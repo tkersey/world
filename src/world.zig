@@ -30542,6 +30542,7 @@ pub const Continuity = struct {
 
         pub fn storeActuationJournal(self: *@This(), journal: Actuation.Journal) !ObjectRef {
             if (!self.policy.persist_actuation_journals) return error.PersistenceDisabled;
+            if (self.policy.reject_unstored_fresh_actuation) try rejectJournalFreshCommitsAgainstRegistry(self.vault, journal);
             var tx = try self.begin(.store_actuation);
             errdefer self.abandonTransaction();
             defer tx.deinit();
@@ -31180,7 +31181,7 @@ pub const Continuity = struct {
                 if (!(try bundleContainsRef(allocator, available_envelopes, dep))) missing_count += 1;
             }
         }
-        const dependency_cycle = try bundleHasDependencyCycle(allocator, bundle.envelopes);
+        const dependency_cycle = try bundleSeedEnvelopesHaveDependencyCycle(allocator, available_envelopes, bundle.envelopes);
         if (dependency_cycle) {
             return ObjectValidationReport.init(.{
                 .object_ref = ObjectRef.init(.{
@@ -32560,6 +32561,13 @@ pub const Continuity = struct {
         pub fn planThawFromVault(session: *Session, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryPlan {
             const requested_mode = recoveryRequestedModeFromThaw(options.thaw_options.mode);
             const source_cursor = session.cursor();
+            const ledger_count_before = session.vault.ledger.events.items.len;
+            const ledger_next_order_before = session.vault.ledger.next_order;
+            var restore_ledger = session.policy.require_transaction_for_recovery;
+            errdefer if (restore_ledger) {
+                session.vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
+                session.vault.ledger.next_order = ledger_next_order_before;
+            };
             var target_ref_fingerprint = targetRefFingerprintFromArg(registry) orelse 0;
             const environment_fingerprint = environmentFingerprintFromArg(env) orelse 0;
             const permit_fingerprint = permitFingerprintFromArg(permit) orelse 0;
@@ -32600,6 +32608,7 @@ pub const Continuity = struct {
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
             }));
+            restore_ledger = false;
             return plan;
         }
 
@@ -36065,6 +36074,17 @@ pub const Continuity = struct {
         return false;
     }
 
+    fn bundleSeedEnvelopesHaveDependencyCycle(allocator: std.mem.Allocator, available_envelopes: []const ObjectEnvelope, seed_envelopes: []const ObjectEnvelope) !bool {
+        var visited: std.ArrayList(ObjectRef) = .empty;
+        defer visited.deinit(allocator);
+        var active: std.ArrayList(ObjectRef) = .empty;
+        defer active.deinit(allocator);
+        for (seed_envelopes) |envelope| {
+            if (try bundleVisitHasCycle(allocator, available_envelopes, envelope.objectRef(), &visited, &active)) return true;
+        }
+        return false;
+    }
+
     fn bundleVisitHasCycle(
         allocator: std.mem.Allocator,
         envelopes: []const ObjectEnvelope,
@@ -36133,6 +36153,16 @@ pub const Continuity = struct {
                 if (incoming.key_fingerprint != existing.key_fingerprint) continue;
                 if (!freshCommitRecordsSameBinding(incoming, existing)) return error.DuplicateBinding;
             }
+        }
+    }
+
+    fn rejectJournalFreshCommitsAgainstRegistry(vault: *Continuity.MemoryVault, journal: Actuation.Journal) !void {
+        var registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(vault);
+        defer registry.deinit(registry.allocator);
+        for (journal.entries.items) |entry| {
+            if (!journalEntryIsTerminalFreshCommit(entry)) continue;
+            const key = entry.idempotency_key_fingerprint orelse return error.InvalidFrameEncoding;
+            try registry.assertFreshCommitAllowed(semanticObjectRef(.actuation_idempotency_key, key));
         }
     }
 
@@ -37984,6 +38014,7 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     const journal_key_ref = Continuity.semanticObjectRef(.actuation_idempotency_key, journal_receipt.idempotency_key_fingerprint);
     try std.testing.expect(journal_registry.lookup(journal_key_ref).?.eql(journal_ref));
     try std.testing.expectError(error.DuplicateBinding, journal_registry.assertFreshCommitAllowed(journal_key_ref));
+    try std.testing.expectError(error.DuplicateBinding, journal_only_session.storeActuationJournal(fresh_journal));
 
     const replay_receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = 0x3470_0030,
@@ -38353,6 +38384,36 @@ test "continuity session import validates bundles before transaction commit" {
     _ = try incremental_inbox.importBundle(incremental_bytes);
     try std.testing.expect(incremental_inbox_vault.has(response_ref));
     try std.testing.expectEqual(Continuity.Ledger.EventKind.bundle_imported, incremental_inbox_vault.ledger.events.items[inbox_ledger_count_before_incremental].kind);
+
+    var cycle_import_vault = Continuity.MemoryVault.init(allocator);
+    defer cycle_import_vault.deinit();
+    var cycle_import_session = try Continuity.Session.init(allocator, &cycle_import_vault, Continuity.PersistPolicy.full_local_evidence());
+    _ = try cycle_import_vault.put(request_envelope);
+    const cycle_response_deps = [_]Continuity.ObjectRef{ request_ref, unrelated_missing_ref };
+    const cycle_response_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_response,
+        .object_format_version = world_frame_response_format_version,
+        .dependency_refs = &cycle_response_deps,
+        .payload_bytes = response_payload,
+    });
+    const cycle_response_ref = cycle_response_envelope.objectRef();
+    const existing_cycle_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .dependency_refs = &.{cycle_response_ref},
+        .payload_bytes = "existing-cycle-node",
+    });
+    try cycle_import_vault.objects.append(allocator, try existing_cycle_envelope.clone(allocator));
+    var cycle_import_envelopes = [_]Continuity.ObjectEnvelope{cycle_response_envelope};
+    const cycle_import_roots = [_]Continuity.ObjectRef{cycle_response_ref};
+    const cycle_import_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &cycle_import_roots, .object_count = cycle_import_envelopes.len }),
+        .envelopes = &cycle_import_envelopes,
+    };
+    const cycle_import_bytes = try cycle_import_bundle.toBytes(allocator);
+    defer allocator.free(cycle_import_bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, cycle_import_session.importBundle(cycle_import_bytes));
 }
 
 test "executable recovery plans and rejects before runspace mutation" {
@@ -39029,6 +39090,56 @@ test "continuity session export allocation failure restores ledger state" {
             else => return err,
         };
         bundle.deinit();
+        try std.testing.expect(!failing_allocator.has_induced_failure);
+        break;
+    }
+    try std.testing.expect(induced_failures > 0);
+}
+
+test "recovery planning allocation failure restores ledger state" {
+    const allocator = std.testing.allocator;
+
+    var induced_failures: usize = 0;
+    for (0..256) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        const fail_alloc = failing_allocator.allocator();
+        var vault = Continuity.MemoryVault.init(fail_alloc);
+        defer vault.deinit();
+        var runspace = Runspace.init(fail_alloc, .{});
+        defer runspace.deinit();
+        var image = Capsule.freezeRunspace(&runspace, .{}) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        defer image.deinit(fail_alloc);
+        const capsule_ref = vault.putCapsule(image) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        var session = try Continuity.Session.init(fail_alloc, &vault, Continuity.PersistPolicy.full_local_evidence());
+        if (failing_allocator.has_induced_failure) continue;
+
+        const ledger_count_before = vault.ledger.events.items.len;
+        const ledger_next_order_before = vault.ledger.next_order;
+        const event_count_before = vault.chronicle_events.items.len;
+        const cursor_before = vault.chronicle_cursor;
+        const plan = Continuity.Recovery.planThawFromVault(&session, capsule_ref, {}, {}, {}, .{
+            .thaw_options = .{ .mode = .inspect_only },
+        }) catch |err| switch (err) {
+            error.OutOfMemory => {
+                try std.testing.expect(failing_allocator.has_induced_failure);
+                induced_failures += 1;
+                try std.testing.expectEqual(ledger_count_before, vault.ledger.events.items.len);
+                try std.testing.expectEqual(ledger_next_order_before, vault.ledger.next_order);
+                try std.testing.expectEqual(event_count_before, vault.chronicle_events.items.len);
+                try std.testing.expectEqual(cursor_before.cursor_fingerprint, vault.chronicle_cursor.cursor_fingerprint);
+                continue;
+            },
+            else => return err,
+        };
+        try plan.validate();
         try std.testing.expect(!failing_allocator.has_induced_failure);
         break;
     }
