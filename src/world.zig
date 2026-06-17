@@ -29104,7 +29104,7 @@ pub const Continuity = struct {
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
                 var validation_envelopes: std.ArrayList(ObjectEnvelope) = .empty;
                 defer validation_envelopes.deinit(self.allocator);
-                try validation_envelopes.appendSlice(self.allocator, self.vault.objects.items);
+                try appendChronicleCommittedVaultEnvelopes(self.allocator, self.vault, &validation_envelopes);
                 try validation_envelopes.appendSlice(self.allocator, self.staged_envelopes.items);
                 try validation_envelopes.appendSlice(self.allocator, bundle.envelopes);
                 const validation_bundle = Bundle{
@@ -29166,7 +29166,7 @@ pub const Continuity = struct {
                 if (self.staged_bundle_envelopes) {
                     var validation_envelopes: std.ArrayList(ObjectEnvelope) = .empty;
                     defer validation_envelopes.deinit(self.allocator);
-                    try validation_envelopes.appendSlice(self.allocator, self.vault.objects.items);
+                    try appendChronicleCommittedVaultEnvelopes(self.allocator, self.vault, &validation_envelopes);
                     try validation_envelopes.appendSlice(self.allocator, self.staged_envelopes.items);
                     const validation_bundle = Bundle{
                         .allocator = self.allocator,
@@ -29721,6 +29721,7 @@ pub const Continuity = struct {
                 const roots = [_]ObjectRef{capsule_ref};
                 try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_export_started, .root_refs = &roots }));
                 if (!try chronicleCommittedObjectRefExists(self.session.vault, capsule_ref)) return error.ObjectMissing;
+                try requireChronicleCommittedClosure(self.session.vault, &roots);
                 var bundle = try Bundle.exportFromVault(self.session.vault, &roots, .{});
                 errdefer bundle.deinit();
                 const bundle_bytes = try bundle.toBytes(self.session.allocator);
@@ -30616,6 +30617,7 @@ pub const Continuity = struct {
             for (roots) |root| {
                 if (!try chronicleCommittedObjectRefExists(self.vault, root)) return error.ObjectMissing;
             }
+            try requireChronicleCommittedClosure(self.vault, roots);
             const ledger_count_before = self.vault.ledger.events.items.len;
             const ledger_next_order_before = self.vault.ledger.next_order;
             var restore_ledger = true;
@@ -33948,6 +33950,28 @@ pub const Continuity = struct {
 
     fn requireChronicleEventsMatchCursor(vault: *const Continuity.MemoryVault) !void {
         if (!try chronicleEventsMatchCursor(vault)) return error.StaleProjection;
+    }
+
+    fn appendChronicleCommittedVaultEnvelopes(
+        allocator: std.mem.Allocator,
+        vault: *const Continuity.MemoryVault,
+        envelopes: *std.ArrayList(ObjectEnvelope),
+    ) !void {
+        try requireChronicleEventsMatchCursor(vault);
+        for (vault.objects.items) |envelope| {
+            if (try chronicleCommittedObjectRefExistsInAuthenticatedEvents(vault, envelope.objectRef())) {
+                try envelopes.append(allocator, envelope);
+            }
+        }
+    }
+
+    fn requireChronicleCommittedClosure(vault: *Continuity.MemoryVault, roots: []const ObjectRef) !void {
+        var graph = try ObjectGraph.buildFromRoots(vault, roots, .{});
+        defer graph.deinit();
+        if (graph.dependency_cycle) return error.InvalidFrameEncoding;
+        for (graph.objects) |ref| {
+            if (!try chronicleCommittedObjectRefExists(vault, ref)) return error.ObjectMissing;
+        }
     }
 
     fn chronicleCommittedObjectRefExists(vault: *const Continuity.MemoryVault, ref: ObjectRef) !bool {
@@ -38593,6 +38617,33 @@ test "continuity session import validates bundles before transaction commit" {
     try std.testing.expectEqual(local_root_object_count_before, locally_available_root_vault.objectCount());
     try std.testing.expectEqual(local_root_event_count_before, locally_available_root_vault.eventCount());
 
+    var unauthenticated_dependency_vault = Continuity.MemoryVault.init(allocator);
+    defer unauthenticated_dependency_vault.deinit();
+    var unauthenticated_dependency_session = try Continuity.Session.init(allocator, &unauthenticated_dependency_vault, Continuity.PersistPolicy.full_local_evidence());
+    const unauthenticated_dependency_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "unauthenticated import dependency",
+    });
+    const unauthenticated_dependency_ref = unauthenticated_dependency_envelope.objectRef();
+    try unauthenticated_dependency_vault.objects.append(allocator, try unauthenticated_dependency_envelope.clone(allocator));
+    const imported_root_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .dependency_refs = &.{unauthenticated_dependency_ref},
+        .payload_bytes = "imported root with raw dependency",
+    });
+    const imported_roots = [_]Continuity.ObjectRef{imported_root_envelope.objectRef()};
+    var imported_envelopes = [_]Continuity.ObjectEnvelope{imported_root_envelope};
+    const raw_dependency_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &imported_roots, .object_count = imported_envelopes.len }),
+        .envelopes = &imported_envelopes,
+    };
+    const raw_dependency_bytes = try raw_dependency_bundle.toBytes(allocator);
+    defer allocator.free(raw_dependency_bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, unauthenticated_dependency_session.importBundle(raw_dependency_bytes));
+
     var incremental_vault = Continuity.MemoryVault.init(allocator);
     defer incremental_vault.deinit();
     var incremental_session = try Continuity.Session.init(allocator, &incremental_vault, Continuity.PersistPolicy.full_local_evidence());
@@ -39437,6 +39488,25 @@ test "continuity session export allocation failure restores ledger state" {
     const unauthenticated_root = unauthenticated_envelope.objectRef();
     try unauthenticated_vault.objects.append(allocator, try unauthenticated_envelope.clone(allocator));
     try std.testing.expectError(error.ObjectMissing, unauthenticated_session.exportBundle(&.{unauthenticated_root}));
+
+    var raw_dependency_export_vault = Continuity.MemoryVault.init(allocator);
+    defer raw_dependency_export_vault.deinit();
+    var raw_dependency_export_session = try Continuity.Session.init(allocator, &raw_dependency_export_vault, Continuity.PersistPolicy.full_local_evidence());
+    const raw_dependency_export_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "unauthenticated export dependency",
+    });
+    const raw_dependency_export_ref = raw_dependency_export_envelope.objectRef();
+    try raw_dependency_export_vault.objects.append(allocator, try raw_dependency_export_envelope.clone(allocator));
+    const committed_root_with_raw_dependency = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .dependency_refs = &.{raw_dependency_export_ref},
+        .payload_bytes = "committed export root with raw dependency",
+    });
+    const committed_root_with_raw_dependency_ref = try raw_dependency_export_vault.put(committed_root_with_raw_dependency);
+    try std.testing.expectError(error.ObjectMissing, raw_dependency_export_session.exportBundle(&.{committed_root_with_raw_dependency_ref}));
 
     const envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_manifest,
