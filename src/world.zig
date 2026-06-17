@@ -29150,9 +29150,21 @@ pub const Continuity = struct {
                 };
                 try rejectDuplicateFreshCommitsAgainstVault(self.vault, staged_bundle);
                 if (self.staged_bundle_envelopes) {
-                    const report = try staged_bundle.validationReport(.{});
+                    var validation_envelopes: std.ArrayList(ObjectEnvelope) = .empty;
+                    defer validation_envelopes.deinit(self.allocator);
+                    try validation_envelopes.appendSlice(self.allocator, self.vault.objects.items);
+                    try validation_envelopes.appendSlice(self.allocator, self.staged_envelopes.items);
+                    const validation_bundle = Bundle{
+                        .allocator = self.allocator,
+                        .manifest = BundleManifest.init(.{
+                            .roots = self.staged_root_refs.items,
+                            .object_count = validation_envelopes.items.len,
+                        }),
+                        .envelopes = validation_envelopes.items,
+                    };
+                    const report = try validation_bundle.validationReport(.{});
                     if (!report.valid) return error.InvalidFrameEncoding;
-                    for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, staged_bundle, envelope);
+                    for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, validation_bundle, envelope);
                 } else {
                     for (self.staged_envelopes.items) |envelope| try self.vault.assertTransactionCanStageEnvelope(self, envelope);
                 }
@@ -29354,6 +29366,8 @@ pub const Continuity = struct {
             }
 
             pub fn rebuild(vault: *Continuity.MemoryVault, kind: ProjectionKind) !@This() {
+                const authenticated_cursor = try replayCursorFromChronicle(vault, vault.allocator);
+                if (authenticated_cursor.cursor_fingerprint != vault.cursor().cursor_fingerprint) return error.StaleProjection;
                 var refs: std.ArrayList(ObjectRef) = .empty;
                 defer refs.deinit(vault.allocator);
                 var consumed_event_count: usize = 0;
@@ -30532,12 +30546,21 @@ pub const Continuity = struct {
                 .object_fingerprint = bundle.manifest.manifest_fingerprint,
                 .byte_len = bytes.len,
             });
+            const ledger_count_before = self.vault.ledger.events.items.len;
+            const ledger_next_order_before = self.vault.ledger.next_order;
+            var restore_ledger = true;
+            errdefer if (restore_ledger) {
+                self.vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
+                self.vault.ledger.next_order = ledger_next_order_before;
+            };
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_started, .bundle_ref = bundle_ref }));
             try tx.putBundle(bundle);
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_validated, .bundle_ref = bundle_ref }));
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = bundle_ref }));
+            try self.vault.ledger.record(.bundle_imported, null);
             _ = try tx.commit();
             self.finishTransaction();
+            restore_ledger = false;
             return manifest;
         }
 
@@ -33594,13 +33617,29 @@ pub const Continuity = struct {
 
     fn replayCommittedObjectsIntoVault(source: *Continuity.MemoryVault, destination: *Continuity.MemoryVault) !void {
         for (source.chronicle_commit_backing.items) |backing| {
+            try validateReplayBackingEnvelopes(destination, backing);
             for (backing) |envelope| _ = try destination.putAcceptedTransactionEnvelope(envelope);
+        }
+    }
+
+    fn validateReplayBackingEnvelopes(destination: *Continuity.MemoryVault, backing: []const ObjectEnvelope) !void {
+        var validation_envelopes: std.ArrayList(ObjectEnvelope) = .empty;
+        defer validation_envelopes.deinit(destination.allocator);
+        try validation_envelopes.appendSlice(destination.allocator, destination.objects.items);
+        try validation_envelopes.appendSlice(destination.allocator, backing);
+        for (backing) |envelope| {
+            try envelope.validate();
+            if (!(try bundleEnvelopeTypedPayloadValid(destination.allocator, envelope))) return error.InvalidFrameEncoding;
+            if (!(try bundleEnvelopeDeclaresRequiredDependencies(destination.allocator, validation_envelopes.items, envelope))) return error.InvalidFrameEncoding;
+            if (!(try bundleEnvelopeDependencyPayloadsValid(destination.allocator, validation_envelopes.items, envelope))) return error.InvalidFrameEncoding;
         }
     }
 
     fn replayChronicleEventsIntoVault(source: *Continuity.MemoryVault, destination: *Continuity.MemoryVault) !void {
         for (destination.chronicle_events.items) |*event| event.deinit(destination.allocator);
         destination.chronicle_events.clearRetainingCapacity();
+        for (destination.chronicle_commits.items) |*commit| commit.deinit(destination.allocator);
+        destination.chronicle_commits.clearRetainingCapacity();
         for (source.chronicle_events.items) |event| {
             try event.validate();
             const owned = try event.clone(destination.allocator);
@@ -33612,7 +33651,18 @@ pub const Continuity = struct {
             try destination.chronicle_events.append(destination.allocator, owned);
             owned_pending = false;
         }
-        destination.chronicle_cursor = try replayCursorFromChronicle(source, destination.allocator);
+        for (source.chronicle_commits.items) |commit| {
+            try commit.validate();
+            const owned = try commit.clone(destination.allocator);
+            var owned_pending = true;
+            errdefer if (owned_pending) {
+                var cleanup = owned;
+                cleanup.deinit(destination.allocator);
+            };
+            try destination.chronicle_commits.append(destination.allocator, owned);
+            owned_pending = false;
+        }
+        destination.chronicle_cursor = try replayCursorFromChronicle(destination, destination.allocator);
     }
 
     fn replayCursorFromChronicle(vault: *const Continuity.MemoryVault, allocator: std.mem.Allocator) !Chronicle.Cursor {
@@ -37522,6 +37572,13 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     try std.testing.expectEqual(vault.eventCount(), report.replayed_event_count);
     const report_again = try Continuity.Chronicle.replay(&vault, .{});
     try std.testing.expectEqual(report.report_fingerprint, report_again.report_fingerprint);
+    try vault.appendChronicleEventWithoutCursor(Continuity.Chronicle.Event.init(.{
+        .kind = .object_validated,
+        .target_ref = envelope.objectRef(),
+    }));
+    try std.testing.expectError(error.StaleProjection, Continuity.Chronicle.Projection.rebuild(&vault, .object_index));
+    var unauthenticated_event = vault.chronicle_events.pop().?;
+    unauthenticated_event.deinit(allocator);
 
     const second = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_certificate,
@@ -37540,6 +37597,15 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     try vault.chronicle_events.items[0].validate();
     try vault.chronicle_commits.items[0].validate();
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&vault, .{}));
+
+    var corrupted_backing_vault = Continuity.MemoryVault.init(allocator);
+    defer corrupted_backing_vault.deinit();
+    var corrupted_tx = try corrupted_backing_vault.beginTransaction(.custom, .{});
+    defer corrupted_tx.deinit();
+    _ = try corrupted_tx.put(envelope);
+    _ = try corrupted_tx.commit();
+    @constCast(corrupted_backing_vault.chronicle_commit_backing.items[0][0].payload_bytes)[0] = 'M';
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&corrupted_backing_vault, .{}));
 }
 
 test "chronicle replay preserves transaction dependency context" {
@@ -38006,6 +38072,62 @@ test "continuity session import validates bundles before transaction commit" {
     try std.testing.expectEqual(event_count_before, vault.eventCount());
     try std.testing.expectEqual(active_transaction_count_before, session.active_transaction_count);
     try std.testing.expectEqual(session_fingerprint_before, session.session_fingerprint);
+
+    var incremental_vault = Continuity.MemoryVault.init(allocator);
+    defer incremental_vault.deinit();
+    var incremental_session = try Continuity.Session.init(allocator, &incremental_vault, Continuity.PersistPolicy.full_local_evidence());
+    const request_fingerprint = 0x3471_1001;
+    const response_fingerprint = 0x3471_1002;
+    const request = Frame.Request.init(.{
+        .world_surface_fingerprint = 0x3471_1011,
+        .target_certificate_fingerprint = 0x3471_1012,
+        .world_port_id = 3,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0x3471_1014,
+        .request_fingerprint = request_fingerprint,
+        .turn_index = 0,
+    });
+    const response = Frame.Response.init(.{
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .target_certificate_fingerprint = request.target_certificate_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request_fingerprint,
+        .response_fingerprint = response_fingerprint,
+        .replay_key = request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+    });
+    const request_payload = try request.encode(allocator);
+    defer allocator.free(request_payload);
+    const response_payload = try response.encode(allocator);
+    defer allocator.free(response_payload);
+    const request_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_request,
+        .object_format_version = world_frame_request_format_version,
+        .payload_bytes = request_payload,
+    });
+    const request_ref = Continuity.semanticObjectRef(.frame_request, request.frame_fingerprint);
+    _ = try incremental_vault.put(request_envelope);
+    const response_deps = [_]Continuity.ObjectRef{request_ref};
+    const response_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_response,
+        .object_format_version = world_frame_response_format_version,
+        .dependency_refs = &response_deps,
+        .payload_bytes = response_payload,
+    });
+    const response_ref = response_envelope.objectRef();
+    var incremental_envelopes = [_]Continuity.ObjectEnvelope{ request_envelope, response_envelope };
+    const incremental_roots = [_]Continuity.ObjectRef{response_ref};
+    const incremental_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{ .roots = &incremental_roots, .object_count = incremental_envelopes.len }),
+        .envelopes = &incremental_envelopes,
+    };
+    const incremental_bytes = try incremental_bundle.toBytes(allocator);
+    defer allocator.free(incremental_bytes);
+    const ledger_count_before_incremental = incremental_vault.ledger.events.items.len;
+    var incremental_manifest = try incremental_session.importBundle(incremental_bytes);
+    defer incremental_manifest.deinit(allocator);
+    try std.testing.expect(incremental_vault.has(response_ref));
+    try std.testing.expectEqual(Continuity.Ledger.EventKind.bundle_imported, incremental_vault.ledger.events.items[ledger_count_before_incremental].kind);
 }
 
 test "executable recovery plans and rejects before runspace mutation" {
