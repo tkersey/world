@@ -34037,11 +34037,8 @@ pub const Continuity = struct {
     }
 
     fn chronicleCommittedRefByKindFingerprint(vault: *const Continuity.MemoryVault, kind: ObjectKind, fingerprint: u64) !?ObjectRef {
-        for (vault.objects.items) |envelope| {
-            const ref = envelope.objectRef();
-            if (ref.kind != kind or ref.object_fingerprint != fingerprint) continue;
-            if (try chronicleCommittedObjectRefExistsInAuthenticatedEvents(vault, ref)) return ref;
-        }
+        const ref = (try vault.refByKindFingerprint(kind, fingerprint)) orelse return null;
+        if (try chronicleCommittedObjectRefExistsInAuthenticatedEvents(vault, ref)) return ref;
         return null;
     }
 
@@ -38429,6 +38426,42 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     raw_journal_receipt_cleanup.deinit(allocator);
     try std.testing.expectError(error.DuplicateBinding, journal_registry.assertFreshCommitAllowed(journal_key_ref));
     try std.testing.expectError(error.DuplicateBinding, journal_only_session.storeActuationJournal(fresh_journal));
+
+    var receipt_backed_journal_vault = Continuity.MemoryVault.init(allocator);
+    defer receipt_backed_journal_vault.deinit();
+    var receipt_backed_journal_session = try Continuity.Session.init(allocator, &receipt_backed_journal_vault, Continuity.PersistPolicy.init(.{
+        .persist_actuation_receipts = true,
+        .persist_actuation_journals = true,
+    }));
+    const journal_named_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3470_5810,
+        .envelope_fingerprint = 0x3470_5811,
+        .decision_fingerprint = 0x3470_5812,
+        .commit_fingerprint = 0x3470_5813,
+        .response_fingerprint = 0x3470_5814,
+        .frame_response_fingerprint = 0x3470_5815,
+        .actuator_ref_fingerprint = 0x3470_5804,
+        .idempotency_key_fingerprint = 0x3470_5820,
+        .request_fingerprint = 0x3470_5803,
+        .target_ref_fingerprint = 0x3470_5801,
+        .world_surface_fingerprint = 0x3470_5802,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const journal_named_receipt_ref = try receipt_backed_journal_session.storeActuationReceipt(journal_named_receipt);
+    try std.testing.expect(journal_named_receipt_ref.object_fingerprint != journal_named_receipt.receipt_fingerprint);
+    var receipt_backed_journal = Actuation.Journal.init();
+    defer receipt_backed_journal.deinit(allocator);
+    try receipt_backed_journal.appendReceipt(allocator, journal_named_receipt);
+    const receipt_backed_journal_ref = try receipt_backed_journal_session.storeActuationJournal(receipt_backed_journal);
+    var receipt_backed_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&receipt_backed_journal_vault);
+    defer receipt_backed_registry.deinit(receipt_backed_registry.allocator);
+    const journal_named_key_ref = Continuity.semanticObjectRef(.actuation_idempotency_key, journal_named_receipt.idempotency_key_fingerprint);
+    try std.testing.expect(receipt_backed_registry.lookup(journal_named_key_ref).?.eql(journal_named_receipt_ref));
+    try std.testing.expect(Continuity.containsRef(receipt_backed_registry.committed_evidence_refs, journal_named_receipt_ref));
+    try std.testing.expect(!Continuity.containsRef(receipt_backed_registry.committed_evidence_refs, receipt_backed_journal_ref));
 
     var commit_only_vault = Continuity.MemoryVault.init(allocator);
     defer commit_only_vault.deinit();
