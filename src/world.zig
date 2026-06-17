@@ -32378,7 +32378,7 @@ pub const Continuity = struct {
         pub fn executeThawPlanFromVault(session: *Session, runspace: *Runspace, plan: RecoveryPlan, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryReport {
             try plan.validate();
             if (plan.requested_mode != recoveryRequestedModeFromThaw(options.thaw_options.mode)) return error.InvalidFrameEncoding;
-            if (session.policy.require_transaction_for_recovery and !recoveryPlanWasRecorded(session.vault, plan)) return error.InvalidFrameEncoding;
+            if (session.policy.require_transaction_for_recovery and !recoveryPlanIsCurrent(session.vault, plan)) return error.InvalidFrameEncoding;
             const before_slots = runspace.slots.items.len;
             if (plan.blockers.len != 0) {
                 if (before_slots != runspace.slots.items.len) return error.InvalidRunspaceTransition;
@@ -32618,15 +32618,28 @@ pub const Continuity = struct {
         }
 
         fn recoveryPlanWasRecorded(vault: *const Continuity.MemoryVault, plan: RecoveryPlan) bool {
-            const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
             const expected_kind: Chronicle.EventKind = if (plan.blockers.len == 0) .capsule_recovery_ready else .capsule_recovery_rejected;
             for (vault.chronicle_events.items) |event| {
-                if (event.kind != expected_kind) continue;
-                if (event.recovery_plan_ref == null or !event.recovery_plan_ref.?.eql(plan_ref)) continue;
-                if (event.capsule_ref == null or !event.capsule_ref.?.eql(plan.capsule_ref)) continue;
+                if (!recoveryPlanEventMatches(event, plan, expected_kind)) continue;
                 return true;
             }
             return false;
+        }
+
+        fn recoveryPlanIsCurrent(vault: *const Continuity.MemoryVault, plan: RecoveryPlan) bool {
+            if (!recoveryPlanWasRecorded(vault, plan)) return false;
+            if (vault.chronicle_events.items.len == 0) return false;
+            const last_event = vault.chronicle_events.items[vault.chronicle_events.items.len - 1];
+            const expected_kind: Chronicle.EventKind = if (plan.blockers.len == 0) .capsule_recovery_ready else .capsule_recovery_rejected;
+            return recoveryPlanEventMatches(last_event, plan, expected_kind);
+        }
+
+        fn recoveryPlanEventMatches(event: Chronicle.Event, plan: RecoveryPlan, expected_kind: Chronicle.EventKind) bool {
+            const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
+            if (event.kind != expected_kind) return false;
+            if (event.recovery_plan_ref == null or !event.recovery_plan_ref.?.eql(plan_ref)) return false;
+            if (event.capsule_ref == null or !event.capsule_ref.?.eql(plan.capsule_ref)) return false;
+            return true;
         }
 
         fn appendOwnedRecoveryChronicleEventAssumeCapacity(session: *Session, event: Chronicle.Event) void {
@@ -37907,7 +37920,12 @@ test "executable recovery plans and rejects before runspace mutation" {
     try std.testing.expectEqual(cursor_before_plan.cursor_fingerprint, plan.source_cursor_fingerprint);
     try std.testing.expect(cursor_before_plan.cursor_fingerprint != session.cursor().cursor_fingerprint);
     try std.testing.expect(plan.blockers.len != 0);
-    const report = try Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, plan, {}, {}, {}, .{});
+    try session.appendChronicleEvent(Continuity.Chronicle.Event.init(.{ .kind = .recovery_blocked, .capsule_ref = missing_capsule }));
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, plan, {}, {}, {}, .{}));
+    const current_plan = try Continuity.Recovery.planThawFromVault(&session, missing_capsule, {}, {}, {}, .{});
+    try current_plan.validate();
+    try std.testing.expect(current_plan.blockers.len != 0);
+    const report = try Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, current_plan, {}, {}, {}, .{});
     try report.validate();
     try std.testing.expect(!report.accepted);
     try std.testing.expect(report.restored_capsule_ref == null);
