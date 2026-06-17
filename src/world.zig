@@ -32498,11 +32498,14 @@ pub const Continuity = struct {
             const plan = try planReplayFromVault(session, capsule_ref, target, options);
             if (plan.blockers.len != 0) return recoveryRejectedReport(session, plan);
             const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
-            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
-                .kind = .capsule_replayed,
-                .capsule_ref = capsule_ref,
-                .recovery_plan_ref = plan_ref,
-            }));
+            if (session.policy.require_transaction_for_recovery) {
+                try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                    .kind = .capsule_replayed,
+                    .capsule_ref = capsule_ref,
+                    .recovery_plan_ref = plan_ref,
+                }));
+            }
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = true,
@@ -32518,12 +32521,14 @@ pub const Continuity = struct {
                 }));
                 report.report_fingerprint = fingerprintRecoveryReport(report);
             }
-            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
-                .kind = .recovery_report_stored,
-                .capsule_ref = capsule_ref,
-                .recovery_plan_ref = plan_ref,
-                .recovery_report_ref = report.report_ref,
-            }));
+            if (session.policy.require_transaction_for_recovery) {
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                    .kind = .recovery_report_stored,
+                    .capsule_ref = capsule_ref,
+                    .recovery_plan_ref = plan_ref,
+                    .recovery_report_ref = report.report_ref,
+                }));
+            }
             try report.validate();
             return report;
         }
@@ -32548,11 +32553,15 @@ pub const Continuity = struct {
         }
 
         fn recoveryRejectedReport(session: *Session, plan: RecoveryPlan) !RecoveryReport {
-            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
-                .kind = .recovery_blocked,
-                .capsule_ref = plan.capsule_ref,
-                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
-            }));
+            const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
+            if (session.policy.require_transaction_for_recovery) {
+                try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                    .kind = .recovery_blocked,
+                    .capsule_ref = plan.capsule_ref,
+                    .recovery_plan_ref = plan_ref,
+                }));
+            }
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = false,
@@ -32563,17 +32572,19 @@ pub const Continuity = struct {
                 report.resulting_cursor_fingerprint = recoveryReportResultingCursorFingerprint(session, Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
                     .capsule_ref = plan.capsule_ref,
-                    .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
+                    .recovery_plan_ref = plan_ref,
                     .recovery_report_ref = report.report_ref,
                 }));
                 report.report_fingerprint = fingerprintRecoveryReport(report);
             }
-            try appendRecoveryChronicleEvent(session, Chronicle.Event.init(.{
-                .kind = .recovery_report_stored,
-                .capsule_ref = plan.capsule_ref,
-                .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
-                .recovery_report_ref = report.report_ref,
-            }));
+            if (session.policy.require_transaction_for_recovery) {
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, Chronicle.Event.init(.{
+                    .kind = .recovery_report_stored,
+                    .capsule_ref = plan.capsule_ref,
+                    .recovery_plan_ref = plan_ref,
+                    .recovery_report_ref = report.report_ref,
+                }));
+            }
             try report.validate();
             return report;
         }
