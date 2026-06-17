@@ -33629,6 +33629,7 @@ pub const Continuity = struct {
         hashOptionalRef(&hasher, event.environment_certificate_ref);
         hashBytesWithLenLocal(&hasher, event.blocker_summary);
         hashBytesWithLenLocal(&hasher, event.warning_summary);
+        hashBytesWithLenLocal(&hasher, event.metadata_bytes);
         return hasher.final();
     }
 
@@ -36995,7 +36996,7 @@ test "continuity object ref fingerprint stable and kind-sensitive" {
     try std.testing.expectEqual(@as(usize, payload.len), ref_a.byte_len);
 }
 
-test "chronicle event fingerprint binds parents refs and excludes metadata authority" {
+test "chronicle event fingerprint binds parents refs and metadata" {
     const capsule_ref = Continuity.ObjectRef.fromPayload(.capsule_image, world_capsule_image_format_version, "capsule", "capsule");
     const receipt_ref = Continuity.ObjectRef.fromPayload(.actuation_receipt, world_actuation_receipt_format_version, "receipt", "receipt");
     var parent_fingerprints = [_]u64{0xabc1};
@@ -37010,7 +37011,7 @@ test "chronicle event fingerprint binds parents refs and excludes metadata autho
     });
     try event.validate();
 
-    const same_authority_different_metadata = Continuity.Chronicle.Event.init(.{
+    const different_metadata = Continuity.Chronicle.Event.init(.{
         .kind = .capsule_stored,
         .parent_event_fingerprints = &parent_fingerprints,
         .transaction_fingerprint = 0x4400,
@@ -37018,7 +37019,7 @@ test "chronicle event fingerprint binds parents refs and excludes metadata autho
         .capsule_ref = capsule_ref,
         .metadata_bytes = "diagnostic b",
     });
-    try std.testing.expectEqual(event.event_fingerprint, same_authority_different_metadata.event_fingerprint);
+    try std.testing.expect(event.event_fingerprint != different_metadata.event_fingerprint);
 
     parent_fingerprints[0] = 0xabc2;
     try std.testing.expectError(error.InvalidFrameEncoding, event.validate());
