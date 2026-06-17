@@ -32516,15 +32516,6 @@ pub const Continuity = struct {
             const plan = try planReplayFromVault(session, capsule_ref, target, options);
             if (plan.blockers.len != 0) return recoveryRejectedReport(session, plan);
             const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
-            if (session.policy.require_transaction_for_recovery) {
-                try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
-                const owned_replayed_event = try Chronicle.Event.init(.{
-                    .kind = .capsule_replayed,
-                    .capsule_ref = capsule_ref,
-                    .recovery_plan_ref = plan_ref,
-                }).clone(session.vault.allocator);
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_replayed_event);
-            }
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = true,
@@ -32532,22 +32523,29 @@ pub const Continuity = struct {
                 .restored_capsule_ref = capsule_ref,
             });
             if (session.policy.require_transaction_for_recovery) {
-                report.resulting_cursor_fingerprint = recoveryReportResultingCursorFingerprint(session, Chronicle.Event.init(.{
-                    .kind = .recovery_report_stored,
+                try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
+                var owned_replayed_event: ?Chronicle.Event = try Chronicle.Event.init(.{
+                    .kind = .capsule_replayed,
                     .capsule_ref = capsule_ref,
                     .recovery_plan_ref = plan_ref,
-                    .recovery_report_ref = report.report_ref,
-                }));
-                report.report_fingerprint = fingerprintRecoveryReport(report);
-            }
-            if (session.policy.require_transaction_for_recovery) {
-                const owned_recovery_report_event = try Chronicle.Event.init(.{
+                }).clone(session.vault.allocator);
+                errdefer if (owned_replayed_event) |*event| event.deinit(session.vault.allocator);
+                var owned_recovery_report_event: ?Chronicle.Event = try Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
                     .capsule_ref = capsule_ref,
                     .recovery_plan_ref = plan_ref,
                     .recovery_report_ref = report.report_ref,
                 }).clone(session.vault.allocator);
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event);
+                errdefer if (owned_recovery_report_event) |*event| event.deinit(session.vault.allocator);
+                var resulting_cursor = session.cursor();
+                resulting_cursor = resulting_cursor.advance(&.{owned_replayed_event.?.event_fingerprint}, 0, 0);
+                resulting_cursor = resulting_cursor.advance(&.{owned_recovery_report_event.?.event_fingerprint}, 0, 0);
+                report.resulting_cursor_fingerprint = resulting_cursor.cursor_fingerprint;
+                report.report_fingerprint = fingerprintRecoveryReport(report);
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_replayed_event.?);
+                owned_replayed_event = null;
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event.?);
+                owned_recovery_report_event = null;
             }
             try report.validate();
             return report;
@@ -32574,15 +32572,6 @@ pub const Continuity = struct {
 
         fn recoveryRejectedReport(session: *Session, plan: RecoveryPlan) !RecoveryReport {
             const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
-            if (session.policy.require_transaction_for_recovery) {
-                try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
-                const owned_recovery_blocked_event = try Chronicle.Event.init(.{
-                    .kind = .recovery_blocked,
-                    .capsule_ref = plan.capsule_ref,
-                    .recovery_plan_ref = plan_ref,
-                }).clone(session.vault.allocator);
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_blocked_event);
-            }
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = false,
@@ -32590,22 +32579,29 @@ pub const Continuity = struct {
                 .blockers = if (plan.blockers.len == 0) &.{1} else plan.blockers,
             });
             if (session.policy.require_transaction_for_recovery) {
-                report.resulting_cursor_fingerprint = recoveryReportResultingCursorFingerprint(session, Chronicle.Event.init(.{
-                    .kind = .recovery_report_stored,
+                try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
+                var owned_recovery_blocked_event: ?Chronicle.Event = try Chronicle.Event.init(.{
+                    .kind = .recovery_blocked,
                     .capsule_ref = plan.capsule_ref,
                     .recovery_plan_ref = plan_ref,
-                    .recovery_report_ref = report.report_ref,
-                }));
-                report.report_fingerprint = fingerprintRecoveryReport(report);
-            }
-            if (session.policy.require_transaction_for_recovery) {
-                const owned_recovery_report_event = try Chronicle.Event.init(.{
+                }).clone(session.vault.allocator);
+                errdefer if (owned_recovery_blocked_event) |*event| event.deinit(session.vault.allocator);
+                var owned_recovery_report_event: ?Chronicle.Event = try Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
                     .capsule_ref = plan.capsule_ref,
                     .recovery_plan_ref = plan_ref,
                     .recovery_report_ref = report.report_ref,
                 }).clone(session.vault.allocator);
-                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event);
+                errdefer if (owned_recovery_report_event) |*event| event.deinit(session.vault.allocator);
+                var resulting_cursor = session.cursor();
+                resulting_cursor = resulting_cursor.advance(&.{owned_recovery_blocked_event.?.event_fingerprint}, 0, 0);
+                resulting_cursor = resulting_cursor.advance(&.{owned_recovery_report_event.?.event_fingerprint}, 0, 0);
+                report.resulting_cursor_fingerprint = resulting_cursor.cursor_fingerprint;
+                report.report_fingerprint = fingerprintRecoveryReport(report);
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_blocked_event.?);
+                owned_recovery_blocked_event = null;
+                appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event.?);
+                owned_recovery_report_event = null;
             }
             try report.validate();
             return report;
