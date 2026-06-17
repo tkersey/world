@@ -32585,10 +32585,17 @@ pub const Continuity = struct {
             const source_cursor = session.cursor();
             const ledger_count_before = session.vault.ledger.events.items.len;
             const ledger_next_order_before = session.vault.ledger.next_order;
+            const event_count_before = session.vault.chronicle_events.items.len;
+            const cursor_before = session.vault.chronicle_cursor;
+            const session_fingerprint_before = session.session_fingerprint;
             var restore_ledger = session.policy.require_transaction_for_recovery;
             errdefer if (restore_ledger) {
                 session.vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
                 session.vault.ledger.next_order = ledger_next_order_before;
+                for (session.vault.chronicle_events.items[event_count_before..]) |*event| event.deinit(session.vault.allocator);
+                session.vault.chronicle_events.shrinkRetainingCapacity(event_count_before);
+                session.vault.chronicle_cursor = cursor_before;
+                session.session_fingerprint = session_fingerprint_before;
             };
             var target_ref_fingerprint = targetRefFingerprintFromArg(registry) orelse 0;
             const environment_fingerprint = environmentFingerprintFromArg(env) orelse 0;
@@ -32650,6 +32657,13 @@ pub const Continuity = struct {
                 return recoveryRejectedReport(session, plan);
             }
             const capsule_ref = plan.capsule_ref;
+            const ledger_count_before = session.vault.ledger.events.items.len;
+            const ledger_next_order_before = session.vault.ledger.next_order;
+            var restore_ledger = session.policy.require_transaction_for_recovery;
+            errdefer if (restore_ledger) {
+                session.vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
+                session.vault.ledger.next_order = ledger_next_order_before;
+            };
             var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
                 error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
                     if (!session.policy.require_transaction_for_recovery) session.refreshFingerprint();
@@ -32712,6 +32726,7 @@ pub const Continuity = struct {
                 handles_owned = false;
             }
             if (session.policy.require_transaction_for_recovery) {
+                restore_ledger = false;
                 if (restore.accepted) {
                     appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_executed_event.?);
                     owned_recovery_executed_event = null;
@@ -32752,6 +32767,20 @@ pub const Continuity = struct {
 
         pub fn planReplayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryPlan {
             const source_cursor = session.cursor();
+            const ledger_count_before = session.vault.ledger.events.items.len;
+            const ledger_next_order_before = session.vault.ledger.next_order;
+            const event_count_before = session.vault.chronicle_events.items.len;
+            const cursor_before = session.vault.chronicle_cursor;
+            const session_fingerprint_before = session.session_fingerprint;
+            var restore_ledger = session.policy.require_transaction_for_recovery;
+            errdefer if (restore_ledger) {
+                session.vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
+                session.vault.ledger.next_order = ledger_next_order_before;
+                for (session.vault.chronicle_events.items[event_count_before..]) |*event| event.deinit(session.vault.allocator);
+                session.vault.chronicle_events.shrinkRetainingCapacity(event_count_before);
+                session.vault.chronicle_cursor = cursor_before;
+                session.session_fingerprint = session_fingerprint_before;
+            };
             const blockers: []const u64 = blk: {
                 var graph = preflightReplayCapsule(session.vault, capsule_ref, target, options) catch |err| switch (err) {
                     error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
@@ -32776,6 +32805,7 @@ pub const Continuity = struct {
                 .capsule_ref = capsule_ref,
                 .recovery_plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint),
             }));
+            restore_ledger = false;
             return plan;
         }
 
@@ -39224,6 +39254,112 @@ test "recovery planning allocation failure restores ledger state" {
         const plan = Continuity.Recovery.planThawFromVault(&session, capsule_ref, {}, {}, {}, .{
             .thaw_options = .{ .mode = .inspect_only },
         }) catch |err| switch (err) {
+            error.OutOfMemory => {
+                try std.testing.expect(failing_allocator.has_induced_failure);
+                induced_failures += 1;
+                try std.testing.expectEqual(ledger_count_before, vault.ledger.events.items.len);
+                try std.testing.expectEqual(ledger_next_order_before, vault.ledger.next_order);
+                try std.testing.expectEqual(event_count_before, vault.chronicle_events.items.len);
+                try std.testing.expectEqual(cursor_before.cursor_fingerprint, vault.chronicle_cursor.cursor_fingerprint);
+                continue;
+            },
+            else => return err,
+        };
+        try plan.validate();
+        try std.testing.expect(!failing_allocator.has_induced_failure);
+        break;
+    }
+    try std.testing.expect(induced_failures > 0);
+}
+
+test "recovery execution allocation failure restores ledger state" {
+    const allocator = std.testing.allocator;
+
+    var induced_failures: usize = 0;
+    for (0..512) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        const fail_alloc = failing_allocator.allocator();
+        var vault = Continuity.MemoryVault.init(fail_alloc);
+        defer vault.deinit();
+        var source_runspace = Runspace.init(fail_alloc, .{});
+        defer source_runspace.deinit();
+        var image = Capsule.freezeRunspace(&source_runspace, .{}) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        defer image.deinit(fail_alloc);
+        const capsule_ref = vault.putCapsule(image) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        var session = try Continuity.Session.init(fail_alloc, &vault, Continuity.PersistPolicy.full_local_evidence());
+        const plan = Continuity.Recovery.planThawFromVault(&session, capsule_ref, {}, {}, {}, .{
+            .thaw_options = .{ .mode = .inspect_only },
+        }) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        if (failing_allocator.has_induced_failure) continue;
+        var target_runspace = Runspace.init(fail_alloc, .{});
+        defer target_runspace.deinit();
+
+        const ledger_count_before = vault.ledger.events.items.len;
+        const ledger_next_order_before = vault.ledger.next_order;
+        const event_count_before = vault.chronicle_events.items.len;
+        const cursor_before = vault.chronicle_cursor;
+        var report = Continuity.Recovery.executeThawPlanFromVault(&session, &target_runspace, plan, {}, {}, {}, .{
+            .thaw_options = .{ .mode = .inspect_only },
+        }) catch |err| switch (err) {
+            error.OutOfMemory => {
+                try std.testing.expect(failing_allocator.has_induced_failure);
+                induced_failures += 1;
+                try std.testing.expectEqual(ledger_count_before, vault.ledger.events.items.len);
+                try std.testing.expectEqual(ledger_next_order_before, vault.ledger.next_order);
+                try std.testing.expectEqual(event_count_before, vault.chronicle_events.items.len);
+                try std.testing.expectEqual(cursor_before.cursor_fingerprint, vault.chronicle_cursor.cursor_fingerprint);
+                continue;
+            },
+            else => return err,
+        };
+        defer report.deinit(fail_alloc);
+        try std.testing.expect(!failing_allocator.has_induced_failure);
+        break;
+    }
+    try std.testing.expect(induced_failures > 0);
+}
+
+test "replay planning allocation failure restores ledger state" {
+    const allocator = std.testing.allocator;
+
+    var induced_failures: usize = 0;
+    for (0..512) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        const fail_alloc = failing_allocator.allocator();
+        var vault = Continuity.MemoryVault.init(fail_alloc);
+        defer vault.deinit();
+        var runspace = Runspace.init(fail_alloc, .{});
+        defer runspace.deinit();
+        var image = Capsule.freezeRunspace(&runspace, .{}) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        defer image.deinit(fail_alloc);
+        const capsule_ref = vault.putCapsule(image) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        var session = try Continuity.Session.init(fail_alloc, &vault, Continuity.PersistPolicy.full_local_evidence());
+        if (failing_allocator.has_induced_failure) continue;
+
+        const ledger_count_before = vault.ledger.events.items.len;
+        const ledger_next_order_before = vault.ledger.next_order;
+        const event_count_before = vault.chronicle_events.items.len;
+        const cursor_before = vault.chronicle_cursor;
+        const plan = Continuity.Recovery.planReplayFromVault(&session, capsule_ref, .{ .target_ref_fingerprint = 0 }, .{}) catch |err| switch (err) {
             error.OutOfMemory => {
                 try std.testing.expect(failing_allocator.has_induced_failure);
                 induced_failures += 1;
