@@ -32453,12 +32453,14 @@ pub const Continuity = struct {
             const capsule_ref = plan.capsule_ref;
             var graph = preflightThawCapsule(session.vault, capsule_ref, registry, env, permit, options) catch |err| switch (err) {
                 error.ObjectMissing, error.InvalidFrameEncoding, error.DuplicateBinding => {
+                    if (!session.policy.require_transaction_for_recovery) session.refreshFingerprint();
                     if (before_slots != runspace.slots.items.len) return error.InvalidRunspaceTransition;
                     return recoveryRejectedReport(session, plan);
                 },
                 else => return err,
             };
             graph.deinit();
+            if (!session.policy.require_transaction_for_recovery) session.refreshFingerprint();
             var image = try session.vault.getCapsule(capsule_ref);
             defer image.deinit(session.vault.allocator);
             const target = thawTargetRefFingerprintFromArg(registry, image.manifest.root_target_ref_fingerprint) orelse 0;
@@ -32698,7 +32700,10 @@ pub const Continuity = struct {
         }
 
         fn appendRecoveryChronicleEvent(session: *Session, event: Chronicle.Event) !void {
-            if (!session.policy.require_transaction_for_recovery) return;
+            if (!session.policy.require_transaction_for_recovery) {
+                session.refreshFingerprint();
+                return;
+            }
             try session.appendChronicleEvent(event);
         }
 
@@ -38184,6 +38189,24 @@ test "executable recovery plans and rejects before runspace mutation" {
     const disabled_ready_plan = try Continuity.Recovery.planThawFromVault(&disabled_ready_session, disabled_ready_ref, {}, {}, {}, .{});
     try disabled_ready_plan.validate();
     try std.testing.expect(disabled_ready_session_fingerprint != disabled_ready_session.session_fingerprint);
+    const disabled_inspect_plan = try Continuity.Recovery.planThawFromVault(&disabled_ready_session, disabled_ready_ref, {}, {}, {}, .{
+        .thaw_options = .{ .mode = .inspect_only },
+    });
+    try disabled_inspect_plan.validate();
+    try std.testing.expectEqual(@as(usize, 0), disabled_inspect_plan.blockers.len);
+    const disabled_before_execute_fingerprint = disabled_ready_session.session_fingerprint;
+    var disabled_inspect_runspace = Runspace.init(allocator, .{});
+    defer disabled_inspect_runspace.deinit();
+    var disabled_inspect_report = try Continuity.Recovery.executeThawPlanFromVault(&disabled_ready_session, &disabled_inspect_runspace, disabled_inspect_plan, {}, {}, {}, .{
+        .thaw_options = .{ .mode = .inspect_only },
+    });
+    defer disabled_inspect_report.deinit(allocator);
+    try disabled_inspect_report.validate();
+    try std.testing.expect(disabled_before_execute_fingerprint != disabled_ready_session.session_fingerprint);
+    const disabled_before_replay_plan_fingerprint = disabled_ready_session.session_fingerprint;
+    const disabled_replay_plan = try Continuity.Recovery.planReplayFromVault(&disabled_ready_session, disabled_ready_ref, .{ .target_ref_fingerprint = 0 }, .{});
+    try disabled_replay_plan.validate();
+    try std.testing.expect(disabled_before_replay_plan_fingerprint != disabled_ready_session.session_fingerprint);
 
     var vault = Continuity.MemoryVault.init(allocator);
     defer vault.deinit();
