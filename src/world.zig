@@ -29420,7 +29420,7 @@ pub const Continuity = struct {
             registry_fingerprint: u64,
             source_cursor_fingerprint: u64,
             idempotency_key_refs: []const ObjectRef = &.{},
-            committed_receipt_refs: []const ObjectRef = &.{},
+            committed_evidence_refs: []const ObjectRef = &.{},
             fresh_commit_count: usize = 0,
             replay_receipt_count: usize = 0,
             conflict_count: usize = 0,
@@ -29429,8 +29429,8 @@ pub const Continuity = struct {
             pub fn rebuild(vault: *Continuity.MemoryVault) !@This() {
                 var key_refs: std.ArrayList(ObjectRef) = .empty;
                 errdefer deinitRefList(vault.allocator, &key_refs);
-                var receipt_refs: std.ArrayList(ObjectRef) = .empty;
-                errdefer deinitRefList(vault.allocator, &receipt_refs);
+                var evidence_refs: std.ArrayList(ObjectRef) = .empty;
+                errdefer deinitRefList(vault.allocator, &evidence_refs);
                 var blockers: std.ArrayList(u64) = .empty;
                 errdefer blockers.deinit(vault.allocator);
                 var fresh_records: std.ArrayList(FreshCommitRecord) = .empty;
@@ -29440,6 +29440,32 @@ pub const Continuity = struct {
                 var conflict_count: usize = 0;
                 for (vault.objects.items) |envelope| {
                     switch (envelope.kind) {
+                        .actuation_commit => {
+                            const commit = decodePortableEvidence(Actuation.Commit, vault.allocator, envelope.payload_bytes) catch |err| switch (err) {
+                                error.OutOfMemory => return error.OutOfMemory,
+                                else => return error.InvalidFrameEncoding,
+                            };
+                            defer deinitOwnedValue(vault.allocator, commit);
+                            try commit.validate();
+                            if (commitIsTerminalFreshCommit(commit)) {
+                                fresh_count += 1;
+                                if (try recordRegistryFreshCommit(
+                                    vault.allocator,
+                                    &key_refs,
+                                    &evidence_refs,
+                                    &fresh_records,
+                                    commit.idempotency_key_fingerprint,
+                                    envelope.objectRef(),
+                                    .{
+                                        .key_fingerprint = commit.idempotency_key_fingerprint,
+                                        .commit_fingerprint = commit.commit_fingerprint,
+                                    },
+                                )) {
+                                    conflict_count += 1;
+                                    try blockers.append(vault.allocator, commit.idempotency_key_fingerprint);
+                                }
+                            }
+                        },
                         .actuation_receipt => {
                             var receipt = try Actuation.Receipt.decode(vault.allocator, envelope.payload_bytes);
                             defer receipt.deinit(vault.allocator);
@@ -29448,7 +29474,7 @@ pub const Continuity = struct {
                                 if (try recordRegistryFreshCommit(
                                     vault.allocator,
                                     &key_refs,
-                                    &receipt_refs,
+                                    &evidence_refs,
                                     &fresh_records,
                                     receipt.idempotency_key_fingerprint,
                                     envelope.objectRef(),
@@ -29472,7 +29498,7 @@ pub const Continuity = struct {
                                     if (try recordRegistryFreshCommit(
                                         vault.allocator,
                                         &key_refs,
-                                        &receipt_refs,
+                                        &evidence_refs,
                                         &fresh_records,
                                         key,
                                         evidence_ref,
@@ -29491,8 +29517,8 @@ pub const Continuity = struct {
                 }
                 const keys = try key_refs.toOwnedSlice(vault.allocator);
                 errdefer freeRefSlice(vault.allocator, keys);
-                const receipts = try receipt_refs.toOwnedSlice(vault.allocator);
-                errdefer freeRefSlice(vault.allocator, receipts);
+                const evidence = try evidence_refs.toOwnedSlice(vault.allocator);
+                errdefer freeRefSlice(vault.allocator, evidence);
                 const blocker_slice = try blockers.toOwnedSlice(vault.allocator);
                 errdefer vault.allocator.free(blocker_slice);
                 var registry = @This(){
@@ -29500,7 +29526,7 @@ pub const Continuity = struct {
                     .registry_fingerprint = 0,
                     .source_cursor_fingerprint = vault.cursor().cursor_fingerprint,
                     .idempotency_key_refs = keys,
-                    .committed_receipt_refs = receipts,
+                    .committed_evidence_refs = evidence,
                     .fresh_commit_count = fresh_count,
                     .replay_receipt_count = replay_count,
                     .conflict_count = conflict_count,
@@ -29512,14 +29538,14 @@ pub const Continuity = struct {
 
             pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
                 freeRefSlice(allocator, @constCast(self.idempotency_key_refs));
-                freeRefSlice(allocator, @constCast(self.committed_receipt_refs));
+                freeRefSlice(allocator, @constCast(self.committed_evidence_refs));
                 allocator.free(self.blockers);
                 self.* = undefined;
             }
 
             pub fn lookup(self: @This(), key: ObjectRef) ?ObjectRef {
                 for (self.idempotency_key_refs, 0..) |ref, index| {
-                    if (ref.object_fingerprint == key.object_fingerprint and index < self.committed_receipt_refs.len) return self.committed_receipt_refs[index];
+                    if (ref.object_fingerprint == key.object_fingerprint and index < self.committed_evidence_refs.len) return self.committed_evidence_refs[index];
                 }
                 return null;
             }
@@ -29544,7 +29570,7 @@ pub const Continuity = struct {
 
                 var receipt_refs: std.ArrayList(ObjectRef) = .empty;
                 errdefer deinitRefList(self.allocator, &receipt_refs);
-                for (self.committed_receipt_refs) |ref| try appendClonedRef(&receipt_refs, self.allocator, ref);
+                for (self.committed_evidence_refs) |ref| try appendClonedRef(&receipt_refs, self.allocator, ref);
                 try appendClonedRef(&receipt_refs, self.allocator, receipt_ref);
 
                 const keys = try key_refs.toOwnedSlice(self.allocator);
@@ -29553,9 +29579,9 @@ pub const Continuity = struct {
                 errdefer freeRefSlice(self.allocator, receipts);
 
                 freeRefSlice(self.allocator, @constCast(self.idempotency_key_refs));
-                freeRefSlice(self.allocator, @constCast(self.committed_receipt_refs));
+                freeRefSlice(self.allocator, @constCast(self.committed_evidence_refs));
                 self.idempotency_key_refs = keys;
-                self.committed_receipt_refs = receipts;
+                self.committed_evidence_refs = receipts;
                 self.fresh_commit_count += 1;
                 self.registry_fingerprint = fingerprintIdempotencyRegistry(self.*);
             }
@@ -33690,7 +33716,7 @@ pub const Continuity = struct {
         hashBytes(&hasher, "world.continuity.chronicle.idempotency.registry");
         hashU64(&hasher, registry.source_cursor_fingerprint);
         hashRefSlice(&hasher, registry.idempotency_key_refs);
-        hashRefSlice(&hasher, registry.committed_receipt_refs);
+        hashRefSlice(&hasher, registry.committed_evidence_refs);
         hashU64(&hasher, registry.fresh_commit_count);
         hashU64(&hasher, registry.replay_receipt_count);
         hashU64(&hasher, registry.conflict_count);
@@ -37999,6 +38025,43 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     try std.testing.expect(journal_registry.lookup(journal_key_ref).?.eql(journal_ref));
     try std.testing.expectError(error.DuplicateBinding, journal_registry.assertFreshCommitAllowed(journal_key_ref));
     try std.testing.expectError(error.DuplicateBinding, journal_only_session.storeActuationJournal(fresh_journal));
+
+    var commit_only_vault = Continuity.MemoryVault.init(allocator);
+    defer commit_only_vault.deinit();
+    var commit_only_session = try Continuity.Session.init(allocator, &commit_only_vault, Continuity.PersistPolicy.actuation_only());
+    const commit_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3470_6101,
+        .world_surface_fingerprint = 0x3470_6102,
+        .world_port_id = 9,
+        .request_fingerprint = 0x3470_6103,
+        .actuator_ref_fingerprint = 0x3470_6104,
+        .intent_fingerprint = 0x3470_6110,
+    });
+    const standalone_commit = Actuation.Commit.init(.{
+        .intent_fingerprint = 0x3470_6110,
+        .decision_fingerprint = 0x3470_6112,
+        .envelope_fingerprint = 0x3470_6111,
+        .idempotency_key_fingerprint = commit_key.key_fingerprint,
+        .status = .committed,
+        .fresh_called = true,
+    });
+    const standalone_commit_payload = try Continuity.encodePortableEvidence(Actuation.Commit, allocator, standalone_commit);
+    defer allocator.free(standalone_commit_payload);
+    const standalone_commit_deps = try Continuity.bundleActuationCommitRequiredDependencyRefs(allocator, standalone_commit);
+    defer Continuity.freeRefSlice(allocator, standalone_commit_deps);
+    const standalone_commit_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_commit,
+        .object_format_version = standalone_commit.format_version,
+        .dependency_refs = standalone_commit_deps,
+        .payload_bytes = standalone_commit_payload,
+    });
+    const standalone_commit_ref = try commit_only_vault.put(standalone_commit_envelope);
+    var commit_only_registry = try Continuity.Chronicle.IdempotencyRegistry.rebuild(&commit_only_vault);
+    defer commit_only_registry.deinit(commit_only_registry.allocator);
+    const commit_key_ref = Continuity.semanticObjectRef(.actuation_idempotency_key, commit_key.key_fingerprint);
+    try std.testing.expect(commit_only_registry.lookup(commit_key_ref).?.eql(standalone_commit_ref));
+    try std.testing.expectError(error.DuplicateBinding, commit_only_registry.assertFreshCommitAllowed(commit_key_ref));
+    try std.testing.expectError(error.DuplicateBinding, Actuation.assertIdempotencyAvailable(&commit_only_session, commit_key, .{}));
 
     const replay_receipt = Actuation.Receipt.init(.{
         .intent_fingerprint = 0x3470_0030,
