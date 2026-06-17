@@ -29386,7 +29386,7 @@ pub const Continuity = struct {
                 for (vault.chronicle_events.items) |event| {
                     if (!projectionKindConsumesEvent(kind, event.kind)) continue;
                     consumed_event_count += 1;
-                    for (event.object_refs) |ref| try appendProjectionRef(vault, &refs, kind, ref);
+                    for (event.object_refs) |ref| try appendProjectionCommittedObjectRef(vault, &refs, kind, ref);
                     if (event.capsule_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
                     if (event.bundle_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
                     if (event.inbox_outbox_item_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
@@ -30722,6 +30722,7 @@ pub const Continuity = struct {
         pub fn recordParkedCapsule(self: *@This(), runspace: *Runspace, options: Capsule.FreezeOptions) !?ObjectRef {
             if (!self.policy.persist_parked_capsule) return null;
             var parked_options = options;
+            parked_options.require_quiescent = true;
             parked_options.allow_completed = false;
             parked_options.allow_failed = false;
             parked_options.allow_active_fabric_parked = false;
@@ -32770,8 +32771,6 @@ pub const Continuity = struct {
                     .recovery_report_ref = report.report_ref,
                 });
                 owned_recovery_report_event.owns_memory = true;
-                report.resulting_cursor_fingerprint = recoveryReportResultingCursorFingerprint(session, owned_recovery_report_event);
-                report.report_fingerprint = fingerprintRecoveryReport(report);
                 appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event);
                 owned_recovery_report_capsule_ref = null;
             }
@@ -32847,6 +32846,10 @@ pub const Continuity = struct {
                     .recovery_plan_ref = plan_ref,
                 }).clone(session.vault.allocator);
                 errdefer if (owned_replayed_event) |*event| event.deinit(session.vault.allocator);
+                const resulting_cursor = session.cursor().advance(&.{owned_replayed_event.?.event_fingerprint}, 0, 0);
+                report.resulting_cursor_fingerprint = resulting_cursor.cursor_fingerprint;
+                report.report_ref = semanticObjectRef(.capsule_restore_report, fingerprintRecoveryReportRef(report));
+                report.report_fingerprint = fingerprintRecoveryReport(report);
                 var owned_recovery_report_event: ?Chronicle.Event = try Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
                     .capsule_ref = capsule_ref,
@@ -32854,11 +32857,6 @@ pub const Continuity = struct {
                     .recovery_report_ref = report.report_ref,
                 }).clone(session.vault.allocator);
                 errdefer if (owned_recovery_report_event) |*event| event.deinit(session.vault.allocator);
-                var resulting_cursor = session.cursor();
-                resulting_cursor = resulting_cursor.advance(&.{owned_replayed_event.?.event_fingerprint}, 0, 0);
-                resulting_cursor = resulting_cursor.advance(&.{owned_recovery_report_event.?.event_fingerprint}, 0, 0);
-                report.resulting_cursor_fingerprint = resulting_cursor.cursor_fingerprint;
-                report.report_fingerprint = fingerprintRecoveryReport(report);
                 appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_replayed_event.?);
                 owned_replayed_event = null;
                 appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event.?);
@@ -32909,6 +32907,10 @@ pub const Continuity = struct {
                     .recovery_plan_ref = plan_ref,
                 }).clone(session.vault.allocator);
                 errdefer if (owned_recovery_blocked_event) |*event| event.deinit(session.vault.allocator);
+                const resulting_cursor = session.cursor().advance(&.{owned_recovery_blocked_event.?.event_fingerprint}, 0, 0);
+                report.resulting_cursor_fingerprint = resulting_cursor.cursor_fingerprint;
+                report.report_ref = semanticObjectRef(.capsule_restore_report, fingerprintRecoveryReportRef(report));
+                report.report_fingerprint = fingerprintRecoveryReport(report);
                 var owned_recovery_report_event: ?Chronicle.Event = try Chronicle.Event.init(.{
                     .kind = .recovery_report_stored,
                     .capsule_ref = plan.capsule_ref,
@@ -32916,11 +32918,6 @@ pub const Continuity = struct {
                     .recovery_report_ref = report.report_ref,
                 }).clone(session.vault.allocator);
                 errdefer if (owned_recovery_report_event) |*event| event.deinit(session.vault.allocator);
-                var resulting_cursor = session.cursor();
-                resulting_cursor = resulting_cursor.advance(&.{owned_recovery_blocked_event.?.event_fingerprint}, 0, 0);
-                resulting_cursor = resulting_cursor.advance(&.{owned_recovery_report_event.?.event_fingerprint}, 0, 0);
-                report.resulting_cursor_fingerprint = resulting_cursor.cursor_fingerprint;
-                report.report_fingerprint = fingerprintRecoveryReport(report);
                 appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_blocked_event.?);
                 owned_recovery_blocked_event = null;
                 appendOwnedRecoveryChronicleEventAssumeCapacity(session, owned_recovery_report_event.?);
@@ -32954,11 +32951,6 @@ pub const Continuity = struct {
                 return;
             }
             try session.appendChronicleEvent(event);
-        }
-
-        fn recoveryReportResultingCursorFingerprint(session: *Session, event: Chronicle.Event) u64 {
-            if (!session.policy.require_transaction_for_recovery) return session.cursor().cursor_fingerprint;
-            return session.cursor().advance(&.{event.event_fingerprint}, 0, 0).cursor_fingerprint;
         }
 
         fn recoveryPlanWasRecorded(vault: *const Continuity.MemoryVault, plan: RecoveryPlan) bool {
@@ -33808,6 +33800,16 @@ pub const Continuity = struct {
         try refs.append(vault.allocator, projection_ref);
     }
 
+    fn appendProjectionCommittedObjectRef(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: Chronicle.ProjectionKind, ref: ObjectRef) !void {
+        if (!projectionKindIncludesRef(kind, ref)) return;
+        const projection_ref = if (projectionKindRequiresStoredRef(kind))
+            (try vault.resolveRef(ref)) orelse return error.ObjectMissing
+        else
+            ref;
+        if (containsRef(refs.items, projection_ref)) return;
+        try refs.append(vault.allocator, projection_ref);
+    }
+
     fn projectionKindRequiresStoredRef(kind: Chronicle.ProjectionKind) bool {
         return switch (kind) {
             .capsule_index, .actuation_index, .idempotency_registry, .object_index => true,
@@ -34058,6 +34060,7 @@ pub const Continuity = struct {
         hashBytes(&hasher, "world.continuity.recovery.report.ref");
         hashU64(&hasher, report.recovery_plan_fingerprint);
         hashBool(&hasher, report.accepted);
+        hashU64(&hasher, report.resulting_cursor_fingerprint);
         hashOptionalRef(&hasher, report.restored_capsule_ref);
         hashU64SliceLocal(&hasher, report.restored_run_handles);
         hashU64SliceLocal(&hasher, report.restored_pending_ports);
@@ -37244,6 +37247,21 @@ test "chronicle commit fingerprint binds transaction cursors objects and events"
         .warning_summary = "c",
     });
     try std.testing.expect(delimited_summary_a.commit_fingerprint != delimited_summary_b.commit_fingerprint);
+
+    const report_a = Continuity.RecoveryReport.init(.{
+        .recovery_plan_fingerprint = 0x5151_1001,
+        .accepted = true,
+        .resulting_cursor_fingerprint = 0x5151_2001,
+    });
+    const report_b = Continuity.RecoveryReport.init(.{
+        .recovery_plan_fingerprint = 0x5151_1001,
+        .accepted = true,
+        .resulting_cursor_fingerprint = 0x5151_2002,
+    });
+    try std.testing.expect(!report_a.report_ref.eql(report_b.report_ref));
+    var tampered_report = report_a;
+    tampered_report.resulting_cursor_fingerprint = report_b.resulting_cursor_fingerprint;
+    try std.testing.expectError(error.InvalidFrameEncoding, tampered_report.validate());
 }
 
 test "continuity object envelope encode decode preserves dependencies" {
@@ -38016,6 +38034,16 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     try projection_after_stray.assertFresh(cursor);
     try std.testing.expect(!Continuity.containsRef(projection_after_stray.report.object_refs_consumed, stray_envelope.objectRef()));
     try std.testing.expectEqual(projection_summary_before_stray, projection_after_stray.report.result_summary_fingerprint);
+
+    var missing_object_vault = Continuity.MemoryVault.init(allocator);
+    defer missing_object_vault.deinit();
+    var missing_object_tx = try missing_object_vault.beginTransaction(.custom, .{});
+    defer missing_object_tx.deinit();
+    _ = try missing_object_tx.put(envelope);
+    _ = try missing_object_tx.commit();
+    missing_object_vault.objects.items[0].deinit(allocator);
+    missing_object_vault.objects.shrinkRetainingCapacity(0);
+    try std.testing.expectError(error.ObjectMissing, Continuity.Chronicle.Projection.rebuild(&missing_object_vault, .object_index));
 
     const report = try Continuity.Chronicle.replay(&vault, .{});
     try report.validate();
@@ -39006,11 +39034,16 @@ test "executable recovery plans and rejects before runspace mutation" {
     try current_plan.validate();
     try std.testing.expect(current_plan.blockers.len != 0);
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, current_plan, {}, {}, .{ .permit_fingerprint = 0x3490_7771 }, .{}));
+    const cursor_before_execute = session.cursor();
     const report = try Continuity.Recovery.executeThawPlanFromVault(&session, &runspace, current_plan, {}, {}, {}, .{});
     try report.validate();
     try std.testing.expect(!report.accepted);
     try std.testing.expect(report.restored_capsule_ref == null);
-    try std.testing.expectEqual(session.cursor().cursor_fingerprint, report.resulting_cursor_fingerprint);
+    const recovery_blocked_event = vault.chronicle_events.items[vault.chronicle_events.items.len - 2];
+    try std.testing.expectEqual(Continuity.Chronicle.EventKind.recovery_blocked, recovery_blocked_event.kind);
+    const expected_report_cursor = cursor_before_execute.advance(&.{recovery_blocked_event.event_fingerprint}, 0, 0);
+    try std.testing.expectEqual(expected_report_cursor.cursor_fingerprint, report.resulting_cursor_fingerprint);
+    try std.testing.expect(report.resulting_cursor_fingerprint != session.cursor().cursor_fingerprint);
     var recovery_projection = try Continuity.Chronicle.Projection.rebuild(&vault, .recovery_queue);
     defer recovery_projection.deinit();
     try std.testing.expect(recovery_projection.report.object_refs_consumed.len != 0);
@@ -39049,7 +39082,8 @@ test "executable recovery plans and rejects before runspace mutation" {
     try denied_report.validate();
     try std.testing.expect(!denied_report.accepted);
     try std.testing.expect(denied_report.restored_capsule_ref == null);
-    try std.testing.expectEqual(session.cursor().cursor_fingerprint, denied_report.resulting_cursor_fingerprint);
+    try std.testing.expect(denied_report.resulting_cursor_fingerprint != 0);
+    try std.testing.expect(denied_report.resulting_cursor_fingerprint != session.cursor().cursor_fingerprint);
     try std.testing.expectEqual(@as(usize, 0), denied_report.restored_run_handles.len);
     try std.testing.expectEqual(admission_required_slots_before, admission_required_runspace.slots.items.len);
 
