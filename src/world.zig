@@ -28314,6 +28314,7 @@ pub const Continuity = struct {
         auto_store_on_actuation_commit: bool = false,
         reject_unstored_fresh_actuation: bool = false,
         require_transaction_for_bundle_import: bool = false,
+        require_transaction_for_bundle_export: bool = false,
         require_transaction_for_capsule_store: bool = false,
         require_transaction_for_recovery: bool = false,
         policy_fingerprint_version: u32 = world_continuity_persist_policy_fingerprint_version,
@@ -28364,6 +28365,7 @@ pub const Continuity = struct {
             policy.auto_freeze_on_completed = true;
             policy.auto_freeze_on_parked = true;
             policy.require_transaction_for_bundle_import = true;
+            policy.require_transaction_for_bundle_export = true;
             policy.require_transaction_for_recovery = true;
             policy.policy_fingerprint = fingerprintPersistPolicy(policy);
             return policy;
@@ -28391,6 +28393,7 @@ pub const Continuity = struct {
             auto_store_on_actuation_commit: bool = false,
             reject_unstored_fresh_actuation: bool = false,
             require_transaction_for_bundle_import: bool = false,
+            require_transaction_for_bundle_export: bool = false,
             require_transaction_for_capsule_store: bool = false,
             require_transaction_for_recovery: bool = false,
         }) @This() {
@@ -28412,6 +28415,7 @@ pub const Continuity = struct {
                 .auto_store_on_actuation_commit = args.auto_store_on_actuation_commit,
                 .reject_unstored_fresh_actuation = args.reject_unstored_fresh_actuation,
                 .require_transaction_for_bundle_import = args.require_transaction_for_bundle_import,
+                .require_transaction_for_bundle_export = args.require_transaction_for_bundle_export,
                 .require_transaction_for_capsule_store = args.require_transaction_for_capsule_store,
                 .require_transaction_for_recovery = args.require_transaction_for_recovery,
             };
@@ -29607,6 +29611,7 @@ pub const Continuity = struct {
             }
 
             pub fn stageCapsule(self: *@This(), capsule_ref: ObjectRef) !ObjectRef {
+                if (!self.session.policy.require_transaction_for_bundle_export) return error.PersistenceDisabled;
                 try capsule_ref.validate();
                 if (capsule_ref.kind != .capsule_image) return error.InvalidFrameEncoding;
                 if (!self.session.vault.has(capsule_ref)) return error.ObjectMissing;
@@ -29622,6 +29627,7 @@ pub const Continuity = struct {
             }
 
             pub fn exportBundle(self: *@This(), ref: ObjectRef) !Bundle {
+                if (!self.session.policy.require_transaction_for_bundle_export) return error.PersistenceDisabled;
                 _ = try self.inspect(ref);
                 const capsule_ref = try outboxCapsuleForRef(self.session.vault, ref);
                 var tx = try self.session.begin(.outbox_export);
@@ -29653,6 +29659,7 @@ pub const Continuity = struct {
             }
 
             pub fn markExported(self: *@This(), ref: ObjectRef) !void {
+                if (!self.session.policy.require_transaction_for_bundle_export) return error.PersistenceDisabled;
                 _ = try self.inspect(ref);
                 if (!chronicleOutboxRefWasExported(self.session.vault, ref)) return error.OutboxItemNotExported;
                 const event = Event.init(.{ .kind = .outbox_item_completed, .inbox_outbox_item_ref = ref });
@@ -30512,6 +30519,7 @@ pub const Continuity = struct {
         }
 
         pub fn exportBundle(self: *@This(), roots: []const ObjectRef) !Bundle {
+            if (!self.policy.require_transaction_for_bundle_export) return error.PersistenceDisabled;
             var tx = try self.begin(.export_bundle);
             errdefer self.abandonTransaction();
             defer tx.deinit();
@@ -33320,6 +33328,7 @@ pub const Continuity = struct {
         hashBool(&hasher, policy.auto_store_on_actuation_commit);
         hashBool(&hasher, policy.reject_unstored_fresh_actuation);
         hashBool(&hasher, policy.require_transaction_for_bundle_import);
+        hashBool(&hasher, policy.require_transaction_for_bundle_export);
         hashBool(&hasher, policy.require_transaction_for_capsule_store);
         hashBool(&hasher, policy.require_transaction_for_recovery);
         return hasher.final();
@@ -37040,8 +37049,12 @@ test "continuity session begins transactions and policy gates persistence" {
     var image = try Capsule.freezeRunspace(&runspace, .{});
     defer image.deinit(allocator);
     try std.testing.expectError(error.PersistenceDisabled, session.storeCapsule(image));
+    const direct_capsule_ref = try vault.putCapsule(image);
+    try std.testing.expectError(error.PersistenceDisabled, session.exportBundle(&.{direct_capsule_ref}));
+    var disabled_outbox = Continuity.Chronicle.Outbox.init(&session);
+    try std.testing.expectError(error.PersistenceDisabled, disabled_outbox.stageCapsule(direct_capsule_ref));
     try std.testing.expectError(error.PersistenceDisabled, session.importBundle("not a bundle"));
-    try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
+    try std.testing.expectEqual(@as(usize, 1), vault.objectCount());
 }
 
 test "continuity session stores capsule and actuation receipt through chronicle transactions" {
