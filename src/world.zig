@@ -29038,10 +29038,17 @@ pub const Continuity = struct {
                 };
                 try self.staged_root_refs.append(self.allocator, owned_ref);
                 ref_pending = false;
+                var root_ref_appended = true;
+                errdefer if (root_ref_appended) {
+                    var cleanup = self.staged_root_refs.pop().?;
+                    cleanup.deinit(self.allocator);
+                };
+                const returned_ref = try self.vault.backedObjectRef(staged_ref);
+                root_ref_appended = false;
                 envelope_appended = false;
                 self.accepted = false;
                 self.refreshFingerprint();
-                return try self.vault.backedObjectRef(staged_ref);
+                return returned_ref;
             }
 
             pub fn putCapsule(self: *@This(), image: Capsule.Image) !ObjectRef {
@@ -37499,6 +37506,7 @@ test "chronicle transaction staging allocation failure owns envelope once" {
         .label = "manifest",
     });
 
+    var induced_failures: usize = 0;
     for (0..64) |fail_index| {
         var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
             .fail_index = fail_index,
@@ -37508,10 +37516,17 @@ test "chronicle transaction staging allocation failure owns envelope once" {
         var tx = vault.beginTransaction(.custom, .{}) catch continue;
         defer tx.deinit();
         _ = tx.put(envelope) catch |err| switch (err) {
-            error.OutOfMemory => continue,
+            error.OutOfMemory => {
+                induced_failures += 1;
+                try std.testing.expectEqual(@as(usize, 0), tx.staged_envelopes.items.len);
+                try std.testing.expectEqual(@as(usize, 0), tx.staged_root_refs.items.len);
+                try std.testing.expectEqual(@as(usize, 0), vault.returned_ref_backing.items.len);
+                continue;
+            },
             else => return err,
         };
     }
+    try std.testing.expect(induced_failures > 0);
 }
 
 test "persist policy presets are deterministic and default persists nothing" {
