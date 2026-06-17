@@ -29187,7 +29187,7 @@ pub const Continuity = struct {
                     if (ledgerEventKindForCommittedEnvelope(envelope.kind)) |ledger_kind| {
                         try self.vault.ledger.record(ledger_kind, ref);
                     }
-                    if (!containsRef(committed_refs.items, ref)) try committed_refs.append(self.allocator, try ref.clone(self.allocator));
+                    if (!containsRef(committed_refs.items, ref)) try appendClonedRef(&committed_refs, self.allocator, ref);
                     const event_refs = [_]ObjectRef{ref};
                     const event = Event.init(.{
                         .kind = .object_committed,
@@ -29509,13 +29509,13 @@ pub const Continuity = struct {
 
                 var key_refs: std.ArrayList(ObjectRef) = .empty;
                 errdefer deinitRefList(self.allocator, &key_refs);
-                for (self.idempotency_key_refs) |ref| try key_refs.append(self.allocator, try ref.clone(self.allocator));
-                try key_refs.append(self.allocator, try key.clone(self.allocator));
+                for (self.idempotency_key_refs) |ref| try appendClonedRef(&key_refs, self.allocator, ref);
+                try appendClonedRef(&key_refs, self.allocator, key);
 
                 var receipt_refs: std.ArrayList(ObjectRef) = .empty;
                 errdefer deinitRefList(self.allocator, &receipt_refs);
-                for (self.committed_receipt_refs) |ref| try receipt_refs.append(self.allocator, try ref.clone(self.allocator));
-                try receipt_refs.append(self.allocator, try receipt_ref.clone(self.allocator));
+                for (self.committed_receipt_refs) |ref| try appendClonedRef(&receipt_refs, self.allocator, ref);
+                try appendClonedRef(&receipt_refs, self.allocator, receipt_ref);
 
                 const keys = try key_refs.toOwnedSlice(self.allocator);
                 errdefer freeRefSlice(self.allocator, keys);
@@ -35905,6 +35905,12 @@ pub const Continuity = struct {
     fn deinitRefList(allocator: std.mem.Allocator, list: *std.ArrayList(ObjectRef)) void {
         for (list.items) |*ref| ref.deinit(allocator);
         list.deinit(allocator);
+    }
+
+    fn appendClonedRef(list: *std.ArrayList(ObjectRef), allocator: std.mem.Allocator, ref: ObjectRef) !void {
+        var owned = try ref.clone(allocator);
+        errdefer owned.deinit(allocator);
+        try list.append(allocator, owned);
     }
 
     fn containsRef(refs: []const ObjectRef, needle: ObjectRef) bool {
