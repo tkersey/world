@@ -29069,7 +29069,7 @@ pub const Continuity = struct {
 
             pub fn putActuationReceipt(self: *@This(), receipt: Actuation.Receipt) !ObjectRef {
                 try receipt.validate();
-                try self.vault.rejectDuplicateFreshCommitReceipt(receipt);
+                try rejectDuplicateFreshCommitReceiptAgainstChronicle(self.vault, receipt);
                 const payload = try receipt.encode(self.allocator);
                 defer self.allocator.free(payload);
                 const deps = try actuationReceiptStoredDependencyRefs(self.vault, receipt);
@@ -36287,9 +36287,12 @@ pub const Continuity = struct {
         for (bundle.envelopes) |incoming_envelope| {
             try recordFreshCommitsFromEnvelope(bundle.allocator, bundle.allocator, &incoming_records, incoming_envelope);
         }
+        var committed_envelopes: std.ArrayList(ObjectEnvelope) = .empty;
+        defer committed_envelopes.deinit(vault.allocator);
+        try appendChronicleCommittedVaultEnvelopes(vault.allocator, vault, &committed_envelopes);
         var existing_records: std.ArrayList(FreshCommitRecord) = .empty;
         defer existing_records.deinit(vault.allocator);
-        for (vault.objects.items) |existing_envelope| {
+        for (committed_envelopes.items) |existing_envelope| {
             try recordFreshCommitsFromEnvelope(vault.allocator, vault.allocator, &existing_records, existing_envelope);
         }
         for (incoming_records.items) |incoming| {
@@ -36297,6 +36300,24 @@ pub const Continuity = struct {
                 if (incoming.key_fingerprint != existing.key_fingerprint) continue;
                 if (!freshCommitRecordsSameBinding(incoming, existing)) return error.DuplicateBinding;
             }
+        }
+    }
+
+    fn rejectDuplicateFreshCommitReceiptAgainstChronicle(vault: *Continuity.MemoryVault, receipt: Actuation.Receipt) !void {
+        if (!receiptIsTerminalFreshCommit(receipt)) return;
+        var committed_envelopes: std.ArrayList(ObjectEnvelope) = .empty;
+        defer committed_envelopes.deinit(vault.allocator);
+        try appendChronicleCommittedVaultEnvelopes(vault.allocator, vault, &committed_envelopes);
+        for (committed_envelopes.items) |envelope| {
+            if (envelope.kind != .actuation_receipt) continue;
+            var existing = try Actuation.Receipt.decode(vault.allocator, envelope.payload_bytes);
+            defer existing.deinit(vault.allocator);
+            if (!receiptIsTerminalFreshCommit(existing)) continue;
+            if (existing.idempotency_key_fingerprint != receipt.idempotency_key_fingerprint) continue;
+            if (!freshCommitRecordsSameBinding(
+                freshCommitRecordFromReceipt(existing.idempotency_key_fingerprint, existing),
+                freshCommitRecordFromReceipt(receipt.idempotency_key_fingerprint, receipt),
+            )) return error.DuplicateBinding;
         }
     }
 
@@ -38419,6 +38440,21 @@ test "idempotency registry records fresh commits and allows replay receipts" {
         .fresh_called = true,
     });
     try std.testing.expectError(error.DuplicateBinding, mixed_session.storeActuationReceipt(duplicate_fresh_b));
+
+    var raw_conflict_vault = Continuity.MemoryVault.init(allocator);
+    defer raw_conflict_vault.deinit();
+    var raw_conflict_session = try Continuity.Session.init(allocator, &raw_conflict_vault, Continuity.PersistPolicy.actuation_only());
+    const raw_conflict_payload = try duplicate_fresh_b.encode(allocator);
+    defer allocator.free(raw_conflict_payload);
+    const raw_conflict_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = duplicate_fresh_b.format_version,
+        .payload_bytes = raw_conflict_payload,
+        .label = "raw actuation receipt",
+    });
+    try raw_conflict_vault.objects.append(allocator, try raw_conflict_envelope.clone(allocator));
+    const raw_conflict_ref = try raw_conflict_session.storeActuationReceipt(fresh_b);
+    try std.testing.expect(raw_conflict_vault.has(raw_conflict_ref));
 
     var transaction_vault = Continuity.MemoryVault.init(allocator);
     defer transaction_vault.deinit();
