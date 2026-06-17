@@ -29139,6 +29139,7 @@ pub const Continuity = struct {
             pub fn addEvent(self: *@This(), event: Event) !void {
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
                 try event.validate();
+                if (event.kind == .object_committed) return error.InvalidFrameEncoding;
                 const owned = try event.clone(self.allocator);
                 errdefer {
                     var cleanup = owned;
@@ -29692,6 +29693,9 @@ pub const Continuity = struct {
                 if (capsule_ref.kind != .capsule_image) return error.InvalidFrameEncoding;
                 const stored_capsule_ref = (try self.session.vault.resolveRef(capsule_ref)) orelse return error.ObjectMissing;
                 if (stored_capsule_ref.kind != .capsule_image) return error.InvalidFrameEncoding;
+                if (!try chronicleCommittedObjectRefExists(self.session.vault, stored_capsule_ref)) return error.ObjectMissing;
+                const roots = [_]ObjectRef{stored_capsule_ref};
+                try requireChronicleCommittedClosure(self.session.vault, &roots);
                 const envelope = HandoffEnvelope.init(.{
                     .direction = .outbound,
                     .capsule_ref = stored_capsule_ref,
@@ -37578,6 +37582,31 @@ test "chronicle transaction put returns vault-backed object ref" {
     try std.testing.expectEqualStrings("owned diagnostics", staged_ref.metadata);
 }
 
+test "chronicle transaction rejects caller supplied object committed events" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const raw_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "raw object",
+    });
+    const raw_ref = raw_envelope.objectRef();
+    try vault.objects.append(allocator, try raw_envelope.clone(allocator));
+
+    var tx = try vault.beginTransaction(.custom, .{});
+    defer tx.deinit();
+    const event = Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .object_refs = &.{raw_ref},
+        .target_ref = raw_ref,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, tx.addEvent(event));
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.full_local_evidence());
+    try std.testing.expectError(error.ObjectMissing, session.exportBundle(&.{raw_ref}));
+}
+
 test "chronicle transaction staging allocation failure owns envelope once" {
     const allocator = std.testing.allocator;
     const envelope = Continuity.ObjectEnvelope.init(.{
@@ -38432,6 +38461,15 @@ test "inbox outbox views rebuild from chronicle events" {
     const missing_capsule = Continuity.semanticObjectRef(.capsule_image, 0x3480_9999);
     try std.testing.expectError(error.ObjectMissing, outbox.stageCapsule(missing_capsule));
     try std.testing.expectError(error.InvalidFrameEncoding, outbox.stageCapsule(non_capsule_ref));
+    const raw_capsule_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = world_capsule_image_format_version,
+        .payload_bytes = "raw capsule image",
+        .label = "raw capsule image",
+    });
+    const raw_capsule_ref = raw_capsule_envelope.objectRef();
+    try outbound_vault.objects.append(allocator, try raw_capsule_envelope.clone(allocator));
+    try std.testing.expectError(error.ObjectMissing, outbox.stageCapsule(raw_capsule_ref));
     const cursor_before_outbox_stage = outbound_session.cursor();
     const outbound_ref = try outbox.stageCapsule(root_ref);
     try std.testing.expect(cursor_before_outbox_stage.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
