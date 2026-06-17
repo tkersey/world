@@ -29635,15 +29635,16 @@ pub const Continuity = struct {
                 if (!self.session.policy.require_transaction_for_bundle_export) return error.PersistenceDisabled;
                 try capsule_ref.validate();
                 if (capsule_ref.kind != .capsule_image) return error.InvalidFrameEncoding;
-                if (!self.session.vault.has(capsule_ref)) return error.ObjectMissing;
+                const stored_capsule_ref = (try self.session.vault.resolveRef(capsule_ref)) orelse return error.ObjectMissing;
+                if (stored_capsule_ref.kind != .capsule_image) return error.InvalidFrameEncoding;
                 const envelope = HandoffEnvelope.init(.{
                     .direction = .outbound,
-                    .capsule_ref = capsule_ref,
+                    .capsule_ref = stored_capsule_ref,
                     .status = .created,
                 });
                 const ref = envelope.objectRef();
                 if (chronicleInboxOutboxRefIsPending(self.session.vault, ref, false)) return ref;
-                const event = Event.init(.{ .kind = .outbox_item_created, .inbox_outbox_item_ref = ref, .capsule_ref = capsule_ref });
+                const event = Event.init(.{ .kind = .outbox_item_created, .inbox_outbox_item_ref = ref, .capsule_ref = stored_capsule_ref });
                 try self.session.appendChronicleEvent(event);
                 return ref;
             }
@@ -30646,7 +30647,11 @@ pub const Continuity = struct {
 
         pub fn recordParkedCapsule(self: *@This(), runspace: *Runspace, options: Capsule.FreezeOptions) !?ObjectRef {
             if (!self.policy.persist_parked_capsule) return null;
-            return try Capsule.freezeToSession(self.session, runspace, options);
+            var parked_options = options;
+            parked_options.allow_completed = false;
+            parked_options.allow_failed = false;
+            parked_options.allow_active_fabric_parked = false;
+            return try Capsule.freezeToSession(self.session, runspace, parked_options);
         }
 
         pub fn recordGuestReport(self: *@This(), report: Guest.ConformanceReport) !void {
@@ -33589,6 +33594,7 @@ pub const Continuity = struct {
         for (destination.chronicle_events.items) |*event| event.deinit(destination.allocator);
         destination.chronicle_events.clearRetainingCapacity();
         for (source.chronicle_events.items) |event| {
+            try event.validate();
             const owned = try event.clone(destination.allocator);
             var owned_pending = true;
             errdefer if (owned_pending) {
@@ -33598,22 +33604,36 @@ pub const Continuity = struct {
             try destination.chronicle_events.append(destination.allocator, owned);
             owned_pending = false;
         }
-        destination.chronicle_cursor = replayCursorFromChronicle(source);
+        destination.chronicle_cursor = try replayCursorFromChronicle(source, destination.allocator);
     }
 
-    fn replayCursorFromChronicle(vault: *const Continuity.MemoryVault) Chronicle.Cursor {
+    fn replayCursorFromChronicle(vault: *const Continuity.MemoryVault, allocator: std.mem.Allocator) !Chronicle.Cursor {
         var cursor = Chronicle.Cursor.initial();
         var event_index: usize = 0;
+        var actual_event_fingerprints: std.ArrayList(u64) = .empty;
+        defer actual_event_fingerprints.deinit(allocator);
         for (vault.chronicle_commits.items) |commit| {
+            try commit.validate();
             while (cursor.cursor_fingerprint != commit.parent_cursor_fingerprint and event_index < vault.chronicle_events.items.len) {
+                try vault.chronicle_events.items[event_index].validate();
                 cursor = replayCursorAdvanceEvent(cursor, vault.chronicle_events.items[event_index]);
                 event_index += 1;
             }
-            if (cursor.cursor_fingerprint != commit.parent_cursor_fingerprint) continue;
-            cursor = cursor.advance(commit.committed_event_fingerprints, commit.committed_object_refs.len, 1);
-            event_index += @min(commit.committed_event_fingerprints.len, vault.chronicle_events.items.len - event_index);
+            if (cursor.cursor_fingerprint != commit.parent_cursor_fingerprint) return error.InvalidFrameEncoding;
+            if (commit.committed_event_fingerprints.len > vault.chronicle_events.items.len - event_index) return error.InvalidFrameEncoding;
+            actual_event_fingerprints.clearRetainingCapacity();
+            try actual_event_fingerprints.ensureTotalCapacity(allocator, commit.committed_event_fingerprints.len);
+            for (commit.committed_event_fingerprints, 0..) |expected_fingerprint, offset| {
+                const event = vault.chronicle_events.items[event_index + offset];
+                try event.validate();
+                if (event.event_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
+                actual_event_fingerprints.appendAssumeCapacity(event.event_fingerprint);
+            }
+            cursor = cursor.advance(actual_event_fingerprints.items, commit.committed_object_refs.len, 1);
+            event_index += actual_event_fingerprints.items.len;
         }
         while (event_index < vault.chronicle_events.items.len) {
+            try vault.chronicle_events.items[event_index].validate();
             cursor = replayCursorAdvanceEvent(cursor, vault.chronicle_events.items[event_index]);
             event_index += 1;
         }
@@ -37439,6 +37459,8 @@ test "ContinuitySink opt-in bridge persists configured evidence and surfaces fai
     defer runspace.deinit();
     const capsule_ref = (try sink.recordCompletedCapsule(&runspace, .{})).?;
     try std.testing.expect(vault.has(capsule_ref));
+    var parked_only_sink = Continuity.Sink.init(&session, .{ .persist_parked_capsule = true });
+    try std.testing.expectError(error.InvalidFrameEncoding, parked_only_sink.recordParkedCapsule(&runspace, .{}));
 
     const guest_summary = Guest.RunResultSummary{ .status = .done, .result_fingerprint = 0x3467_1010 };
     const guest_report = Guest.ConformanceReport.init(.{
@@ -37504,6 +37526,12 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     try std.testing.expectEqual(@as(usize, 0), replay_after_public_put.mismatch_count);
     try std.testing.expectError(error.StaleProjection, projection.assertFresh(vault.cursor()));
     try std.testing.expectError(error.StaleProjection, Continuity.Chronicle.Projection.replayFromKind(&vault, cursor, .object_index));
+    vault.chronicle_events.items[0].kind = .object_rejected;
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&vault, .{}));
+    vault.chronicle_events.items[0].event_fingerprint = Continuity.fingerprintChronicleEvent(vault.chronicle_events.items[0]);
+    try vault.chronicle_events.items[0].validate();
+    try vault.chronicle_commits.items[0].validate();
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&vault, .{}));
 }
 
 test "chronicle replay preserves transaction dependency context" {
@@ -37834,6 +37862,9 @@ test "inbox outbox views rebuild from chronicle events" {
     const cursor_before_outbox_stage = outbound_session.cursor();
     const outbound_ref = try outbox.stageCapsule(root_ref);
     try std.testing.expect(cursor_before_outbox_stage.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
+    const semantic_root_ref = Continuity.semanticObjectRef(.capsule_image, image.image_fingerprint);
+    const semantic_outbound_ref = try outbox.stageCapsule(semantic_root_ref);
+    try std.testing.expect(semantic_outbound_ref.eql(outbound_ref));
     var wrong_inbox = Continuity.Chronicle.Inbox.init(&outbound_session);
     try std.testing.expectError(error.ObjectMissing, wrong_inbox.inspect(outbound_ref));
     const pending_outbound = try outbox.listPending();
