@@ -29098,10 +29098,20 @@ pub const Continuity = struct {
 
             pub fn putBundle(self: *@This(), bundle: Bundle) !void {
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
-                const report = try bundle.validationReport(.{});
+                var validation_envelopes: std.ArrayList(ObjectEnvelope) = .empty;
+                defer validation_envelopes.deinit(self.allocator);
+                try validation_envelopes.appendSlice(self.allocator, self.vault.objects.items);
+                try validation_envelopes.appendSlice(self.allocator, self.staged_envelopes.items);
+                try validation_envelopes.appendSlice(self.allocator, bundle.envelopes);
+                const validation_bundle = Bundle{
+                    .allocator = self.allocator,
+                    .manifest = bundle.manifest,
+                    .envelopes = validation_envelopes.items,
+                };
+                const report = try validation_bundle.validationReport(.{});
                 if (!report.valid) return error.InvalidFrameEncoding;
                 try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
-                for (bundle.envelopes) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, bundle, envelope);
+                for (bundle.envelopes) |envelope| try self.vault.assertTransactionBundleEnvelopeCanStage(self, validation_bundle, envelope);
                 const staged_envelope_count_before = self.staged_envelopes.items.len;
                 const staged_root_ref_count_before = self.staged_root_refs.items.len;
                 const staged_bundle_envelopes_before = self.staged_bundle_envelopes;
@@ -29578,8 +29588,6 @@ pub const Continuity = struct {
                 defer tx.deinit();
                 var bundle = try Bundle.decode(self.session.allocator, bytes, .{});
                 defer bundle.deinit();
-                const report = try bundle.validationReport(.{});
-                if (!report.valid) return error.InvalidFrameEncoding;
                 try canonicalizeBundleDependencyRefsForStorage(&bundle);
                 try rejectDuplicateFreshCommitsAgainstVault(self.session.vault, bundle);
                 const bundle_ref = ObjectRef.init(.{
@@ -30543,8 +30551,6 @@ pub const Continuity = struct {
             defer tx.deinit();
             var bundle = try Bundle.decode(self.allocator, bytes, .{});
             defer bundle.deinit();
-            const report = try bundle.validationReport(.{});
-            if (!report.valid) return error.InvalidFrameEncoding;
             try canonicalizeBundleDependencyRefsForStorage(&bundle);
             try rejectDuplicateFreshCommitsAgainstVault(self.vault, bundle);
             var manifest = try bundle.manifest.clone(self.allocator);
@@ -38143,7 +38149,7 @@ test "continuity session import validates bundles before transaction commit" {
         .payload_bytes = response_payload,
     });
     const response_ref = response_envelope.objectRef();
-    var incremental_envelopes = [_]Continuity.ObjectEnvelope{ request_envelope, response_envelope };
+    var incremental_envelopes = [_]Continuity.ObjectEnvelope{response_envelope};
     const incremental_roots = [_]Continuity.ObjectRef{response_ref};
     const incremental_bundle = Continuity.Bundle{
         .allocator = allocator,
@@ -38157,6 +38163,16 @@ test "continuity session import validates bundles before transaction commit" {
     defer incremental_manifest.deinit(allocator);
     try std.testing.expect(incremental_vault.has(response_ref));
     try std.testing.expectEqual(Continuity.Ledger.EventKind.bundle_imported, incremental_vault.ledger.events.items[ledger_count_before_incremental].kind);
+
+    var incremental_inbox_vault = Continuity.MemoryVault.init(allocator);
+    defer incremental_inbox_vault.deinit();
+    var incremental_inbox_session = try Continuity.Session.init(allocator, &incremental_inbox_vault, Continuity.PersistPolicy.full_local_evidence());
+    _ = try incremental_inbox_vault.put(request_envelope);
+    var incremental_inbox = Continuity.Chronicle.Inbox.init(&incremental_inbox_session);
+    const inbox_ledger_count_before_incremental = incremental_inbox_vault.ledger.events.items.len;
+    _ = try incremental_inbox.importBundle(incremental_bytes);
+    try std.testing.expect(incremental_inbox_vault.has(response_ref));
+    try std.testing.expectEqual(Continuity.Ledger.EventKind.bundle_imported, incremental_inbox_vault.ledger.events.items[inbox_ledger_count_before_incremental].kind);
 }
 
 test "executable recovery plans and rejects before runspace mutation" {
