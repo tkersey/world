@@ -32552,11 +32552,17 @@ pub const Continuity = struct {
         }
 
         pub fn planResumeParked(session: *Session, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryPlan {
-            return planThawFromVault(session, capsule_ref, registry, env, permit, options);
+            return planThawFromVault(session, capsule_ref, registry, env, permit, parkedResumeOptions(options));
         }
 
         pub fn resumeParked(session: *Session, runspace: *Runspace, capsule_ref: ObjectRef, registry: anytype, env: anytype, permit: anytype, options: Options) !RecoveryReport {
-            return thawFromVault(session, runspace, capsule_ref, registry, env, permit, options);
+            return thawFromVault(session, runspace, capsule_ref, registry, env, permit, parkedResumeOptions(options));
+        }
+
+        fn parkedResumeOptions(options: Options) Options {
+            var result = options;
+            result.thaw_options.mode = .restore_parked;
+            return result;
         }
 
         fn recoveryRequestedModeFromThaw(mode: Capsule.RestoreMode) RecoveryPlan.RequestedMode {
@@ -37892,6 +37898,9 @@ test "executable recovery plans and rejects before runspace mutation" {
     const disabled_plan = try Continuity.Recovery.planThawFromVault(&disabled_session, missing_disabled_capsule, {}, {}, {}, .{});
     try disabled_plan.validate();
     try std.testing.expect(disabled_plan.blockers.len != 0);
+    const disabled_resume_plan = try Continuity.Recovery.planResumeParked(&disabled_session, missing_disabled_capsule, {}, {}, {}, .{});
+    try disabled_resume_plan.validate();
+    try std.testing.expectEqual(Continuity.RecoveryPlan.RequestedMode.thaw_parked, disabled_resume_plan.requested_mode);
     try std.testing.expectEqual(disabled_event_count, disabled_vault.eventCount());
     try std.testing.expectEqual(disabled_cursor.cursor_fingerprint, disabled_session.cursor().cursor_fingerprint);
     const disabled_report = try Continuity.Recovery.executeThawPlanFromVault(&disabled_session, &disabled_runspace, disabled_plan, {}, {}, {}, .{});
