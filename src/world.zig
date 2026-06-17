@@ -29594,13 +29594,22 @@ pub const Continuity = struct {
                     .status = .imported,
                 });
                 const ref = envelope.objectRef();
+                const ledger_count_before = self.session.vault.ledger.events.items.len;
+                const ledger_next_order_before = self.session.vault.ledger.next_order;
+                var restore_ledger = true;
+                errdefer if (restore_ledger) {
+                    self.session.vault.ledger.events.shrinkRetainingCapacity(ledger_count_before);
+                    self.session.vault.ledger.next_order = ledger_next_order_before;
+                };
                 try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_started, .bundle_ref = bundle_ref }));
                 try tx.putBundle(bundle);
                 try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_validated, .bundle_ref = bundle_ref }));
                 try tx.addEvent(Event.init(.{ .kind = .inbox_item_created, .inbox_outbox_item_ref = ref, .bundle_ref = bundle_ref }));
                 try tx.addEvent(Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = bundle_ref }));
+                try self.session.vault.ledger.record(.bundle_imported, null);
                 _ = try tx.commit();
                 self.session.finishTransaction();
+                restore_ledger = false;
                 return ref;
             }
 
@@ -38004,8 +38013,10 @@ test "inbox outbox views rebuild from chronicle events" {
     var inbound_session = try Continuity.Session.init(allocator, &inbound_vault, Continuity.PersistPolicy.full_local_evidence());
     var inbox = Continuity.Chronicle.Inbox.init(&inbound_session);
     const cursor_before_inbox_import = inbound_session.cursor();
+    const ledger_count_before_inbox_import = inbound_vault.ledger.events.items.len;
     const inbound_ref = try inbox.importBundle(bundle_bytes);
     try std.testing.expect(cursor_before_inbox_import.cursor_fingerprint != inbound_session.cursor().cursor_fingerprint);
+    try std.testing.expectEqual(Continuity.Ledger.EventKind.bundle_imported, inbound_vault.ledger.events.items[ledger_count_before_inbox_import].kind);
     var wrong_outbox = Continuity.Chronicle.Outbox.init(&inbound_session);
     try std.testing.expectError(error.ObjectMissing, wrong_outbox.markExported(inbound_ref));
     const pending_inbound = try inbox.listPending();
