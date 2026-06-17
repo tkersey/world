@@ -33903,9 +33903,13 @@ pub const Continuity = struct {
     }
 
     fn replayCommittedObjectsIntoVault(source: *Continuity.MemoryVault, destination: *Continuity.MemoryVault) !void {
+        try requireChronicleEventsMatchCursor(source);
         for (source.chronicle_commit_backing.items) |backing| {
             try validateReplayBackingEnvelopes(destination, backing);
-            for (backing) |envelope| _ = try destination.putAcceptedTransactionEnvelope(envelope);
+            for (backing) |envelope| {
+                if (!try chronicleCommittedObjectRefExistsInAuthenticatedEvents(source, envelope.objectRef())) return error.InvalidFrameEncoding;
+                _ = try destination.putAcceptedTransactionEnvelope(envelope);
+            }
         }
     }
 
@@ -38109,6 +38113,19 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     try std.testing.expectEqual(vault.eventCount(), report.replayed_event_count);
     const report_again = try Continuity.Chronicle.replay(&vault, .{});
     try std.testing.expectEqual(report.report_fingerprint, report_again.report_fingerprint);
+
+    const unauthenticated_backing = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "unauthenticated-backing",
+        .label = "unauthenticated-backing",
+    });
+    const extra_backing = try Continuity.cloneEnvelopeSlice(allocator, &.{unauthenticated_backing});
+    try vault.chronicle_commit_backing.append(allocator, extra_backing);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&vault, .{}));
+    const extra_backing_cleanup = vault.chronicle_commit_backing.pop().?;
+    Continuity.freeEnvelopeSlice(allocator, extra_backing_cleanup);
+
     try vault.appendChronicleEventWithoutCursor(Continuity.Chronicle.Event.init(.{
         .kind = .object_validated,
         .target_ref = envelope.objectRef(),
