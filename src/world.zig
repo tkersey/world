@@ -33688,6 +33688,7 @@ pub const Continuity = struct {
                 actual_event_fingerprints.appendAssumeCapacity(event.event_fingerprint);
             }
             cursor = cursor.advance(actual_event_fingerprints.items, commit.committed_object_refs.len, 1);
+            if (cursor.cursor_fingerprint != commit.resulting_cursor_fingerprint) return error.InvalidFrameEncoding;
             event_index += actual_event_fingerprints.items.len;
         }
         while (event_index < vault.chronicle_events.items.len) {
@@ -37597,6 +37598,17 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     try vault.chronicle_events.items[0].validate();
     try vault.chronicle_commits.items[0].validate();
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&vault, .{}));
+
+    var bad_result_cursor_vault = Continuity.MemoryVault.init(allocator);
+    defer bad_result_cursor_vault.deinit();
+    var bad_cursor_tx = try bad_result_cursor_vault.beginTransaction(.custom, .{});
+    defer bad_cursor_tx.deinit();
+    _ = try bad_cursor_tx.put(envelope);
+    _ = try bad_cursor_tx.commit();
+    bad_result_cursor_vault.chronicle_commits.items[0].resulting_cursor_fingerprint +%= 1;
+    bad_result_cursor_vault.chronicle_commits.items[0].commit_fingerprint = Continuity.fingerprintChronicleCommit(bad_result_cursor_vault.chronicle_commits.items[0]);
+    try bad_result_cursor_vault.chronicle_commits.items[0].validate();
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&bad_result_cursor_vault, .{}));
 
     var corrupted_backing_vault = Continuity.MemoryVault.init(allocator);
     defer corrupted_backing_vault.deinit();
