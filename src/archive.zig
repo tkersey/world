@@ -1455,7 +1455,7 @@ pub fn Archive(comptime World: type) type {
                 if (batch.parent_cursor.cursor_fingerprint != self.currentCursor().cursor_fingerprint) return error.StaleProjection;
                 var writer = Writer.init(self.allocator, .{});
                 defer writer.deinit();
-                try writer.bytes.appendSlice(self.allocator, self.bytes.items);
+                try writer.bytes.appendSlice(self.allocator, self.bytes.items[0..self.image.committed_prefix_byte_len]);
                 writer.header_written = true;
                 _ = try writer.append(batch, self.image.latestMoment(), self.image.latestSeal());
                 var reader = Reader.init(self.allocator, writer.bytes.items, .{});

@@ -343,6 +343,20 @@ test "archive recovery truncates memory bytes to valid sealed prefix" {
     try std.testing.expectEqual(@as(usize, 2), scan.committed_moment_count);
 }
 
+test "archive append ignores stale unsealed tail" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "tail-first", "tail-first"));
+    try archive.bytes.appendSlice(std.testing.allocator, "stale-tail");
+
+    const second = try commitArchiveObject(&archive, archiveEnvelope(.capsule_manifest, "tail-second", "tail-second"));
+    try std.testing.expectEqual(@as(u64, 2), second.sequence_number);
+    const reader = world.Archive.Reader.init(std.testing.allocator, archive.bytesView(), .{});
+    const scan = try reader.scan();
+    try std.testing.expectEqual(@as(usize, 2), scan.committed_moment_count);
+    try std.testing.expectEqual(archive.bytesView().len, scan.committed_prefix_byte_len);
+}
+
 test "archive recovery report owns latest moment" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     var archive_active = true;
