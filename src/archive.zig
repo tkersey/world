@@ -441,15 +441,33 @@ pub fn Archive(comptime World: type) type {
                 try self.moment.validate();
                 try self.commit.validate();
                 if (self.commit.commit_fingerprint != self.moment.chronicle_commit_ref.commit_fingerprint) return error.InvalidFrameEncoding;
+                if (self.commit.transaction_fingerprint != self.moment.chronicle_commit_ref.transaction_fingerprint) return error.InvalidFrameEncoding;
+                if (self.commit.parent_cursor_fingerprint != self.moment.chronicle_parent_cursor.cursor_fingerprint) return error.InvalidFrameEncoding;
+                if (self.commit.resulting_cursor_fingerprint != self.moment.chronicle_resulting_cursor.cursor_fingerprint) return error.InvalidFrameEncoding;
+                if (!refSlicesEqual(self.commit.committed_object_refs, self.moment.committed_object_refs)) return error.InvalidFrameEncoding;
                 if (self.events.len != self.moment.committed_event_refs.len) return error.InvalidFrameEncoding;
-                for (self.events, self.moment.committed_event_refs) |event, expected| {
+                if (self.events.len != self.commit.committed_event_fingerprints.len) return error.InvalidFrameEncoding;
+                for (self.events, self.moment.committed_event_refs, self.commit.committed_event_fingerprints) |event, moment_expected, commit_expected| {
                     try event.validate();
-                    if (event.event_fingerprint != expected) return error.InvalidFrameEncoding;
+                    if (event.event_fingerprint != moment_expected or event.event_fingerprint != commit_expected) return error.InvalidFrameEncoding;
+                }
+                for (self.events) |event| {
+                    if (event.kind != .object_committed) continue;
+                    if (event.transaction_fingerprint != self.commit.transaction_fingerprint) return error.InvalidFrameEncoding;
+                    for (event.object_refs) |ref| {
+                        if (!containsRef(self.commit.committed_object_refs, ref)) return error.InvalidFrameEncoding;
+                    }
+                }
+                for (self.commit.committed_object_refs) |ref| {
+                    if (!objectCommitEventsContainRef(self.events, ref)) return error.InvalidFrameEncoding;
                 }
                 for (self.objects) |envelope| {
                     try envelope.validate();
                     const ref = envelope.objectRef();
-                    if (!containsRef(self.moment.committed_object_refs, ref)) return error.InvalidFrameEncoding;
+                    if (!containsRef(self.commit.committed_object_refs, ref)) return error.InvalidFrameEncoding;
+                }
+                for (self.commit.committed_object_refs) |ref| {
+                    if (!objectSliceContainsRef(self.objects, ref)) return error.InvalidFrameEncoding;
                 }
                 try rejectConflictingObjectBytes(self.objects);
             }
@@ -602,6 +620,11 @@ pub fn Archive(comptime World: type) type {
             recovered_object_count: usize = 0,
             committed_prefix_byte_len: usize = 0,
             discarded_tail_byte_len: usize = 0,
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.latest_moment) |*moment| moment.deinit(allocator);
+                self.* = undefined;
+            }
         };
 
         pub const OpenReport = RecoveryReport;
@@ -792,7 +815,7 @@ pub fn Archive(comptime World: type) type {
 
             pub fn getObject(self: @This(), ref: ObjectRef) !ObjectEnvelope {
                 for (self.image.objects) |envelope| {
-                    if (envelope.objectRef().eql(ref) and self.refCommittedAtOrBeforeMoment(ref)) return envelope;
+                    if (envelope.objectRef().eql(ref) and self.refCommittedAtOrBeforeMoment(ref)) return envelope.clone(self.image.allocator);
                 }
                 return error.ObjectMissing;
             }
@@ -919,8 +942,13 @@ pub fn Archive(comptime World: type) type {
             pub fn recover(self: @This()) !RecoveryReport {
                 var image = try self.readImage();
                 defer image.deinit();
+                const latest_moment = if (image.latestMoment()) |moment| try moment.clone(self.allocator) else null;
+                errdefer if (latest_moment) |moment| {
+                    var cleanup = moment;
+                    cleanup.deinit(self.allocator);
+                };
                 return .{
-                    .latest_moment = image.latestMoment(),
+                    .latest_moment = latest_moment,
                     .latest_cursor = image.latestCursor(),
                     .recovered_moment_count = image.moments.len,
                     .recovered_commit_count = image.commits.len,
@@ -954,15 +982,18 @@ pub fn Archive(comptime World: type) type {
 
                 while (cursor < self.bytes.len) {
                     const moment_segment_start = cursor;
-                    const moment_segment = readSegment(self.bytes, &cursor, self.limits) catch {
+                    const moment_segment = readSegment(self.bytes, &cursor, self.limits) catch |err| {
+                        if (!recoverableTailError(err)) return err;
                         break;
                     };
                     if (moment_segment.header.segment_kind != .moment_data or !moment_segment.header.required) break;
-                    var data = decodeMomentData(self.allocator, moment_segment.payload) catch {
+                    var data = decodeMomentData(self.allocator, moment_segment.payload) catch |err| {
+                        if (!recoverableTailError(err)) return err;
                         break;
                     };
                     defer data.deinit(self.allocator);
-                    data.validate() catch {
+                    data.validate() catch |err| {
+                        if (!recoverableTailError(err)) return err;
                         break;
                     };
                     if (data.moment.sequence_number != expected_sequence or
@@ -972,14 +1003,17 @@ pub fn Archive(comptime World: type) type {
                     {
                         break;
                     }
-                    const seal_segment = readSegment(self.bytes, &cursor, self.limits) catch {
+                    const seal_segment = readSegment(self.bytes, &cursor, self.limits) catch |err| {
+                        if (!recoverableTailError(err)) return err;
                         break;
                     };
                     if (seal_segment.header.segment_kind != .moment_seal or !seal_segment.header.required) break;
-                    const seal = decodeSeal(seal_segment.payload) catch {
+                    const seal = decodeSeal(seal_segment.payload) catch |err| {
+                        if (!recoverableTailError(err)) return err;
                         break;
                     };
-                    seal.validate() catch {
+                    seal.validate() catch |err| {
+                        if (!recoverableTailError(err)) return err;
                         break;
                     };
                     if (seal.sequence_number != data.moment.sequence_number or
@@ -994,33 +1028,41 @@ pub fn Archive(comptime World: type) type {
                     }
 
                     const owned_moment = try data.moment.clone(self.allocator);
-                    errdefer {
+                    var owned_moment_pending = true;
+                    errdefer if (owned_moment_pending) {
                         var cleanup = owned_moment;
                         cleanup.deinit(self.allocator);
-                    }
+                    };
                     const owned_commit = try data.commit.clone(self.allocator);
-                    errdefer {
+                    var owned_commit_pending = true;
+                    errdefer if (owned_commit_pending) {
                         var cleanup = owned_commit;
                         cleanup.deinit(self.allocator);
-                    }
+                    };
                     try moments.append(self.allocator, owned_moment);
+                    owned_moment_pending = false;
                     try seals.append(self.allocator, seal);
                     try commits.append(self.allocator, owned_commit);
+                    owned_commit_pending = false;
                     for (data.events) |event| {
                         const owned = try event.clone(self.allocator);
-                        errdefer {
+                        var owned_pending = true;
+                        errdefer if (owned_pending) {
                             var cleanup = owned;
                             cleanup.deinit(self.allocator);
-                        }
+                        };
                         try events.append(self.allocator, owned);
+                        owned_pending = false;
                     }
                     for (data.objects) |object| {
                         const owned = try object.clone(self.allocator);
-                        errdefer {
+                        var owned_pending = true;
+                        errdefer if (owned_pending) {
                             var cleanup = owned;
                             cleanup.deinit(self.allocator);
-                        }
+                        };
                         try objects.append(self.allocator, owned);
+                        owned_pending = false;
                     }
                     parent_seal_fingerprint = seal.seal_fingerprint;
                     parent_moment_fingerprint = data.moment.moment_fingerprint;
@@ -1097,6 +1139,8 @@ pub fn Archive(comptime World: type) type {
                 const committed_refs = try cloneRefSlice(self.allocator, batch.commit.committed_object_refs);
                 defer freeRefSlice(self.allocator, committed_refs);
                 std.mem.sort(ObjectRef, committed_refs, {}, refLessThan);
+                const dependency_refs = try collectDependencyRefs(self.allocator, batch.objects);
+                defer freeRefSlice(self.allocator, dependency_refs);
                 const moment = Moment.init(.{
                     .sequence_number = if (parent_moment) |m| m.sequence_number + 1 else 1,
                     .parent_moment_fingerprint = if (parent_moment) |m| m.moment_fingerprint else null,
@@ -1110,7 +1154,7 @@ pub fn Archive(comptime World: type) type {
                     .capsule_refs = batch.commit.capsule_refs,
                     .actuation_refs = batch.commit.actuation_refs,
                     .bundle_refs = batch.commit.bundle_refs,
-                    .dependency_refs = collectDependencyRefsScratch(batch.objects),
+                    .dependency_refs = dependency_refs,
                     .diagnostic_metadata_bytes = batch.diagnostic_metadata_bytes,
                 });
                 try moment.validate();
@@ -1236,14 +1280,36 @@ pub fn Archive(comptime World: type) type {
                     }
                     var event_fingerprints: std.ArrayList(u64) = .empty;
                     defer event_fingerprints.deinit(self.archive.allocator);
+                    for (self.staged_objects.items) |object| {
+                        const ref = object.objectRef();
+                        if (stagedEventsAlreadyCommitRef(self.staged_events.items, ref)) continue;
+                        const refs = [_]ObjectRef{ref};
+                        const event = Chronicle.Event.init(.{
+                            .kind = .object_committed,
+                            .transaction_fingerprint = tx_fingerprint,
+                            .object_refs = &refs,
+                            .target_ref = ref,
+                        });
+                        const owned = try event.clone(self.archive.allocator);
+                        var owned_pending = true;
+                        errdefer if (owned_pending) {
+                            var cleanup = owned;
+                            cleanup.deinit(self.archive.allocator);
+                        };
+                        try normalized_events.append(self.archive.allocator, owned);
+                        owned_pending = false;
+                        try event_fingerprints.append(self.archive.allocator, owned.event_fingerprint);
+                    }
                     for (self.staged_events.items) |event| {
                         const normalized = bindEventTransaction(event, tx_fingerprint);
                         const owned = try normalized.clone(self.archive.allocator);
-                        errdefer {
+                        var owned_pending = true;
+                        errdefer if (owned_pending) {
                             var cleanup = owned;
                             cleanup.deinit(self.archive.allocator);
-                        }
+                        };
                         try normalized_events.append(self.archive.allocator, owned);
+                        owned_pending = false;
                         try event_fingerprints.append(self.archive.allocator, owned.event_fingerprint);
                     }
                     const resulting_cursor = latest.advance(event_fingerprints.items, object_refs.items.len, 1);
@@ -1327,14 +1393,25 @@ pub fn Archive(comptime World: type) type {
 
             pub fn appendBatch(self: *@This(), batch: AppendBatch) !Moment {
                 if (self.closed) return error.InvalidFrameEncoding;
+                if (batch.parent_cursor.cursor_fingerprint != self.currentCursor().cursor_fingerprint) return error.StaleProjection;
                 var writer = Writer.init(self.allocator, .{});
                 defer writer.deinit();
                 try writer.bytes.appendSlice(self.allocator, self.bytes.items);
                 writer.header_written = true;
                 _ = try writer.append(batch, self.image.latestMoment(), self.image.latestSeal());
-                self.bytes.clearRetainingCapacity();
-                try self.bytes.appendSlice(self.allocator, writer.bytes.items);
-                try self.refreshImage();
+                var reader = Reader.init(self.allocator, writer.bytes.items, .{});
+                var next_image = try reader.readImage();
+                var next_image_owned = true;
+                errdefer if (next_image_owned) next_image.deinit();
+                var next_bytes: std.ArrayList(u8) = .empty;
+                errdefer next_bytes.deinit(self.allocator);
+                try next_bytes.appendSlice(self.allocator, writer.bytes.items);
+                self.bytes.deinit(self.allocator);
+                self.bytes = next_bytes;
+                next_bytes = .empty;
+                self.image.deinit();
+                self.image = next_image;
+                next_image_owned = false;
                 return self.image.latestMoment() orelse error.ObjectMissing;
             }
 
@@ -1343,9 +1420,14 @@ pub fn Archive(comptime World: type) type {
             }
 
             pub fn recover(self: *@This()) !RecoveryReport {
-                try self.refreshImage();
                 var reader = Reader.init(self.allocator, self.bytes.items, .{});
-                return reader.recover();
+                var report = try reader.recover();
+                errdefer report.deinit(self.allocator);
+                if (report.committed_prefix_byte_len < self.bytes.items.len) {
+                    self.bytes.shrinkRetainingCapacity(report.committed_prefix_byte_len);
+                }
+                try self.refreshImage();
+                return report;
             }
 
             pub fn replay(self: *@This()) !ReplayReport {
@@ -1362,7 +1444,7 @@ pub fn Archive(comptime World: type) type {
 
             pub fn getObject(self: @This(), ref: ObjectRef) !ObjectEnvelope {
                 for (self.image.objects) |envelope| {
-                    if (envelope.objectRef().eql(ref)) return envelope;
+                    if (envelope.objectRef().eql(ref)) return envelope.clone(self.allocator);
                 }
                 return error.ObjectMissing;
             }
@@ -1376,14 +1458,18 @@ pub fn Archive(comptime World: type) type {
 
             pub fn readCommit(self: @This(), ref: CommitRef) !Chronicle.Commit {
                 for (self.image.commits) |commit| {
-                    if (commit.commit_fingerprint == ref.commit_fingerprint) return commit;
+                    if (commitRefMatchesCommit(ref, commit)) return commit;
                 }
                 return error.ObjectMissing;
             }
 
             pub fn readEvents(self: @This(), commit_ref: CommitRef) ![]const Chronicle.Event {
+                var start: usize = 0;
                 for (self.image.commits) |commit| {
-                    if (commit.commit_fingerprint == commit_ref.commit_fingerprint) return self.image.events;
+                    const end = start + commit.committed_event_fingerprints.len;
+                    if (end > self.image.events.len) return error.InvalidFrameEncoding;
+                    if (commitRefMatchesCommit(commit_ref, commit)) return self.image.events[start..end];
+                    start = end;
                 }
                 return error.ObjectMissing;
             }
@@ -1395,6 +1481,11 @@ pub fn Archive(comptime World: type) type {
                     const existing = envelope.objectRef();
                     if (existing.kind == .actuation_idempotency_key and existing.object_fingerprint == key_ref.object_fingerprint) return error.DuplicateBinding;
                 }
+                var vault = try self.image.materializeVault(self.allocator, if (self.image.moments.len == 0) null else self.image.moments.len - 1);
+                defer vault.deinit();
+                var registry = try Chronicle.IdempotencyRegistry.rebuild(&vault);
+                defer registry.deinit(registry.allocator);
+                try registry.assertFreshCommitAllowed(key_ref);
             }
 
             pub fn reopenFrom(source: *const @This(), allocator: std.mem.Allocator) !@This() {
@@ -1445,11 +1536,13 @@ pub fn Archive(comptime World: type) type {
                 const first = try commitMemoryObject(&archive, .capsule_manifest, "conformance-capsule", "conformance-capsule");
                 const second = try commitMemoryObject(&archive, .capsule_manifest, "conformance-manifest", "conformance-manifest");
                 var first_snapshot = try archive.openMoment(first.moment);
-                _ = try first_snapshot.getObject(first.ref);
+                var first_object = try first_snapshot.getObject(first.ref);
+                defer first_object.deinit(allocator);
                 if (first_snapshot.getObject(second.ref)) |_| return error.InvalidFrameEncoding else |_| {}
                 var reopened = try Memory.reopenFrom(&archive, allocator);
                 defer reopened.deinit();
-                _ = try reopened.recover();
+                var recovery = try reopened.recover();
+                defer recovery.deinit(allocator);
                 const replay_report = try reopened.replay();
                 try replay_report.validate();
                 const key_commit = try commitMemoryObject(&reopened, .actuation_idempotency_key, "idem-key", "idem-key");
@@ -1541,7 +1634,11 @@ pub fn Archive(comptime World: type) type {
             try readExact(bytes, cursor, &header.magic);
             header.segment_format_version = try readU32(bytes, cursor);
             header.segment_kind = try enumFromByte(SegmentKind, try readU8(bytes, cursor));
-            header.required = (try readU8(bytes, cursor)) != 0;
+            header.required = switch (try readU8(bytes, cursor)) {
+                0 => false,
+                1 => true,
+                else => return error.InvalidFrameEncoding,
+            };
             header.sequence_number = try readU64(bytes, cursor);
             header.payload_byte_len = try readU64(bytes, cursor);
             header.payload_fingerprint = try readU64(bytes, cursor);
@@ -2145,6 +2242,21 @@ pub fn Archive(comptime World: type) type {
             return false;
         }
 
+        fn refSlicesEqual(lhs: []const ObjectRef, rhs: []const ObjectRef) bool {
+            if (lhs.len != rhs.len) return false;
+            for (lhs, rhs) |left, right| {
+                if (!left.eql(right)) return false;
+            }
+            return true;
+        }
+
+        fn objectSliceContainsRef(objects: []const ObjectEnvelope, ref: ObjectRef) bool {
+            for (objects) |object| {
+                if (object.objectRef().eql(ref)) return true;
+            }
+            return false;
+        }
+
         fn refLessThan(_: void, lhs: ObjectRef, rhs: ObjectRef) bool {
             return lhs.ref_fingerprint < rhs.ref_fingerprint;
         }
@@ -2157,11 +2269,53 @@ pub fn Archive(comptime World: type) type {
             }
         }
 
-        fn collectDependencyRefsScratch(objects: []const ObjectEnvelope) []const ObjectRef {
+        fn collectDependencyRefs(allocator: std.mem.Allocator, objects: []const ObjectEnvelope) ![]ObjectRef {
+            var refs: std.ArrayList(ObjectRef) = .empty;
+            errdefer deinitRefList(&refs, allocator);
             for (objects) |object| {
-                if (object.dependency_refs.len != 0) return object.dependency_refs;
+                for (object.dependency_refs) |dep| {
+                    if (containsRef(refs.items, dep)) continue;
+                    const owned = try dep.clone(allocator);
+                    var owned_pending = true;
+                    errdefer if (owned_pending) {
+                        var cleanup = owned;
+                        cleanup.deinit(allocator);
+                    };
+                    try refs.append(allocator, owned);
+                    owned_pending = false;
+                }
             }
-            return &.{};
+            return refs.toOwnedSlice(allocator);
+        }
+
+        fn deinitRefList(list: *std.ArrayList(ObjectRef), allocator: std.mem.Allocator) void {
+            for (list.items) |*ref| ref.deinit(allocator);
+            list.deinit(allocator);
+        }
+
+        fn stagedEventsAlreadyCommitRef(events: []const Chronicle.Event, ref: ObjectRef) bool {
+            for (events) |event| {
+                if (event.kind == .object_committed and containsRef(event.object_refs, ref)) return true;
+            }
+            return false;
+        }
+
+        fn objectCommitEventsContainRef(events: []const Chronicle.Event, ref: ObjectRef) bool {
+            return stagedEventsAlreadyCommitRef(events, ref);
+        }
+
+        fn commitRefMatchesCommit(ref: CommitRef, commit: Chronicle.Commit) bool {
+            return ref.commit_fingerprint == commit.commit_fingerprint and
+                ref.transaction_fingerprint == commit.transaction_fingerprint and
+                ref.parent_cursor_fingerprint == commit.parent_cursor_fingerprint and
+                ref.resulting_cursor_fingerprint == commit.resulting_cursor_fingerprint;
+        }
+
+        fn recoverableTailError(err: anyerror) bool {
+            return switch (err) {
+                error.OutOfMemory => false,
+                else => true,
+            };
         }
 
         fn bindEventTransaction(event: Chronicle.Event, transaction_fingerprint: u64) Chronicle.Event {

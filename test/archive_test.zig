@@ -132,6 +132,10 @@ test "archive valid-prefix recovery discards unsealed tail" {
     try std.testing.expectEqual(sealed_len, scan.committed_prefix_byte_len);
     try std.testing.expectEqual(@as(usize, 9), scan.discarded_tail_byte_len);
     const recovery = try reader.recover();
+    defer {
+        var cleanup = recovery;
+        cleanup.deinit(std.testing.allocator);
+    }
     try std.testing.expectEqual(@as(usize, 1), recovery.recovered_moment_count);
 }
 
@@ -147,6 +151,10 @@ test "archive partial final seal is not committed" {
 
     const reader = world.Archive.Reader.init(std.testing.allocator, truncated, .{});
     const recovery = try reader.recover();
+    defer {
+        var cleanup = recovery;
+        cleanup.deinit(std.testing.allocator);
+    }
     try std.testing.expectEqual(first_len, recovery.committed_prefix_byte_len);
     try std.testing.expectEqual(@as(usize, 1), recovery.recovered_moment_count);
 }
@@ -164,7 +172,8 @@ test "archive snapshot reads historical prefix and replay binds cursor" {
     _ = try commitArchiveObject(&archive, second);
 
     var snapshot = try archive.openMoment(first_moment);
-    const visible = try snapshot.getObject(first_ref);
+    var visible = try snapshot.getObject(first_ref);
+    defer visible.deinit(std.testing.allocator);
     try std.testing.expectEqual(first_ref.ref_fingerprint, visible.objectRef().ref_fingerprint);
     try std.testing.expectError(error.ObjectMissing, snapshot.getObject(second_ref));
     try std.testing.expectEqual(@as(usize, 1), try snapshot.objectCount());
@@ -239,6 +248,191 @@ test "archive memory transaction hides staged objects until commit" {
     }));
     _ = try tx.commit();
     try std.testing.expect(archive.hasObject(ref));
+}
+
+test "archive append rejects stale batches before mutating bytes" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const stale_parent = archive.image.latestCursor();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "first", "first"));
+    const bytes_before = try std.testing.allocator.dupe(u8, archive.bytesView());
+    defer std.testing.allocator.free(bytes_before);
+
+    const envelope = archiveEnvelope(.capsule_manifest, "second", "second");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const event = world.Continuity.Chronicle.Event.init(.{ .kind = .object_committed, .object_refs = &refs });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const resulting = stale_parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xABCDEF,
+        .parent_cursor_fingerprint = stale_parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = stale_parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    try std.testing.expectError(error.StaleProjection, archive.appendBatch(batch));
+    try std.testing.expectEqualSlices(u8, bytes_before, archive.bytesView());
+}
+
+test "archive append allocation failure preserves canonical bytes" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "stable", "stable"));
+    const bytes_before = try std.testing.allocator.dupe(u8, archive.bytesView());
+    defer std.testing.allocator.free(bytes_before);
+
+    var induced_failures: usize = 0;
+    for (0..64) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        var reopened = world.Archive.Memory.reopenFrom(&archive, failing_allocator.allocator()) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        defer reopened.deinit();
+        const result = commitArchiveObject(&reopened, archiveEnvelope(.capsule_manifest, "oom", "oom"));
+        if (result) |moment| {
+            try moment.validate();
+        } else |err| switch (err) {
+            error.OutOfMemory => {
+                induced_failures += 1;
+                try std.testing.expectEqualSlices(u8, bytes_before, reopened.bytesView());
+            },
+            else => return err,
+        }
+    }
+    try std.testing.expect(induced_failures > 0);
+}
+
+test "archive recovery truncates memory bytes to valid sealed prefix" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "first", "first"));
+    const sealed_len = archive.bytesView().len;
+    try archive.bytes.appendSlice(std.testing.allocator, "unsealed-tail");
+
+    var recovery = try archive.recover();
+    defer recovery.deinit(std.testing.allocator);
+    try std.testing.expectEqual(sealed_len, archive.bytesView().len);
+    try std.testing.expectEqual(@as(usize, "unsealed-tail".len), recovery.discarded_tail_byte_len);
+
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_manifest, "second", "second"));
+    const reader = world.Archive.Reader.init(std.testing.allocator, archive.bytesView(), .{});
+    const scan = try reader.scan();
+    try std.testing.expectEqual(@as(usize, 2), scan.committed_moment_count);
+}
+
+test "archive recovery report owns latest moment" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    var archive_active = true;
+    defer if (archive_active) archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "owned", "owned"));
+
+    const reader = world.Archive.Reader.init(std.testing.allocator, archive.bytesView(), .{});
+    var recovery = try reader.recover();
+    defer recovery.deinit(std.testing.allocator);
+    try std.testing.expect(recovery.latest_moment != null);
+    try std.testing.expect(recovery.latest_moment.?.owns_memory);
+    archive.deinit();
+    archive_active = false;
+    try recovery.latest_moment.?.validate();
+}
+
+test "archive rejects non-canonical required segment flag" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "flag", "flag"));
+
+    const segment_required_flag_offset = 72 + 8 + 4 + 1;
+    var corrupted = try std.testing.allocator.dupe(u8, archive.bytesView());
+    defer std.testing.allocator.free(corrupted);
+    corrupted[segment_required_flag_offset] = 2;
+
+    const reader = world.Archive.Reader.init(std.testing.allocator, corrupted, .{});
+    const validation = reader.validate();
+    try std.testing.expect(!validation.valid);
+}
+
+test "archive readEvents returns only requested commit events" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const first = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "first", "first"));
+    const first_event_refs = [_]u64{first.committed_event_refs[0]};
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_manifest, "second", "second"));
+
+    const events = try archive.readEvents(first.chronicle_commit_ref);
+    try std.testing.expectEqual(first_event_refs.len, events.len);
+    for (events, first_event_refs) |event, expected| {
+        try std.testing.expectEqual(expected, event.event_fingerprint);
+    }
+
+    var invalid = first.chronicle_commit_ref;
+    invalid.transaction_fingerprint +%= 1;
+    try std.testing.expectError(error.ObjectMissing, archive.readEvents(invalid));
+}
+
+test "archive transactions synthesize object commit events" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    const envelope = archiveEnvelope(.bundle, "bundle-no-explicit-object-event", "bundle");
+    const ref = try tx.putObject(envelope);
+    try tx.addEvent(world.Continuity.Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = ref }));
+    const moment = try tx.commit();
+
+    const events = try archive.readEvents(moment.chronicle_commit_ref);
+    try std.testing.expectEqual(@as(usize, 2), events.len);
+    try std.testing.expectEqual(world.Continuity.Chronicle.EventKind.object_committed, events[0].kind);
+    try std.testing.expect(refSliceContains(events[0].object_refs, ref));
+    const replay = try archive.replay();
+    try std.testing.expectEqual(@as(usize, 0), replay.mismatch_count);
+}
+
+test "archive moments aggregate dependencies from every object" {
+    const dep_a_envelope = archiveEnvelope(.capsule_manifest, "dep-a", "dep-a");
+    const dep_b_envelope = archiveEnvelope(.capsule_manifest, "dep-b", "dep-b");
+    const dep_a = dep_a_envelope.objectRef();
+    const dep_b = dep_b_envelope.objectRef();
+    const first_deps = [_]world.Continuity.ObjectRef{dep_a};
+    const second_deps = [_]world.Continuity.ObjectRef{dep_b};
+    const first = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "first",
+        .label = "first",
+        .dependency_refs = &first_deps,
+    });
+    const second = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .payload_bytes = "second",
+        .label = "second",
+        .dependency_refs = &second_deps,
+    });
+
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    _ = try tx.putObject(first);
+    _ = try tx.putObject(second);
+    const moment = try tx.commit();
+
+    try std.testing.expect(refSliceContains(moment.dependency_refs, dep_a));
+    try std.testing.expect(refSliceContains(moment.dependency_refs, dep_b));
 }
 
 fn refSliceContains(refs: []const world.Continuity.ObjectRef, needle: world.Continuity.ObjectRef) bool {
