@@ -28952,12 +28952,18 @@ pub const Continuity = struct {
             metadata_bytes: []const u8 = "",
         };
 
+        const TransactionEventAuthority = enum {
+            public,
+            system,
+        };
+
         pub const Transaction = struct {
             allocator: std.mem.Allocator,
             vault: *Continuity.MemoryVault,
             transaction_fingerprint_version: u32 = world_chronicle_transaction_fingerprint_version,
             transaction_fingerprint: u64,
             transaction_kind: TransactionKind,
+            event_authority: TransactionEventAuthority,
             parent_cursor_fingerprint: u64,
             staged_envelopes: std.ArrayList(ObjectEnvelope) = .empty,
             staged_events: std.ArrayList(Event) = .empty,
@@ -28974,12 +28980,13 @@ pub const Continuity = struct {
             metadata_bytes: []const u8 = "",
             owns_metadata: bool = false,
 
-            fn init(vault: *Continuity.MemoryVault, kind: TransactionKind, options: TransactionOptions) !@This() {
+            fn init(vault: *Continuity.MemoryVault, kind: TransactionKind, options: TransactionOptions, event_authority: TransactionEventAuthority) !@This() {
                 var tx = @This(){
                     .allocator = vault.allocator,
                     .vault = vault,
                     .transaction_fingerprint = 0,
                     .transaction_kind = kind,
+                    .event_authority = event_authority,
                     .parent_cursor_fingerprint = vault.chronicle_cursor.cursor_fingerprint,
                     .metadata_bytes = try vault.allocator.dupe(u8, options.metadata_bytes),
                     .owns_metadata = true,
@@ -29139,7 +29146,7 @@ pub const Continuity = struct {
             pub fn addEvent(self: *@This(), event: Event) !void {
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
                 try event.validate();
-                if (event.kind == .object_committed) return error.InvalidFrameEncoding;
+                if (!transactionKindAllowsEvent(self.transaction_kind, self.event_authority, event.kind)) return error.InvalidFrameEncoding;
                 const owned = try event.clone(self.allocator);
                 errdefer {
                     var cleanup = owned;
@@ -29277,6 +29284,103 @@ pub const Continuity = struct {
                 self.transaction_fingerprint = fingerprintChronicleTransaction(self.*);
             }
         };
+
+        fn transactionKindAllowsEvent(kind: TransactionKind, authority: TransactionEventAuthority, event_kind: Chronicle.EventKind) bool {
+            if (event_kind == .object_committed) return false;
+            if (authority == .public) return publicTransactionEventAllowed(event_kind);
+            return switch (kind) {
+                .store_capsule => switch (event_kind) {
+                    .capsule_stored,
+                    .capsule_validated,
+                    => true,
+                    else => false,
+                },
+                .store_actuation => switch (event_kind) {
+                    .actuation_receipt_stored,
+                    .actuation_journal_stored,
+                    .actuation_idempotency_registered,
+                    .actuation_idempotency_conflict,
+                    => true,
+                    else => false,
+                },
+                .import_bundle => switch (event_kind) {
+                    .bundle_import_started,
+                    .bundle_import_validated,
+                    .bundle_import_committed,
+                    .bundle_import_rejected,
+                    => true,
+                    else => false,
+                },
+                .export_bundle => switch (event_kind) {
+                    .bundle_export_started,
+                    .bundle_export_committed,
+                    .bundle_export_rejected,
+                    => true,
+                    else => false,
+                },
+                .freeze_capsule => switch (event_kind) {
+                    .capsule_staged,
+                    .capsule_exported,
+                    => true,
+                    else => false,
+                },
+                .recovery_preflight => switch (event_kind) {
+                    .capsule_recovery_planned,
+                    .capsule_recovery_rejected,
+                    .capsule_recovery_ready,
+                    .actuation_replay_planned,
+                    .recovery_preflighted,
+                    .recovery_blocked,
+                    .recovery_ready,
+                    => true,
+                    else => false,
+                },
+                .recovery_execute => switch (event_kind) {
+                    .capsule_restored,
+                    .capsule_replayed,
+                    .actuation_replayed,
+                    .recovery_executed,
+                    .recovery_report_stored,
+                    => true,
+                    else => false,
+                },
+                .inbox_import => switch (event_kind) {
+                    .bundle_import_started,
+                    .bundle_import_validated,
+                    .bundle_import_committed,
+                    .bundle_import_rejected,
+                    .inbox_item_created,
+                    => true,
+                    else => false,
+                },
+                .outbox_export => switch (event_kind) {
+                    .bundle_export_started,
+                    .bundle_export_committed,
+                    .bundle_export_rejected,
+                    .outbox_item_exported,
+                    => true,
+                    else => false,
+                },
+                .guest_report_record => switch (event_kind) {
+                    .guest_report_stored,
+                    .guest_report_validated,
+                    => true,
+                    else => false,
+                },
+                .custom => publicTransactionEventAllowed(event_kind),
+            };
+        }
+
+        fn publicTransactionEventAllowed(event_kind: Chronicle.EventKind) bool {
+            return switch (event_kind) {
+                .object_staged,
+                .object_rejected,
+                .object_validated,
+                => true,
+                else => false,
+            };
+        }
+
         pub const ProjectionKind = enum(u8) {
             capsule_index = 0,
             actuation_index = 1,
@@ -29886,7 +29990,11 @@ pub const Continuity = struct {
         }
 
         pub fn beginTransaction(self: *@This(), kind: Chronicle.TransactionKind, options: Chronicle.TransactionOptions) !Chronicle.Transaction {
-            return Chronicle.Transaction.init(self, kind, options);
+            return Chronicle.Transaction.init(self, kind, options, .public);
+        }
+
+        fn beginSystemTransaction(self: *@This(), kind: Chronicle.TransactionKind, options: Chronicle.TransactionOptions) !Chronicle.Transaction {
+            return Chronicle.Transaction.init(self, kind, options, .system);
         }
 
         fn backedObjectRef(self: *@This(), ref: ObjectRef) !ObjectRef {
@@ -30549,7 +30657,7 @@ pub const Continuity = struct {
             self.active_transaction_count += 1;
             self.refreshFingerprint();
             errdefer self.abandonTransaction();
-            return self.vault.beginTransaction(kind, .{});
+            return self.vault.beginSystemTransaction(kind, .{});
         }
 
         fn abandonTransaction(self: *@This()) void {
@@ -38120,6 +38228,18 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     var projection_after_non_commit_ref = try Continuity.Chronicle.Projection.rebuild(&vault, .object_index);
     defer projection_after_non_commit_ref.deinit();
     try std.testing.expect(!Continuity.containsRef(projection_after_non_commit_ref.report.object_refs_consumed, missing_validated_ref));
+
+    const forged_outbox_item_ref = Continuity.HandoffEnvelope.init(.{
+        .direction = .outbound,
+        .status = .exported,
+    }).objectRef();
+    var forged_outbox_tx = try vault.beginTransaction(.outbox_export, .{});
+    defer forged_outbox_tx.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_outbox_tx.addEvent(Continuity.Chronicle.Event.init(.{
+        .kind = .outbox_item_exported,
+        .inbox_outbox_item_ref = forged_outbox_item_ref,
+        .bundle_ref = Continuity.semanticObjectRef(.bundle, 0x3472_9002),
+    })));
 
     const report = try Continuity.Chronicle.replay(&vault, .{});
     try report.validate();
