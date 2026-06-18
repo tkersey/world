@@ -1097,7 +1097,12 @@ pub fn Archive(comptime World: type) type {
                         if (!recoverableTailError(err)) return err;
                         break;
                     };
-                    if (moment_segment.header.segment_kind != .moment_data or !moment_segment.header.required) break;
+                    if (moment_segment.header.segment_kind == .optional_extension) {
+                        if (moment_segment.header.required) return error.UnsupportedMapping;
+                        latest_prefix_len = cursor;
+                        continue;
+                    }
+                    if (moment_segment.header.segment_kind != .moment_data or !moment_segment.header.required) return error.InvalidFrameEncoding;
                     var data = decodeMomentData(self.allocator, moment_segment.payload, self.limits) catch |err| {
                         if (!recoverableTailError(err)) return err;
                         break;
@@ -1119,7 +1124,7 @@ pub fn Archive(comptime World: type) type {
                         if (!recoverableTailError(err)) return err;
                         break;
                     };
-                    if (seal_segment.header.segment_kind != .moment_seal or !seal_segment.header.required) break;
+                    if (seal_segment.header.segment_kind != .moment_seal or !seal_segment.header.required) return error.InvalidFrameEncoding;
                     if (seal_segment.header.sequence_number != data.moment.sequence_number) {
                         cursor = moment_segment_start;
                         break;
@@ -1268,6 +1273,13 @@ pub fn Archive(comptime World: type) type {
             }
 
             pub fn append(self: *@This(), batch: AppendBatch, parent_moment: ?Moment, parent_seal: ?Seal) !Seal {
+                const append_start = self.bytes.items.len;
+                const header_written_before = self.header_written;
+                var append_pending = true;
+                errdefer if (append_pending) {
+                    self.bytes.shrinkRetainingCapacity(append_start);
+                    self.header_written = header_written_before;
+                };
                 if (!self.header_written) try self.writeHeader(Header.init(.{}));
                 try batch.validate();
                 try self.validateAppendParent(batch, parent_moment, parent_seal);
@@ -1313,11 +1325,10 @@ pub fn Archive(comptime World: type) type {
                     .payload = payload.items,
                 });
                 const data_segment_start = self.bytes.items.len;
-                var append_pending = true;
-                errdefer if (append_pending) self.bytes.shrinkRetainingCapacity(data_segment_start);
                 try encodeSegmentHeader(&self.bytes, self.allocator, data_header);
                 try self.bytes.appendSlice(self.allocator, payload.items);
                 const committed_prefix_len = self.bytes.items.len + segmentHeaderEncodedLen() + sealEncodedLen(parent_seal != null);
+                if (committed_prefix_len > self.limits.max_archive_bytes) return error.InvalidFrameEncoding;
                 const seal = Seal.init(.{
                     .sequence_number = moment.sequence_number,
                     .parent_seal_fingerprint = if (parent_seal) |s| s.seal_fingerprint else null,
@@ -1337,6 +1348,7 @@ pub fn Archive(comptime World: type) type {
                 if (data_segment_start >= self.bytes.items.len) return error.InvalidFrameEncoding;
                 try encodeSegmentHeader(&self.bytes, self.allocator, seal_header);
                 try self.bytes.appendSlice(self.allocator, seal_payload.items);
+                if (self.bytes.items.len != committed_prefix_len or self.bytes.items.len > self.limits.max_archive_bytes) return error.InvalidFrameEncoding;
                 append_pending = false;
                 return seal;
             }
@@ -1362,6 +1374,7 @@ pub fn Archive(comptime World: type) type {
                 }
                 try validateDomainEventRefsKnown(batch.events, image.objects, batch.objects);
                 try validateObjectDependenciesKnown(image.objects, batch.objects);
+                try rejectAlreadyCommittedObjectRefs(image.objects, batch.objects);
             }
 
             fn rejectObjectConflicts(self: *@This(), objects: []const ObjectEnvelope) !void {
@@ -2661,6 +2674,12 @@ pub fn Archive(comptime World: type) type {
                     if (objectSliceContainsRef(current_objects, dep) or objectSliceContainsRef(prior_objects, dep)) continue;
                     return error.ObjectMissing;
                 }
+            }
+        }
+
+        fn rejectAlreadyCommittedObjectRefs(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
+            for (current_objects) |object| {
+                if (objectSliceContainsRef(prior_objects, object.objectRef())) return error.DuplicateBinding;
             }
         }
 
