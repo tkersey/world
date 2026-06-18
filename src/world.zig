@@ -30158,6 +30158,7 @@ pub const Continuity = struct {
             for (self.objects.items) |existing| {
                 if (existing.objectRef().eql(ref)) {
                     if (existing.envelope_fingerprint != envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
+                    if (!try chronicleCommittedObjectRefExistsInAuthenticatedEvents(&self, ref)) return error.InvalidFrameEncoding;
                     return;
                 }
                 if (existing.kind == ref.kind and existing.object_fingerprint == ref.object_fingerprint and existing.object_byte_len == ref.byte_len) {
@@ -38823,6 +38824,13 @@ test "idempotency registry records fresh commits and allows replay receipts" {
     var raw_dependency_tx = try raw_dependency_vault.beginTransaction(.store_actuation, .{});
     defer raw_dependency_tx.deinit();
     try std.testing.expectError(error.InvalidFrameEncoding, raw_dependency_tx.put(raw_dependency_receipt_envelope));
+
+    var raw_duplicate_vault = Continuity.MemoryVault.init(allocator);
+    defer raw_duplicate_vault.deinit();
+    try raw_duplicate_vault.objects.append(allocator, try raw_dependency_key_envelope.clone(allocator));
+    var raw_duplicate_tx = try raw_duplicate_vault.beginTransaction(.store_actuation, .{});
+    defer raw_duplicate_tx.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, raw_duplicate_tx.put(raw_dependency_key_envelope));
 
     var transaction_vault = Continuity.MemoryVault.init(allocator);
     defer transaction_vault.deinit();
