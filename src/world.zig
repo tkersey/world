@@ -29222,13 +29222,24 @@ pub const Continuity = struct {
                     self.vault.ledger.next_order = ledger_next_order_before;
                     self.vault.chronicle_cursor = cursor_before;
                 }
-                const backing_envelopes = try cloneEnvelopeSlice(self.allocator, self.staged_envelopes.items);
-                errdefer freeEnvelopeSlice(self.allocator, backing_envelopes);
+                var backing_envelopes: std.ArrayList(ObjectEnvelope) = .empty;
+                errdefer {
+                    for (backing_envelopes.items) |*envelope| envelope.deinit(self.allocator);
+                    backing_envelopes.deinit(self.allocator);
+                }
 
                 for (self.staged_envelopes.items) |envelope| {
                     const object_count_before_put = self.vault.objects.items.len;
                     const ref = try self.vault.putAcceptedTransactionEnvelope(envelope);
                     if (self.vault.objects.items.len == object_count_before_put) continue;
+                    const backing_envelope = try envelope.clone(self.allocator);
+                    var backing_envelope_pending = true;
+                    errdefer if (backing_envelope_pending) {
+                        var cleanup = backing_envelope;
+                        cleanup.deinit(self.allocator);
+                    };
+                    try backing_envelopes.append(self.allocator, backing_envelope);
+                    backing_envelope_pending = false;
                     if (ledgerEventKindForCommittedEnvelope(envelope.kind)) |ledger_kind| {
                         try self.vault.ledger.record(ledger_kind, ref);
                     }
@@ -29265,9 +29276,13 @@ pub const Continuity = struct {
                 var owned_commit = try commit_record.clone(self.allocator);
                 var commit_appended = false;
                 errdefer if (!commit_appended) owned_commit.deinit(self.allocator);
+                const backing_slice = try backing_envelopes.toOwnedSlice(self.allocator);
+                var backing_slice_owned = true;
+                errdefer if (backing_slice_owned) freeEnvelopeSlice(self.allocator, backing_slice);
                 try self.vault.chronicle_commits.append(self.allocator, owned_commit);
                 commit_appended = true;
-                try self.vault.chronicle_commit_backing.append(self.allocator, backing_envelopes);
+                try self.vault.chronicle_commit_backing.append(self.allocator, backing_slice);
+                backing_slice_owned = false;
                 var stored_commit = self.vault.chronicle_commits.items[self.vault.chronicle_commits.items.len - 1];
                 stored_commit.owns_memory = false;
                 self.committed = true;
@@ -37727,6 +37742,8 @@ test "chronicle transaction staged put abort and commit are atomic" {
     try std.testing.expectEqual(object_count_before_duplicate, vault.objectCount());
     try std.testing.expectEqual(@as(usize, 0), duplicate_commit.committed_object_refs.len);
     try std.testing.expectEqual(committed_object_count_before_duplicate, vault.cursor().committed_object_count);
+    const duplicate_replay_report = try Continuity.Chronicle.replay(&vault, .{});
+    try std.testing.expectEqual(@as(usize, 0), duplicate_replay_report.mismatch_count);
 
     var stale_tx = try vault.beginTransaction(.custom, .{});
     defer stale_tx.deinit();
