@@ -451,12 +451,17 @@ pub fn Archive(comptime World: type) type {
                 if (self.commit.parent_cursor_fingerprint != self.moment.chronicle_parent_cursor.cursor_fingerprint) return error.InvalidFrameEncoding;
                 if (self.commit.resulting_cursor_fingerprint != self.moment.chronicle_resulting_cursor.cursor_fingerprint) return error.InvalidFrameEncoding;
                 if (!refSlicesEqual(self.commit.committed_object_refs, self.moment.committed_object_refs)) return error.InvalidFrameEncoding;
+                if (!refSlicesEqual(self.commit.bundle_refs, self.moment.bundle_refs)) return error.InvalidFrameEncoding;
+                if (!refSlicesEqual(self.commit.capsule_refs, self.moment.capsule_refs)) return error.InvalidFrameEncoding;
+                if (!refSlicesEqual(self.commit.actuation_refs, self.moment.actuation_refs)) return error.InvalidFrameEncoding;
                 if (self.events.len != self.moment.committed_event_refs.len) return error.InvalidFrameEncoding;
                 if (self.events.len != self.commit.committed_event_fingerprints.len) return error.InvalidFrameEncoding;
                 for (self.events, self.moment.committed_event_refs, self.commit.committed_event_fingerprints) |event, moment_expected, commit_expected| {
                     try event.validate();
                     if (event.event_fingerprint != moment_expected or event.event_fingerprint != commit_expected) return error.InvalidFrameEncoding;
                 }
+                const recomputed_cursor = self.moment.chronicle_parent_cursor.advance(self.commit.committed_event_fingerprints, self.commit.committed_object_refs.len, 1);
+                if (!cursorsEqual(recomputed_cursor, self.moment.chronicle_resulting_cursor)) return error.InvalidFrameEncoding;
                 var committed_ref_index: usize = 0;
                 for (self.events) |event| {
                     if (event.kind != .object_committed) continue;
@@ -477,6 +482,16 @@ pub fn Archive(comptime World: type) type {
                     if (!objectSliceContainsRef(self.objects, ref)) return error.InvalidFrameEncoding;
                 }
                 try rejectConflictingObjectBytes(self.objects);
+                if (self.commit.bundle_refs.len != 0 and !summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.bundle_refs, .bundle)) return error.InvalidFrameEncoding;
+                if (self.commit.capsule_refs.len != 0 and !summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.capsule_refs, .capsule)) return error.InvalidFrameEncoding;
+                if (self.commit.actuation_refs.len != 0 and !summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.actuation_refs, .actuation)) return error.InvalidFrameEncoding;
+                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.root_object_refs);
+                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.admission_refs);
+                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.environment_certificate_refs);
+                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.permit_receipt_refs);
+                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.link_assembly_refs);
+                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.fabric_receipt_refs);
+                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.guest_conformance_refs);
             }
 
             pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
@@ -2387,6 +2402,63 @@ pub fn Archive(comptime World: type) type {
                 ref.transaction_fingerprint == commit.transaction_fingerprint and
                 ref.parent_cursor_fingerprint == commit.parent_cursor_fingerprint and
                 ref.resulting_cursor_fingerprint == commit.resulting_cursor_fingerprint;
+        }
+
+        const SummaryRefKind = enum {
+            bundle,
+            capsule,
+            actuation,
+        };
+
+        fn cursorsEqual(a: Chronicle.Cursor, b: Chronicle.Cursor) bool {
+            return a.cursor_fingerprint_version == b.cursor_fingerprint_version and
+                a.cursor_fingerprint == b.cursor_fingerprint and
+                a.event_index == b.event_index and
+                a.last_event_fingerprint == b.last_event_fingerprint and
+                a.cumulative_prefix_fingerprint == b.cumulative_prefix_fingerprint and
+                a.committed_object_count == b.committed_object_count and
+                a.committed_transaction_count == b.committed_transaction_count and
+                std.mem.eql(u8, a.metadata_bytes, b.metadata_bytes);
+        }
+
+        fn summaryRefsMatchCommittedObjects(
+            committed_refs: []const ObjectRef,
+            summary_refs: []const ObjectRef,
+            summary_kind: SummaryRefKind,
+        ) bool {
+            var summary_index: usize = 0;
+            for (committed_refs) |ref| {
+                if (!refMatchesSummaryKind(ref, summary_kind)) continue;
+                if (summary_index >= summary_refs.len) return false;
+                if (!summary_refs[summary_index].eql(ref)) return false;
+                summary_index += 1;
+            }
+            return summary_index == summary_refs.len;
+        }
+
+        fn refMatchesSummaryKind(ref: ObjectRef, summary_kind: SummaryRefKind) bool {
+            return switch (summary_kind) {
+                .bundle => ref.kind == .bundle,
+                .capsule => ref.kind == .capsule_image,
+                .actuation => switch (ref.kind) {
+                    .actuation_intent,
+                    .actuation_envelope,
+                    .actuation_decision,
+                    .actuation_commit,
+                    .actuation_response,
+                    .actuation_receipt,
+                    .actuation_journal,
+                    .actuation_idempotency_key,
+                    => true,
+                    else => false,
+                },
+            };
+        }
+
+        fn validateSummaryRefsSubset(committed_refs: []const ObjectRef, summary_refs: []const ObjectRef) !void {
+            for (summary_refs) |ref| {
+                if (!containsRef(committed_refs, ref)) return error.InvalidFrameEncoding;
+            }
         }
 
         fn recoverableTailError(err: anyerror) bool {

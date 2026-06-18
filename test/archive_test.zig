@@ -462,6 +462,99 @@ test "archive transactions synthesize object commit events" {
     try std.testing.expectEqual(@as(usize, 0), replay.mismatch_count);
 }
 
+test "archive moment data rejects forged resulting cursor" {
+    const envelope = archiveEnvelope(.capsule_image, "forged-cursor", "forged-cursor");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const transaction_fingerprint = 0xA17C;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const forged_resulting = parent.advance(&fingerprints, refs.len + 1, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = forged_resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .capsule_refs = &refs,
+    });
+    const moment = world.Archive.Moment.init(.{
+        .sequence_number = 1,
+        .chronicle_parent_cursor = parent,
+        .chronicle_resulting_cursor = forged_resulting,
+        .chronicle_commit_ref = world.Archive.CommitRef.fromCommit(commit),
+        .committed_event_refs = &fingerprints,
+        .committed_object_refs = &refs,
+        .capsule_refs = &refs,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const data = world.Archive.MomentData{
+        .moment = moment,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    };
+
+    try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
+}
+
+test "archive moment data rejects forged summary refs" {
+    const capsule = archiveEnvelope(.capsule_image, "summary-capsule", "summary-capsule");
+    const bundle = archiveEnvelope(.bundle, "summary-bundle", "summary-bundle");
+    const capsule_ref = capsule.objectRef();
+    const bundle_ref = bundle.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ capsule_ref, bundle_ref };
+    const capsule_refs = [_]world.Continuity.ObjectRef{capsule_ref};
+    const bundle_refs = [_]world.Continuity.ObjectRef{bundle_ref};
+    const forged_capsule_refs = [_]world.Continuity.ObjectRef{bundle_ref};
+    const transaction_fingerprint = 0xA17D;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = bundle_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &bundle_refs,
+        .capsule_refs = &capsule_refs,
+    });
+    const forged_moment = world.Archive.Moment.init(.{
+        .sequence_number = 1,
+        .chronicle_parent_cursor = parent,
+        .chronicle_resulting_cursor = resulting,
+        .chronicle_commit_ref = world.Archive.CommitRef.fromCommit(commit),
+        .committed_event_refs = &fingerprints,
+        .committed_object_refs = &refs,
+        .bundle_refs = &bundle_refs,
+        .capsule_refs = &forged_capsule_refs,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{ capsule, bundle };
+    const data = world.Archive.MomentData{
+        .moment = forged_moment,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    };
+
+    try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
+}
+
 test "archive writer append allocation failure rolls back bytes" {
     const envelope = archiveEnvelope(.capsule_image, "writer-oom", "writer-oom");
     const ref = envelope.objectRef();
