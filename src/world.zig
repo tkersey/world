@@ -29490,19 +29490,13 @@ pub const Continuity = struct {
                 for (vault.chronicle_events.items) |event| {
                     if (!projectionKindConsumesEvent(kind, event.kind)) continue;
                     consumed_event_count += 1;
-                    for (event.object_refs) |ref| {
-                        if (event.kind == .object_committed) {
-                            try appendProjectionCommittedObjectRef(vault, &refs, kind, ref);
-                        } else {
-                            try appendProjectionRef(vault, &refs, kind, ref);
-                        }
-                    }
-                    if (event.capsule_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
-                    if (event.bundle_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
-                    if (event.inbox_outbox_item_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
-                    if (event.recovery_plan_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
-                    if (event.recovery_report_ref) |ref| try appendProjectionRef(vault, &refs, kind, ref);
-                    for (event.actuation_refs) |ref| try appendProjectionRef(vault, &refs, kind, ref);
+                    for (event.object_refs) |ref| try appendProjectionEventRef(vault, &refs, kind, event.kind, ref);
+                    if (event.capsule_ref) |ref| try appendProjectionEventRef(vault, &refs, kind, event.kind, ref);
+                    if (event.bundle_ref) |ref| try appendProjectionEventRef(vault, &refs, kind, event.kind, ref);
+                    if (event.inbox_outbox_item_ref) |ref| try appendProjectionEventRef(vault, &refs, kind, event.kind, ref);
+                    if (event.recovery_plan_ref) |ref| try appendProjectionEventRef(vault, &refs, kind, event.kind, ref);
+                    if (event.recovery_report_ref) |ref| try appendProjectionEventRef(vault, &refs, kind, event.kind, ref);
+                    for (event.actuation_refs) |ref| try appendProjectionEventRef(vault, &refs, kind, event.kind, ref);
                 }
                 const summary = projectionSummaryFingerprint(kind, refs.items);
                 const consumed_refs = if (refs.items.len == 0) &.{} else try cloneRefSlice(vault.allocator, refs.items);
@@ -33944,6 +33938,20 @@ pub const Continuity = struct {
         try refs.append(vault.allocator, projection_ref);
     }
 
+    fn appendProjectionEventRef(
+        vault: *Continuity.MemoryVault,
+        refs: *std.ArrayList(ObjectRef),
+        kind: Chronicle.ProjectionKind,
+        event_kind: Chronicle.EventKind,
+        ref: ObjectRef,
+    ) !void {
+        if (event_kind == .object_committed) return appendProjectionCommittedObjectRef(vault, refs, kind, ref);
+        if (!projectionKindRequiresStoredRef(kind)) return appendProjectionRef(vault, refs, kind, ref);
+        if (!projectionKindIncludesRef(kind, ref)) return;
+        if (!try chronicleCommittedObjectRefExistsInAuthenticatedEvents(vault, ref)) return;
+        return appendProjectionCommittedObjectRef(vault, refs, kind, ref);
+    }
+
     fn appendProjectionCommittedObjectRef(vault: *Continuity.MemoryVault, refs: *std.ArrayList(ObjectRef), kind: Chronicle.ProjectionKind, ref: ObjectRef) !void {
         if (!projectionKindIncludesRef(kind, ref)) return;
         const projection_ref = if (projectionKindRequiresStoredRef(kind))
@@ -38228,6 +38236,27 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     var projection_after_non_commit_ref = try Continuity.Chronicle.Projection.rebuild(&vault, .object_index);
     defer projection_after_non_commit_ref.deinit();
     try std.testing.expect(!Continuity.containsRef(projection_after_non_commit_ref.report.object_refs_consumed, missing_validated_ref));
+
+    const raw_validated_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "raw-validated-manifest",
+        .label = "raw-validated-manifest",
+    });
+    const raw_validated_ref = raw_validated_envelope.objectRef();
+    try vault.objects.append(allocator, try raw_validated_envelope.clone(allocator));
+    const raw_validated_refs = [_]Continuity.ObjectRef{raw_validated_ref};
+    var raw_validated_tx = try vault.beginTransaction(.custom, .{});
+    defer raw_validated_tx.deinit();
+    try raw_validated_tx.addEvent(Continuity.Chronicle.Event.init(.{
+        .kind = .object_validated,
+        .object_refs = &raw_validated_refs,
+        .target_ref = raw_validated_ref,
+    }));
+    _ = try raw_validated_tx.commit();
+    var projection_after_raw_validated = try Continuity.Chronicle.Projection.rebuild(&vault, .object_index);
+    defer projection_after_raw_validated.deinit();
+    try std.testing.expect(!Continuity.containsRef(projection_after_raw_validated.report.object_refs_consumed, raw_validated_ref));
 
     const forged_outbox_item_ref = Continuity.HandoffEnvelope.init(.{
         .direction = .outbound,
