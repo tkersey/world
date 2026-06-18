@@ -34247,6 +34247,7 @@ pub const Continuity = struct {
     fn requireChronicleCommittedClosure(vault: *Continuity.MemoryVault, roots: []const ObjectRef) !void {
         var graph = try ObjectGraph.buildFromRoots(vault, roots, .{});
         defer graph.deinit();
+        if (graph.missing_deps.len != 0) return error.ObjectMissing;
         if (graph.dependency_cycle) return error.InvalidFrameEncoding;
         for (graph.objects) |ref| {
             if (!try chronicleCommittedObjectRefExists(vault, ref)) return error.ObjectMissing;
@@ -39148,6 +39149,61 @@ test "inbox outbox views rebuild from chronicle events" {
     const raw_capsule_ref = raw_capsule_envelope.objectRef();
     try outbound_vault.objects.append(allocator, try raw_capsule_envelope.clone(allocator));
     try std.testing.expectError(error.ObjectMissing, outbox.stageCapsule(raw_capsule_ref));
+    var incomplete_outbox_vault = Continuity.MemoryVault.init(allocator);
+    defer incomplete_outbox_vault.deinit();
+    var incomplete_outbox_session = try Continuity.Session.init(allocator, &incomplete_outbox_vault, Continuity.PersistPolicy.full_local_evidence());
+    const missing_outbox_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3480_4010,
+        .envelope_fingerprint = 0x3480_4011,
+        .decision_fingerprint = 0x3480_4012,
+        .commit_fingerprint = 0x3480_4013,
+        .response_fingerprint = 0x3480_4014,
+        .frame_response_fingerprint = 0x3480_4015,
+        .actuator_ref_fingerprint = 0x3480_4004,
+        .idempotency_key_fingerprint = 0x3480_4020,
+        .request_fingerprint = 0x3480_4003,
+        .target_ref_fingerprint = 0x3480_4001,
+        .world_surface_fingerprint = 0x3480_4002,
+        .world_port_id = 4,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const incomplete_manifest = Capsule.Manifest.init(.{
+        .kind = image.manifest.kind,
+        .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+        .actuation_receipt_fingerprints = &.{missing_outbox_receipt.receipt_fingerprint},
+        .normal_form = image.manifest.normal_form,
+    });
+    const incomplete_runspace = Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = image.runspace_image.runspace_fingerprint,
+        .runspace_report_fingerprint = image.runspace_image.runspace_report_fingerprint,
+        .actuation_receipt_refs = &.{missing_outbox_receipt.receipt_fingerprint},
+    });
+    const incomplete_image = Capsule.Image.init(.{
+        .manifest = incomplete_manifest,
+        .runspace_image = incomplete_runspace,
+        .actuation_receipt_refs = &.{missing_outbox_receipt.receipt_fingerprint},
+    });
+    const incomplete_root_ref = try incomplete_outbox_session.storeCapsule(incomplete_image);
+    const incomplete_deps = try incomplete_outbox_vault.dependencies(incomplete_root_ref);
+    defer {
+        for (incomplete_deps) |*ref| ref.deinit(allocator);
+        allocator.free(incomplete_deps);
+    }
+    try std.testing.expectEqual(@as(usize, 1), incomplete_deps.len);
+    try std.testing.expectEqual(Continuity.ObjectKind.actuation_receipt, incomplete_deps[0].kind);
+    try std.testing.expect(!incomplete_outbox_vault.has(incomplete_deps[0]));
+    var incomplete_outbox = Continuity.Chronicle.Outbox.init(&incomplete_outbox_session);
+    const cursor_before_incomplete_stage = incomplete_outbox_session.cursor();
+    try std.testing.expectError(error.ObjectMissing, incomplete_outbox.stageCapsule(incomplete_root_ref));
+    try std.testing.expectEqual(cursor_before_incomplete_stage.cursor_fingerprint, incomplete_outbox_session.cursor().cursor_fingerprint);
+    const incomplete_pending = try incomplete_outbox.listPending();
+    defer {
+        for (incomplete_pending) |*ref| ref.deinit(allocator);
+        allocator.free(incomplete_pending);
+    }
+    try std.testing.expectEqual(@as(usize, 0), incomplete_pending.len);
     const cursor_before_outbox_stage = outbound_session.cursor();
     const outbound_ref = try outbox.stageCapsule(root_ref);
     try std.testing.expect(cursor_before_outbox_stage.cursor_fingerprint != outbound_session.cursor().cursor_fingerprint);
