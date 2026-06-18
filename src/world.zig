@@ -3369,13 +3369,10 @@ pub const Admission = struct {
                     return rejectedResult(request, package, target_ref, module_ref, match, &.{.RunImageInvalid}, "run image is required for handoff admission");
                 }
             }
-            const direct_actuation_view = if (args.fabric_plan == null)
-                if (package.run_image) |run_image|
-                    if (run_image.current_state.status == .parked_on_port)
-                        if (run_image.pending_request_frame) |pending_frame|
-                            directActuationPolicyViewForEnvironmentPort(Env, pending_frame.world_port_id, admissionModeToRunMode(mode))
-                        else
-                            null
+            const direct_actuation_view = if (package.run_image) |run_image|
+                if (run_image.current_state.status == .parked_on_port)
+                    if (run_image.pending_request_frame) |pending_frame|
+                        directActuationPolicyViewForEnvironmentPort(Env, pending_frame.world_port_id, admissionModeToRunMode(mode))
                     else
                         null
                 else
@@ -34192,6 +34189,8 @@ pub const Continuity = struct {
         var event_index: usize = 0;
         var actual_event_fingerprints: std.ArrayList(u64) = .empty;
         defer actual_event_fingerprints.deinit(allocator);
+        var actual_object_refs: std.ArrayList(ObjectRef) = .empty;
+        defer actual_object_refs.deinit(allocator);
         for (vault.chronicle_commits.items) |commit| {
             try commit.validate();
             while (cursor.cursor_fingerprint != commit.parent_cursor_fingerprint and event_index < vault.chronicle_events.items.len) {
@@ -34202,13 +34201,21 @@ pub const Continuity = struct {
             if (cursor.cursor_fingerprint != commit.parent_cursor_fingerprint) return error.InvalidFrameEncoding;
             if (commit.committed_event_fingerprints.len > vault.chronicle_events.items.len - event_index) return error.InvalidFrameEncoding;
             actual_event_fingerprints.clearRetainingCapacity();
+            actual_object_refs.clearRetainingCapacity();
             try actual_event_fingerprints.ensureTotalCapacity(allocator, commit.committed_event_fingerprints.len);
             for (commit.committed_event_fingerprints, 0..) |expected_fingerprint, offset| {
                 const event = vault.chronicle_events.items[event_index + offset];
                 try event.validate();
                 if (event.event_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
-                if (event.kind == .object_committed and event.transaction_fingerprint != commit.transaction_fingerprint) return error.InvalidFrameEncoding;
+                if (event.kind == .object_committed) {
+                    if (event.transaction_fingerprint != commit.transaction_fingerprint) return error.InvalidFrameEncoding;
+                    try actual_object_refs.appendSlice(allocator, event.object_refs);
+                }
                 actual_event_fingerprints.appendAssumeCapacity(event.event_fingerprint);
+            }
+            if (actual_object_refs.items.len != commit.committed_object_refs.len) return error.InvalidFrameEncoding;
+            for (actual_object_refs.items, commit.committed_object_refs) |actual_ref, committed_ref| {
+                if (!actual_ref.eql(committed_ref)) return error.InvalidFrameEncoding;
             }
             cursor = cursor.advance(actual_event_fingerprints.items, commit.committed_object_refs.len, 1);
             if (cursor.cursor_fingerprint != commit.resulting_cursor_fingerprint) return error.InvalidFrameEncoding;
@@ -38538,6 +38545,25 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     forged_transaction_vault.chronicle_commits.items[0].resulting_cursor_fingerprint = forged_transaction_vault.chronicle_cursor.cursor_fingerprint;
     forged_transaction_vault.chronicle_commits.items[0].commit_fingerprint = Continuity.fingerprintChronicleCommit(forged_transaction_vault.chronicle_commits.items[0]);
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&forged_transaction_vault, .{}));
+
+    var forged_commit_refs_vault = Continuity.MemoryVault.init(allocator);
+    defer forged_commit_refs_vault.deinit();
+    var forged_commit_refs_tx = try forged_commit_refs_vault.beginTransaction(.custom, .{});
+    defer forged_commit_refs_tx.deinit();
+    _ = try forged_commit_refs_tx.put(envelope);
+    _ = try forged_commit_refs_tx.commit();
+    const committed_refs = @constCast(forged_commit_refs_vault.chronicle_commits.items[0].committed_object_refs);
+    const committed_ref = committed_refs[0];
+    committed_refs[0].deinit(allocator);
+    committed_refs[0] = Continuity.ObjectRef.init(.{
+        .kind = committed_ref.kind,
+        .object_format_version = committed_ref.object_format_version,
+        .object_fingerprint = committed_ref.object_fingerprint +% 1,
+        .byte_len = committed_ref.byte_len,
+    });
+    forged_commit_refs_vault.chronicle_commits.items[0].commit_fingerprint = Continuity.fingerprintChronicleCommit(forged_commit_refs_vault.chronicle_commits.items[0]);
+    try forged_commit_refs_vault.chronicle_commits.items[0].validate();
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&forged_commit_refs_vault, .{}));
 
     const unauthenticated_backing = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_manifest,
