@@ -1674,6 +1674,7 @@ pub fn Archive(comptime World: type) type {
             }
 
             pub fn getObject(self: @This(), ref: ObjectRef) !ObjectEnvelope {
+                try ref.validate();
                 for (self.image.objects) |envelope| {
                     if (refMatchesObject(envelope, ref)) return envelope.clone(self.allocator);
                 }
@@ -1681,6 +1682,7 @@ pub fn Archive(comptime World: type) type {
             }
 
             pub fn hasObject(self: @This(), ref: ObjectRef) bool {
+                ref.validate() catch return false;
                 for (self.image.objects) |envelope| {
                     if (refMatchesObject(envelope, ref)) return true;
                 }

@@ -298,6 +298,29 @@ test "archive transactions accept semantic dependency refs resolved by fingerpri
     _ = try tx.commit();
 }
 
+test "archive object lookup validates semantic refs before matching" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const envelope = archiveEnvelope(.capsule_manifest, "semantic-lookup", "semantic-lookup");
+    _ = try commitArchiveObject(&archive, envelope);
+    const ref = envelope.objectRef();
+    const semantic_ref = world.Continuity.ObjectRef.init(.{
+        .kind = ref.kind,
+        .object_format_version = ref.object_format_version,
+        .object_fingerprint = ref.object_fingerprint,
+        .byte_len = 0,
+    });
+    var object = try archive.getObject(semantic_ref);
+    defer object.deinit(std.testing.allocator);
+    try std.testing.expect(archive.hasObject(semantic_ref));
+
+    var malformed_ref = ref;
+    malformed_ref.byte_len = 0;
+    try std.testing.expect(!archive.hasObject(malformed_ref));
+    try std.testing.expectError(error.InvalidFrameEncoding, archive.getObject(malformed_ref));
+}
+
 test "archive transactions accept receipt-backed semantic idempotency keys" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
