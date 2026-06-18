@@ -32915,7 +32915,7 @@ pub const Continuity = struct {
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = restore.accepted,
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
-                .restored_capsule_ref = if (restore.accepted) capsule_ref else null,
+                .restored_capsule_ref = if (restore.accepted and mutates_runspace) capsule_ref else null,
                 .restored_run_handles = restored_handles,
                 .blockers = if (restore.accepted) &.{} else &.{1},
             });
@@ -32997,7 +32997,7 @@ pub const Continuity = struct {
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
                 .accepted = true,
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
-                .restored_capsule_ref = capsule_ref,
+                .restored_capsule_ref = null,
             });
             if (session.policy.require_transaction_for_recovery) {
                 try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
@@ -39565,8 +39565,14 @@ test "executable recovery plans and rejects before runspace mutation" {
     defer inspect_report.deinit(allocator);
     try inspect_report.validate();
     try std.testing.expect(inspect_report.accepted);
+    try std.testing.expect(inspect_report.restored_capsule_ref == null);
     try std.testing.expectEqual(@as(usize, 0), inspect_report.restored_run_handles.len);
     try std.testing.expect(!inspect_report.owns_memory);
+
+    var replay_report = try Continuity.Recovery.replayFromVault(&session, capsule_ref, .{ .target_ref_fingerprint = 0 }, .{});
+    defer replay_report.deinit(allocator);
+    try replay_report.validate();
+    try std.testing.expect(replay_report.restored_capsule_ref == null);
 }
 
 test "memory vault stores capsule receipt journal and looks up idempotency key" {
