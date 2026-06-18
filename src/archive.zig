@@ -451,6 +451,7 @@ pub fn Archive(comptime World: type) type {
                 if (self.commit.parent_cursor_fingerprint != self.moment.chronicle_parent_cursor.cursor_fingerprint) return error.InvalidFrameEncoding;
                 if (self.commit.resulting_cursor_fingerprint != self.moment.chronicle_resulting_cursor.cursor_fingerprint) return error.InvalidFrameEncoding;
                 if (!refSlicesEqual(self.commit.committed_object_refs, self.moment.committed_object_refs)) return error.InvalidFrameEncoding;
+                try validateRefSliceUnique(self.commit.committed_object_refs);
                 if (!refSlicesEqual(self.commit.bundle_refs, self.moment.bundle_refs)) return error.InvalidFrameEncoding;
                 if (!refSlicesEqual(self.commit.capsule_refs, self.moment.capsule_refs)) return error.InvalidFrameEncoding;
                 if (!refSlicesEqual(self.commit.actuation_refs, self.moment.actuation_refs)) return error.InvalidFrameEncoding;
@@ -2506,6 +2507,14 @@ pub fn Archive(comptime World: type) type {
         fn validateSummaryRefsSubset(committed_refs: []const ObjectRef, summary_refs: []const ObjectRef) !void {
             for (summary_refs) |ref| {
                 if (!containsRef(committed_refs, ref)) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn validateRefSliceUnique(refs: []const ObjectRef) !void {
+            for (refs, 0..) |ref, index| {
+                for (refs[0..index]) |prior| {
+                    if (ref.eql(prior)) return error.InvalidFrameEncoding;
+                }
             }
         }
 
