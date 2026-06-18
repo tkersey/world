@@ -32743,6 +32743,7 @@ pub const Continuity = struct {
         warnings: []const u64 = &.{},
         owned_memory_allocator: ?std.mem.Allocator = null,
         owns_memory: bool = false,
+        owns_replayed_actuation_refs: bool = false,
 
         pub fn init(args: struct {
             recovery_plan_fingerprint: u64,
@@ -32776,12 +32777,17 @@ pub const Continuity = struct {
             if (self.restored_capsule_ref) |ref| try ref.validate();
             if (self.report_fingerprint != fingerprintRecoveryReport(self)) return error.InvalidFrameEncoding;
             if (self.owns_memory and self.owned_memory_allocator == null) return error.InvalidFrameEncoding;
+            if (self.owns_replayed_actuation_refs and self.owned_memory_allocator == null) return error.InvalidFrameEncoding;
         }
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             if (self.owns_memory) {
                 const owned_allocator = self.owned_memory_allocator orelse allocator;
                 owned_allocator.free(self.restored_run_handles);
+            }
+            if (self.owns_replayed_actuation_refs) {
+                const owned_allocator = self.owned_memory_allocator orelse allocator;
+                freeRefSlice(owned_allocator, @constCast(self.replayed_actuation_refs));
             }
             self.* = undefined;
         }
@@ -33041,6 +33047,26 @@ pub const Continuity = struct {
         pub fn replayFromVault(session: *Session, capsule_ref: ObjectRef, target: anytype, options: Options) !RecoveryReport {
             const plan = try planReplayFromVault(session, capsule_ref, target, options);
             if (plan.blockers.len != 0) return recoveryRejectedReport(session, plan);
+            try validateReplayTarget(session.vault, capsule_ref, target);
+            var graph = try CapsuleGraph.fromCapsule(session.vault, capsule_ref);
+            defer graph.deinit();
+            var replayed_actuation_refs: []ObjectRef = &.{};
+            var replayed_actuation_refs_owned = false;
+            errdefer if (replayed_actuation_refs_owned) freeRefSlice(session.allocator, replayed_actuation_refs);
+            if (graph.actuation_receipt_refs.len != 0 or graph.actuation_journal_refs.len != 0) {
+                var replayed_refs: std.ArrayList(ObjectRef) = .empty;
+                errdefer deinitRefList(session.allocator, &replayed_refs);
+                for (graph.actuation_receipt_refs) |ref| {
+                    if (containsRef(replayed_refs.items, ref)) continue;
+                    try appendClonedRef(&replayed_refs, session.allocator, ref);
+                }
+                for (graph.actuation_journal_refs) |ref| {
+                    if (containsRef(replayed_refs.items, ref)) continue;
+                    try appendClonedRef(&replayed_refs, session.allocator, ref);
+                }
+                replayed_actuation_refs = try replayed_refs.toOwnedSlice(session.allocator);
+                replayed_actuation_refs_owned = true;
+            }
             const plan_ref = semanticObjectRef(.capsule_thaw_plan, plan.plan_fingerprint);
             var report = RecoveryReport.init(.{
                 .recovery_plan_fingerprint = plan.plan_fingerprint,
@@ -33048,6 +33074,12 @@ pub const Continuity = struct {
                 .resulting_cursor_fingerprint = session.cursor().cursor_fingerprint,
                 .restored_capsule_ref = null,
             });
+            report.replayed_actuation_refs = replayed_actuation_refs;
+            report.owns_memory = replayed_actuation_refs.len != 0;
+            if (report.owns_memory) report.owned_memory_allocator = session.allocator;
+            report.owns_replayed_actuation_refs = replayed_actuation_refs.len != 0;
+            report.report_ref = semanticObjectRef(.capsule_restore_report, fingerprintRecoveryReportRef(report));
+            report.report_fingerprint = fingerprintRecoveryReport(report);
             if (session.policy.require_transaction_for_recovery) {
                 try session.vault.chronicle_events.ensureUnusedCapacity(session.vault.allocator, 2);
                 var owned_replayed_event: ?Chronicle.Event = try Chronicle.Event.init(.{
@@ -33074,6 +33106,7 @@ pub const Continuity = struct {
                 report.report_fingerprint = fingerprintRecoveryReport(report);
             }
             try report.validate();
+            replayed_actuation_refs_owned = false;
             return report;
         }
 
@@ -39683,6 +39716,65 @@ test "executable recovery plans and rejects before runspace mutation" {
     defer replay_report.deinit(allocator);
     try replay_report.validate();
     try std.testing.expect(replay_report.restored_capsule_ref == null);
+
+    const replay_target_ref_fingerprint: u64 = 0x3490_8a01;
+    const replay_key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = replay_target_ref_fingerprint,
+        .world_surface_fingerprint = 0x3490_8a02,
+        .world_port_id = 11,
+        .request_fingerprint = 0x3490_8a03,
+        .actuator_ref_fingerprint = 0x3490_8a04,
+    });
+    const replay_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3490_8a10,
+        .envelope_fingerprint = 0x3490_8a11,
+        .decision_fingerprint = 0x3490_8a12,
+        .commit_fingerprint = 0x3490_8a13,
+        .response_fingerprint = 0x3490_8a14,
+        .frame_response_fingerprint = 0x3490_8a15,
+        .actuator_ref_fingerprint = replay_key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = replay_key.key_fingerprint,
+        .request_fingerprint = replay_key.request_fingerprint,
+        .target_ref_fingerprint = replay_key.target_ref_fingerprint,
+        .world_surface_fingerprint = replay_key.world_surface_fingerprint,
+        .world_port_id = replay_key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    _ = try vault.putActuationReceipt(replay_receipt);
+    const replay_receipt_fingerprints = [_]u64{replay_receipt.receipt_fingerprint};
+    const replay_evidence_image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .replay_only,
+            .root_target_ref_fingerprint = replay_target_ref_fingerprint,
+            .actuation_receipt_fingerprints = &replay_receipt_fingerprints,
+            .normal_form = .quiescent_completed,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3490_8a20,
+            .runspace_report_fingerprint = 0x3490_8a21,
+            .actuation_receipt_refs = &replay_receipt_fingerprints,
+        }),
+        .actuation_receipt_refs = &replay_receipt_fingerprints,
+    });
+    const replay_evidence_capsule_ref = try session.storeCapsule(replay_evidence_image);
+    var replay_evidence_graph = try Continuity.Recovery.inspectCapsule(&vault, replay_evidence_capsule_ref);
+    defer replay_evidence_graph.deinit();
+    try std.testing.expectEqual(@as(usize, 1), replay_evidence_graph.actuation_receipt_refs.len);
+    try std.testing.expect(replay_evidence_graph.actuation_receipt_refs[0].eql(Continuity.semanticObjectRef(.actuation_receipt, replay_receipt.receipt_fingerprint)));
+    var replay_evidence_report = try Continuity.Recovery.replayFromVault(
+        &session,
+        replay_evidence_capsule_ref,
+        .{ .target_ref_fingerprint = replay_target_ref_fingerprint },
+        .{ .allow_external_dependencies = true },
+    );
+    defer replay_evidence_report.deinit(allocator);
+    try replay_evidence_report.validate();
+    try std.testing.expect(replay_evidence_report.accepted);
+    try std.testing.expect(replay_evidence_report.owns_memory);
+    try std.testing.expectEqual(@as(usize, 1), replay_evidence_report.replayed_actuation_refs.len);
+    try std.testing.expect(replay_evidence_report.replayed_actuation_refs[0].eql(replay_evidence_graph.actuation_receipt_refs[0]));
 }
 
 test "memory vault stores capsule receipt journal and looks up idempotency key" {
