@@ -34810,7 +34810,7 @@ pub const Continuity = struct {
         }
     };
 
-    fn decodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, bytes: []const u8) anyerror!Value {
+    pub fn decodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, bytes: []const u8) anyerror!Value {
         if (comptime Value == Actuation.Response) {
             const payload = try decodePortableEvidence(ActuationResponsePortableEvidence, allocator, bytes);
             errdefer deinitOwnedValue(allocator, payload);
@@ -34826,7 +34826,7 @@ pub const Continuity = struct {
         return value;
     }
 
-    fn encodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, value: Value) ![]const u8 {
+    pub fn encodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, value: Value) ![]const u8 {
         if (comptime Value == Actuation.Response) {
             return encodePortableEvidence(ActuationResponsePortableEvidence, allocator, ActuationResponsePortableEvidence.fromResponse(value));
         }
@@ -34966,6 +34966,11 @@ pub const Continuity = struct {
         for (summary.pending_frame_fingerprints) |fingerprint| if (fingerprint == 0) return false;
         for (summary.actuation_receipt_fingerprints) |fingerprint| if (fingerprint == 0) return false;
         return true;
+    }
+
+    pub fn validateObjectEnvelopeTypedPayload(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !void {
+        try envelope.validate();
+        if (!(try bundleEnvelopeTypedPayloadValid(allocator, envelope))) return error.InvalidFrameEncoding;
     }
 
     fn bundleEnvelopeTypedPayloadValid(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !bool {

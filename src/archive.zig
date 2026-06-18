@@ -1813,7 +1813,9 @@ pub fn Archive(comptime World: type) type {
                 var replay_report = try reopened.replay();
                 defer replay_report.deinit(allocator);
                 try replay_report.validate();
-                const key_commit = try commitMemoryObject(&reopened, .actuation_idempotency_key, "idem-key", "idem-key");
+                const key_envelope = try conformanceIdempotencyKeyEnvelope(allocator, "idem-key", 0xA900);
+                defer allocator.free(key_envelope.payload_bytes);
+                const key_commit = try commitMemoryEnvelope(&reopened, key_envelope);
                 var reopened_again = try Memory.reopenFrom(&reopened, allocator);
                 defer reopened_again.deinit();
                 if (reopened_again.assertFreshIdempotencyAllowed(key_commit.ref)) |_| return error.InvalidFrameEncoding else |err| switch (err) {
@@ -1838,12 +1840,34 @@ pub fn Archive(comptime World: type) type {
 
         fn commitMemoryObject(archive: *Memory, kind: Continuity.ObjectKind, payload: []const u8, label: []const u8) !CommitResult {
             const envelope = ObjectEnvelope.init(.{ .kind = kind, .payload_bytes = payload, .label = label });
+            return commitMemoryEnvelope(archive, envelope);
+        }
+
+        fn commitMemoryEnvelope(archive: *Memory, envelope: ObjectEnvelope) !CommitResult {
             var tx = try archive.begin(archive.currentCursor(), .{});
             defer tx.deinit();
             const ref = try tx.putObject(envelope);
             const refs = [_]ObjectRef{ref};
             try tx.addEvent(Chronicle.Event.init(.{ .kind = .object_committed, .object_refs = &refs }));
             return .{ .moment = try tx.commit(), .ref = ref };
+        }
+
+        fn conformanceIdempotencyKeyEnvelope(allocator: std.mem.Allocator, label: []const u8, seed: u64) !ObjectEnvelope {
+            const key = Actuation.IdempotencyKey.init(.{
+                .target_ref_fingerprint = seed + 1,
+                .world_surface_fingerprint = seed + 2,
+                .world_port_id = @intCast(seed % 1024 + 1),
+                .request_fingerprint = seed + 3,
+                .actuator_ref_fingerprint = seed + 4,
+            });
+            const payload = try Continuity.encodePortableEvidence(Actuation.IdempotencyKey, allocator, key);
+            errdefer allocator.free(payload);
+            return ObjectEnvelope.init(.{
+                .kind = .actuation_idempotency_key,
+                .object_format_version = key.format_version,
+                .payload_bytes = payload,
+                .label = label,
+            });
         }
 
         fn encodeHeader(out: *std.ArrayList(u8), allocator: std.mem.Allocator, header: Header) !void {
@@ -2713,6 +2737,23 @@ pub fn Archive(comptime World: type) type {
                     defer frame.deinit(allocator);
                     if (frame.format_version != envelope.object_format_version) return error.InvalidFrameEncoding;
                 },
+                .actuator_ref,
+                .actuation_descriptor,
+                .actuation_binding,
+                .actuation_policy,
+                .actuation_idempotency_key,
+                .actuation_envelope,
+                .actuation_decision,
+                .actuation_commit,
+                .actuation_response,
+                .actuation_verify_report,
+                .environment_certificate,
+                .run_permit,
+                .run_receipt,
+                .admission_receipt,
+                .fabric_receipt,
+                .guest_conformance_report,
+                => return Continuity.validateObjectEnvelopeTypedPayload(allocator, envelope),
                 else => {},
             }
         }

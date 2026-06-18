@@ -558,6 +558,18 @@ test "archive putObject rejects malformed typed actuation receipt payloads" {
     );
 }
 
+test "archive putObject rejects malformed portable evidence payloads" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        tx.putObject(archiveEnvelope(.actuation_idempotency_key, "not-a-key", "not-a-key")),
+    );
+}
+
 test "archive transaction fingerprints bind envelope fingerprints" {
     const first = world.Continuity.ObjectEnvelope.init(.{
         .kind = .bundle,
@@ -591,7 +603,8 @@ test "archive byte clone reopen preserves idempotency conflict evidence" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
 
-    const key_envelope = archiveEnvelope(.actuation_idempotency_key, "idem-key-persisted", "idem-key-persisted");
+    const key_envelope = try archiveIdempotencyKeyEnvelope(std.testing.allocator, "idem-key-persisted", 0xA900);
+    defer std.testing.allocator.free(key_envelope.payload_bytes);
     const key_ref = key_envelope.objectRef();
     _ = try commitArchiveObject(&archive, key_envelope);
 
@@ -1976,6 +1989,28 @@ fn archiveReceiptEnvelope(
     const payload = try receipt.encode(allocator);
     return world.Continuity.ObjectEnvelope.init(.{
         .kind = .actuation_receipt,
+        .payload_bytes = payload,
+        .label = label,
+    });
+}
+
+fn archiveIdempotencyKeyEnvelope(
+    allocator: std.mem.Allocator,
+    label: []const u8,
+    seed: u64,
+) !world.Continuity.ObjectEnvelope {
+    const key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = seed + 1,
+        .world_surface_fingerprint = seed + 2,
+        .world_port_id = @intCast(seed % 1024 + 1),
+        .request_fingerprint = seed + 3,
+        .actuator_ref_fingerprint = seed + 4,
+    });
+    const payload = try world.Continuity.encodePortableEvidence(world.Actuation.IdempotencyKey, allocator, key);
+    errdefer allocator.free(payload);
+    return world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_format_version = key.format_version,
         .payload_bytes = payload,
         .label = label,
     });
