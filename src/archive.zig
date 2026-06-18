@@ -1788,7 +1788,7 @@ pub fn Archive(comptime World: type) type {
                     error.InvalidFrameEncoding => {},
                 }
                 var ref_cursor: usize = 0;
-                if (readOptionalRef(std.heap.page_allocator, &.{2}, &ref_cursor)) |_| {
+                if (readOptionalRef(std.heap.page_allocator, &.{2}, &ref_cursor, .{})) |_| {
                     return error.InvalidFrameEncoding;
                 } else |err| switch (err) {
                     error.InvalidFrameEncoding => {},
@@ -2012,10 +2012,10 @@ pub fn Archive(comptime World: type) type {
             const sequence_number = try readU64(bytes, cursor);
             const parent_moment_fingerprint = try readOptionalU64(bytes, cursor);
             const parent_seal_fingerprint = try readOptionalU64(bytes, cursor);
-            const parent_cursor = try decodeCursor(allocator, bytes, cursor);
+            const parent_cursor = try decodeCursor(allocator, bytes, cursor, limits);
             var parent_cursor_pending = true;
             errdefer if (parent_cursor_pending) allocator.free(parent_cursor.metadata_bytes);
-            const resulting_cursor = try decodeCursor(allocator, bytes, cursor);
+            const resulting_cursor = try decodeCursor(allocator, bytes, cursor, limits);
             var resulting_cursor_pending = true;
             errdefer if (resulting_cursor_pending) allocator.free(resulting_cursor.metadata_bytes);
 
@@ -2050,7 +2050,7 @@ pub fn Archive(comptime World: type) type {
             moment.dependency_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             moment.projection_summary_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             moment.idempotency_registry_summary_fingerprint = try readOptionalU64(bytes, cursor);
-            moment.diagnostic_metadata_bytes = try readBytesOwned(allocator, bytes, cursor);
+            moment.diagnostic_metadata_bytes = try readBytesOwned(allocator, bytes, cursor, limits);
             moment_pending = false;
             return moment;
         }
@@ -2097,7 +2097,7 @@ pub fn Archive(comptime World: type) type {
             try writeBytes(out, allocator, cursor.metadata_bytes);
         }
 
-        fn decodeCursor(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Chronicle.Cursor {
+        fn decodeCursor(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) !Chronicle.Cursor {
             return .{
                 .cursor_fingerprint_version = try readU32(bytes, cursor),
                 .cursor_fingerprint = try readU64(bytes, cursor),
@@ -2106,7 +2106,7 @@ pub fn Archive(comptime World: type) type {
                 .cumulative_prefix_fingerprint = try readU64(bytes, cursor),
                 .committed_object_count = try readU64(bytes, cursor),
                 .committed_transaction_count = try readU64(bytes, cursor),
-                .metadata_bytes = try readBytesOwned(allocator, bytes, cursor),
+                .metadata_bytes = try readBytesOwned(allocator, bytes, cursor, limits),
             };
         }
 
@@ -2169,11 +2169,11 @@ pub fn Archive(comptime World: type) type {
             errdefer freeRefSlice(allocator, commit.idempotency_key_refs);
             commit.validation_report_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, commit.validation_report_refs);
-            commit.blocker_summary = try readBytesOwned(allocator, bytes, cursor);
+            commit.blocker_summary = try readBytesOwned(allocator, bytes, cursor, limits);
             errdefer allocator.free(commit.blocker_summary);
-            commit.warning_summary = try readBytesOwned(allocator, bytes, cursor);
+            commit.warning_summary = try readBytesOwned(allocator, bytes, cursor, limits);
             errdefer allocator.free(commit.warning_summary);
-            commit.metadata_bytes = try readBytesOwned(allocator, bytes, cursor);
+            commit.metadata_bytes = try readBytesOwned(allocator, bytes, cursor, limits);
             return commit;
         }
 
@@ -2219,23 +2219,23 @@ pub fn Archive(comptime World: type) type {
             event.transaction_fingerprint = try readOptionalU64(bytes, cursor);
             event.object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             event.root_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
-            event.capsule_ref = try readOptionalRef(allocator, bytes, cursor);
+            event.capsule_ref = try readOptionalRef(allocator, bytes, cursor, limits);
             event.actuation_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
-            event.actuation_idempotency_key_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.bundle_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.recovery_plan_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.recovery_report_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.inbox_outbox_item_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.target_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.module_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.assembly_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.run_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.run_permit_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.admission_receipt_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.environment_certificate_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.blocker_summary = try readBytesOwned(allocator, bytes, cursor);
-            event.warning_summary = try readBytesOwned(allocator, bytes, cursor);
-            event.metadata_bytes = try readBytesOwned(allocator, bytes, cursor);
+            event.actuation_idempotency_key_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.bundle_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.recovery_plan_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.recovery_report_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.inbox_outbox_item_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.target_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.module_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.assembly_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.run_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.run_permit_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.admission_receipt_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.environment_certificate_ref = try readOptionalRef(allocator, bytes, cursor, limits);
+            event.blocker_summary = try readBytesOwned(allocator, bytes, cursor, limits);
+            event.warning_summary = try readBytesOwned(allocator, bytes, cursor, limits);
+            event.metadata_bytes = try readBytesOwned(allocator, bytes, cursor, limits);
             event_pending = false;
             return event;
         }
@@ -2247,9 +2247,12 @@ pub fn Archive(comptime World: type) type {
         }
 
         fn decodeEnvelope(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) !ObjectEnvelope {
-            const encoded = try readBytesOwned(allocator, bytes, cursor);
+            const encoded = try readBytesOwned(allocator, bytes, cursor, limits);
             defer allocator.free(encoded);
-            return Continuity.ObjectCodec.decodeEnvelope(allocator, encoded, limits.max_ref_count);
+            var envelope = try Continuity.ObjectCodec.decodeEnvelope(allocator, encoded, limits.max_ref_count);
+            errdefer envelope.deinit(allocator);
+            try validateEnvelopePayloadLimits(envelope, limits);
+            return envelope;
         }
 
         fn writeRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, ref: ObjectRef) !void {
@@ -2264,7 +2267,7 @@ pub fn Archive(comptime World: type) type {
             try writeBytes(out, allocator, ref.metadata);
         }
 
-        fn readRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !ObjectRef {
+        fn readRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) !ObjectRef {
             var ref = ObjectRef{
                 .ref_format_version = try readU32(bytes, cursor),
                 .ref_fingerprint_version = try readU32(bytes, cursor),
@@ -2273,13 +2276,13 @@ pub fn Archive(comptime World: type) type {
                 .object_format_version = try readU32(bytes, cursor),
                 .object_fingerprint = try readU64(bytes, cursor),
                 .byte_len = try readU64AsUsize(bytes, cursor),
-                .label = try readBytesOwned(allocator, bytes, cursor),
+                .label = try readBytesOwned(allocator, bytes, cursor, limits),
                 .metadata = "",
                 .owns_memory = true,
             };
             var ref_pending = true;
             errdefer if (ref_pending) ref.deinit(allocator);
-            ref.metadata = try readBytesOwned(allocator, bytes, cursor);
+            ref.metadata = try readBytesOwned(allocator, bytes, cursor, limits);
             try ref.validate();
             ref_pending = false;
             return ref;
@@ -2290,10 +2293,10 @@ pub fn Archive(comptime World: type) type {
             if (ref) |value| try writeRef(out, allocator, value);
         }
 
-        fn readOptionalRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?ObjectRef {
+        fn readOptionalRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) !?ObjectRef {
             return switch (try readU8(bytes, cursor)) {
                 0 => null,
-                1 => try readRef(allocator, bytes, cursor),
+                1 => try readRef(allocator, bytes, cursor, limits),
                 else => error.InvalidFrameEncoding,
             };
         }
@@ -2311,7 +2314,7 @@ pub fn Archive(comptime World: type) type {
             var initialized: usize = 0;
             errdefer for (refs[0..initialized]) |*ref| ref.deinit(allocator);
             for (refs) |*ref| {
-                ref.* = try readRef(allocator, bytes, cursor);
+                ref.* = try readRef(allocator, bytes, cursor, limits);
                 initialized += 1;
             }
             return refs;
@@ -2336,9 +2339,9 @@ pub fn Archive(comptime World: type) type {
             try out.appendSlice(allocator, bytes);
         }
 
-        fn readBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]u8 {
+        fn readBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) ![]u8 {
             const len = try readU64AsUsize(bytes, cursor);
-            if (len > max_decoded_byte_field_len * 32) return error.InvalidFrameEncoding;
+            if (len > limits.max_payload_bytes) return error.InvalidFrameEncoding;
             if (bytes.len - cursor.* < len) return error.InvalidFrameEncoding;
             const out = try allocator.dupe(u8, bytes[cursor.* .. cursor.* + len]);
             cursor.* += len;
@@ -2564,20 +2567,79 @@ pub fn Archive(comptime World: type) type {
             try validateRefSliceLimit(batch.commit.actuation_refs, limits);
             try validateRefSliceLimit(batch.commit.idempotency_key_refs, limits);
             try validateRefSliceLimit(batch.commit.validation_report_refs, limits);
+            try validateCommitPayloadLimits(batch.commit, limits);
+            try validateByteFieldPayloadLimit(batch.diagnostic_metadata_bytes, limits);
             if (batch.events.len > limits.max_event_count_per_moment) return error.InvalidFrameEncoding;
             if (batch.objects.len > limits.max_object_count_per_moment) return error.InvalidFrameEncoding;
             for (batch.events) |event| {
                 try validateRefSliceLimit(event.object_refs, limits);
                 try validateRefSliceLimit(event.root_refs, limits);
                 try validateRefSliceLimit(event.actuation_refs, limits);
+                try validateEventPayloadLimits(event, limits);
             }
             for (batch.objects) |object| {
                 try validateRefSliceLimit(object.dependency_refs, limits);
+                try validateEnvelopePayloadLimits(object, limits);
             }
         }
 
         fn validateRefSliceLimit(refs: []const ObjectRef, limits: Limits) !void {
             if (refs.len > limits.max_ref_count) return error.InvalidFrameEncoding;
+        }
+
+        fn validateCommitPayloadLimits(commit: Chronicle.Commit, limits: Limits) !void {
+            try validateRefSlicePayloadLimits(commit.committed_object_refs, limits);
+            try validateRefSlicePayloadLimits(commit.bundle_refs, limits);
+            try validateRefSlicePayloadLimits(commit.capsule_refs, limits);
+            try validateRefSlicePayloadLimits(commit.actuation_refs, limits);
+            try validateRefSlicePayloadLimits(commit.idempotency_key_refs, limits);
+            try validateRefSlicePayloadLimits(commit.validation_report_refs, limits);
+            try validateByteFieldPayloadLimit(commit.blocker_summary, limits);
+            try validateByteFieldPayloadLimit(commit.warning_summary, limits);
+            try validateByteFieldPayloadLimit(commit.metadata_bytes, limits);
+        }
+
+        fn validateEventPayloadLimits(event: Chronicle.Event, limits: Limits) !void {
+            try validateRefSlicePayloadLimits(event.object_refs, limits);
+            try validateRefSlicePayloadLimits(event.root_refs, limits);
+            if (event.capsule_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            try validateRefSlicePayloadLimits(event.actuation_refs, limits);
+            if (event.actuation_idempotency_key_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.bundle_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.recovery_plan_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.recovery_report_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.inbox_outbox_item_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.target_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.module_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.assembly_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.run_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.run_permit_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.admission_receipt_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            if (event.environment_certificate_ref) |ref| try validateRefPayloadLimits(ref, limits);
+            try validateByteFieldPayloadLimit(event.blocker_summary, limits);
+            try validateByteFieldPayloadLimit(event.warning_summary, limits);
+            try validateByteFieldPayloadLimit(event.metadata_bytes, limits);
+        }
+
+        fn validateEnvelopePayloadLimits(envelope: ObjectEnvelope, limits: Limits) !void {
+            try validateByteFieldPayloadLimit(envelope.payload_bytes, limits);
+            try validateByteFieldPayloadLimit(envelope.summary_metadata_bytes, limits);
+            try validateByteFieldPayloadLimit(envelope.label, limits);
+            try validateByteFieldPayloadLimit(envelope.metadata, limits);
+            try validateRefSlicePayloadLimits(envelope.dependency_refs, limits);
+        }
+
+        fn validateRefSlicePayloadLimits(refs: []const ObjectRef, limits: Limits) !void {
+            for (refs) |ref| try validateRefPayloadLimits(ref, limits);
+        }
+
+        fn validateRefPayloadLimits(ref: ObjectRef, limits: Limits) !void {
+            try validateByteFieldPayloadLimit(ref.label, limits);
+            try validateByteFieldPayloadLimit(ref.metadata, limits);
+        }
+
+        fn validateByteFieldPayloadLimit(bytes: []const u8, limits: Limits) !void {
+            if (bytes.len > limits.max_payload_bytes) return error.InvalidFrameEncoding;
         }
 
         fn validateTypedObjectPayloads(allocator: std.mem.Allocator, objects: []const ObjectEnvelope) !void {
@@ -2776,21 +2838,26 @@ pub fn Archive(comptime World: type) type {
                 }
                 try validateKnownEventRefSlice(prior_objects, current_objects, event.object_refs);
                 try validateKnownEventRefSlice(prior_objects, current_objects, event.root_refs);
-                if (event.capsule_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.capsule_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
                 try validateKnownEventRefSlice(prior_objects, current_objects, event.actuation_refs);
                 if (event.actuation_idempotency_key_ref) |ref| try validateKnownActuationIdempotencyKeyRef(allocator, prior_objects, current_objects, event, ref);
-                if (event.bundle_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.recovery_plan_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.recovery_report_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.inbox_outbox_item_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.target_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.module_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.assembly_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.run_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.run_permit_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.admission_receipt_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                if (event.environment_certificate_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.bundle_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.recovery_plan_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.recovery_report_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.inbox_outbox_item_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.target_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.module_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.assembly_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.run_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.run_permit_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.admission_receipt_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.environment_certificate_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
             }
+        }
+
+        fn validateKnownOrSemanticEventRef(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, ref: ObjectRef) !void {
+            if (ref.byte_len == 0) return ref.validate();
+            return validateKnownEventRef(prior_objects, current_objects, ref);
         }
 
         fn validateKnownEventRefSlice(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, refs: []const ObjectRef) !void {

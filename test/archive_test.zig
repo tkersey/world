@@ -440,6 +440,112 @@ test "archive writer rejects malformed typed payloads before append" {
     try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
 }
 
+test "archive writer enforces configured payload limit before append" {
+    const envelope = archiveEnvelope(.bundle, "payload-over-limit", "limit");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = 0xA940,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xA940,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{ .max_payload_bytes = 4 });
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+}
+
+test "archive reader honors configured payload limit while decoding" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.bundle, "reader-payload-over-limit", "reader-limit"));
+
+    const reader = world.Archive.Reader.init(std.testing.allocator, archive.bytesView(), .{ .max_payload_bytes = 4 });
+    const scan = try reader.scan();
+    try std.testing.expect(scan.recovered);
+    try std.testing.expectEqual(@as(usize, 0), scan.committed_moment_count);
+    try std.testing.expect(scan.discarded_tail_byte_len > 0);
+}
+
+test "archive writer accepts semantic evidence refs in domain events" {
+    const bundle_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .bundle,
+        .object_fingerprint = 0xAA01,
+        .byte_len = 0,
+    });
+    const capsule_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .capsule_image,
+        .object_fingerprint = 0xAA02,
+        .byte_len = 0,
+    });
+    const recovery_plan_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .capsule_thaw_plan,
+        .object_fingerprint = 0xAA03,
+        .byte_len = 0,
+    });
+    const recovery_report_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .capsule_restore_report,
+        .object_fingerprint = 0xAA04,
+        .byte_len = 0,
+    });
+    const handoff_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .handoff_envelope,
+        .object_fingerprint = 0xAA05,
+        .byte_len = 0,
+    });
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_committed,
+        .capsule_ref = capsule_ref,
+        .bundle_ref = bundle_ref,
+        .recovery_plan_ref = recovery_plan_ref,
+        .recovery_report_ref = recovery_report_ref,
+        .inbox_outbox_item_ref = handoff_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, 0, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xAA10,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &.{},
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    _ = try writer.append(batch, null, null);
+    const reader = world.Archive.Reader.init(std.testing.allocator, writer.bytes.items, .{});
+    const scan = try reader.scan();
+    try std.testing.expectEqual(@as(usize, 1), scan.committed_moment_count);
+}
+
 test "archive putObject rejects malformed typed actuation receipt payloads" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
