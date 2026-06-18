@@ -612,6 +612,44 @@ test "archive writer append allocation failure rolls back bytes" {
     try std.testing.expect(induced_failures > 0);
 }
 
+test "archive direct writer rejects stale appends" {
+    const envelope = archiveEnvelope(.capsule_image, "direct-stale", "direct-stale");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const transaction_fingerprint = 0xDA7A;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    _ = try writer.append(batch, null, null);
+    const len_after_first = writer.bytes.items.len;
+    try std.testing.expectError(error.StaleProjection, writer.append(batch, null, null));
+    try std.testing.expectEqual(len_after_first, writer.bytes.items.len);
+}
+
 test "archive append rejects object committed event order mismatch" {
     const first = archiveEnvelope(.capsule_image, "order-mismatch-first", "order-mismatch-first");
     const second = archiveEnvelope(.capsule_manifest, "order-mismatch-second", "order-mismatch-second");

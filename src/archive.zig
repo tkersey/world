@@ -1035,7 +1035,7 @@ pub fn Archive(comptime World: type) type {
                         break;
                     };
                     if (moment_segment.header.segment_kind != .moment_data or !moment_segment.header.required) break;
-                    var data = decodeMomentData(self.allocator, moment_segment.payload) catch |err| {
+                    var data = decodeMomentData(self.allocator, moment_segment.payload, self.limits) catch |err| {
                         if (!recoverableTailError(err)) return err;
                         break;
                     };
@@ -1191,6 +1191,7 @@ pub fn Archive(comptime World: type) type {
             pub fn append(self: *@This(), batch: AppendBatch, parent_moment: ?Moment, parent_seal: ?Seal) !Seal {
                 if (!self.header_written) try self.writeHeader(Header.init(.{}));
                 try batch.validate();
+                try self.validateAppendParent(batch, parent_moment, parent_seal);
                 try self.rejectObjectConflicts(batch.objects);
                 var event_fingerprints: std.ArrayList(u64) = .empty;
                 defer event_fingerprints.deinit(self.allocator);
@@ -1259,6 +1260,26 @@ pub fn Archive(comptime World: type) type {
                 try self.bytes.appendSlice(self.allocator, seal_payload.items);
                 append_pending = false;
                 return seal;
+            }
+
+            fn validateAppendParent(self: *@This(), batch: AppendBatch, parent_moment: ?Moment, parent_seal: ?Seal) !void {
+                var reader = Reader.init(self.allocator, self.bytes.items, self.limits);
+                var image = try reader.readImage();
+                defer image.deinit();
+
+                if (batch.parent_cursor.cursor_fingerprint != image.latestCursor().cursor_fingerprint) return error.StaleProjection;
+                if (image.latestMoment()) |latest_moment| {
+                    const supplied = parent_moment orelse return error.StaleProjection;
+                    if (supplied.moment_fingerprint != latest_moment.moment_fingerprint) return error.StaleProjection;
+                } else if (parent_moment != null) {
+                    return error.StaleProjection;
+                }
+                if (image.latestSeal()) |latest_seal| {
+                    const supplied = parent_seal orelse return error.StaleProjection;
+                    if (supplied.seal_fingerprint != latest_seal.seal_fingerprint) return error.StaleProjection;
+                } else if (parent_seal != null) {
+                    return error.StaleProjection;
+                }
             }
 
             fn rejectObjectConflicts(self: *@This(), objects: []const ObjectEnvelope) !void {
@@ -1764,13 +1785,14 @@ pub fn Archive(comptime World: type) type {
             for (data.objects) |object| try encodeEnvelope(out, allocator, object);
         }
 
-        fn decodeMomentData(allocator: std.mem.Allocator, bytes: []const u8) !MomentData {
+        fn decodeMomentData(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) !MomentData {
             var cursor: usize = 0;
             var moment = try decodeMoment(allocator, bytes, &cursor);
             errdefer moment.deinit(allocator);
             var commit = try decodeCommit(allocator, bytes, &cursor);
             errdefer commit.deinit(allocator);
             const event_count = try readU64AsUsize(bytes, &cursor);
+            if (event_count > limits.max_event_count_per_moment) return error.InvalidFrameEncoding;
             var events = try allocator.alloc(Chronicle.Event, event_count);
             errdefer allocator.free(events);
             var event_init: usize = 0;
@@ -1780,6 +1802,7 @@ pub fn Archive(comptime World: type) type {
                 event_init += 1;
             }
             const object_count = try readU64AsUsize(bytes, &cursor);
+            if (object_count > limits.max_object_count_per_moment) return error.InvalidFrameEncoding;
             var objects = try allocator.alloc(ObjectEnvelope, object_count);
             errdefer allocator.free(objects);
             var object_init: usize = 0;
@@ -1821,18 +1844,33 @@ pub fn Archive(comptime World: type) type {
         }
 
         fn decodeMoment(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Moment {
+            const moment_format_version = try readU32(bytes, cursor);
+            const moment_fingerprint_version = try readU32(bytes, cursor);
+            const moment_fingerprint = try readU64(bytes, cursor);
+            const sequence_number = try readU64(bytes, cursor);
+            const parent_moment_fingerprint = try readOptionalU64(bytes, cursor);
+            const parent_seal_fingerprint = try readOptionalU64(bytes, cursor);
+            const parent_cursor = try decodeCursor(allocator, bytes, cursor);
+            var parent_cursor_pending = true;
+            errdefer if (parent_cursor_pending) allocator.free(parent_cursor.metadata_bytes);
+            const resulting_cursor = try decodeCursor(allocator, bytes, cursor);
+            var resulting_cursor_pending = true;
+            errdefer if (resulting_cursor_pending) allocator.free(resulting_cursor.metadata_bytes);
+
             var moment = Moment{
-                .moment_format_version = try readU32(bytes, cursor),
-                .moment_fingerprint_version = try readU32(bytes, cursor),
-                .moment_fingerprint = try readU64(bytes, cursor),
-                .sequence_number = try readU64(bytes, cursor),
-                .parent_moment_fingerprint = try readOptionalU64(bytes, cursor),
-                .parent_seal_fingerprint = try readOptionalU64(bytes, cursor),
-                .chronicle_parent_cursor = try decodeCursor(bytes, cursor),
-                .chronicle_resulting_cursor = try decodeCursor(bytes, cursor),
+                .moment_format_version = moment_format_version,
+                .moment_fingerprint_version = moment_fingerprint_version,
+                .moment_fingerprint = moment_fingerprint,
+                .sequence_number = sequence_number,
+                .parent_moment_fingerprint = parent_moment_fingerprint,
+                .parent_seal_fingerprint = parent_seal_fingerprint,
+                .chronicle_parent_cursor = parent_cursor,
+                .chronicle_resulting_cursor = resulting_cursor,
                 .chronicle_commit_ref = try decodeCommitRef(bytes, cursor),
                 .owns_memory = true,
             };
+            parent_cursor_pending = false;
+            resulting_cursor_pending = false;
             moment.committed_event_refs = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(moment.committed_event_refs);
             moment.committed_object_refs = try readRefSliceOwned(allocator, bytes, cursor);
@@ -1908,7 +1946,7 @@ pub fn Archive(comptime World: type) type {
             try writeBytes(out, allocator, cursor.metadata_bytes);
         }
 
-        fn decodeCursor(bytes: []const u8, cursor: *usize) !Chronicle.Cursor {
+        fn decodeCursor(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Chronicle.Cursor {
             return .{
                 .cursor_fingerprint_version = try readU32(bytes, cursor),
                 .cursor_fingerprint = try readU64(bytes, cursor),
@@ -1917,7 +1955,7 @@ pub fn Archive(comptime World: type) type {
                 .cumulative_prefix_fingerprint = try readU64(bytes, cursor),
                 .committed_object_count = try readU64(bytes, cursor),
                 .committed_transaction_count = try readU64(bytes, cursor),
-                .metadata_bytes = try readBytesBorrowed(bytes, cursor),
+                .metadata_bytes = try readBytesOwned(allocator, bytes, cursor),
             };
         }
 
