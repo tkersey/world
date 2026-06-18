@@ -733,9 +733,7 @@ pub fn Archive(comptime World: type) type {
             pub fn openSnapshot(self: *const @This(), moment_ref: Moment) !Snapshot {
                 for (self.moments, 0..) |moment, index| {
                     if (moment.moment_fingerprint == moment_ref.moment_fingerprint) {
-                        var borrowed = moment;
-                        borrowed.owns_memory = false;
-                        return .{ .image = self, .moment_value = borrowed, .moment_index = index };
+                        return .{ .image = try self.clonePrefix(index), .moment_index = index };
                     }
                 }
                 return error.ObjectMissing;
@@ -848,21 +846,82 @@ pub fn Archive(comptime World: type) type {
                 }
                 return null;
             }
+
+            fn clonePrefix(self: *const @This(), moment_index: usize) !@This() {
+                const upper = moment_index + 1;
+                if (upper > self.moments.len or upper > self.seals.len or upper > self.commits.len) return error.InvalidFrameEncoding;
+
+                var event_count: usize = 0;
+                var object_count: usize = 0;
+                for (self.moments[0..upper]) |moment| {
+                    event_count += moment.committed_event_refs.len;
+                    object_count += moment.committed_object_refs.len;
+                }
+                if (event_count > self.events.len or object_count > self.objects.len) return error.InvalidFrameEncoding;
+
+                const moments_slice = try self.allocator.alloc(Moment, upper);
+                errdefer self.allocator.free(moments_slice);
+                var moments_cloned: usize = 0;
+                errdefer {
+                    for (moments_slice[0..moments_cloned]) |*moment| moment.deinit(self.allocator);
+                }
+                for (self.moments[0..upper], 0..) |moment, index| {
+                    moments_slice[index] = try moment.clone(self.allocator);
+                    moments_cloned += 1;
+                }
+
+                const seals_slice = try self.allocator.dupe(Seal, self.seals[0..upper]);
+                errdefer self.allocator.free(seals_slice);
+
+                const commits_slice = try self.allocator.alloc(Chronicle.Commit, upper);
+                errdefer self.allocator.free(commits_slice);
+                var commits_cloned: usize = 0;
+                errdefer {
+                    for (commits_slice[0..commits_cloned]) |*commit| commit.deinit(self.allocator);
+                }
+                for (self.commits[0..upper], 0..) |commit, index| {
+                    commits_slice[index] = try commit.clone(self.allocator);
+                    commits_cloned += 1;
+                }
+
+                const events_slice = try cloneEventSlice(self.allocator, self.events[0..event_count]);
+                errdefer freeEventSlice(self.allocator, events_slice);
+                const objects_slice = try cloneEnvelopeSlice(self.allocator, self.objects[0..object_count]);
+                errdefer freeEnvelopeSlice(self.allocator, objects_slice);
+
+                var image = @This(){
+                    .allocator = self.allocator,
+                    .header = self.header,
+                    .moments = moments_slice,
+                    .seals = seals_slice,
+                    .commits = commits_slice,
+                    .events = events_slice,
+                    .objects = objects_slice,
+                    .committed_prefix_byte_len = self.seals[upper - 1].committed_prefix_byte_len,
+                    .owns_memory = true,
+                };
+                image.image_fingerprint = fingerprintImage(image);
+                return image;
+            }
         };
 
         pub const Snapshot = struct {
-            image: *const Image,
-            moment_value: Moment,
+            image: Image,
             moment_index: usize,
 
             pub fn cursor(self: @This()) Chronicle.Cursor {
-                return self.moment_value.chronicle_resulting_cursor;
+                return self.image.moments[self.moment_index].chronicle_resulting_cursor;
             }
 
             pub fn moment(self: @This()) Moment {
-                var borrowed = self.moment_value;
+                var borrowed = self.image.moments[self.moment_index];
                 borrowed.owns_memory = false;
                 return borrowed;
+            }
+
+            pub fn deinit(self: *@This()) void {
+                self.image.deinit();
+                self.* = undefined;
             }
 
             pub fn getObject(self: @This(), ref: ObjectRef) !ObjectEnvelope {
@@ -1198,6 +1257,12 @@ pub fn Archive(comptime World: type) type {
             pub fn writeHeader(self: *@This(), header: Header) !void {
                 if (self.header_written or self.bytes.items.len != 0) return error.InvalidFrameEncoding;
                 try header.validate();
+                const len_before = self.bytes.items.len;
+                const header_written_before = self.header_written;
+                errdefer {
+                    self.bytes.shrinkRetainingCapacity(len_before);
+                    self.header_written = header_written_before;
+                }
                 try encodeHeader(&self.bytes, self.allocator, header);
                 self.header_written = true;
             }
@@ -1697,6 +1762,7 @@ pub fn Archive(comptime World: type) type {
                 const first = try commitMemoryObject(&archive, .capsule_manifest, "conformance-capsule", "conformance-capsule");
                 const second = try commitMemoryObject(&archive, .capsule_manifest, "conformance-manifest", "conformance-manifest");
                 var first_snapshot = try archive.openMoment(first.moment);
+                defer first_snapshot.deinit();
                 var first_object = try first_snapshot.getObject(first.ref);
                 defer first_object.deinit(allocator);
                 if (first_snapshot.getObject(second.ref)) |_| return error.InvalidFrameEncoding else |_| {}

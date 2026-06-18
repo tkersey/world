@@ -173,6 +173,7 @@ test "archive snapshot reads historical prefix and replay binds cursor" {
     _ = try commitArchiveObject(&archive, second);
 
     var snapshot = try archive.openMoment(first_moment);
+    defer snapshot.deinit();
     var visible = try snapshot.getObject(first_ref);
     defer visible.deinit(std.testing.allocator);
     try std.testing.expectEqual(first_ref.ref_fingerprint, visible.objectRef().ref_fingerprint);
@@ -184,6 +185,27 @@ test "archive snapshot reads historical prefix and replay binds cursor" {
     defer snapshot.deinitProjectionReport(&projection);
     try projection.validate();
     try std.testing.expectEqual(snapshot.cursor().cursor_fingerprint, projection.source_cursor_fingerprint);
+}
+
+test "archive snapshot remains valid after memory refresh" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const first = archiveEnvelope(.capsule_image, "snapshot-refresh-one", "snapshot-refresh-one");
+    const second = archiveEnvelope(.capsule_manifest, "snapshot-refresh-two", "snapshot-refresh-two");
+    const first_ref = first.objectRef();
+    const second_ref = second.objectRef();
+
+    const first_moment = try commitArchiveObject(&archive, first);
+    var snapshot = try archive.openMoment(first_moment);
+    defer snapshot.deinit();
+    _ = try commitArchiveObject(&archive, second);
+
+    var visible = try snapshot.getObject(first_ref);
+    defer visible.deinit(std.testing.allocator);
+    try std.testing.expectEqual(first_ref.ref_fingerprint, visible.objectRef().ref_fingerprint);
+    try std.testing.expectError(error.ObjectMissing, snapshot.getObject(second_ref));
+    try std.testing.expectEqual(@as(usize, 1), try snapshot.objectCount());
 }
 
 test "archive snapshot indexes are rebuilt by Chronicle projection" {
@@ -198,6 +220,7 @@ test "archive snapshot indexes are rebuilt by Chronicle projection" {
     _ = try commitArchiveObject(&archive, capsule);
     const moment = try commitArchiveObject(&archive, receipt);
     var snapshot = try archive.openMoment(moment);
+    defer snapshot.deinit();
 
     var capsule_index = try snapshot.capsuleIndex();
     defer capsule_index.deinit();
@@ -390,6 +413,7 @@ test "archive snapshot moment returns borrowed ownership" {
     const committed = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "snapshot-borrowed", "snapshot-borrowed"));
 
     var snapshot = try archive.openMoment(committed);
+    defer snapshot.deinit();
     var moment = snapshot.moment();
     try std.testing.expect(!moment.owns_memory);
     moment.deinit(std.testing.allocator);
@@ -607,6 +631,58 @@ test "archive writer append allocation failure rolls back bytes" {
                 },
                 else => return err,
             }
+        }
+    }
+    try std.testing.expect(induced_failures > 0);
+}
+
+test "archive writer rolls back fresh header allocation failure" {
+    const envelope = archiveEnvelope(.capsule_image, "fresh-oom-object", "fresh-oom-object");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const transaction_fingerprint = 0xDAE;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var induced_failures: usize = 0;
+    for (0..32) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        var writer = world.Archive.Writer.init(failing_allocator.allocator(), .{});
+        defer writer.deinit();
+        if (writer.append(batch, null, null)) |_| {
+            continue;
+        } else |err| switch (err) {
+            error.OutOfMemory => {
+                if (!writer.header_written) {
+                    induced_failures += 1;
+                    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+                }
+            },
+            else => return err,
         }
     }
     try std.testing.expect(induced_failures > 0);
