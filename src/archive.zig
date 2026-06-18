@@ -1058,6 +1058,11 @@ pub fn Archive(comptime World: type) type {
                         cursor = moment_segment_start;
                         break;
                     }
+                    rejectConflictingObjectBytesAcross(objects.items, data.objects) catch |err| {
+                        if (!recoverableTailError(err)) return err;
+                        cursor = moment_segment_start;
+                        break;
+                    };
 
                     const owned_moment = try data.moment.clone(self.allocator);
                     var owned_moment_pending = true;
@@ -1086,11 +1091,6 @@ pub fn Archive(comptime World: type) type {
                         try events.append(self.allocator, owned);
                         owned_pending = false;
                     }
-                    rejectConflictingObjectBytesAcross(objects.items, data.objects) catch |err| {
-                        if (!recoverableTailError(err)) return err;
-                        cursor = moment_segment_start;
-                        break;
-                    };
                     for (data.objects) |object| {
                         const owned = try object.clone(self.allocator);
                         var owned_pending = true;
@@ -2388,7 +2388,7 @@ pub fn Archive(comptime World: type) type {
             return Chronicle.Event.init(.{
                 .kind = event.kind,
                 .parent_event_fingerprints = event.parent_event_fingerprints,
-                .transaction_fingerprint = event.transaction_fingerprint orelse transaction_fingerprint,
+                .transaction_fingerprint = transaction_fingerprint,
                 .object_refs = event.object_refs,
                 .root_refs = event.root_refs,
                 .capsule_ref = event.capsule_ref,

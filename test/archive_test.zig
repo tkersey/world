@@ -594,6 +594,27 @@ test "archive transactions canonicalize explicit object commit events" {
     try std.testing.expect(events[1].object_refs[0].eql(second_ref));
 }
 
+test "archive transactions overwrite pre-bound domain event transaction" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    const envelope = archiveEnvelope(.bundle, "prebound-domain-event", "prebound-domain-event");
+    const ref = try tx.putObject(envelope);
+    try tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_committed,
+        .transaction_fingerprint = 0x1234,
+        .bundle_ref = ref,
+    }));
+    const moment = try tx.commit();
+
+    const events = try archive.readEvents(moment.chronicle_commit_ref);
+    try std.testing.expectEqual(@as(usize, 2), events.len);
+    try std.testing.expectEqual(world.Continuity.Chronicle.EventKind.bundle_import_committed, events[1].kind);
+    try std.testing.expectEqual(moment.chronicle_commit_ref.transaction_fingerprint, events[1].transaction_fingerprint.?);
+}
+
 test "archive append rejects cross-moment object ref conflicts" {
     const first = archiveEnvelope(.capsule_image, "same-ref", "same-ref");
     const dep = archiveEnvelope(.capsule_manifest, "dependency", "dependency").objectRef();
