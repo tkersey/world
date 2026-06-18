@@ -67,9 +67,43 @@ fn archiveEnvelope(
     payload: []const u8,
     label: []const u8,
 ) world.Continuity.ObjectEnvelope {
+    if (kind == .capsule_image) return archiveCapsuleEnvelope(payload, label);
     return world.Continuity.ObjectEnvelope.init(.{
         .kind = kind,
         .payload_bytes = payload,
+        .label = label,
+    });
+}
+
+var archive_capsule_payload_slots: [512][4096]u8 = undefined;
+var archive_capsule_payload_next: usize = 0;
+
+fn archiveCapsuleEnvelope(metadata: []const u8, label: []const u8) world.Continuity.ObjectEnvelope {
+    const slot_index = archive_capsule_payload_next % archive_capsule_payload_slots.len;
+    archive_capsule_payload_next += 1;
+    var fixed = std.heap.FixedBufferAllocator.init(&archive_capsule_payload_slots[slot_index]);
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .reference_only,
+        .root_target_ref_fingerprint = 0xA4C1_0001,
+        .normal_form = .quiescent_completed,
+        .metadata = metadata,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0xA4C1_0002,
+        .runspace_report_fingerprint = 0xA4C1_0003,
+        .metadata = metadata,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .metadata = metadata,
+    });
+    image.validate(.{}) catch unreachable;
+    const encoded = image.encode(fixed.allocator()) catch unreachable;
+    return world.Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = image.format_version,
+        .payload_bytes = encoded,
         .label = label,
     });
 }
@@ -424,6 +458,46 @@ test "archive writer rejects malformed typed payloads before append" {
         .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
         .committed_object_refs = &refs,
         .actuation_refs = &refs,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+}
+
+test "archive writer rejects malformed capsule image payloads before append" {
+    const envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .payload_bytes = "writer-bad-capsule",
+        .label = "writer-bad-capsule",
+    });
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = 0xA931,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xA931,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .capsule_refs = &refs,
         .committed_event_fingerprints = &event_fingerprints,
     });
     const objects = [_]world.Continuity.ObjectEnvelope{envelope};
@@ -1788,11 +1862,7 @@ test "archive putObject returns staged stable ref" {
     const payload = try std.testing.allocator.dupe(u8, "stable-ref-payload");
     const label = try std.testing.allocator.dupe(u8, "stable-ref-label");
     var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
-    const ref = try tx.putObject(world.Continuity.ObjectEnvelope.init(.{
-        .kind = .capsule_image,
-        .payload_bytes = payload,
-        .label = label,
-    }));
+    const ref = try tx.putObject(archiveEnvelope(.capsule_image, payload, label));
     try std.testing.expect(ref.label.ptr != label.ptr);
     std.testing.allocator.free(payload);
     std.testing.allocator.free(label);
@@ -1918,8 +1988,9 @@ test "archive append rejects cross-moment object ref conflicts" {
     const deps = [_]world.Continuity.ObjectRef{dep};
     const conflicting = world.Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_image,
-        .payload_bytes = "same-ref",
-        .label = "same-ref",
+        .object_format_version = first.object_format_version,
+        .payload_bytes = first.payload_bytes,
+        .label = first.label,
         .dependency_refs = &deps,
     });
     try std.testing.expect(first.objectRef().eql(conflicting.objectRef()));
@@ -2002,10 +2073,12 @@ test "archive moments aggregate dependencies from every object" {
         .label = "first",
         .dependency_refs = &first_deps,
     });
+    const second_seed = archiveEnvelope(.capsule_image, "second", "second");
     const second = world.Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_image,
-        .payload_bytes = "second",
-        .label = "second",
+        .object_format_version = second_seed.object_format_version,
+        .payload_bytes = second_seed.payload_bytes,
+        .label = second_seed.label,
         .dependency_refs = &second_deps,
     });
 

@@ -2737,6 +2737,7 @@ pub fn Archive(comptime World: type) type {
                     defer frame.deinit(allocator);
                     if (frame.format_version != envelope.object_format_version) return error.InvalidFrameEncoding;
                 },
+                .capsule_image,
                 .actuator_ref,
                 .actuation_descriptor,
                 .actuation_binding,
