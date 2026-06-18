@@ -24339,9 +24339,36 @@ pub const Capsule = struct {
     }
 
     pub fn freezeRunToSession(session: *Continuity.Session, runspace: *Runspace, handle: RunHandle, options: FreezeOptions) !Continuity.ObjectRef {
-        const summary = try runspace.getSlotSummary(handle);
+        const slot_index = try runspace.slotIndex(handle);
+        const slot = runspace.slots.items[slot_index];
+        const summary = slot.summary();
         if (summary.status != .completed) return error.InvalidFrameEncoding;
-        var image = try freezeRunspace(runspace, options);
+        var selected_image = try runspace.snapshotSlotImage(slot_index);
+        var selected_image_owned = true;
+        errdefer if (selected_image_owned) selected_image.deinit(runspace.allocator);
+        var selected_runspace = Runspace.init(runspace.allocator, runspace.config);
+        defer selected_runspace.deinit();
+        selected_runspace.runspace_fingerprint = runspace.runspace_fingerprint;
+        try selected_runspace.slots.append(runspace.allocator, Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = slot.target_ref,
+            .current_state = selected_image.current_state,
+            .status = .completed,
+            .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
+            .environment_certificate_fingerprint = slot.environment_certificate_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .fabric_plan_fingerprint = slot.fabric_plan_fingerprint,
+            .run_receipt_fingerprint = slot.run_receipt_fingerprint,
+            .branch_id = slot.branch_id,
+            .parent_run_handle_fingerprint = slot.parent_run_handle_fingerprint,
+            .checkpoint_fingerprint = slot.checkpoint_fingerprint,
+            .target_match_fingerprint = slot.target_match_fingerprint,
+            .module_ref_fingerprint = slot.module_ref_fingerprint,
+            .installed_run_image = selected_image,
+            .owns_installed_run_image = true,
+        }));
+        selected_image_owned = false;
+        var image = try freezeRunspace(&selected_runspace, options);
         defer image.deinit(runspace.allocator);
         return session.storeCapsule(image);
     }
@@ -36275,6 +36302,7 @@ pub const Continuity = struct {
             .linker_certificate,
             .assembly,
             .bundle,
+            .handoff_envelope,
             => true,
             else => false,
         };
@@ -37690,6 +37718,20 @@ test "memory vault put get has list and deduplicates envelopes" {
     defer allocator.free(refs);
     try std.testing.expectEqual(@as(usize, 1), refs.len);
     try std.testing.expect(refs[0].eql(ref));
+
+    const handoff = Continuity.HandoffEnvelope.init(.{
+        .direction = .outbound,
+        .status = .created,
+        .metadata_bytes = "handoff",
+    });
+    try handoff.validate();
+    const handoff_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .handoff_envelope,
+        .object_format_version = 1,
+        .payload_bytes = "opaque handoff envelope",
+        .label = "handoff",
+    });
+    _ = try vault.put(handoff_envelope);
 }
 
 test "chronicle transaction staged put abort and commit are atomic" {
@@ -38100,19 +38142,42 @@ test "freeze to session stores completed and handle capsules through chronicle t
         }),
         .status = .completed,
     }));
+    var unrelated_target_ref = TargetRef{
+        .target_ref_fingerprint = 0,
+        .world_surface_fingerprint = 0x3465_0201,
+        .target_certificate_fingerprint = 0x3465_0202,
+    };
+    unrelated_target_ref.target_ref_fingerprint = fingerprintTargetRef(unrelated_target_ref);
+    const unrelated_handle = RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = unrelated_target_ref.target_ref_fingerprint,
+    });
+    try runspace.slots.append(allocator, Runspace.RunSlot.fromState(.{
+        .handle = unrelated_handle,
+        .target_ref = unrelated_target_ref,
+        .current_state = RunState.init(.{
+            .target_ref_fingerprint = unrelated_target_ref.target_ref_fingerprint,
+            .status = .running,
+        }),
+        .status = .running,
+    }));
     const handle_ref = try Capsule.freezeRunToSession(&session, &runspace, handle, .{});
     try std.testing.expect(vault.has(handle_ref));
     var handle_image = try vault.getCapsule(handle_ref);
     defer handle_image.deinit(allocator);
     try std.testing.expect(handle_image.manifest.kind != .reference_only);
-    try std.testing.expect(handle_image.runspace_image.run_slots.len != 0);
-    try std.testing.expect(handle_image.run_images.len != 0);
+    try std.testing.expectEqual(@as(usize, 1), handle_image.runspace_image.run_slots.len);
+    try std.testing.expectEqual(@as(usize, 1), handle_image.run_images.len);
+    try std.testing.expectEqual(handle.handle_fingerprint, handle_image.runspace_image.run_slots[0].original_run_handle_fingerprint);
     try std.testing.expectEqual(@as(usize, 2), session.committed_transaction_count);
 
     var disabled_vault = Continuity.MemoryVault.init(allocator);
     defer disabled_vault.deinit();
     var disabled_session = try Continuity.Session.init(allocator, &disabled_vault, null);
-    try std.testing.expectError(error.PersistenceDisabled, Capsule.freezeToSession(&disabled_session, &runspace, .{}));
+    var disabled_runspace = Runspace.init(allocator, .{});
+    defer disabled_runspace.deinit();
+    try std.testing.expectError(error.PersistenceDisabled, Capsule.freezeToSession(&disabled_session, &disabled_runspace, .{}));
 }
 
 test "actuation to session records idempotency and permits replay receipts" {
