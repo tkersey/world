@@ -1085,6 +1085,11 @@ pub fn Archive(comptime World: type) type {
                         cursor = moment_segment_start;
                         break;
                     };
+                    validateDomainEventRefsKnown(data.events, objects.items, data.objects) catch |err| {
+                        if (!recoverableTailError(err)) return err;
+                        cursor = moment_segment_start;
+                        break;
+                    };
 
                     const owned_moment = try data.moment.clone(self.allocator);
                     var owned_moment_pending = true;
@@ -1268,6 +1273,7 @@ pub fn Archive(comptime World: type) type {
                 var image = try reader.readImage();
                 defer image.deinit();
 
+                if (image.committed_prefix_byte_len != self.bytes.items.len) return error.InvalidFrameEncoding;
                 if (batch.parent_cursor.cursor_fingerprint != image.latestCursor().cursor_fingerprint) return error.StaleProjection;
                 if (image.latestMoment()) |latest_moment| {
                     const supplied = parent_moment orelse return error.StaleProjection;
@@ -1281,6 +1287,7 @@ pub fn Archive(comptime World: type) type {
                 } else if (parent_seal != null) {
                     return error.StaleProjection;
                 }
+                try validateDomainEventRefsKnown(batch.events, image.objects, batch.objects);
             }
 
             fn rejectObjectConflicts(self: *@This(), objects: []const ObjectEnvelope) !void {
@@ -2500,6 +2507,40 @@ pub fn Archive(comptime World: type) type {
             for (summary_refs) |ref| {
                 if (!containsRef(committed_refs, ref)) return error.InvalidFrameEncoding;
             }
+        }
+
+        fn validateDomainEventRefsKnown(events: []const Chronicle.Event, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
+            for (events) |event| {
+                if (event.kind == .object_committed) {
+                    if (event.target_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                    continue;
+                }
+                try validateKnownEventRefSlice(prior_objects, current_objects, event.object_refs);
+                try validateKnownEventRefSlice(prior_objects, current_objects, event.root_refs);
+                if (event.capsule_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                try validateKnownEventRefSlice(prior_objects, current_objects, event.actuation_refs);
+                if (event.actuation_idempotency_key_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.bundle_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.recovery_plan_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.recovery_report_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.inbox_outbox_item_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.target_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.module_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.assembly_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.run_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.run_permit_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.admission_receipt_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.environment_certificate_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+            }
+        }
+
+        fn validateKnownEventRefSlice(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, refs: []const ObjectRef) !void {
+            for (refs) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+        }
+
+        fn validateKnownEventRef(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, ref: ObjectRef) !void {
+            if (objectSliceContainsRef(current_objects, ref) or objectSliceContainsRef(prior_objects, ref)) return;
+            return error.InvalidFrameEncoding;
         }
 
         fn recoverableTailError(err: anyerror) bool {

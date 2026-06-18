@@ -650,6 +650,108 @@ test "archive direct writer rejects stale appends" {
     try std.testing.expectEqual(len_after_first, writer.bytes.items.len);
 }
 
+test "archive direct writer rejects unsealed tail before append" {
+    const first = archiveEnvelope(.capsule_image, "tail-first", "tail-first");
+    const first_ref = first.objectRef();
+    const first_refs = [_]world.Continuity.ObjectRef{first_ref};
+    const first_tx = 0x7A11;
+    const first_event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = first_tx,
+        .object_refs = &first_refs,
+        .target_ref = first_ref,
+    });
+    const first_events = [_]world.Continuity.Chronicle.Event{first_event};
+    const first_fingerprints = [_]u64{first_event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const first_resulting = parent.advance(&first_fingerprints, first_refs.len, 1);
+    const first_commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = first_tx,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = first_resulting.cursor_fingerprint,
+        .committed_object_refs = &first_refs,
+        .committed_event_fingerprints = &first_fingerprints,
+    });
+    const first_objects = [_]world.Continuity.ObjectEnvelope{first};
+    const first_batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = first_commit,
+        .events = &first_events,
+        .objects = &first_objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    const first_seal = try writer.append(first_batch, null, null);
+    var reader = world.Archive.Reader.init(std.testing.allocator, writer.bytes.items, .{});
+    var image = try reader.readImage();
+    defer image.deinit();
+    const first_moment = image.latestMoment().?;
+
+    try writer.bytes.appendSlice(std.testing.allocator, "unsealed");
+    const len_with_tail = writer.bytes.items.len;
+    const second = archiveEnvelope(.capsule_image, "tail-second", "tail-second");
+    const second_ref = second.objectRef();
+    const second_refs = [_]world.Continuity.ObjectRef{second_ref};
+    const second_tx = 0x7A12;
+    const second_event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = second_tx,
+        .object_refs = &second_refs,
+        .target_ref = second_ref,
+    });
+    const second_events = [_]world.Continuity.Chronicle.Event{second_event};
+    const second_fingerprints = [_]u64{second_event.event_fingerprint};
+    const second_resulting = first_moment.chronicle_resulting_cursor.advance(&second_fingerprints, second_refs.len, 1);
+    const second_commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = second_tx,
+        .parent_cursor_fingerprint = first_moment.chronicle_resulting_cursor.cursor_fingerprint,
+        .resulting_cursor_fingerprint = second_resulting.cursor_fingerprint,
+        .committed_object_refs = &second_refs,
+        .committed_event_fingerprints = &second_fingerprints,
+    });
+    const second_objects = [_]world.Continuity.ObjectEnvelope{second};
+    const second_batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = first_moment.chronicle_resulting_cursor,
+        .commit = second_commit,
+        .events = &second_events,
+        .objects = &second_objects,
+    });
+
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(second_batch, first_moment, first_seal));
+    try std.testing.expectEqual(len_with_tail, writer.bytes.items.len);
+}
+
+test "archive append rejects missing domain event refs" {
+    const missing_bundle_ref = archiveEnvelope(.bundle, "missing-bundle", "missing-bundle").objectRef();
+    const transaction_fingerprint = 0xD04A;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .bundle_ref = missing_bundle_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, 0, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_event_fingerprints = &fingerprints,
+    });
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &.{},
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+}
+
 test "archive append rejects duplicate object payloads" {
     const envelope = archiveEnvelope(.capsule_image, "duplicate-payload", "duplicate-payload");
     const ref = envelope.objectRef();
