@@ -83,4 +83,4 @@ Each run keeps its own transcript/timeline behavior through Machine and Handoff 
 
 ## Non-goals
 
-Runspace does not implement storage, xitdb, network transport, distributed protocol, scheduler threads, async runtime, provider lifecycle, service discovery, real model/tool/file/human integrations, WASM ABI, Boundary loaded execution, Boundary closure or normalization, TreatyResolver or ProviderHarness hot paths, signing, encryption, package management, artifact registry, or an agent framework.
+Runspace does not implement storage, network transport, distributed protocol, scheduler threads, async runtime, provider lifecycle, service discovery, real model/tool/file/human integrations, WASM ABI, Boundary loaded execution, Boundary closure or normalization, TreatyResolver or ProviderHarness hot paths, signing, encryption, package management, artifact registry, or an agent framework.

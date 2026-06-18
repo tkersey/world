@@ -18,7 +18,7 @@ The capsule certificate is deterministic witness metadata. It is not a cryptogra
 
 ## Capsule vs Continuity Store
 
-Capsules are store-ready, not a store. Deterministic encoding, dependency refs, object refs, and bundle-root helpers prepare Continuity Store without implementing storage, xitdb, a database, transport, signing, or encryption.
+Capsules are store-ready, not a store. Deterministic encoding, dependency refs, object refs, and bundle-root helpers prepare Continuity Store without implementing storage, a database, transport, signing, or encryption.
 
 ## Quiescence
 
@@ -88,4 +88,4 @@ Sender permits and receipts are evidence, not authority. A receiver can require 
 
 ## Non-goals
 
-Capsules do not implement a storage backend, xitdb integration, production database, network transport, distributed protocol, scheduler thread, async runtime, real model/tool/file/human integration, provider lifecycle manager, service discovery, WASM host package, Boundary LoadedModule execution, Boundary closure/normalization, TreatyResolver hot path, ProviderHarness hot path, package manager, artifact registry, signing, encryption, cryptographic security, or an agent framework.
+Capsules do not implement a storage backend, production database, network transport, distributed protocol, scheduler thread, async runtime, real model/tool/file/human integration, provider lifecycle manager, service discovery, WASM host package, Boundary LoadedModule execution, Boundary closure/normalization, TreatyResolver hot path, ProviderHarness hot path, package manager, artifact registry, signing, encryption, cryptographic security, or an agent framework.

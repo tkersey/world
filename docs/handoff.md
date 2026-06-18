@@ -54,4 +54,4 @@ Storage or transport layers only need to carry encoded `RunImage` bytes and any 
 
 ## Non-Goals
 
-World Handoff does not implement storage, xitdb, network transport, scheduler, async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, WASM ABI, linear memory layout, Boundary closure, Boundary normalization, TreatyResolver hot paths, ProviderHarness hot paths, persistence backends, signing/encryption, or an agent framework.
+World Handoff does not implement storage, network transport, scheduler, async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, WASM ABI, linear memory layout, Boundary closure, Boundary normalization, TreatyResolver hot paths, ProviderHarness hot paths, persistence backends, signing/encryption, or an agent framework.

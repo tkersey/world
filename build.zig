@@ -44,7 +44,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const test_args = parseTestArgs(b);
-
     const boundary_dep = b.dependency("boundary", .{
         .target = target,
         .optimize = optimize,
@@ -81,6 +80,32 @@ pub fn build(b: *std.Build) void {
     const check_world_wasm_step = b.step("check-world-wasm", "Build and inspect World wasm guest artifacts.");
     check_world_wasm_step.dependOn(&wasm_guest.step);
 
+    const wasm_boundary_dep = b.dependency("boundary", .{
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    const wasm_boundary = wasm_boundary_dep.module("boundary");
+    const wasm_world = b.createModule(.{
+        .root_source_file = b.path("src/world.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    wasm_world.addImport("boundary", wasm_boundary);
+    const archive_wasm_probe = b.addExecutable(.{
+        .name = "world_archive_wasm_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/world_archive_wasm_probe.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "world", .module = wasm_world },
+            },
+        }),
+    });
+    archive_wasm_probe.entry = .disabled;
+    archive_wasm_probe.rdynamic = true;
+    check_world_wasm_step.dependOn(&archive_wasm_probe.step);
+
     const fixtures = b.createModule(.{
         .root_source_file = b.path("test/fixtures.zig"),
         .target = target,
@@ -102,15 +127,27 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = test_args.filters,
     });
-    const world_module_tests = b.addTest(.{
+    const archive_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/world.zig"),
+            .root_source_file = b.path("test/archive_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "boundary", .module = boundary },
+                .{ .name = "world", .module = world },
             },
         }),
+        .filters = test_args.filters,
+    });
+    const world_module_test_module = b.createModule(.{
+        .root_source_file = b.path("src/world.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "boundary", .module = boundary },
+        },
+    });
+    const world_module_tests = b.addTest(.{
+        .root_module = world_module_test_module,
         .filters = test_args.filters,
     });
     const wasm_guest_tests = b.addTest(.{
@@ -125,12 +162,15 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&addRunArtifactWithArgs(b, wasm_guest_tests, test_args.passthrough).step);
     if (target.query.isNative()) {
         test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
+        test_step.dependOn(&addRunArtifactWithArgs(b, archive_tests, test_args.passthrough).step);
         test_step.dependOn(&addRunArtifactWithArgs(b, world_module_tests, test_args.passthrough).step);
         b.default_step.dependOn(test_step);
     } else {
         test_step.dependOn(&tests.step);
+        test_step.dependOn(&archive_tests.step);
         test_step.dependOn(&world_module_tests.step);
         b.default_step.dependOn(&tests.step);
+        b.default_step.dependOn(&archive_tests.step);
         b.default_step.dependOn(&world_module_tests.step);
     }
 

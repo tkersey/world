@@ -54,6 +54,7 @@ The public root is intentionally small:
 - `world.AssemblyCapsule`
 - `world.Actuation`
 - `world.Continuity`
+- `world.Archive`
 - `world.MemoryVault`
 - `world.ActuatorRef`
 - `world.ConduitPlan`
@@ -223,7 +224,7 @@ Continuity Core stores facts. Chronicle records why those facts exist and how to
 
 `Continuity.ObjectEnvelope` wraps canonical payload bytes with the object kind/version, content fingerprint, byte length, explicit dependency refs, optional summary bytes, and labels. The envelope fingerprint binds the stored payload metadata and dependency list so stores and bundles can validate malformed, mismatched, missing, oversized, cyclic, or unsupported objects fail-closed.
 
-`world.MemoryVault` is the v1 in-memory content-addressed vault. It deduplicates identical envelopes, stores and loads capsule images, actuation receipts, and actuation journals, lists objects by kind, validates refs, returns explicit dependencies, and looks up committed actuation receipts by idempotency key. It is append-oriented and has no delete, file backend, xitdb adapter, production database semantics, network fetch, signing, or encryption.
+`world.MemoryVault` is the v1 in-memory content-addressed vault. It deduplicates identical envelopes, stores and loads capsule images, actuation receipts, and actuation journals, lists objects by kind, validates refs, returns explicit dependencies, and looks up committed actuation receipts by idempotency key. It is append-oriented and has no delete, file backend, production database semantics, network fetch, signing, or encryption.
 
 `Continuity.Chronicle` adds the replayable local history above MemoryVault. `Chronicle.Event` records deterministic causal events such as object commit, capsule store, actuation receipt store, idempotency registration, bundle import/export, inbox/outbox transitions, and recovery execution. Event fingerprints exclude wall-clock time, credentials, request tokens, handler pointers, host handles, allocator/runtime/thread identity, and other authority-bearing host state.
 
@@ -239,7 +240,15 @@ Continuity Core stores facts. Chronicle records why those facts exist and how to
 
 `Continuity.Recovery` now has cursor-bound `RecoveryPlan` and `RecoveryReport` evidence for executable local recovery. Planning emits Chronicle readiness or rejection events; execution denies before Runspace mutation when blockers exist and then calls Capsule thaw/replay owner APIs. Recovery still does not bypass Capsule quiescence, Linker relink checks, Admission/Supervision/Actuation invariants, fetch network dependencies, deserialize handlers, or call fresh host actuators outside local policy.
 
-`Capsule.freezeToSession`, `Capsule.freezeAssemblyToSession`, `Capsule.freezeRunToSession`, `Actuation.commitToSession`, and `Actuation.journalToSession` are explicit transaction-backed helpers. Future file stores and xitdb adapters can persist one append-only local Chronicle stream plus object envelopes without inventing their own transaction/event/projection semantics. World still does not implement xitdb, a production database, filesystem storage, network transport, a scheduler, an async runtime, real model/tool/file/human integrations, signing, encryption, exactly-once semantics, broad implicit persistence, or credential/host-handle serialization.
+`Capsule.freezeToSession`, `Capsule.freezeAssemblyToSession`, `Capsule.freezeRunToSession`, `Actuation.commitToSession`, and `Actuation.journalToSession` are explicit transaction-backed helpers. Archive bytes retain one append-only local Chronicle stream plus object envelopes without inventing separate transaction/event/projection semantics. World still does not implement a production database, filesystem storage, network transport, a scheduler, an async runtime, real model/tool/file/human integrations, signing, encryption, exactly-once semantics, broad implicit persistence, or credential/host-handle serialization.
+
+## World Archive
+
+`world.Archive` is the portable byte format and replay model for canonical `Continuity.ObjectEnvelope` values and committed Chronicle history. Archive owns canonical encoding, segment framing, moment visibility, historical materialization, valid-prefix recovery, and replay from sealed bytes. Chronicle owns causal events, cursors, transactions, commits, and replayable projections.
+
+`Archive.Moment` records one committed Chronicle transition. A moment becomes committed only when its `MomentData` segment is immediately followed by a matching valid `Seal`. `Archive.Snapshot` is a read-only view at a historical moment. `Archive.Memory` is the reference in-memory byte store and supports historical moments, simulated reopen by byte clone, replay reports, idempotency duplicate checks after reopen, and valid-prefix recovery without claiming process durability.
+
+Archive defines canonical bytes and replay semantics. Hosts may retain those bytes, but storage adapters live outside World and must not shape World semantics.
 
 ## World Admission
 
@@ -257,7 +266,7 @@ Admission is the receiver-side proof that a transferred run can be interpreted l
 
 `world.Admission.Admitter` coordinates package validation, target matching, environment preflight, permit checks, report/receipt issuance, and construction of an `AdmittedRun` when the mode is executable. `AdmittedRun` wraps existing Machine/Handoff data; it does not duplicate Machine execution logic.
 
-Admission keeps storage, xitdb, network transport, scheduler, async runtime, real integrations, WASM ABI, Boundary loaded execution, Boundary closure/normalization, signing, encryption, package management, and artifact registry out of World.
+Admission keeps storage, network transport, scheduler, async runtime, real integrations, WASM ABI, Boundary loaded execution, Boundary closure/normalization, signing, encryption, package management, and artifact registry out of World.
 
 ## World Runspace
 
@@ -286,7 +295,7 @@ Manual mode is the default: every port request parks and waits for host action. 
 
 Runspace integrates with Admission by installing `AdmittedRun` values and preserving admission receipt fingerprints. Parked run images install into the mailbox so hosts can inspect or export the pending request. It integrates with Supervision through the existing `Machine`/`Supervisor` membrane: permits are enforced before handlers, runspace limits cap runs, pending ports, and events, and handoff/checkpoint/branch operations record runspace events. It integrates with Timeline and Handoff by exporting `RunImage` snapshots, creating `Timeline.Checkpoint` metadata, and creating local branch handles.
 
-Runspace is not a scheduler, async runtime, storage backend, network transport, xitdb integration, agent framework, real model/tool/file/human integration, service discovery layer, WASM ABI, Boundary loaded execution path, Boundary closure/normalization path, package manager, artifact registry, signing layer, or encryption layer.
+Runspace is not a scheduler, async runtime, storage backend, network transport, agent framework, real model/tool/file/human integration, service discovery layer, WASM ABI, Boundary loaded execution path, Boundary closure/normalization path, package manager, artifact registry, signing layer, or encryption layer.
 
 ## World Fabric
 
@@ -302,7 +311,7 @@ Runspace integrates Fabric through `installFabricPlan`, `routePending`, `routePe
 
 Fabric cycle/depth controls fail closed with same-run recursion, same-target cycle, depth, and provider-run-limit errors. Supervision accounts Fabric invocations, provider runs, nested depth, and provider costs before provider installation or response emission. Replay routes satisfy parent requests from transcript images. Reject routes produce deterministic terminal responses. Fabric v1 rejects guest routes until a dedicated guest route executor exists. Active Fabric handoff fails closed in v1 with `ActiveFabricUnsupported`; completed Fabric history remains available in runspace Fabric receipts and event summaries.
 
-Fabric is local composition only. It does not implement Boundary provider linking, Boundary normalization, TreatyResolver hot paths, ProviderHarness hot paths, service discovery, storage, xitdb, network transport, scheduler threads, async runtime, real model/tool/file/human integration, provider lifecycle, WASM host packages, Boundary loaded-module execution, signing, encryption, package management, artifact registry, or an agent framework.
+Fabric is local composition only. It does not implement Boundary provider linking, Boundary normalization, TreatyResolver hot paths, ProviderHarness hot paths, service discovery, storage, network transport, scheduler threads, async runtime, real model/tool/file/human integration, provider lifecycle, WASM host packages, Boundary loaded-module execution, signing, encryption, package management, artifact registry, or an agent framework.
 
 See `docs/fabric.md`.
 
@@ -318,7 +327,7 @@ Fabric executes explicit routes. Linker synthesizes explicit routes from a close
 
 `world.Assembly` does not execute. It installs synthesized Fabric plans into Runspace through the Fabric API and exposes residual imports for Environment preflight. Supervision and Guest conformance can bind the LinkPlan, LinkCertificate, and Assembly fingerprints as provenance.
 
-Linker is closed-world assembly linking only. It does not implement service discovery, package management, artifact registries, storage, xitdb, network transport, schedulers, async runtimes, real integrations, provider lifecycle, Boundary normalization, TreatyResolver/ProviderHarness hot paths, Boundary loaded-module execution, signing, encryption, or an agent framework.
+Linker is closed-world assembly linking only. It does not implement service discovery, package management, artifact registries, storage, network transport, schedulers, async runtimes, real integrations, provider lifecycle, Boundary normalization, TreatyResolver/ProviderHarness hot paths, Boundary loaded-module execution, signing, encryption, or an agent framework.
 
 See `docs/linker.md`.
 
@@ -334,7 +343,7 @@ Quiescence is the freeze boundary. Completed, failed, parked, and witnessed acti
 
 Thaw is receiver-owned. `Capsule.planThaw` validates the local root target-ref witness plus link/environment/permit policy and records handle/mailbox remapping plans. `Capsule.thawIntoRunspace` denies before destination Runspace mutation when policy fails. Sender permits and receipts are evidence only; receiver permit fingerprints are recorded as local restore evidence, not object-level authorization. Receivers configured with supervision or parked restore still fail closed until a receiver-local permit verifier and executable continuation witness exist. `Capsule.verifyLink` and `Capsule.relink` can use an embedded LinkCertificate or compare against a local catalog fingerprint, rejecting drift by default. Replay-only and inspect-only modes do not call native handlers. Guest conformance refs are carried as evidence and can be rerun by policy without requiring a real wasm runtime by default.
 
-`Handoff.exportCapsule`, `Handoff.fromCapsule`, and `Handoff.acceptCapsule` move capsule bytes locally. `Admission.capsuleAdmissionReport` binds Capsule image/certificate/thaw/restore fingerprints into admission reports. Capsule is store-ready through object/dependency refs, but World still does not implement storage, xitdb, network transport, schedulers, async runtimes, real model/tool/file/human integrations, provider lifecycle management, WASM host packages, Boundary loaded-module execution, package management, artifact registries, signing, encryption, or cryptographic security.
+`Handoff.exportCapsule`, `Handoff.fromCapsule`, and `Handoff.acceptCapsule` move capsule bytes locally. `Admission.capsuleAdmissionReport` binds Capsule image/certificate/thaw/restore fingerprints into admission reports. Capsule is store-ready through object/dependency refs, but World still does not implement storage, network transport, schedulers, async runtimes, real model/tool/file/human integrations, provider lifecycle management, WASM host packages, Boundary loaded-module execution, package management, artifact registries, signing, encryption, or cryptographic security.
 
 See `docs/capsules.md`.
 
@@ -517,7 +526,7 @@ zig build check-world-wasm
 
 ## Non-goals
 
-World Supervision does not add storage, xitdb, network transport, a scheduler, an async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, a WASM ABI, Boundary closure or normalization, billing, signing, encryption, or cryptographic security claims.
+World Supervision does not add storage, network transport, a scheduler, an async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, a WASM ABI, Boundary closure or normalization, billing, signing, encryption, or cryptographic security claims.
 
 ## Validation
 
@@ -531,4 +540,4 @@ The `check` step runs unit tests, the forged-descriptor compile-fail fixture, al
 
 ## Non-Goals
 
-World v0 does not implement a scheduler, async runtime, storage backend, xitdb integration, network transport, provider lifecycle manager, service discovery, real model/tool/file/human integrations, WASI filesystem, Component Model/WIT bindings, security/signing/encryption, distributed execution, Boundary loaded module execution, Boundary closure, Boundary normalization, treaty resolution, provider harness execution, provider catalog lookup, morphism catalog lookup, closure graph traversal, or evidence graph traversal.
+World v0 does not implement a scheduler, async runtime, storage backend, network transport, provider lifecycle manager, service discovery, real model/tool/file/human integrations, WASI filesystem, Component Model/WIT bindings, security/signing/encryption, distributed execution, Boundary loaded module execution, Boundary closure, Boundary normalization, treaty resolution, provider harness execution, provider catalog lookup, morphism catalog lookup, closure graph traversal, or evidence graph traversal.

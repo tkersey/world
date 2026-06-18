@@ -1193,6 +1193,7 @@ pub const RunReceipt = Supervision.RunReceipt;
 
 pub const ConduitPlan = Fabric.Plan;
 pub const ConduitRoute = Fabric.Route;
+pub const Archive = @import("archive.zig").Archive(@This());
 pub const Linker = @import("linker.zig").Linker(@This());
 pub const Assembly = Linker.Assembly;
 pub const ActuatorRef = Actuation.Ref;
@@ -33625,8 +33626,8 @@ pub const Continuity = struct {
         }
     };
 
-    const ObjectCodec = struct {
-        fn encodeEnvelope(envelope: ObjectEnvelope, allocator: std.mem.Allocator) ![]const u8 {
+    pub const ObjectCodec = struct {
+        pub fn encodeEnvelope(envelope: ObjectEnvelope, allocator: std.mem.Allocator) ![]const u8 {
             var out: std.ArrayList(u8) = .empty;
             errdefer out.deinit(allocator);
             try writeU32(&out, allocator, envelope.envelope_format_version);
@@ -33644,7 +33645,7 @@ pub const Continuity = struct {
             return out.toOwnedSlice(allocator);
         }
 
-        fn decodeEnvelope(allocator: std.mem.Allocator, bytes: []const u8, max_dependency_count: usize) !ObjectEnvelope {
+        pub fn decodeEnvelope(allocator: std.mem.Allocator, bytes: []const u8, max_dependency_count: usize) !ObjectEnvelope {
             var cursor: usize = 0;
             const envelope_format_version = try readU32(bytes, &cursor);
             const envelope_fingerprint_version = try readU32(bytes, &cursor);
