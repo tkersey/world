@@ -252,7 +252,8 @@ test "archive snapshot indexes are rebuilt by Chronicle projection" {
     defer archive.deinit();
 
     const capsule = archiveEnvelope(.capsule_image, "capsule-index", "capsule-index");
-    const receipt = archiveEnvelope(.actuation_receipt, "receipt-index", "receipt-index");
+    const receipt = try archiveReceiptEnvelope(std.testing.allocator, "receipt-index", 0xA700);
+    defer std.testing.allocator.free(receipt.payload_bytes);
     const capsule_ref = capsule.objectRef();
     const receipt_ref = receipt.objectRef();
 
@@ -268,6 +269,157 @@ test "archive snapshot indexes are rebuilt by Chronicle projection" {
     var actuation_index = try snapshot.actuationIndex();
     defer actuation_index.deinit();
     try std.testing.expect(refSliceContains(actuation_index.refs, receipt_ref));
+}
+
+test "archive transactions accept semantic dependency refs resolved by fingerprint" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const dependency = archiveEnvelope(.capsule_manifest, "semantic-dep", "semantic-dep");
+    _ = try commitArchiveObject(&archive, dependency);
+    const dependency_ref = dependency.objectRef();
+    const semantic_dependency_ref = world.Continuity.ObjectRef.init(.{
+        .kind = dependency_ref.kind,
+        .object_format_version = dependency_ref.object_format_version,
+        .object_fingerprint = dependency_ref.object_fingerprint,
+        .byte_len = 0,
+    });
+    const dependency_refs = [_]world.Continuity.ObjectRef{semantic_dependency_ref};
+    const envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "semantic-dep-user",
+        .label = "semantic-dep-user",
+        .dependency_refs = &dependency_refs,
+    });
+
+    var tx = try archive.begin(archive.image.latestMoment().?.chronicle_resulting_cursor, .{});
+    defer tx.deinit();
+    _ = try tx.putObject(envelope);
+    _ = try tx.commit();
+}
+
+test "archive transactions accept receipt-backed semantic idempotency keys" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const receipt = try archiveReceiptEnvelope(std.testing.allocator, "receipt-key-evidence", 0xA800);
+    defer std.testing.allocator.free(receipt.payload_bytes);
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    const receipt_ref = try tx.putObject(receipt);
+    const actuation_refs = [_]world.Continuity.ObjectRef{receipt_ref};
+    const key_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_fingerprint = 0xA800 + 8,
+        .byte_len = 0,
+    });
+    try tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .actuation_idempotency_registered,
+        .actuation_refs = &actuation_refs,
+        .actuation_idempotency_key_ref = key_ref,
+        .target_ref = receipt_ref,
+    }));
+    _ = try tx.commit();
+}
+
+test "archive transactions reject unproven semantic idempotency keys" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const receipt = try archiveReceiptEnvelope(std.testing.allocator, "receipt-key-mismatch", 0xA820);
+    defer std.testing.allocator.free(receipt.payload_bytes);
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    const receipt_ref = try tx.putObject(receipt);
+    const actuation_refs = [_]world.Continuity.ObjectRef{receipt_ref};
+    const key_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_fingerprint = 0xA820 + 9,
+        .byte_len = 0,
+    });
+    try tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .actuation_idempotency_registered,
+        .actuation_refs = &actuation_refs,
+        .actuation_idempotency_key_ref = key_ref,
+        .target_ref = receipt_ref,
+    }));
+    try std.testing.expectError(error.InvalidFrameEncoding, tx.commit());
+}
+
+test "archive writer enforces configured ref-count limit before append" {
+    const envelope = archiveEnvelope(.bundle, "limit-object", "limit-object");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = 0xA900,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xA900,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{ .max_ref_count = 0 });
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+}
+
+test "archive putObject rejects malformed typed actuation receipt payloads" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        tx.putObject(archiveEnvelope(.actuation_receipt, "not-a-receipt", "not-a-receipt")),
+    );
+}
+
+test "archive transaction fingerprints bind envelope fingerprints" {
+    const first = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "same-payload",
+        .label = "same-label",
+        .summary_metadata_bytes = "first-summary",
+    });
+    const second = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "same-payload",
+        .label = "same-label",
+        .summary_metadata_bytes = "second-summary",
+    });
+    try std.testing.expect(first.objectRef().eql(second.objectRef()));
+    try std.testing.expect(first.envelope_fingerprint != second.envelope_fingerprint);
+
+    var first_archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer first_archive.deinit();
+    var second_archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer second_archive.deinit();
+    const first_moment = try commitArchiveObject(&first_archive, first);
+    const second_moment = try commitArchiveObject(&second_archive, second);
+
+    try std.testing.expect(
+        first_moment.chronicle_commit_ref.transaction_fingerprint !=
+            second_moment.chronicle_commit_ref.transaction_fingerprint,
+    );
 }
 
 test "archive byte clone reopen preserves idempotency conflict evidence" {
@@ -1580,6 +1732,35 @@ fn refSliceContains(refs: []const world.Continuity.ObjectRef, needle: world.Cont
         if (ref.eql(needle)) return true;
     }
     return false;
+}
+
+fn archiveReceiptEnvelope(
+    allocator: std.mem.Allocator,
+    label: []const u8,
+    seed: u64,
+) !world.Continuity.ObjectEnvelope {
+    const receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = seed + 1,
+        .envelope_fingerprint = seed + 2,
+        .decision_fingerprint = seed + 3,
+        .commit_fingerprint = seed + 4,
+        .response_fingerprint = seed + 5,
+        .frame_response_fingerprint = seed + 6,
+        .actuator_ref_fingerprint = seed + 7,
+        .idempotency_key_fingerprint = seed + 8,
+        .target_ref_fingerprint = seed + 9,
+        .world_surface_fingerprint = seed + 10,
+        .world_port_id = @intCast(seed & 0xffff),
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const payload = try receipt.encode(allocator);
+    return world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .payload_bytes = payload,
+        .label = label,
+    });
 }
 
 fn archiveSecondMomentDataEnd(bytes: []const u8) !usize {

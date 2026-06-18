@@ -7,6 +7,10 @@ pub fn Archive(comptime World: type) type {
         const Chronicle = Continuity.Chronicle;
         const ObjectRef = Continuity.ObjectRef;
         const ObjectEnvelope = Continuity.ObjectEnvelope;
+        const Actuation = World.Actuation;
+        const Frame = World.Frame;
+        const RunImage = World.RunImage;
+        const TranscriptImage = World.TranscriptImage;
         const max_decoded_byte_field_len = World.world_max_decoded_byte_field_len;
 
         pub const world_archive_format_version: u32 = 1;
@@ -1111,6 +1115,11 @@ pub fn Archive(comptime World: type) type {
                         break;
                     };
                     defer data.deinit(self.allocator);
+                    validateTypedObjectPayloads(self.allocator, data.objects) catch |err| {
+                        if (!recoverableTailError(err)) return err;
+                        cursor = moment_segment_start;
+                        break;
+                    };
                     data.validate() catch |err| {
                         if (!recoverableTailError(err)) return err;
                         break;
@@ -1163,7 +1172,7 @@ pub fn Archive(comptime World: type) type {
                         cursor = moment_segment_start;
                         break;
                     };
-                    validateDomainEventRefsKnown(data.events, objects.items, data.objects) catch |err| {
+                    validateDomainEventRefsKnown(self.allocator, data.events, objects.items, data.objects) catch |err| {
                         if (!recoverableTailError(err)) return err;
                         cursor = moment_segment_start;
                         break;
@@ -1293,6 +1302,7 @@ pub fn Archive(comptime World: type) type {
                 };
                 if (!self.header_written) try self.writeHeader(Header.init(.{}));
                 try batch.validate();
+                try validateAppendBatchLimits(batch, self.limits);
                 try self.validateAppendParent(batch, parent_moment, parent_seal);
                 try self.rejectObjectConflicts(batch.objects);
                 var event_fingerprints: std.ArrayList(u64) = .empty;
@@ -1385,7 +1395,7 @@ pub fn Archive(comptime World: type) type {
                 } else if (parent_seal != null) {
                     return error.StaleProjection;
                 }
-                try validateDomainEventRefsKnown(batch.events, image.objects, batch.objects);
+                try validateDomainEventRefsKnown(self.allocator, batch.events, image.objects, batch.objects);
                 try validateObjectDependenciesKnown(image.objects, batch.objects);
                 try rejectAlreadyCommittedObjectRefs(image.objects, batch.objects);
             }
@@ -1421,6 +1431,7 @@ pub fn Archive(comptime World: type) type {
 
                 pub fn putObject(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
                     try envelope.validate();
+                    try validateTypedObjectPayload(self.archive.allocator, envelope);
                     const ref = envelope.objectRef();
                     for (self.archive.image.objects) |object| {
                         if (!object.objectRef().eql(ref)) continue;
@@ -1484,7 +1495,7 @@ pub fn Archive(comptime World: type) type {
                             else => {},
                         }
                     }
-                    const tx_fingerprint = transactionFingerprint(latest, object_refs.items, self.staged_events.items);
+                    const tx_fingerprint = transactionFingerprint(latest, self.staged_objects.items, self.staged_events.items);
                     var normalized_events: std.ArrayList(Chronicle.Event) = .empty;
                     defer {
                         for (normalized_events.items) |*event| event.deinit(self.archive.allocator);
@@ -1664,14 +1675,14 @@ pub fn Archive(comptime World: type) type {
 
             pub fn getObject(self: @This(), ref: ObjectRef) !ObjectEnvelope {
                 for (self.image.objects) |envelope| {
-                    if (envelope.objectRef().eql(ref)) return envelope.clone(self.allocator);
+                    if (refMatchesObject(envelope, ref)) return envelope.clone(self.allocator);
                 }
                 return error.ObjectMissing;
             }
 
             pub fn hasObject(self: @This(), ref: ObjectRef) bool {
                 for (self.image.objects) |envelope| {
-                    if (envelope.objectRef().eql(ref)) return true;
+                    if (refMatchesObject(envelope, ref)) return true;
                 }
                 return false;
             }
@@ -1935,9 +1946,9 @@ pub fn Archive(comptime World: type) type {
 
         fn decodeMomentData(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) !MomentData {
             var cursor: usize = 0;
-            var moment = try decodeMoment(allocator, bytes, &cursor);
+            var moment = try decodeMoment(allocator, bytes, &cursor, limits);
             errdefer moment.deinit(allocator);
-            var commit = try decodeCommit(allocator, bytes, &cursor);
+            var commit = try decodeCommit(allocator, bytes, &cursor, limits);
             errdefer commit.deinit(allocator);
             const event_count = try readU64AsUsize(bytes, &cursor);
             if (event_count > limits.max_event_count_per_moment) return error.InvalidFrameEncoding;
@@ -1946,7 +1957,7 @@ pub fn Archive(comptime World: type) type {
             var event_init: usize = 0;
             errdefer for (events[0..event_init]) |*event| event.deinit(allocator);
             for (events) |*event| {
-                event.* = try decodeEvent(allocator, bytes, &cursor);
+                event.* = try decodeEvent(allocator, bytes, &cursor, limits);
                 event_init += 1;
             }
             const object_count = try readU64AsUsize(bytes, &cursor);
@@ -1956,7 +1967,7 @@ pub fn Archive(comptime World: type) type {
             var object_init: usize = 0;
             errdefer for (objects[0..object_init]) |*object| object.deinit(allocator);
             for (objects) |*object| {
-                object.* = try decodeEnvelope(allocator, bytes, &cursor);
+                object.* = try decodeEnvelope(allocator, bytes, &cursor, limits);
                 object_init += 1;
             }
             if (cursor != bytes.len) return error.InvalidFrameEncoding;
@@ -1991,7 +2002,7 @@ pub fn Archive(comptime World: type) type {
             try writeBytes(out, allocator, moment.diagnostic_metadata_bytes);
         }
 
-        fn decodeMoment(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Moment {
+        fn decodeMoment(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) !Moment {
             const moment_format_version = try readU32(bytes, cursor);
             const moment_fingerprint_version = try readU32(bytes, cursor);
             const moment_fingerprint = try readU64(bytes, cursor);
@@ -2021,29 +2032,29 @@ pub fn Archive(comptime World: type) type {
             resulting_cursor_pending = false;
             moment.committed_event_refs = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(moment.committed_event_refs);
-            moment.committed_object_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.committed_object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.committed_object_refs);
-            moment.root_object_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.root_object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.root_object_refs);
-            moment.capsule_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.capsule_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.capsule_refs);
-            moment.actuation_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.actuation_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.actuation_refs);
-            moment.bundle_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.bundle_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.bundle_refs);
-            moment.admission_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.admission_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.admission_refs);
-            moment.environment_certificate_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.environment_certificate_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.environment_certificate_refs);
-            moment.permit_receipt_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.permit_receipt_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.permit_receipt_refs);
-            moment.link_assembly_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.link_assembly_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.link_assembly_refs);
-            moment.fabric_receipt_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.fabric_receipt_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.fabric_receipt_refs);
-            moment.guest_conformance_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.guest_conformance_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.guest_conformance_refs);
-            moment.dependency_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            moment.dependency_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, moment.dependency_refs);
             moment.projection_summary_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(moment.projection_summary_fingerprints);
@@ -2142,7 +2153,7 @@ pub fn Archive(comptime World: type) type {
             try writeBytes(out, allocator, commit.metadata_bytes);
         }
 
-        fn decodeCommit(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Chronicle.Commit {
+        fn decodeCommit(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) !Chronicle.Commit {
             var commit = Chronicle.Commit{
                 .commit_format_version = try readU32(bytes, cursor),
                 .commit_fingerprint_version = try readU32(bytes, cursor),
@@ -2152,19 +2163,19 @@ pub fn Archive(comptime World: type) type {
                 .resulting_cursor_fingerprint = try readU64(bytes, cursor),
                 .owns_memory = true,
             };
-            commit.committed_object_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            commit.committed_object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, commit.committed_object_refs);
             commit.committed_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(commit.committed_event_fingerprints);
-            commit.bundle_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            commit.bundle_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, commit.bundle_refs);
-            commit.capsule_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            commit.capsule_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, commit.capsule_refs);
-            commit.actuation_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            commit.actuation_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, commit.actuation_refs);
-            commit.idempotency_key_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            commit.idempotency_key_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, commit.idempotency_key_refs);
-            commit.validation_report_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            commit.validation_report_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, commit.validation_report_refs);
             commit.blocker_summary = try readBytesOwned(allocator, bytes, cursor);
             errdefer allocator.free(commit.blocker_summary);
@@ -2202,7 +2213,7 @@ pub fn Archive(comptime World: type) type {
             try writeBytes(out, allocator, event.metadata_bytes);
         }
 
-        fn decodeEvent(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Chronicle.Event {
+        fn decodeEvent(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) !Chronicle.Event {
             var event = Chronicle.Event{
                 .event_format_version = try readU32(bytes, cursor),
                 .event_fingerprint_version = try readU32(bytes, cursor),
@@ -2214,10 +2225,10 @@ pub fn Archive(comptime World: type) type {
             errdefer if (event_pending) event.deinit(allocator);
             event.parent_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             event.transaction_fingerprint = try readOptionalU64(bytes, cursor);
-            event.object_refs = try readRefSliceOwned(allocator, bytes, cursor);
-            event.root_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            event.object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
+            event.root_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             event.capsule_ref = try readOptionalRef(allocator, bytes, cursor);
-            event.actuation_refs = try readRefSliceOwned(allocator, bytes, cursor);
+            event.actuation_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             event.actuation_idempotency_key_ref = try readOptionalRef(allocator, bytes, cursor);
             event.bundle_ref = try readOptionalRef(allocator, bytes, cursor);
             event.recovery_plan_ref = try readOptionalRef(allocator, bytes, cursor);
@@ -2243,10 +2254,10 @@ pub fn Archive(comptime World: type) type {
             try writeBytes(out, allocator, encoded);
         }
 
-        fn decodeEnvelope(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !ObjectEnvelope {
+        fn decodeEnvelope(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) !ObjectEnvelope {
             const encoded = try readBytesOwned(allocator, bytes, cursor);
             defer allocator.free(encoded);
-            return Continuity.ObjectCodec.decodeEnvelope(allocator, encoded, max_decoded_byte_field_len / @sizeOf(ObjectRef));
+            return Continuity.ObjectCodec.decodeEnvelope(allocator, encoded, limits.max_ref_count);
         }
 
         fn writeRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, ref: ObjectRef) !void {
@@ -2300,9 +2311,9 @@ pub fn Archive(comptime World: type) type {
             for (refs) |ref| try writeRef(out, allocator, ref);
         }
 
-        fn readRefSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]ObjectRef {
+        fn readRefSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) ![]ObjectRef {
             const count = try readU64AsUsize(bytes, cursor);
-            if (count > max_decoded_byte_field_len / @sizeOf(ObjectRef)) return error.InvalidFrameEncoding;
+            if (count > limits.max_ref_count) return error.InvalidFrameEncoding;
             const refs = try allocator.alloc(ObjectRef, count);
             errdefer allocator.free(refs);
             var initialized: usize = 0;
@@ -2537,9 +2548,119 @@ pub fn Archive(comptime World: type) type {
 
         fn objectSliceContainsRef(objects: []const ObjectEnvelope, ref: ObjectRef) bool {
             for (objects) |object| {
-                if (object.objectRef().eql(ref)) return true;
+                if (refMatchesObject(object, ref)) return true;
             }
             return false;
+        }
+
+        fn refsEquivalent(lhs: ObjectRef, rhs: ObjectRef) bool {
+            return lhs.eql(rhs) or
+                (lhs.kind == rhs.kind and
+                    lhs.object_format_version == rhs.object_format_version and
+                    lhs.object_fingerprint == rhs.object_fingerprint and
+                    (lhs.byte_len == 0 or rhs.byte_len == 0));
+        }
+
+        fn refMatchesObject(object: ObjectEnvelope, ref: ObjectRef) bool {
+            return refsEquivalent(object.objectRef(), ref);
+        }
+
+        fn validateAppendBatchLimits(batch: AppendBatch, limits: Limits) !void {
+            try validateRefSliceLimit(batch.commit.committed_object_refs, limits);
+            try validateRefSliceLimit(batch.commit.bundle_refs, limits);
+            try validateRefSliceLimit(batch.commit.capsule_refs, limits);
+            try validateRefSliceLimit(batch.commit.actuation_refs, limits);
+            try validateRefSliceLimit(batch.commit.idempotency_key_refs, limits);
+            try validateRefSliceLimit(batch.commit.validation_report_refs, limits);
+            if (batch.events.len > limits.max_event_count_per_moment) return error.InvalidFrameEncoding;
+            if (batch.objects.len > limits.max_object_count_per_moment) return error.InvalidFrameEncoding;
+            for (batch.events) |event| {
+                try validateRefSliceLimit(event.object_refs, limits);
+                try validateRefSliceLimit(event.root_refs, limits);
+                try validateRefSliceLimit(event.actuation_refs, limits);
+            }
+            for (batch.objects) |object| {
+                try validateRefSliceLimit(object.dependency_refs, limits);
+            }
+        }
+
+        fn validateRefSliceLimit(refs: []const ObjectRef, limits: Limits) !void {
+            if (refs.len > limits.max_ref_count) return error.InvalidFrameEncoding;
+        }
+
+        fn validateTypedObjectPayloads(allocator: std.mem.Allocator, objects: []const ObjectEnvelope) !void {
+            for (objects) |object| try validateTypedObjectPayload(allocator, object);
+        }
+
+        fn validateTypedObjectPayload(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !void {
+            try envelope.validate();
+            switch (envelope.kind) {
+                .actuation_intent => {
+                    var intent = Actuation.Intent.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidFrameEncoding,
+                    };
+                    defer intent.deinit(allocator);
+                    if (intent.format_version != envelope.object_format_version) return error.InvalidFrameEncoding;
+                },
+                .actuation_receipt => {
+                    var receipt = Actuation.Receipt.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidFrameEncoding,
+                    };
+                    defer receipt.deinit(allocator);
+                    if (receipt.format_version != envelope.object_format_version) return error.InvalidFrameEncoding;
+                },
+                .actuation_journal => {
+                    var journal = Actuation.Journal.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidFrameEncoding,
+                    };
+                    defer journal.deinit(allocator);
+                    if (journal.fingerprint_version != envelope.object_format_version) return error.InvalidFrameEncoding;
+                },
+                .value_image => {
+                    var image = Frame.ValueImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidFrameEncoding,
+                    };
+                    defer image.deinit(allocator);
+                    if (image.format_version != envelope.object_format_version) return error.InvalidFrameEncoding;
+                },
+                .transcript_image => {
+                    var image = TranscriptImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidFrameEncoding,
+                    };
+                    defer image.deinit(allocator);
+                    if (image.format_version != envelope.object_format_version) return error.InvalidFrameEncoding;
+                },
+                .run_image => {
+                    var image = RunImage.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidFrameEncoding,
+                    };
+                    defer image.deinit(allocator);
+                    if (image.format_version != envelope.object_format_version) return error.InvalidFrameEncoding;
+                },
+                .frame_request => {
+                    var frame = Frame.Request.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidFrameEncoding,
+                    };
+                    defer frame.deinit(allocator);
+                    if (frame.format_version != envelope.object_format_version) return error.InvalidFrameEncoding;
+                },
+                .frame_response => {
+                    var frame = Frame.Response.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidFrameEncoding,
+                    };
+                    defer frame.deinit(allocator);
+                    if (frame.format_version != envelope.object_format_version) return error.InvalidFrameEncoding;
+                },
+                else => {},
+            }
         }
 
         fn rejectConflictingObjectBytes(objects: []const ObjectEnvelope) !void {
@@ -2655,7 +2776,7 @@ pub fn Archive(comptime World: type) type {
             }
         }
 
-        fn validateDomainEventRefsKnown(events: []const Chronicle.Event, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
+        fn validateDomainEventRefsKnown(allocator: std.mem.Allocator, events: []const Chronicle.Event, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
             for (events) |event| {
                 if (event.kind == .object_committed) {
                     if (event.target_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
@@ -2665,7 +2786,7 @@ pub fn Archive(comptime World: type) type {
                 try validateKnownEventRefSlice(prior_objects, current_objects, event.root_refs);
                 if (event.capsule_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
                 try validateKnownEventRefSlice(prior_objects, current_objects, event.actuation_refs);
-                if (event.actuation_idempotency_key_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+                if (event.actuation_idempotency_key_ref) |ref| try validateKnownActuationIdempotencyKeyRef(allocator, prior_objects, current_objects, event, ref);
                 if (event.bundle_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
                 if (event.recovery_plan_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
                 if (event.recovery_report_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
@@ -2687,6 +2808,41 @@ pub fn Archive(comptime World: type) type {
         fn validateKnownEventRef(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, ref: ObjectRef) !void {
             if (objectSliceContainsRef(current_objects, ref) or objectSliceContainsRef(prior_objects, ref)) return;
             return error.InvalidFrameEncoding;
+        }
+
+        fn validateKnownActuationIdempotencyKeyRef(
+            allocator: std.mem.Allocator,
+            prior_objects: []const ObjectEnvelope,
+            current_objects: []const ObjectEnvelope,
+            event: Chronicle.Event,
+            ref: ObjectRef,
+        ) !void {
+            if (objectSliceContainsRef(current_objects, ref) or objectSliceContainsRef(prior_objects, ref)) return;
+            if (event.kind == .actuation_idempotency_registered and ref.kind == .actuation_idempotency_key and event.actuation_refs.len != 0) {
+                for (event.actuation_refs) |actuation_ref| {
+                    if (try actuationReceiptBindsIdempotencyKey(allocator, current_objects, actuation_ref, ref)) return;
+                    if (try actuationReceiptBindsIdempotencyKey(allocator, prior_objects, actuation_ref, ref)) return;
+                }
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn actuationReceiptBindsIdempotencyKey(
+            allocator: std.mem.Allocator,
+            objects: []const ObjectEnvelope,
+            actuation_ref: ObjectRef,
+            key_ref: ObjectRef,
+        ) !bool {
+            for (objects) |object| {
+                if (object.kind != .actuation_receipt or !refMatchesObject(object, actuation_ref)) continue;
+                var receipt = Actuation.Receipt.decode(allocator, object.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer receipt.deinit(allocator);
+                return receipt.idempotency_key_fingerprint == key_ref.object_fingerprint;
+            }
+            return false;
         }
 
         fn validateObjectDependenciesKnown(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
@@ -2742,11 +2898,15 @@ pub fn Archive(comptime World: type) type {
             });
         }
 
-        fn transactionFingerprint(parent: Chronicle.Cursor, object_refs: []const ObjectRef, staged_events: []const Chronicle.Event) u64 {
+        fn transactionFingerprint(parent: Chronicle.Cursor, staged_objects: []const ObjectEnvelope, staged_events: []const Chronicle.Event) u64 {
             var hasher = std.hash.Wyhash.init(0);
             hashBytes(&hasher, "world.archive.transaction");
             hashU64(&hasher, parent.cursor_fingerprint);
-            hashRefSlice(&hasher, object_refs);
+            hashU64(&hasher, staged_objects.len);
+            for (staged_objects) |object| {
+                hashU64(&hasher, object.objectRef().ref_fingerprint);
+                hashU64(&hasher, object.envelope_fingerprint);
+            }
             var domain_event_count: usize = 0;
             for (staged_events) |event| {
                 if (event.kind != .object_committed) domain_event_count += 1;
