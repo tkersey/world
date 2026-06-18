@@ -1103,7 +1103,6 @@ pub fn Archive(comptime World: type) type {
                     };
                     if (moment_segment.header.segment_kind == .optional_extension) {
                         if (moment_segment.header.required) return error.UnsupportedMapping;
-                        latest_prefix_len = cursor;
                         continue;
                     }
                     if (moment_segment.header.segment_kind != .moment_data or !moment_segment.header.required) return error.InvalidFrameEncoding;
@@ -1370,7 +1369,9 @@ pub fn Archive(comptime World: type) type {
                 var image = try reader.readImage();
                 defer image.deinit();
 
-                if (image.committed_prefix_byte_len != self.bytes.items.len) return error.InvalidFrameEncoding;
+                if (image.committed_prefix_byte_len != self.bytes.items.len) {
+                    try validateOptionalExtensionTail(self.bytes.items, image.committed_prefix_byte_len, self.limits);
+                }
                 if (batch.parent_cursor.cursor_fingerprint != image.latestCursor().cursor_fingerprint) return error.StaleProjection;
                 if (image.latestMoment()) |latest_moment| {
                     const supplied = parent_moment orelse return error.StaleProjection;
@@ -1913,6 +1914,14 @@ pub fn Archive(comptime World: type) type {
             cursor.* += len;
             try header.validate(payload);
             return .{ .header = header, .payload = payload };
+        }
+
+        fn validateOptionalExtensionTail(bytes: []const u8, start: usize, limits: Limits) !void {
+            var cursor = start;
+            while (cursor < bytes.len) {
+                const segment = try readSegment(bytes, &cursor, limits);
+                if (segment.header.segment_kind != .optional_extension or segment.header.required) return error.InvalidFrameEncoding;
+            }
         }
 
         fn encodeMomentData(out: *std.ArrayList(u8), allocator: std.mem.Allocator, data: MomentData) !void {

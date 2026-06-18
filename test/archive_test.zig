@@ -549,6 +549,26 @@ test "archive reader skips optional extension between sealed moments" {
     try std.testing.expectEqual(@as(usize, 0), scan.discarded_tail_byte_len);
 }
 
+test "archive recovery discards trailing optional extension without later seal" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "extension-tail", "extension-tail"));
+    const sealed_len = archive.bytesView().len;
+
+    var damaged: std.ArrayList(u8) = .empty;
+    defer damaged.deinit(std.testing.allocator);
+    try damaged.appendSlice(std.testing.allocator, archive.bytesView());
+    try appendArchiveOptionalExtension(std.testing.allocator, &damaged, 2, "unsealed-extension-tail");
+
+    const reader = world.Archive.Reader.init(std.testing.allocator, damaged.items, .{});
+    const scan = try reader.scan();
+    try std.testing.expect(scan.recovered);
+    try std.testing.expectEqual(sealed_len, scan.committed_prefix_byte_len);
+    try std.testing.expectEqual(damaged.items.len - sealed_len, scan.discarded_tail_byte_len);
+    const validation = reader.validate();
+    try std.testing.expect(!validation.valid);
+}
+
 test "archive readEvents returns only requested commit events" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
