@@ -29990,10 +29990,24 @@ pub const Continuity = struct {
 
         pub fn init(allocator: std.mem.Allocator) @This() {
             var vault = @This(){ .allocator = allocator, .ledger = Ledger.init(allocator) };
-            vault.ledger.record(.vault_initialized, null) catch {};
+            vault.ledger.record(.vault_initialized, null) catch {
+                vault.discardInitializationEvidence();
+                return vault;
+            };
             const event = Chronicle.Event.init(.{ .kind = .vault_initialized });
-            vault.appendChronicleEvent(event) catch return vault;
+            vault.appendChronicleEvent(event) catch {
+                vault.discardInitializationEvidence();
+                return vault;
+            };
             return vault;
+        }
+
+        fn discardInitializationEvidence(self: *@This()) void {
+            for (self.chronicle_events.items) |*event| event.deinit(self.allocator);
+            self.chronicle_events.clearRetainingCapacity();
+            self.chronicle_cursor = Chronicle.Cursor.initial();
+            self.ledger.events.clearRetainingCapacity();
+            self.ledger.next_order = 0;
         }
 
         pub fn deinit(self: *@This()) void {
@@ -30558,7 +30572,7 @@ pub const Continuity = struct {
             return Actuation.Journal.decode(self.allocator, envelope.payload_bytes);
         }
 
-        pub fn lookupActuationByIdempotencyKey(self: @This(), key: Actuation.IdempotencyKey) !?ObjectRef {
+        pub fn lookupActuationByIdempotencyKey(self: *const @This(), key: Actuation.IdempotencyKey) !?ObjectRef {
             try key.validate();
             var terminal_match: ?ObjectRef = null;
             var terminal_record: ?FreshCommitRecord = null;
@@ -30567,10 +30581,11 @@ pub const Continuity = struct {
             var non_terminal_match: ?ObjectRef = null;
             for (self.objects.items) |envelope| {
                 if (envelope.kind != .actuation_receipt) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self, ref)) continue;
                 var receipt = try Actuation.Receipt.decode(self.allocator, envelope.payload_bytes);
                 defer receipt.deinit(self.allocator);
                 if (!receiptMatchesIdempotencyKey(receipt, key)) continue;
-                const ref = envelope.objectRef();
                 if (receiptIsTerminalFreshCommit(receipt)) {
                     const record = freshCommitRecordFromReceipt(key.key_fingerprint, receipt);
                     if (terminal_match) |_| {
@@ -31956,6 +31971,8 @@ pub const Continuity = struct {
             var non_terminal_journal_ref: ?ObjectRef = null;
             for (vault.objects.items) |envelope| {
                 if (envelope.kind != .actuation_journal) continue;
+                const journal_ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(vault, journal_ref)) continue;
                 var journal = try Actuation.Journal.decode(vault.allocator, envelope.payload_bytes);
                 defer journal.deinit(vault.allocator);
                 for (journal.entries.items) |entry| {
@@ -31966,12 +31983,12 @@ pub const Continuity = struct {
                             if (!journalEntriesSameFreshBinding(terminal_entry.?, entry)) return error.DuplicateBinding;
                             continue;
                         }
-                        terminal_journal_ref = envelope.objectRef();
+                        terminal_journal_ref = journal_ref;
                         terminal_entry = entry;
                         continue;
                     }
                     if (terminal_only) continue;
-                    non_terminal_journal_ref = envelope.objectRef();
+                    non_terminal_journal_ref = journal_ref;
                 }
             }
             if (terminal_journal_ref) |ref| return try fromJournalForIdempotencyKey(vault, ref, key);
@@ -32507,6 +32524,7 @@ pub const Continuity = struct {
             for (self.vault.objects.items) |envelope| {
                 switch (envelope.kind) {
                     .actuation_receipt => {
+                        if (!try chronicleCommittedObjectRefExists(self.vault, envelope.objectRef())) continue;
                         var receipt = try Actuation.Receipt.decode(self.vault.allocator, envelope.payload_bytes);
                         const matches = switch (query) {
                             .actuator => receipt.actuator_ref_fingerprint == needle,
@@ -32523,6 +32541,8 @@ pub const Continuity = struct {
                     },
                     .actuation_journal => {
                         if (!receiptQueryCanMatchJournalEntry(query)) continue;
+                        const journal_ref = envelope.objectRef();
+                        if (!try chronicleCommittedObjectRefExists(self.vault, journal_ref)) continue;
                         var journal = try Actuation.Journal.decode(self.vault.allocator, envelope.payload_bytes);
                         defer journal.deinit(self.vault.allocator);
                         for (journal.entries.items) |entry| {
@@ -32530,7 +32550,7 @@ pub const Continuity = struct {
                             if (entry.receipt_fingerprint) |fingerprint| {
                                 try appendUniqueReceiptRefForFingerprint(self.vault, &refs, fingerprint);
                             } else {
-                                const ref = try journalEntryActuationEvidenceRef(self.vault, envelope.objectRef(), entry);
+                                const ref = try journalEntryActuationEvidenceRef(self.vault, journal_ref, entry);
                                 try appendUniqueRef(&refs, self.vault.allocator, ref);
                             }
                         }
@@ -32548,11 +32568,13 @@ pub const Continuity = struct {
             var non_terminal_match: ?ObjectRef = null;
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .actuation_journal) continue;
+                const journal_ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, journal_ref)) continue;
                 var journal = try Actuation.Journal.decode(self.vault.allocator, envelope.payload_bytes);
                 defer journal.deinit(self.vault.allocator);
                 for (journal.entries.items) |entry| {
                     if (!journalEntryMatchesIdempotencyKey(entry, key)) continue;
-                    const ref = try journalEntryActuationEvidenceRef(self.vault, envelope.objectRef(), entry);
+                    const ref = try journalEntryActuationEvidenceRef(self.vault, journal_ref, entry);
                     if (journalEntryIsTerminalFreshCommit(entry)) {
                         if (entry.commit_fingerprint == null) return error.InvalidFrameEncoding;
                         const record = freshCommitRecordFromJournalEntry(key.key_fingerprint, entry);
@@ -33424,6 +33446,7 @@ pub const Continuity = struct {
             var terminal_entry: ?Actuation.Journal.Entry = null;
             for (vault.objects.items) |envelope| {
                 if (envelope.kind != .actuation_journal) continue;
+                if (!try chronicleCommittedObjectRefExists(vault, envelope.objectRef())) continue;
                 var journal = try Actuation.Journal.decode(vault.allocator, envelope.payload_bytes);
                 defer journal.deinit(vault.allocator);
                 for (journal.entries.items) |entry| {
@@ -37113,6 +37136,7 @@ pub const Continuity = struct {
         }
         for (vault.objects.items) |envelope| {
             if (envelope.kind != .actuation_journal) continue;
+            if (!try chronicleCommittedObjectRefExists(vault, envelope.objectRef())) continue;
             var journal = try Actuation.Journal.decode(vault.allocator, envelope.payload_bytes);
             defer journal.deinit(vault.allocator);
             for (journal.entries.items) |entry| {
@@ -37958,6 +37982,27 @@ test "chronicle transaction staging allocation failure owns envelope once" {
             },
             else => return err,
         };
+    }
+    try std.testing.expect(induced_failures > 0);
+}
+
+test "memory vault init allocation failure discards partial chronicle evidence" {
+    const allocator = std.testing.allocator;
+    var induced_failures: usize = 0;
+    for (0..8) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(allocator, .{
+            .fail_index = fail_index,
+        });
+        var vault = Continuity.MemoryVault.init(failing_allocator.allocator());
+        defer vault.deinit();
+        if (!failing_allocator.has_induced_failure) continue;
+
+        induced_failures += 1;
+        try std.testing.expect(try Continuity.chronicleEventsMatchCursor(&vault));
+        try std.testing.expectEqual(@as(usize, 0), vault.eventCount());
+        try std.testing.expectEqual(@as(usize, 0), vault.ledger.events.items.len);
+        try std.testing.expectEqual(@as(u64, 0), vault.ledger.next_order);
+        try std.testing.expectEqual(Continuity.Chronicle.Cursor.initial().cursor_fingerprint, vault.cursor().cursor_fingerprint);
     }
     try std.testing.expect(induced_failures > 0);
 }
@@ -39712,6 +39757,83 @@ test "memory vault stores capsule receipt journal and looks up idempotency key" 
     const lookup = try vault.lookupActuationByIdempotencyKey(key);
     try std.testing.expect(lookup != null);
     try std.testing.expect(lookup.?.eql(receipt_ref));
+}
+
+test "actuation replay ignores raw uncommitted receipt and journal evidence" {
+    const allocator = std.testing.allocator;
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3271_1001,
+        .world_surface_fingerprint = 0x3271_1002,
+        .world_port_id = 17,
+        .request_fingerprint = 0x3271_1003,
+        .actuator_ref_fingerprint = 0x3271_1004,
+    });
+    const receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3271_1010,
+        .envelope_fingerprint = 0x3271_1011,
+        .decision_fingerprint = 0x3271_1012,
+        .commit_fingerprint = 0x3271_1013,
+        .response_fingerprint = 0x3271_1014,
+        .frame_response_fingerprint = 0x3271_1015,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .failed = true,
+    });
+
+    var raw_receipt_vault = Continuity.MemoryVault.init(allocator);
+    defer raw_receipt_vault.deinit();
+    const receipt_payload = try receipt.encode(allocator);
+    defer allocator.free(receipt_payload);
+    const raw_receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = world_actuation_receipt_format_version,
+        .payload_bytes = receipt_payload,
+    });
+    {
+        var owned_receipt_envelope = try raw_receipt_envelope.clone(allocator);
+        errdefer owned_receipt_envelope.deinit(allocator);
+        try raw_receipt_vault.objects.append(allocator, owned_receipt_envelope);
+    }
+
+    try std.testing.expectEqual(@as(?Continuity.ObjectRef, null), try raw_receipt_vault.lookupActuationByIdempotencyKey(key));
+    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.replayActuation(&raw_receipt_vault, key));
+
+    var raw_journal_vault = Continuity.MemoryVault.init(allocator);
+    defer raw_journal_vault.deinit();
+    var journal = Actuation.Journal.init();
+    defer journal.deinit(allocator);
+    try journal.entries.append(allocator, .{
+        .order = journal.takeOrder(),
+        .intent_fingerprint = receipt.intent_fingerprint,
+        .commit_fingerprint = receipt.commit_fingerprint,
+        .response_fingerprint = receipt.response_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .fresh_called = true,
+        .failed = true,
+    });
+    journal.refreshFingerprint();
+    const journal_payload = try journal.encode(allocator);
+    defer allocator.free(journal_payload);
+    const raw_journal_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_journal,
+        .object_format_version = world_actuation_journal_fingerprint_version,
+        .payload_bytes = journal_payload,
+    });
+    {
+        var owned_journal_envelope = try raw_journal_envelope.clone(allocator);
+        errdefer owned_journal_envelope.deinit(allocator);
+        try raw_journal_vault.objects.append(allocator, owned_journal_envelope);
+    }
+
+    try std.testing.expectError(error.ObjectMissing, Continuity.Recovery.replayActuation(&raw_journal_vault, key));
 }
 
 test "object graph builds closure and reports missing dependencies" {
