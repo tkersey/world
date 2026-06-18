@@ -1399,6 +1399,59 @@ test "archive append rejects missing object dependencies" {
     try std.testing.expectError(error.ObjectMissing, writer.append(batch, null, null));
 }
 
+test "archive append rejects same-batch object dependency cycles" {
+    const first_seed = archiveEnvelope(.bundle, "cycle-first", "cycle-first");
+    const second_seed = archiveEnvelope(.capsule_image, "cycle-second", "cycle-second");
+    const first_ref = first_seed.objectRef();
+    const second_ref = second_seed.objectRef();
+    const first_deps = [_]world.Continuity.ObjectRef{second_ref};
+    const second_deps = [_]world.Continuity.ObjectRef{first_ref};
+    const first = world.Continuity.ObjectEnvelope.init(.{
+        .kind = first_seed.kind,
+        .payload_bytes = first_seed.payload_bytes,
+        .label = first_seed.label,
+        .dependency_refs = &first_deps,
+    });
+    const second = world.Continuity.ObjectEnvelope.init(.{
+        .kind = second_seed.kind,
+        .payload_bytes = second_seed.payload_bytes,
+        .label = second_seed.label,
+        .dependency_refs = &second_deps,
+    });
+    const refs = [_]world.Continuity.ObjectRef{ first_ref, second_ref };
+    const transaction_fingerprint = 0xC1C1;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = first_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &.{first_ref},
+        .capsule_refs = &.{second_ref},
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{ first, second };
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+}
+
 test "archive append rejects duplicate object payloads" {
     const envelope = archiveEnvelope(.capsule_image, "duplicate-payload", "duplicate-payload");
     const ref = envelope.objectRef();

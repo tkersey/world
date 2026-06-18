@@ -2905,9 +2905,10 @@ pub fn Archive(comptime World: type) type {
         }
 
         fn validateObjectDependenciesKnown(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
-            for (current_objects) |object| {
+            for (current_objects, 0..) |object, index| {
                 for (object.dependency_refs) |dep| {
-                    if (objectSliceContainsRef(current_objects, dep) or objectSliceContainsRef(prior_objects, dep)) continue;
+                    if (objectSliceContainsRef(prior_objects, dep) or objectSliceContainsRef(current_objects[0..index], dep)) continue;
+                    if (objectSliceContainsRef(current_objects[index..], dep)) return error.InvalidFrameEncoding;
                     return error.ObjectMissing;
                 }
             }
