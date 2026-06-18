@@ -1289,6 +1289,7 @@ pub fn Archive(comptime World: type) type {
                     self.header_written = header_written_before;
                 }
                 try encodeHeader(&self.bytes, self.allocator, header);
+                if (self.bytes.items.len > self.limits.max_archive_bytes) return error.InvalidFrameEncoding;
                 self.header_written = true;
             }
 
@@ -2059,7 +2060,7 @@ pub fn Archive(comptime World: type) type {
             resulting_cursor_pending = false;
             var moment_pending = true;
             errdefer if (moment_pending) moment.deinit(allocator);
-            moment.committed_event_refs = try readU64SliceOwned(allocator, bytes, cursor);
+            moment.committed_event_refs = try readU64SliceOwned(allocator, bytes, cursor, limits.max_event_count_per_moment);
             moment.committed_object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             moment.root_object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             moment.capsule_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
@@ -2072,7 +2073,7 @@ pub fn Archive(comptime World: type) type {
             moment.fabric_receipt_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             moment.guest_conformance_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             moment.dependency_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
-            moment.projection_summary_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            moment.projection_summary_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, max_decoded_byte_field_len / @sizeOf(u64));
             moment.idempotency_registry_summary_fingerprint = try readOptionalU64(bytes, cursor);
             moment.diagnostic_metadata_bytes = try readBytesOwned(allocator, bytes, cursor, limits);
             moment_pending = false;
@@ -2181,7 +2182,7 @@ pub fn Archive(comptime World: type) type {
             };
             commit.committed_object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, commit.committed_object_refs);
-            commit.committed_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            commit.committed_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, limits.max_event_count_per_moment);
             errdefer allocator.free(commit.committed_event_fingerprints);
             commit.bundle_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             errdefer freeRefSlice(allocator, commit.bundle_refs);
@@ -2239,7 +2240,7 @@ pub fn Archive(comptime World: type) type {
             };
             var event_pending = true;
             errdefer if (event_pending) event.deinit(allocator);
-            event.parent_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            event.parent_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, limits.max_event_count_per_moment);
             event.transaction_fingerprint = try readOptionalU64(bytes, cursor);
             event.object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             event.root_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
@@ -2349,8 +2350,9 @@ pub fn Archive(comptime World: type) type {
             for (values) |value| try writeU64(out, allocator, value);
         }
 
-        fn readU64SliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]u64 {
+        fn readU64SliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]u64 {
             const count = try readU64AsUsize(bytes, cursor);
+            if (count > max_count) return error.InvalidFrameEncoding;
             if (count > max_decoded_byte_field_len / @sizeOf(u64)) return error.InvalidFrameEncoding;
             const values = try allocator.alloc(u64, count);
             errdefer allocator.free(values);

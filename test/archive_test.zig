@@ -561,6 +561,18 @@ test "archive reader honors configured payload limit while decoding" {
     try std.testing.expect(scan.discarded_tail_byte_len > 0);
 }
 
+test "archive reader honors configured event-count limit while decoding" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.bundle, "reader-event-over-limit", "reader-event-limit"));
+
+    const reader = world.Archive.Reader.init(std.testing.allocator, archive.bytesView(), .{ .max_event_count_per_moment = 0 });
+    const scan = try reader.scan();
+    try std.testing.expect(scan.recovered);
+    try std.testing.expectEqual(@as(usize, 0), scan.committed_moment_count);
+    try std.testing.expect(scan.discarded_tail_byte_len > 0);
+}
+
 test "archive writer accepts semantic evidence refs in domain events" {
     const bundle_ref = world.Continuity.ObjectRef.init(.{
         .kind = .bundle,
@@ -1263,6 +1275,14 @@ test "archive writer rolls back fresh header allocation failure" {
         }
     }
     try std.testing.expect(induced_failures > 0);
+}
+
+test "archive writer enforces header size limit when writing header directly" {
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{ .max_archive_bytes = 1 });
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.writeHeader(world.Archive.Header.init(.{})));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+    try std.testing.expect(!writer.header_written);
 }
 
 test "archive writer enforces total archive size limits" {
