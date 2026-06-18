@@ -375,6 +375,10 @@ pub fn Archive(comptime World: type) type {
 
             pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
                 var moment = self;
+                moment.chronicle_parent_cursor.metadata_bytes = try allocator.dupe(u8, self.chronicle_parent_cursor.metadata_bytes);
+                errdefer allocator.free(moment.chronicle_parent_cursor.metadata_bytes);
+                moment.chronicle_resulting_cursor.metadata_bytes = try allocator.dupe(u8, self.chronicle_resulting_cursor.metadata_bytes);
+                errdefer allocator.free(moment.chronicle_resulting_cursor.metadata_bytes);
                 moment.committed_event_refs = try allocator.dupe(u64, self.committed_event_refs);
                 errdefer allocator.free(moment.committed_event_refs);
                 moment.committed_object_refs = try cloneRefSlice(allocator, self.committed_object_refs);
@@ -410,6 +414,8 @@ pub fn Archive(comptime World: type) type {
 
             pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
                 if (self.owns_memory) {
+                    allocator.free(self.chronicle_parent_cursor.metadata_bytes);
+                    allocator.free(self.chronicle_resulting_cursor.metadata_bytes);
                     allocator.free(self.committed_event_refs);
                     freeRefSlice(allocator, self.committed_object_refs);
                     freeRefSlice(allocator, self.root_object_refs);
@@ -1270,13 +1276,19 @@ pub fn Archive(comptime World: type) type {
 
                 pub fn putObject(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
                     try envelope.validate();
+                    const ref = envelope.objectRef();
+                    for (self.staged_objects.items) |object| {
+                        if (!object.objectRef().eql(ref)) continue;
+                        if (object.envelope_fingerprint != envelope.envelope_fingerprint) return error.DuplicateBinding;
+                        return object.objectRef();
+                    }
                     const owned = try envelope.clone(self.archive.allocator);
                     errdefer {
                         var cleanup = owned;
                         cleanup.deinit(self.archive.allocator);
                     }
                     try self.staged_objects.append(self.archive.allocator, owned);
-                    return envelope.objectRef();
+                    return self.staged_objects.items[self.staged_objects.items.len - 1].objectRef();
                 }
 
                 pub fn addEvent(self: *@This(), event: Chronicle.Event) !void {

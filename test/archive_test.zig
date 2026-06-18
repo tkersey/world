@@ -568,6 +568,43 @@ test "archive multi-object transactions preserve commit ref order" {
     try std.testing.expect(moment.committed_object_refs[1].eql(second_ref));
 }
 
+test "archive transactions deduplicate staged object refs" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    const envelope = archiveEnvelope(.capsule_image, "dedupe-staged", "dedupe-staged");
+    const first_ref = try tx.putObject(envelope);
+    const second_ref = try tx.putObject(envelope);
+    try std.testing.expect(first_ref.eql(second_ref));
+    const moment = try tx.commit();
+
+    try std.testing.expectEqual(@as(usize, 1), moment.committed_object_refs.len);
+}
+
+test "archive putObject returns staged stable ref" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const payload = try std.testing.allocator.dupe(u8, "stable-ref-payload");
+    const label = try std.testing.allocator.dupe(u8, "stable-ref-label");
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    const ref = try tx.putObject(world.Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .payload_bytes = payload,
+        .label = label,
+    }));
+    try std.testing.expect(ref.label.ptr != label.ptr);
+    std.testing.allocator.free(payload);
+    std.testing.allocator.free(label);
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    try tx.addEvent(world.Continuity.Chronicle.Event.init(.{ .kind = .object_committed, .object_refs = &refs }));
+    const moment = try tx.commit();
+    try moment.validate();
+}
+
 test "archive transactions canonicalize explicit object commit events" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
