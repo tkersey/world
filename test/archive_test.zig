@@ -404,6 +404,42 @@ test "archive writer enforces configured ref-count limit before append" {
     try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
 }
 
+test "archive writer rejects malformed typed payloads before append" {
+    const envelope = archiveEnvelope(.actuation_receipt, "writer-bad-receipt", "writer-bad-receipt");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = 0xA930,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xA930,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .actuation_refs = &refs,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+}
+
 test "archive putObject rejects malformed typed actuation receipt payloads" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();

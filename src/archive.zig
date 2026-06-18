@@ -1300,9 +1300,10 @@ pub fn Archive(comptime World: type) type {
                     self.bytes.shrinkRetainingCapacity(append_start);
                     self.header_written = header_written_before;
                 };
-                if (!self.header_written) try self.writeHeader(Header.init(.{}));
                 try batch.validate();
                 try validateAppendBatchLimits(batch, self.limits);
+                try validateTypedObjectPayloads(self.allocator, batch.objects);
+                if (!self.header_written) try self.writeHeader(Header.init(.{}));
                 try self.validateAppendParent(batch, parent_moment, parent_seal);
                 try self.rejectObjectConflicts(batch.objects);
                 var event_fingerprints: std.ArrayList(u64) = .empty;
