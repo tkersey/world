@@ -473,6 +473,7 @@ pub fn Archive(comptime World: type) type {
                     }
                 }
                 if (committed_ref_index != self.commit.committed_object_refs.len) return error.InvalidFrameEncoding;
+                if (self.objects.len != self.commit.committed_object_refs.len) return error.InvalidFrameEncoding;
                 for (self.objects) |envelope| {
                     try envelope.validate();
                     const ref = envelope.objectRef();
@@ -2062,16 +2063,14 @@ pub fn Archive(comptime World: type) type {
                 .kind = try enumFromByte(Chronicle.EventKind, try readU8(bytes, cursor)),
                 .owns_memory = true,
             };
+            var event_pending = true;
+            errdefer if (event_pending) event.deinit(allocator);
             event.parent_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
-            errdefer allocator.free(event.parent_event_fingerprints);
             event.transaction_fingerprint = try readOptionalU64(bytes, cursor);
             event.object_refs = try readRefSliceOwned(allocator, bytes, cursor);
-            errdefer freeRefSlice(allocator, event.object_refs);
             event.root_refs = try readRefSliceOwned(allocator, bytes, cursor);
-            errdefer freeRefSlice(allocator, event.root_refs);
             event.capsule_ref = try readOptionalRef(allocator, bytes, cursor);
             event.actuation_refs = try readRefSliceOwned(allocator, bytes, cursor);
-            errdefer freeRefSlice(allocator, event.actuation_refs);
             event.actuation_idempotency_key_ref = try readOptionalRef(allocator, bytes, cursor);
             event.bundle_ref = try readOptionalRef(allocator, bytes, cursor);
             event.recovery_plan_ref = try readOptionalRef(allocator, bytes, cursor);
@@ -2085,10 +2084,9 @@ pub fn Archive(comptime World: type) type {
             event.admission_receipt_ref = try readOptionalRef(allocator, bytes, cursor);
             event.environment_certificate_ref = try readOptionalRef(allocator, bytes, cursor);
             event.blocker_summary = try readBytesOwned(allocator, bytes, cursor);
-            errdefer allocator.free(event.blocker_summary);
             event.warning_summary = try readBytesOwned(allocator, bytes, cursor);
-            errdefer allocator.free(event.warning_summary);
             event.metadata_bytes = try readBytesOwned(allocator, bytes, cursor);
+            event_pending = false;
             return event;
         }
 
