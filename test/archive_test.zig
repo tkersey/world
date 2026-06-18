@@ -763,6 +763,27 @@ test "archive transactions deduplicate staged object refs" {
     try std.testing.expectEqual(@as(usize, 1), moment.committed_object_refs.len);
 }
 
+test "archive transactions deduplicate already committed object refs" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const envelope = archiveEnvelope(.capsule_image, "dedupe-committed", "dedupe-committed");
+    const first = try commitArchiveObject(&archive, envelope);
+    try std.testing.expectEqual(@as(usize, 1), archive.image.objects.len);
+
+    var tx = try archive.begin(first.chronicle_resulting_cursor, .{});
+    defer tx.deinit();
+    const ref = try tx.putObject(envelope);
+    try tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_validated,
+        .target_ref = ref,
+    }));
+    const second = try tx.commit();
+
+    try std.testing.expectEqual(@as(usize, 0), second.committed_object_refs.len);
+    try std.testing.expectEqual(@as(usize, 1), archive.image.objects.len);
+}
+
 test "archive putObject returns staged stable ref" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
@@ -851,8 +872,7 @@ test "archive append rejects cross-moment object ref conflicts" {
 
     var tx = try archive.begin(first_moment.chronicle_resulting_cursor, .{});
     defer tx.deinit();
-    _ = try tx.putObject(conflicting);
-    try std.testing.expectError(error.DuplicateBinding, tx.commit());
+    try std.testing.expectError(error.DuplicateBinding, tx.putObject(conflicting));
 }
 
 test "archive replay report owns source moment" {

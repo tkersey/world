@@ -1314,6 +1314,11 @@ pub fn Archive(comptime World: type) type {
                 pub fn putObject(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
                     try envelope.validate();
                     const ref = envelope.objectRef();
+                    for (self.archive.image.objects) |object| {
+                        if (!object.objectRef().eql(ref)) continue;
+                        if (object.envelope_fingerprint != envelope.envelope_fingerprint) return error.DuplicateBinding;
+                        return object.objectRef();
+                    }
                     for (self.staged_objects.items) |object| {
                         if (!object.objectRef().eql(ref)) continue;
                         if (object.envelope_fingerprint != envelope.envelope_fingerprint) return error.DuplicateBinding;
@@ -1589,7 +1594,7 @@ pub fn Archive(comptime World: type) type {
                 errdefer bytes.deinit(allocator);
                 try bytes.appendSlice(allocator, source.bytes.items);
                 var reader = Reader.init(allocator, bytes.items, .{});
-                const image = try reader.readImage();
+                var image = try reader.readImage();
                 errdefer image.deinit();
                 return .{ .allocator = allocator, .bytes = bytes, .image = image };
             }
