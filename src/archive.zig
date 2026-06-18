@@ -491,9 +491,9 @@ pub fn Archive(comptime World: type) type {
                     if (!objectSliceContainsRef(self.objects, ref)) return error.InvalidFrameEncoding;
                 }
                 try rejectConflictingObjectBytes(self.objects);
-                if (self.commit.bundle_refs.len != 0 and !summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.bundle_refs, .bundle)) return error.InvalidFrameEncoding;
-                if (self.commit.capsule_refs.len != 0 and !summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.capsule_refs, .capsule)) return error.InvalidFrameEncoding;
-                if (self.commit.actuation_refs.len != 0 and !summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.actuation_refs, .actuation)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.bundle_refs, .bundle)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.capsule_refs, .capsule)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.actuation_refs, .actuation)) return error.InvalidFrameEncoding;
                 try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.root_object_refs);
                 try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.admission_refs);
                 try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.environment_certificate_refs);
