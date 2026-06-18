@@ -497,14 +497,16 @@ pub fn Archive(comptime World: type) type {
             }
 
             pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
-                var result = @This(){
-                    .moment = try self.moment.clone(allocator),
-                    .commit = try self.commit.clone(allocator),
-                    .events = try cloneEventSlice(allocator, self.events),
-                    .objects = try cloneEnvelopeSlice(allocator, self.objects),
-                    .owns_memory = true,
-                };
-                errdefer result.deinit(allocator);
+                var result = self;
+                result.moment = try self.moment.clone(allocator);
+                errdefer result.moment.deinit(allocator);
+                result.commit = try self.commit.clone(allocator);
+                errdefer result.commit.deinit(allocator);
+                result.events = try cloneEventSlice(allocator, self.events);
+                errdefer freeEventSlice(allocator, result.events);
+                result.objects = try cloneEnvelopeSlice(allocator, self.objects);
+                errdefer freeEnvelopeSlice(allocator, result.objects);
+                result.owns_memory = true;
                 return result;
             }
 
@@ -2140,9 +2142,11 @@ pub fn Archive(comptime World: type) type {
                 .metadata = "",
                 .owns_memory = true,
             };
-            errdefer allocator.free(ref.label);
+            var ref_pending = true;
+            errdefer if (ref_pending) ref.deinit(allocator);
             ref.metadata = try readBytesOwned(allocator, bytes, cursor);
             try ref.validate();
+            ref_pending = false;
             return ref;
         }
 
@@ -2187,6 +2191,7 @@ pub fn Archive(comptime World: type) type {
             const count = try readU64AsUsize(bytes, cursor);
             if (count > max_decoded_byte_field_len / @sizeOf(u64)) return error.InvalidFrameEncoding;
             const values = try allocator.alloc(u64, count);
+            errdefer allocator.free(values);
             for (values) |*value| value.* = try readU64(bytes, cursor);
             return values;
         }
