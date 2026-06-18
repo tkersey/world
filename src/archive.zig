@@ -690,7 +690,9 @@ pub fn Archive(comptime World: type) type {
 
             pub fn latestMoment(self: @This()) ?Moment {
                 if (self.moments.len == 0) return null;
-                return self.moments[self.moments.len - 1];
+                var moment = self.moments[self.moments.len - 1];
+                moment.owns_memory = false;
+                return moment;
             }
 
             pub fn latestSeal(self: @This()) ?Seal {
@@ -1080,6 +1082,11 @@ pub fn Archive(comptime World: type) type {
                         try events.append(self.allocator, owned);
                         owned_pending = false;
                     }
+                    rejectConflictingObjectBytesAcross(objects.items, data.objects) catch |err| {
+                        if (!recoverableTailError(err)) return err;
+                        cursor = moment_segment_start;
+                        break;
+                    };
                     for (data.objects) |object| {
                         const owned = try object.clone(self.allocator);
                         var owned_pending = true;
@@ -1318,7 +1325,6 @@ pub fn Archive(comptime World: type) type {
                     defer event_fingerprints.deinit(self.archive.allocator);
                     for (self.staged_objects.items) |object| {
                         const ref = object.objectRef();
-                        if (stagedEventsAlreadyCommitRef(self.staged_events.items, ref)) continue;
                         const refs = [_]ObjectRef{ref};
                         const event = Chronicle.Event.init(.{
                             .kind = .object_committed,
@@ -1337,6 +1343,7 @@ pub fn Archive(comptime World: type) type {
                         try event_fingerprints.append(self.archive.allocator, owned.event_fingerprint);
                     }
                     for (self.staged_events.items) |event| {
+                        if (event.kind == .object_committed) continue;
                         const normalized = bindEventTransaction(event, tx_fingerprint);
                         const owned = try normalized.clone(self.archive.allocator);
                         var owned_pending = true;
@@ -2357,13 +2364,6 @@ pub fn Archive(comptime World: type) type {
         fn deinitRefList(list: *std.ArrayList(ObjectRef), allocator: std.mem.Allocator) void {
             for (list.items) |*ref| ref.deinit(allocator);
             list.deinit(allocator);
-        }
-
-        fn stagedEventsAlreadyCommitRef(events: []const Chronicle.Event, ref: ObjectRef) bool {
-            for (events) |event| {
-                if (event.kind == .object_committed and containsRef(event.object_refs, ref)) return true;
-            }
-            return false;
         }
 
         fn commitRefMatchesCommit(ref: CommitRef, commit: Chronicle.Commit) bool {

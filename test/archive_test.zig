@@ -359,6 +359,17 @@ test "archive recovery report owns latest moment" {
     try recovery.latest_moment.?.validate();
 }
 
+test "archive latest moment returns borrowed ownership" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "borrowed-moment", "borrowed-moment"));
+
+    var moment = try archive.latestMoment();
+    try std.testing.expect(!moment.owns_memory);
+    moment.deinit(std.testing.allocator);
+    try std.testing.expect(archive.hasObject(archiveEnvelope(.capsule_image, "borrowed-moment", "borrowed-moment").objectRef()));
+}
+
 test "archive rejects non-canonical required segment flag" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
@@ -531,6 +542,32 @@ test "archive multi-object transactions preserve commit ref order" {
     try std.testing.expectEqual(@as(usize, 2), moment.committed_object_refs.len);
     try std.testing.expect(moment.committed_object_refs[0].eql(first_ref));
     try std.testing.expect(moment.committed_object_refs[1].eql(second_ref));
+}
+
+test "archive transactions canonicalize explicit object commit events" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    const first = archiveEnvelope(.capsule_image, "explicit-first", "explicit-first");
+    const second = archiveEnvelope(.capsule_manifest, "explicit-second", "explicit-second");
+    const first_ref = try tx.putObject(first);
+    const second_ref = try tx.putObject(second);
+    const explicit_refs = [_]world.Continuity.ObjectRef{first_ref};
+    try tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .object_refs = &explicit_refs,
+        .target_ref = first_ref,
+    }));
+    const moment = try tx.commit();
+
+    const events = try archive.readEvents(moment.chronicle_commit_ref);
+    try std.testing.expectEqual(@as(usize, 2), events.len);
+    try std.testing.expectEqual(world.Continuity.Chronicle.EventKind.object_committed, events[0].kind);
+    try std.testing.expectEqual(world.Continuity.Chronicle.EventKind.object_committed, events[1].kind);
+    try std.testing.expect(events[0].object_refs[0].eql(first_ref));
+    try std.testing.expect(events[1].object_refs[0].eql(second_ref));
 }
 
 test "archive append rejects cross-moment object ref conflicts" {
