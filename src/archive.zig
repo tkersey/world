@@ -2873,10 +2873,6 @@ pub fn Archive(comptime World: type) type {
 
         fn validateDomainEventRefsKnown(allocator: std.mem.Allocator, events: []const Chronicle.Event, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
             for (events) |event| {
-                if (event.kind == .object_committed) {
-                    if (event.target_ref) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
-                    continue;
-                }
                 try validateKnownEventRefSlice(prior_objects, current_objects, event.object_refs);
                 try validateKnownEventRefSlice(prior_objects, current_objects, event.root_refs);
                 if (event.capsule_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
