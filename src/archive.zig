@@ -465,8 +465,11 @@ pub fn Archive(comptime World: type) type {
                 if (!cursorsEqual(recomputed_cursor, self.moment.chronicle_resulting_cursor)) return error.InvalidFrameEncoding;
                 var committed_ref_index: usize = 0;
                 for (self.events) |event| {
+                    if (event.transaction_fingerprint) |transaction_fingerprint| {
+                        if (transaction_fingerprint != self.commit.transaction_fingerprint) return error.InvalidFrameEncoding;
+                    }
                     if (event.kind != .object_committed) continue;
-                    if (event.transaction_fingerprint != self.commit.transaction_fingerprint) return error.InvalidFrameEncoding;
+                    if (event.transaction_fingerprint == null) return error.InvalidFrameEncoding;
                     for (event.object_refs) |ref| {
                         if (committed_ref_index >= self.commit.committed_object_refs.len) return error.InvalidFrameEncoding;
                         if (!ref.eql(self.commit.committed_object_refs[committed_ref_index])) return error.InvalidFrameEncoding;
@@ -1148,6 +1151,11 @@ pub fn Archive(comptime World: type) type {
                         break;
                     }
                     rejectConflictingObjectBytesAcross(objects.items, data.objects) catch |err| {
+                        if (!recoverableTailError(err)) return err;
+                        cursor = moment_segment_start;
+                        break;
+                    };
+                    rejectAlreadyCommittedObjectRefs(objects.items, data.objects) catch |err| {
                         if (!recoverableTailError(err)) return err;
                         cursor = moment_segment_start;
                         break;

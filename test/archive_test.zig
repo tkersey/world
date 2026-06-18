@@ -940,6 +940,47 @@ test "archive append rejects missing domain event refs" {
     try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
 }
 
+test "archive append rejects mismatched domain event transaction" {
+    const envelope = archiveEnvelope(.bundle, "mismatched-domain-tx", "mismatched-domain-tx");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const transaction_fingerprint = 0xD04C;
+    const object_event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const domain_event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_committed,
+        .transaction_fingerprint = transaction_fingerprint + 1,
+        .bundle_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{ object_event, domain_event };
+    const fingerprints = [_]u64{ object_event.event_fingerprint, domain_event.event_fingerprint };
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &refs,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+}
+
 test "archive append rejects missing object dependencies" {
     const missing_dep = archiveEnvelope(.capsule_manifest, "direct-missing-dep", "direct-missing-dep").objectRef();
     const deps = [_]world.Continuity.ObjectRef{missing_dep};
