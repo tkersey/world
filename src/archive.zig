@@ -1309,6 +1309,7 @@ pub fn Archive(comptime World: type) type {
             allocator: std.mem.Allocator,
             bytes: std.ArrayList(u8) = .empty,
             image: Image,
+            stable_refs: std.ArrayList(ObjectRef) = .empty,
             closed: bool = false,
 
             pub const OpenOptions = struct {};
@@ -1327,20 +1328,23 @@ pub fn Archive(comptime World: type) type {
                     for (self.archive.image.objects) |object| {
                         if (!object.objectRef().eql(ref)) continue;
                         if (object.envelope_fingerprint != envelope.envelope_fingerprint) return error.DuplicateBinding;
-                        return object.objectRef();
+                        return try self.archive.stableRef(object.objectRef());
                     }
                     for (self.staged_objects.items) |object| {
                         if (!object.objectRef().eql(ref)) continue;
                         if (object.envelope_fingerprint != envelope.envelope_fingerprint) return error.DuplicateBinding;
-                        return object.objectRef();
+                        return try self.archive.stableRef(object.objectRef());
                     }
+                    try self.validateDependencies(envelope);
                     const owned = try envelope.clone(self.archive.allocator);
-                    errdefer {
+                    var owned_pending = true;
+                    errdefer if (owned_pending) {
                         var cleanup = owned;
                         cleanup.deinit(self.archive.allocator);
-                    }
+                    };
                     try self.staged_objects.append(self.archive.allocator, owned);
-                    return self.staged_objects.items[self.staged_objects.items.len - 1].objectRef();
+                    owned_pending = false;
+                    return try self.archive.stableRef(self.staged_objects.items[self.staged_objects.items.len - 1].objectRef());
                 }
 
                 pub fn addEvent(self: *@This(), event: Chronicle.Event) !void {
@@ -1459,6 +1463,13 @@ pub fn Archive(comptime World: type) type {
                     self.staged_objects.clearRetainingCapacity();
                     self.staged_events.clearRetainingCapacity();
                 }
+
+                fn validateDependencies(self: @This(), envelope: ObjectEnvelope) !void {
+                    for (envelope.dependency_refs) |dep| {
+                        if (self.archive.hasObject(dep) or objectSliceContainsRef(self.staged_objects.items, dep)) continue;
+                        return error.ObjectMissing;
+                    }
+                }
             };
 
             pub fn capabilities() Capabilities {
@@ -1488,6 +1499,7 @@ pub fn Archive(comptime World: type) type {
             pub fn deinit(self: *@This()) void {
                 self.bytes.deinit(self.allocator);
                 self.image.deinit();
+                deinitRefList(&self.stable_refs, self.allocator);
                 self.* = undefined;
             }
 
@@ -1611,6 +1623,20 @@ pub fn Archive(comptime World: type) type {
 
             fn currentCursor(self: @This()) Chronicle.Cursor {
                 return self.image.latestCursor();
+            }
+
+            fn stableRef(self: *@This(), ref: ObjectRef) !ObjectRef {
+                const owned = try ref.clone(self.allocator);
+                var owned_pending = true;
+                errdefer if (owned_pending) {
+                    var cleanup = owned;
+                    cleanup.deinit(self.allocator);
+                };
+                try self.stable_refs.append(self.allocator, owned);
+                owned_pending = false;
+                var borrowed = self.stable_refs.items[self.stable_refs.items.len - 1];
+                borrowed.owns_memory = false;
+                return borrowed;
             }
 
             fn refreshImage(self: *@This()) !void {

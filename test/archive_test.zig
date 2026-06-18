@@ -928,7 +928,6 @@ test "archive putObject returns staged stable ref" {
     const payload = try std.testing.allocator.dupe(u8, "stable-ref-payload");
     const label = try std.testing.allocator.dupe(u8, "stable-ref-label");
     var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
-    defer tx.deinit();
     const ref = try tx.putObject(world.Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_image,
         .payload_bytes = payload,
@@ -940,7 +939,10 @@ test "archive putObject returns staged stable ref" {
     const refs = [_]world.Continuity.ObjectRef{ref};
     try tx.addEvent(world.Continuity.Chronicle.Event.init(.{ .kind = .object_committed, .object_refs = &refs }));
     const moment = try tx.commit();
+    tx.deinit();
     try moment.validate();
+    try ref.validate();
+    try std.testing.expect(archive.hasObject(ref));
 }
 
 test "archive transactions canonicalize explicit object commit events" {
@@ -1091,12 +1093,31 @@ test "archive moments aggregate dependencies from every object" {
     defer archive.deinit();
     var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
     defer tx.deinit();
+    _ = try tx.putObject(dep_a_envelope);
+    _ = try tx.putObject(dep_b_envelope);
     _ = try tx.putObject(first);
     _ = try tx.putObject(second);
     const moment = try tx.commit();
 
     try std.testing.expect(refSliceContains(moment.dependency_refs, dep_a));
     try std.testing.expect(refSliceContains(moment.dependency_refs, dep_b));
+}
+
+test "archive transactions reject missing object dependencies" {
+    const missing_dep = archiveEnvelope(.capsule_manifest, "missing-dep", "missing-dep").objectRef();
+    const deps = [_]world.Continuity.ObjectRef{missing_dep};
+    const envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "missing-dep-user",
+        .label = "missing-dep-user",
+        .dependency_refs = &deps,
+    });
+
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    try std.testing.expectError(error.ObjectMissing, tx.putObject(envelope));
 }
 
 fn refSliceContains(refs: []const world.Continuity.ObjectRef, needle: world.Continuity.ObjectRef) bool {
