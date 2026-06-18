@@ -35,6 +35,7 @@ test "archive v1 constants and header validate canonical bytes" {
     var bad = header;
     bad.magic[0] = 'X';
     try std.testing.expectError(error.InvalidFrameEncoding, bad.validate());
+    try world.Archive.Conformance.requireCanonicalOptionalTags();
 }
 
 test "archive native fixture exposes stable header identity for wasm parity" {
@@ -401,6 +402,61 @@ test "archive transactions synthesize object commit events" {
     try std.testing.expect(refSliceContains(events[0].object_refs, ref));
     const replay = try archive.replay();
     try std.testing.expectEqual(@as(usize, 0), replay.mismatch_count);
+}
+
+test "archive multi-object transactions preserve commit ref order" {
+    var first = archiveEnvelope(.capsule_image, "order-first", "order-first");
+    var second = archiveEnvelope(.capsule_manifest, "order-second", "order-second");
+    if (first.objectRef().ref_fingerprint < second.objectRef().ref_fingerprint) {
+        const tmp = first;
+        first = second;
+        second = tmp;
+    }
+    const first_ref = first.objectRef();
+    const second_ref = second.objectRef();
+    try std.testing.expect(first_ref.ref_fingerprint > second_ref.ref_fingerprint);
+
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    _ = try tx.putObject(first);
+    _ = try tx.putObject(second);
+    const moment = try tx.commit();
+
+    try std.testing.expectEqual(@as(usize, 2), moment.committed_object_refs.len);
+    try std.testing.expect(moment.committed_object_refs[0].eql(first_ref));
+    try std.testing.expect(moment.committed_object_refs[1].eql(second_ref));
+}
+
+test "archive replay allocation failure keeps vault ownership singular" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "vault-first", "vault-first"));
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_manifest, "vault-second", "vault-second"));
+
+    var induced_failures: usize = 0;
+    for (0..128) |fail_index| {
+        {
+            var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+                .fail_index = fail_index,
+            });
+            var reopened = world.Archive.Memory.reopenFrom(&archive, failing_allocator.allocator()) catch |err| switch (err) {
+                error.OutOfMemory => continue,
+                else => return err,
+            };
+            defer reopened.deinit();
+            const result = reopened.replay();
+            if (result) |report| {
+                try report.validate();
+            } else |err| switch (err) {
+                error.OutOfMemory => induced_failures += 1,
+                error.InvalidFrameEncoding => {},
+                else => return err,
+            }
+        }
+    }
+    try std.testing.expect(induced_failures > 0);
 }
 
 test "archive moments aggregate dependencies from every object" {

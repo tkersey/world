@@ -749,27 +749,33 @@ pub fn Archive(comptime World: type) type {
                 }
                 for (self.objects[0..@min(object_limit, self.objects.len)]) |object| {
                     const owned = try object.clone(allocator);
-                    errdefer {
+                    var owned_pending = true;
+                    errdefer if (owned_pending) {
                         var cleanup = owned;
                         cleanup.deinit(allocator);
-                    }
+                    };
                     try vault.objects.append(allocator, owned);
+                    owned_pending = false;
                 }
                 for (self.events[0..@min(event_limit, self.events.len)]) |event| {
                     const owned = try event.clone(allocator);
-                    errdefer {
+                    var owned_pending = true;
+                    errdefer if (owned_pending) {
                         var cleanup = owned;
                         cleanup.deinit(allocator);
-                    }
+                    };
                     try vault.chronicle_events.append(allocator, owned);
+                    owned_pending = false;
                 }
                 for (self.commits[0..upper]) |commit| {
                     const owned = try commit.clone(allocator);
-                    errdefer {
+                    var owned_pending = true;
+                    errdefer if (owned_pending) {
                         var cleanup = owned;
                         cleanup.deinit(allocator);
-                    }
+                    };
                     try vault.chronicle_commits.append(allocator, owned);
+                    owned_pending = false;
                 }
                 for (self.moments[0..upper]) |moment| {
                     var backing: std.ArrayList(ObjectEnvelope) = .empty;
@@ -777,16 +783,20 @@ pub fn Archive(comptime World: type) type {
                     for (moment.committed_object_refs) |ref| {
                         const envelope = self.findObject(ref) orelse return error.ObjectMissing;
                         const owned = try envelope.clone(allocator);
-                        errdefer {
+                        var owned_pending = true;
+                        errdefer if (owned_pending) {
                             var cleanup = owned;
                             cleanup.deinit(allocator);
-                        }
+                        };
                         try backing.append(allocator, owned);
+                        owned_pending = false;
                     }
                     const backing_slice = try backing.toOwnedSlice(allocator);
                     backing = .empty;
-                    errdefer freeEnvelopeSlice(allocator, backing_slice);
+                    var backing_slice_pending = true;
+                    errdefer if (backing_slice_pending) freeEnvelopeSlice(allocator, backing_slice);
                     try vault.chronicle_commit_backing.append(allocator, backing_slice);
+                    backing_slice_pending = false;
                 }
                 vault.chronicle_cursor = if (upper == 0) Chronicle.Cursor.initial() else self.moments[upper - 1].chronicle_resulting_cursor;
                 return vault;
@@ -1138,7 +1148,6 @@ pub fn Archive(comptime World: type) type {
                 for (batch.events) |event| try event_fingerprints.append(self.allocator, event.event_fingerprint);
                 const committed_refs = try cloneRefSlice(self.allocator, batch.commit.committed_object_refs);
                 defer freeRefSlice(self.allocator, committed_refs);
-                std.mem.sort(ObjectRef, committed_refs, {}, refLessThan);
                 const dependency_refs = try collectDependencyRefs(self.allocator, batch.objects);
                 defer freeRefSlice(self.allocator, dependency_refs);
                 const moment = Moment.init(.{
@@ -1528,6 +1537,24 @@ pub fn Archive(comptime World: type) type {
 
             pub fn requireMemorySurface() void {
                 if (!@hasDecl(Self.Memory, "open") or !@hasDecl(Self.Memory, "bytesView")) @compileError("Archive.Memory byte surface missing");
+            }
+
+            pub fn requireCanonicalOptionalTags() !void {
+                var absent_cursor: usize = 0;
+                if ((try readOptionalU64(&.{0}, &absent_cursor)) != null) return error.InvalidFrameEncoding;
+                var u64_cursor: usize = 0;
+                if (readOptionalU64(&.{2}, &u64_cursor)) |_| {
+                    return error.InvalidFrameEncoding;
+                } else |err| switch (err) {
+                    error.InvalidFrameEncoding => {},
+                }
+                var ref_cursor: usize = 0;
+                if (readOptionalRef(std.heap.page_allocator, &.{2}, &ref_cursor)) |_| {
+                    return error.InvalidFrameEncoding;
+                } else |err| switch (err) {
+                    error.InvalidFrameEncoding => {},
+                    else => return err,
+                }
             }
 
             pub fn runMemory(allocator: std.mem.Allocator) !Report {
@@ -2010,8 +2037,11 @@ pub fn Archive(comptime World: type) type {
         }
 
         fn readOptionalRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?ObjectRef {
-            if ((try readU8(bytes, cursor)) == 0) return null;
-            return try readRef(allocator, bytes, cursor);
+            return switch (try readU8(bytes, cursor)) {
+                0 => null,
+                1 => try readRef(allocator, bytes, cursor),
+                else => error.InvalidFrameEncoding,
+            };
         }
 
         fn writeRefSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, refs: []const ObjectRef) !void {
@@ -2075,8 +2105,11 @@ pub fn Archive(comptime World: type) type {
         }
 
         fn readOptionalU64(bytes: []const u8, cursor: *usize) !?u64 {
-            if ((try readU8(bytes, cursor)) == 0) return null;
-            return try readU64(bytes, cursor);
+            return switch (try readU8(bytes, cursor)) {
+                0 => null,
+                1 => try readU64(bytes, cursor),
+                else => error.InvalidFrameEncoding,
+            };
         }
 
         fn writeU8(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u8) !void {
@@ -2255,10 +2288,6 @@ pub fn Archive(comptime World: type) type {
                 if (object.objectRef().eql(ref)) return true;
             }
             return false;
-        }
-
-        fn refLessThan(_: void, lhs: ObjectRef, rhs: ObjectRef) bool {
-            return lhs.ref_fingerprint < rhs.ref_fingerprint;
         }
 
         fn rejectConflictingObjectBytes(objects: []const ObjectEnvelope) !void {
