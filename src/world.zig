@@ -24341,8 +24341,8 @@ pub const Capsule = struct {
     pub fn freezeRunToSession(session: *Continuity.Session, runspace: *Runspace, handle: RunHandle, options: FreezeOptions) !Continuity.ObjectRef {
         const summary = try runspace.getSlotSummary(handle);
         if (summary.status != .completed) return error.InvalidFrameEncoding;
-        var image = try freezeRun(handle, options);
-        defer image.deinit(session.allocator);
+        var image = try freezeRunspace(runspace, options);
+        defer image.deinit(runspace.allocator);
         return session.storeCapsule(image);
     }
 
@@ -29161,6 +29161,7 @@ pub const Continuity = struct {
                 if (self.committed or self.aborted) return error.InvalidRunspaceTransition;
                 if (self.transaction_fingerprint_version != world_chronicle_transaction_fingerprint_version) return error.InvalidFrameEncoding;
                 if (self.parent_cursor_fingerprint != self.vault.chronicle_cursor.cursor_fingerprint) return error.StaleTransaction;
+                try requireChronicleEventsMatchCursor(self.vault);
                 try self.vault.rejectConflictingTransactionEnvelopes(self.staged_envelopes.items);
                 const staged_bundle = Bundle{
                     .allocator = self.allocator,
@@ -30001,12 +30002,14 @@ pub const Continuity = struct {
         }
 
         pub fn put(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
+            try requireChronicleEventsMatchCursor(self);
             try self.validateStorableEnvelope(envelope);
             try self.rejectDuplicateFreshCommitsForEnvelope(envelope);
             const ref = envelope.objectRef();
             for (self.objects.items) |existing| {
                 if (existing.objectRef().eql(ref)) {
                     if (existing.envelope_fingerprint != envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
+                    if (!try chronicleCommittedObjectRefExistsInAuthenticatedEvents(self, ref)) return error.InvalidFrameEncoding;
                     return existing.objectRef();
                 }
                 if (existing.kind == ref.kind and existing.object_fingerprint == ref.object_fingerprint and existing.object_byte_len == ref.byte_len) {
@@ -30075,6 +30078,7 @@ pub const Continuity = struct {
             for (self.objects.items) |existing| {
                 if (existing.objectRef().eql(ref)) {
                     if (existing.envelope_fingerprint != envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
+                    if (!try chronicleCommittedObjectRefExistsInAuthenticatedEvents(self, ref)) return error.InvalidFrameEncoding;
                     return existing.objectRef();
                 }
                 if (existing.kind == ref.kind and existing.object_fingerprint == ref.object_fingerprint and existing.object_byte_len == ref.byte_len) {
@@ -33991,6 +33995,13 @@ pub const Continuity = struct {
                 event_kind == .recovery_ready or
                 event_kind == .recovery_executed or
                 event_kind == .recovery_report_stored,
+            .bundle_history => event_kind == .bundle_import_started or
+                event_kind == .bundle_import_validated or
+                event_kind == .bundle_import_committed or
+                event_kind == .bundle_import_rejected or
+                event_kind == .bundle_export_started or
+                event_kind == .bundle_export_committed or
+                event_kind == .bundle_export_rejected,
             else => true,
         };
     }
@@ -34093,6 +34104,7 @@ pub const Continuity = struct {
                 const event = vault.chronicle_events.items[event_index + offset];
                 try event.validate();
                 if (event.event_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
+                if (event.kind == .object_committed and event.transaction_fingerprint != commit.transaction_fingerprint) return error.InvalidFrameEncoding;
                 actual_event_fingerprints.appendAssumeCapacity(event.event_fingerprint);
             }
             cursor = cursor.advance(actual_event_fingerprints.items, commit.committed_object_refs.len, 1);
@@ -37626,6 +37638,19 @@ test "memory vault put get has list and deduplicates envelopes" {
     const ref = try vault.put(envelope);
     const duplicate = try vault.put(envelope);
     try std.testing.expect(ref.eql(duplicate));
+    try vault.appendChronicleEventWithoutCursor(Continuity.Chronicle.Event.init(.{
+        .kind = .object_validated,
+        .target_ref = ref,
+    }));
+    const stale_cursor_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "stale-cursor",
+        .label = "stale-cursor",
+    });
+    try std.testing.expectError(error.StaleProjection, vault.put(stale_cursor_envelope));
+    var unauthenticated_event = vault.chronicle_events.pop().?;
+    unauthenticated_event.deinit(allocator);
     const relabeled = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_manifest,
         .object_format_version = world_capsule_manifest_format_version,
@@ -37716,6 +37741,37 @@ test "chronicle transaction staged put abort and commit are atomic" {
     _ = try vault.put(interleaving_envelope);
     try std.testing.expectError(error.StaleTransaction, stale_tx.commit());
     try std.testing.expect(!vault.has(stale_ref));
+
+    var stale_cursor_tx = try vault.beginTransaction(.custom, .{});
+    defer stale_cursor_tx.deinit();
+    const stale_cursor_tx_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "stale-cursor-transaction",
+        .label = "stale-cursor-transaction",
+    });
+    _ = try stale_cursor_tx.put(stale_cursor_tx_envelope);
+    try vault.appendChronicleEventWithoutCursor(Continuity.Chronicle.Event.init(.{
+        .kind = .object_validated,
+        .target_ref = committed_ref,
+    }));
+    try std.testing.expectError(error.StaleProjection, stale_cursor_tx.commit());
+    var stale_cursor_event = vault.chronicle_events.pop().?;
+    stale_cursor_event.deinit(allocator);
+
+    var raw_duplicate_vault = Continuity.MemoryVault.init(allocator);
+    defer raw_duplicate_vault.deinit();
+    const raw_duplicate_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_manifest,
+        .object_format_version = world_capsule_manifest_format_version,
+        .payload_bytes = "late-raw-duplicate",
+        .label = "late-raw-duplicate",
+    });
+    var raw_duplicate_tx = try raw_duplicate_vault.beginTransaction(.custom, .{});
+    defer raw_duplicate_tx.deinit();
+    _ = try raw_duplicate_tx.put(raw_duplicate_envelope);
+    try raw_duplicate_vault.objects.append(allocator, try raw_duplicate_envelope.clone(allocator));
+    try std.testing.expectError(error.InvalidFrameEncoding, raw_duplicate_tx.commit());
 }
 
 test "chronicle transaction duplicate identical deduplicates and conflicting object rejects" {
@@ -38024,6 +38080,11 @@ test "freeze to session stores completed and handle capsules through chronicle t
     }));
     const handle_ref = try Capsule.freezeRunToSession(&session, &runspace, handle, .{});
     try std.testing.expect(vault.has(handle_ref));
+    var handle_image = try vault.getCapsule(handle_ref);
+    defer handle_image.deinit(allocator);
+    try std.testing.expect(handle_image.manifest.kind != .reference_only);
+    try std.testing.expect(handle_image.runspace_image.run_slots.len != 0);
+    try std.testing.expect(handle_image.run_images.len != 0);
     try std.testing.expectEqual(@as(usize, 2), session.committed_transaction_count);
 
     var disabled_vault = Continuity.MemoryVault.init(allocator);
@@ -38259,6 +38320,18 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     defer projection_after_raw_validated.deinit();
     try std.testing.expect(!Continuity.containsRef(projection_after_raw_validated.report.object_refs_consumed, raw_validated_ref));
 
+    const forged_bundle_ref = Continuity.semanticObjectRef(.bundle, 0x3472_9002);
+    var forged_bundle_tx = try vault.beginTransaction(.custom, .{});
+    defer forged_bundle_tx.deinit();
+    try forged_bundle_tx.addEvent(Continuity.Chronicle.Event.init(.{
+        .kind = .object_validated,
+        .bundle_ref = forged_bundle_ref,
+    }));
+    _ = try forged_bundle_tx.commit();
+    var bundle_projection_after_forged_ref = try Continuity.Chronicle.Projection.rebuild(&vault, .bundle_history);
+    defer bundle_projection_after_forged_ref.deinit();
+    try std.testing.expect(!Continuity.containsRef(bundle_projection_after_forged_ref.report.object_refs_consumed, forged_bundle_ref));
+
     const forged_outbox_item_ref = Continuity.HandoffEnvelope.init(.{
         .direction = .outbound,
         .status = .exported,
@@ -38276,6 +38349,29 @@ test "projection reports detect stale cursor and chronicle replay reports are st
     try std.testing.expectEqual(vault.eventCount(), report.replayed_event_count);
     const report_again = try Continuity.Chronicle.replay(&vault, .{});
     try std.testing.expectEqual(report.report_fingerprint, report_again.report_fingerprint);
+
+    var forged_transaction_vault = Continuity.MemoryVault.init(allocator);
+    defer forged_transaction_vault.deinit();
+    var forged_transaction_tx = try forged_transaction_vault.beginTransaction(.custom, .{});
+    defer forged_transaction_tx.deinit();
+    _ = try forged_transaction_tx.put(envelope);
+    _ = try forged_transaction_tx.commit();
+    var object_commit_index: usize = 0;
+    while (object_commit_index < forged_transaction_vault.chronicle_events.items.len and
+        forged_transaction_vault.chronicle_events.items[object_commit_index].kind != .object_committed)
+    {
+        object_commit_index += 1;
+    }
+    try std.testing.expect(object_commit_index < forged_transaction_vault.chronicle_events.items.len);
+    forged_transaction_vault.chronicle_events.items[object_commit_index].transaction_fingerprint = forged_transaction_tx.transaction_fingerprint +% 1;
+    forged_transaction_vault.chronicle_events.items[object_commit_index].event_fingerprint = Continuity.fingerprintChronicleEvent(forged_transaction_vault.chronicle_events.items[object_commit_index]);
+    @constCast(forged_transaction_vault.chronicle_commits.items[0].committed_event_fingerprints)[0] = forged_transaction_vault.chronicle_events.items[object_commit_index].event_fingerprint;
+    forged_transaction_vault.chronicle_cursor = Continuity.Chronicle.Cursor.initial()
+        .advance(&.{forged_transaction_vault.chronicle_events.items[0].event_fingerprint}, 0, 0)
+        .advance(forged_transaction_vault.chronicle_commits.items[0].committed_event_fingerprints, forged_transaction_vault.chronicle_commits.items[0].committed_object_refs.len, 1);
+    forged_transaction_vault.chronicle_commits.items[0].resulting_cursor_fingerprint = forged_transaction_vault.chronicle_cursor.cursor_fingerprint;
+    forged_transaction_vault.chronicle_commits.items[0].commit_fingerprint = Continuity.fingerprintChronicleCommit(forged_transaction_vault.chronicle_commits.items[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Chronicle.replay(&forged_transaction_vault, .{}));
 
     const unauthenticated_backing = Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_manifest,
