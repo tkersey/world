@@ -470,6 +470,44 @@ test "archive writer append allocation failure rolls back bytes" {
     try std.testing.expect(induced_failures > 0);
 }
 
+test "archive append rejects object committed event order mismatch" {
+    const first = archiveEnvelope(.capsule_image, "order-mismatch-first", "order-mismatch-first");
+    const second = archiveEnvelope(.capsule_manifest, "order-mismatch-second", "order-mismatch-second");
+    const first_ref = first.objectRef();
+    const second_ref = second.objectRef();
+    const event_refs = [_]world.Continuity.ObjectRef{ first_ref, second_ref };
+    const transaction_fingerprint = 0xFEED;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &event_refs,
+        .target_ref = second_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, event_refs.len, 1);
+    const commit_refs = [_]world.Continuity.ObjectRef{ second_ref, first_ref };
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &commit_refs,
+        .committed_event_fingerprints = &fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{ first, second };
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+}
+
 test "archive multi-object transactions preserve commit ref order" {
     var first = archiveEnvelope(.capsule_image, "order-first", "order-first");
     var second = archiveEnvelope(.capsule_manifest, "order-second", "order-second");
@@ -493,6 +531,29 @@ test "archive multi-object transactions preserve commit ref order" {
     try std.testing.expectEqual(@as(usize, 2), moment.committed_object_refs.len);
     try std.testing.expect(moment.committed_object_refs[0].eql(first_ref));
     try std.testing.expect(moment.committed_object_refs[1].eql(second_ref));
+}
+
+test "archive append rejects cross-moment object ref conflicts" {
+    const first = archiveEnvelope(.capsule_image, "same-ref", "same-ref");
+    const dep = archiveEnvelope(.capsule_manifest, "dependency", "dependency").objectRef();
+    const deps = [_]world.Continuity.ObjectRef{dep};
+    const conflicting = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .payload_bytes = "same-ref",
+        .label = "same-ref",
+        .dependency_refs = &deps,
+    });
+    try std.testing.expect(first.objectRef().eql(conflicting.objectRef()));
+    try std.testing.expect(first.envelope_fingerprint != conflicting.envelope_fingerprint);
+
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    const first_moment = try commitArchiveObject(&archive, first);
+
+    var tx = try archive.begin(first_moment.chronicle_resulting_cursor, .{});
+    defer tx.deinit();
+    _ = try tx.putObject(conflicting);
+    try std.testing.expectError(error.DuplicateBinding, tx.commit());
 }
 
 test "archive replay report owns source moment" {

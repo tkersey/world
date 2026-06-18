@@ -451,16 +451,17 @@ pub fn Archive(comptime World: type) type {
                     try event.validate();
                     if (event.event_fingerprint != moment_expected or event.event_fingerprint != commit_expected) return error.InvalidFrameEncoding;
                 }
+                var committed_ref_index: usize = 0;
                 for (self.events) |event| {
                     if (event.kind != .object_committed) continue;
                     if (event.transaction_fingerprint != self.commit.transaction_fingerprint) return error.InvalidFrameEncoding;
                     for (event.object_refs) |ref| {
-                        if (!containsRef(self.commit.committed_object_refs, ref)) return error.InvalidFrameEncoding;
+                        if (committed_ref_index >= self.commit.committed_object_refs.len) return error.InvalidFrameEncoding;
+                        if (!ref.eql(self.commit.committed_object_refs[committed_ref_index])) return error.InvalidFrameEncoding;
+                        committed_ref_index += 1;
                     }
                 }
-                for (self.commit.committed_object_refs) |ref| {
-                    if (!objectCommitEventsContainRef(self.events, ref)) return error.InvalidFrameEncoding;
-                }
+                if (committed_ref_index != self.commit.committed_object_refs.len) return error.InvalidFrameEncoding;
                 for (self.objects) |envelope| {
                     try envelope.validate();
                     const ref = envelope.objectRef();
@@ -1158,6 +1159,7 @@ pub fn Archive(comptime World: type) type {
             pub fn append(self: *@This(), batch: AppendBatch, parent_moment: ?Moment, parent_seal: ?Seal) !Seal {
                 if (!self.header_written) try self.writeHeader(Header.init(.{}));
                 try batch.validate();
+                try self.rejectObjectConflicts(batch.objects);
                 var event_fingerprints: std.ArrayList(u64) = .empty;
                 defer event_fingerprints.deinit(self.allocator);
                 for (batch.events) |event| try event_fingerprints.append(self.allocator, event.event_fingerprint);
@@ -1225,6 +1227,13 @@ pub fn Archive(comptime World: type) type {
                 try self.bytes.appendSlice(self.allocator, seal_payload.items);
                 append_pending = false;
                 return seal;
+            }
+
+            fn rejectObjectConflicts(self: *@This(), objects: []const ObjectEnvelope) !void {
+                var reader = Reader.init(self.allocator, self.bytes.items, self.limits);
+                var image = try reader.readImage();
+                defer image.deinit();
+                try rejectConflictingObjectBytesAcross(image.objects, objects);
             }
 
             pub fn toOwnedBytes(self: *@This()) ![]u8 {
@@ -2317,6 +2326,15 @@ pub fn Archive(comptime World: type) type {
             }
         }
 
+        fn rejectConflictingObjectBytesAcross(existing: []const ObjectEnvelope, incoming: []const ObjectEnvelope) !void {
+            for (incoming) |object| {
+                const ref = object.objectRef();
+                for (existing) |candidate| {
+                    if (candidate.objectRef().eql(ref) and candidate.envelope_fingerprint != object.envelope_fingerprint) return error.DuplicateBinding;
+                }
+            }
+        }
+
         fn collectDependencyRefs(allocator: std.mem.Allocator, objects: []const ObjectEnvelope) ![]ObjectRef {
             var refs: std.ArrayList(ObjectRef) = .empty;
             errdefer deinitRefList(&refs, allocator);
@@ -2346,10 +2364,6 @@ pub fn Archive(comptime World: type) type {
                 if (event.kind == .object_committed and containsRef(event.object_refs, ref)) return true;
             }
             return false;
-        }
-
-        fn objectCommitEventsContainRef(events: []const Chronicle.Event, ref: ObjectRef) bool {
-            return stagedEventsAlreadyCommitRef(events, ref);
         }
 
         fn commitRefMatchesCommit(ref: CommitRef, commit: Chronicle.Commit) bool {
