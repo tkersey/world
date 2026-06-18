@@ -1,0 +1,6 @@
+zig fmt --check src/world.zig: pass
+zig build test --summary none -- --test-filter "projection": pass
+zig build test --summary none -- --test-filter "idempotency registry": pass
+zig build test --summary none -- --test-filter "chronicle": pass
+zig build test --summary none -- --test-filter "continuity": pass
+zig build test --summary none -- --test-filter "actuation index": pass

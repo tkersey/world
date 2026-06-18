@@ -870,6 +870,83 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-chronicle-capsule-commit",
+            .path = "examples/world_chronicle_capsule_commit.zig",
+            .step = "run-world-chronicle-capsule-commit",
+            .desc = "Run the World Chronicle capsule commit example.",
+            .expected_stdout =
+            \\capsule_ref=886e63b600519640
+            \\commit_fingerprint=266537d0d9985584
+            \\cursor_fingerprint=ee986c0353dced7a
+            \\final_result=chronicle-capsule-commit-ok
+            \\
+            ,
+        },
+        .{
+            .name = "world-chronicle-actuation-idempotency",
+            .path = "examples/world_chronicle_actuation_idempotency.zig",
+            .step = "run-world-chronicle-actuation-idempotency",
+            .desc = "Run the World Chronicle actuation idempotency example.",
+            .expected_stdout =
+            \\idempotency_key=e3245b76f64e8a52
+            \\first_receipt_ref=b9f7c4e98ad23f57
+            \\duplicate_fresh_rejected=true
+            \\replay_fresh_called=false
+            \\
+            ,
+        },
+        .{
+            .name = "world-chronicle-replay-projection",
+            .path = "examples/world_chronicle_replay_projection.zig",
+            .step = "run-world-chronicle-replay-projection",
+            .desc = "Run the World Chronicle replay projection example.",
+            .expected_stdout =
+            \\event_count=7
+            \\replay_report_fingerprint=8570ccebf5923c4
+            \\projection_match=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-chronicle-bundle-inbox",
+            .path = "examples/world_chronicle_bundle_inbox.zig",
+            .step = "run-world-chronicle-bundle-inbox",
+            .desc = "Run the World Chronicle bundle inbox example.",
+            .expected_stdout =
+            \\outbound_envelope_ref=4b8a94ac7e375cdb
+            \\inbound_envelope_ref=eda78eed6788f67b
+            \\accepted=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-chronicle-recovery",
+            .path = "examples/world_chronicle_recovery.zig",
+            .step = "run-world-chronicle-recovery",
+            .desc = "Run the World Chronicle recovery example.",
+            .expected_stdout =
+            \\recovery_plan_fingerprint=85fbb1357f6fc888
+            \\recovery_report_fingerprint=325cc2b1f78b59f0
+            \\restored=true
+            \\final_result=chronicle-recovery-ok
+            \\
+            ,
+        },
+        .{
+            .name = "world-chronicle-agent-evidence",
+            .path = "examples/world_chronicle_agent_evidence.zig",
+            .step = "run-world-chronicle-agent-evidence",
+            .desc = "Run the World Chronicle agent evidence example.",
+            .expected_stdout =
+            \\capsule_ref=886e63b600519640
+            \\model_receipt_count=1
+            \\tool_receipt_count=1
+            \\bundle_fingerprint=7aba34a125bdc7b4
+            \\projection_replay=true
+            \\
+            ,
+        },
+        .{
             .name = "world-supervised-budget",
             .path = "examples/world_supervised_budget.zig",
             .step = "run-world-supervised-budget",

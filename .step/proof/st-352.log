@@ -1,0 +1,11 @@
+st-352 full proof closeout after replay-backing fix
+zig version: 0.16.0
+zig fmt --check build.zig src examples test: PASS
+git diff --check: PASS
+zig build --summary all: PASS (8/8 steps, 582/582 tests)
+zig build check --summary all: PASS (218/218 steps, 582/582 tests, existing and Chronicle examples)
+zig build world-wasm: PASS
+zig build check-world-wasm: PASS
+focused Chronicle/session/projection/recovery/inbox/outbox filters: PASS
+zig build lint -- --max-warnings 0: PASS
+st assert-projection --target codex: PASS

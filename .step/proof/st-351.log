@@ -1,0 +1,9 @@
+st-351 examples docs build proof
+zig fmt --check build.zig src examples test: PASS
+zig build run-world-chronicle-capsule-commit: PASS
+zig build run-world-chronicle-actuation-idempotency: PASS
+zig build run-world-chronicle-replay-projection: PASS
+zig build run-world-chronicle-bundle-inbox: PASS
+zig build run-world-chronicle-recovery: PASS
+zig build run-world-chronicle-agent-evidence: PASS
+zig build test --summary none -- --test-filter "chronicle": PASS

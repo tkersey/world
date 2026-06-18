@@ -41352,6 +41352,56 @@ test "fabric-covered replay admission requires transcript evidence" {
     try std.testing.expectError(error.InvalidPendingPortTransition, adapter_actuation_install.fail(0, "admitted adapter direct fail bypass"));
     try std.testing.expectEqual(world.Runspace.PendingStatus.pending, (try adapter_actuation_install.mailbox.get(0)).status);
 
+    const empty_fabric_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = PortsActuationOnlyEnv.import_set.import_set_fingerprint,
+    });
+    const direct_actuation_with_empty_fabric_image = world.RunImage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .import_set_fingerprint = PortsActuationOnlyEnv.import_set.import_set_fingerprint,
+        .current_state = direct_actuation_state,
+        .pending_request_frame = direct_actuation_request,
+        .environment_certificate_fingerprint = PortsActuationOnlyEnv.certificate(.fresh, false).certificate_fingerprint,
+        .acceptance_report_fingerprint = PortsActuationOnlyEnv.acceptanceReportWithFabricPlan(.fresh, false, empty_fabric_plan).report_fingerprint,
+    });
+    const direct_actuation_with_empty_fabric_package = world.Admission.TransferPackage.init(.{
+        .kind = .parked_run,
+        .target_ref = parent_ref,
+        .run_image = direct_actuation_with_empty_fabric_image,
+        .requested_mode = .resume_parked,
+    });
+    const direct_actuation_empty_fabric_permit = world.Supervision.issue(fixtures.Ports.Target, PortsActuationOnlyEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = empty_fabric_plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_handoff_accept = true,
+            .allow_fabric_routes = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+        }),
+    });
+    var direct_actuation_empty_fabric_result = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = world.Admission.AdmissionPolicy.test_fixture,
+    }).admitForTarget(fixtures.Ports.Target, PortsActuationOnlyEnv, direct_actuation_with_empty_fabric_package, .{
+        .fabric_plan = empty_fabric_plan,
+        .permit = direct_actuation_empty_fabric_permit,
+    });
+    defer direct_actuation_empty_fabric_result.deinit(std.testing.allocator);
+    try std.testing.expect(direct_actuation_empty_fabric_result.report.accepted);
+    var direct_actuation_empty_fabric_install = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer direct_actuation_empty_fabric_install.deinit();
+    _ = try direct_actuation_empty_fabric_install.installAdmitted(direct_actuation_empty_fabric_result.admitted_run.?);
+    const direct_empty_fabric_pending = try direct_actuation_empty_fabric_install.mailbox.get(0);
+    try std.testing.expectEqual(@as(?u64, direct_actuation_binding.binding_fingerprint), direct_empty_fabric_pending.actuation_binding_fingerprint);
+    try std.testing.expectEqual(@as(?u64, direct_actuation_binding.descriptor_fingerprint), direct_empty_fabric_pending.actuation_descriptor_fingerprint);
+    try std.testing.expectEqual(@as(?u64, direct_actuation_binding.actuator_ref_fingerprint), direct_empty_fabric_pending.actuator_ref_fingerprint);
+    try std.testing.expectError(error.InvalidPendingPortTransition, direct_actuation_empty_fabric_install.reject(0, "admitted empty fabric direct reject bypass"));
+
     const direct_actuation_budget_permit = world.Supervision.issue(fixtures.Ports.Target, PortsActuationOnlyEnv, .{
         .mode = .fresh,
         .policy = direct_actuation_permit.policy,
