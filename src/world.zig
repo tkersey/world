@@ -34048,11 +34048,7 @@ pub const Continuity = struct {
             if (envelope_ref.eql(ref)) return envelope_ref;
         }
         if (ref.byte_len != 0) return null;
-        for (vault.objects.items) |envelope| {
-            const envelope_ref = envelope.objectRef();
-            if (envelope_ref.kind == ref.kind and envelope_ref.object_fingerprint == ref.object_fingerprint) return envelope_ref;
-        }
-        return null;
+        return try vault.refByKindFingerprint(ref.kind, ref.object_fingerprint);
     }
 
     fn replayCursorAdvanceEvent(cursor: Chronicle.Cursor, event: Chronicle.Event) Chronicle.Cursor {
@@ -37812,6 +37808,26 @@ test "continuity session stores capsule and actuation receipt through chronicle 
     try std.testing.expect(vault.has(receipt_ref));
     try std.testing.expectEqual(@as(usize, 2), session.committed_transaction_count);
     try std.testing.expectEqual(@as(usize, 2), vault.commitCount());
+}
+
+test "chronicle session export resolves semantic committed capsule roots" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+    var session = try Continuity.Session.init(allocator, &vault, Continuity.PersistPolicy.full_local_evidence());
+
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    var image = try Capsule.freezeRunspace(&runspace, .{});
+    defer image.deinit(allocator);
+
+    const stored_ref = try session.storeCapsule(image);
+    const semantic_ref = Continuity.semanticObjectRef(.capsule_image, image.image_fingerprint);
+    try std.testing.expect(vault.has(semantic_ref));
+
+    var bundle = try session.exportBundle(&.{semantic_ref});
+    defer bundle.deinit();
+    try std.testing.expect(bundle.manifest.roots[0].eql(stored_ref));
 }
 
 test "actuation session idempotency rebuild deinitializes with vault allocator" {
