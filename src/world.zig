@@ -30525,6 +30525,7 @@ pub const Continuity = struct {
             if (!receiptIsTerminalFreshCommit(receipt)) return;
             for (self.objects.items) |envelope| {
                 if (envelope.kind != .actuation_receipt) continue;
+                if (!try chronicleCommittedObjectRefExists(&self, envelope.objectRef())) continue;
                 var existing = try Actuation.Receipt.decode(self.allocator, envelope.payload_bytes);
                 defer existing.deinit(self.allocator);
                 if (!receiptIsTerminalFreshCommit(existing)) continue;
@@ -32293,10 +32294,12 @@ pub const Continuity = struct {
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 const matches = image.manifest.root_target_ref_fingerprint == target_ref_fingerprint;
                 image.deinit(self.vault.allocator);
-                if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
+                if (matches) try refs.append(self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -32306,10 +32309,12 @@ pub const Continuity = struct {
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 const matches = image.manifest.root_module_ref_fingerprint == module_ref_fingerprint;
                 image.deinit(self.vault.allocator);
-                if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
+                if (matches) try refs.append(self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -32323,13 +32328,15 @@ pub const Continuity = struct {
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 const matches = if (image.runspace_image.run_slots.len != 0)
                     capsuleAllSlotsCompleted(image.runspace_image.run_slots)
                 else
                     image.manifest.normal_form == .quiescent_completed or image.manifest.kind == .completed_assembly;
                 image.deinit(self.vault.allocator);
-                if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
+                if (matches) try refs.append(self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -32347,12 +32354,14 @@ pub const Continuity = struct {
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 const matches = image.manifest.active_fabric_invocation_count != 0 or
                     image.runspace_image.active_fabric_invocation_refs.len != 0 or
                     (image.fabric_image != null and image.fabric_image.?.active_invocation_fingerprints.len != 0);
                 image.deinit(self.vault.allocator);
-                if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
+                if (matches) try refs.append(self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -32362,10 +32371,12 @@ pub const Continuity = struct {
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 defer image.deinit(self.vault.allocator);
                 const has_unresolved_intent = try capsuleHasUnresolvedActuationIntent(self.vault, image);
-                if (has_unresolved_intent) try refs.append(self.vault.allocator, envelope.objectRef());
+                if (has_unresolved_intent) try refs.append(self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -32375,11 +32386,13 @@ pub const Continuity = struct {
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 defer image.deinit(self.vault.allocator);
                 const matches = try capsuleHasTerminalActuationReceipt(self.vault, image) or
                     try capsuleHasTerminalActuationJournal(self.vault, image);
-                if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
+                if (matches) try refs.append(self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -32389,10 +32402,12 @@ pub const Continuity = struct {
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 const matches = image.link_image != null and image.manifest.assembly_fingerprint != null;
                 image.deinit(self.vault.allocator);
-                if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
+                if (matches) try refs.append(self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -32402,6 +32417,8 @@ pub const Continuity = struct {
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 var matches = false;
                 for (image.runspace_image.run_slots) |slot| {
@@ -32412,7 +32429,7 @@ pub const Continuity = struct {
                 }
                 if (!matches and status == .parked_on_port) matches = image.manifest.pending_port_count != 0;
                 image.deinit(self.vault.allocator);
-                if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
+                if (matches) try refs.append(self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -32422,6 +32439,8 @@ pub const Continuity = struct {
             errdefer refs.deinit(self.vault.allocator);
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .capsule_image) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var image = try Capsule.Image.decode(self.vault.allocator, envelope.payload_bytes);
                 var matches = false;
                 for (image.runspace_image.run_slots) |slot| {
@@ -32432,7 +32451,7 @@ pub const Continuity = struct {
                 }
                 if (!matches) matches = image.manifest.pending_port_count != 0;
                 image.deinit(self.vault.allocator);
-                if (matches) try refs.append(self.vault.allocator, envelope.objectRef());
+                if (matches) try refs.append(self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -32637,11 +32656,13 @@ pub const Continuity = struct {
             }
             for (self.vault.objects.items) |envelope| {
                 if (envelope.kind != .actuation_receipt) continue;
+                const ref = envelope.objectRef();
+                if (!try chronicleCommittedObjectRefExists(self.vault, ref)) continue;
                 var receipt = try Actuation.Receipt.decode(self.vault.allocator, envelope.payload_bytes);
                 const matches = receipt.capsule_fingerprint == object_fingerprint or
                     (image_fingerprint != null and receipt.capsule_fingerprint == image_fingerprint.?);
                 receipt.deinit(self.vault.allocator);
-                if (matches) try appendUniqueRef(&refs, self.vault.allocator, envelope.objectRef());
+                if (matches) try appendUniqueRef(&refs, self.vault.allocator, ref);
             }
             return refs.toOwnedSlice(self.vault.allocator);
         }
@@ -34278,7 +34299,7 @@ pub const Continuity = struct {
 
     fn chronicleCommittedRefByKindFingerprint(vault: *const Continuity.MemoryVault, kind: ObjectKind, fingerprint: u64) !?ObjectRef {
         const ref = (try vault.refByKindFingerprint(kind, fingerprint)) orelse return null;
-        if (try chronicleCommittedObjectRefExistsInAuthenticatedEvents(vault, ref)) return ref;
+        if (try chronicleCommittedObjectRefExists(vault, ref)) return ref;
         return null;
     }
 
@@ -37046,6 +37067,7 @@ pub const Continuity = struct {
     fn capsuleReceiptListHasTerminalFreshCommit(vault: *Continuity.MemoryVault, receipt_fingerprints: []const u64) !bool {
         for (receipt_fingerprints) |receipt_fingerprint| {
             const receipt_ref = (try vault.refByKindFingerprint(.actuation_receipt, receipt_fingerprint)) orelse continue;
+            if (!try chronicleCommittedObjectRefExists(vault, receipt_ref)) continue;
             var receipt = vault.getActuationReceipt(receipt_ref) catch |err| switch (err) {
                 error.ObjectMissing => continue,
                 else => return err,
@@ -37059,6 +37081,7 @@ pub const Continuity = struct {
     fn capsuleReceiptListResolvesIntent(vault: *Continuity.MemoryVault, receipt_fingerprints: []const u64, intent_fingerprint: u64) !bool {
         for (receipt_fingerprints) |receipt_fingerprint| {
             const receipt_ref = (try vault.refByKindFingerprint(.actuation_receipt, receipt_fingerprint)) orelse continue;
+            if (!try chronicleCommittedObjectRefExists(vault, receipt_ref)) continue;
             var receipt = vault.getActuationReceipt(receipt_ref) catch |err| switch (err) {
                 error.ObjectMissing => continue,
                 else => return err,
@@ -44482,6 +44505,174 @@ test "capsule index finds target completed pending committed and relink capsules
     defer Continuity.freeRefSlice(allocator, runspace_only_intents);
     try std.testing.expectEqual(@as(usize, 1), runspace_only_intents.len);
     try std.testing.expectEqual(runspace_only_intent, runspace_only_intents[0].object_fingerprint);
+}
+
+test "capsule and actuation indexes ignore raw ahead-of-cursor objects" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    var runspace = Runspace.init(allocator, .{});
+    defer runspace.deinit();
+    var image = try Capsule.freezeRunspace(&runspace, .{});
+    defer image.deinit(allocator);
+    const capsule_ref = try vault.putCapsule(image);
+
+    const raw_capsule = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = image.manifest.root_target_ref_fingerprint,
+            .root_module_ref_fingerprint = 0x3302_0001,
+            .normal_form = .quiescent_completed,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3302_0002,
+            .runspace_report_fingerprint = 0x3302_0003,
+        }),
+    });
+    const raw_capsule_payload = try raw_capsule.encode(allocator);
+    defer allocator.free(raw_capsule_payload);
+    const raw_capsule_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = raw_capsule.format_version,
+        .payload_bytes = raw_capsule_payload,
+        .label = "raw capsule",
+    });
+    const raw_capsule_ref = raw_capsule_envelope.objectRef();
+    try vault.objects.append(allocator, try raw_capsule_envelope.clone(allocator));
+
+    const raw_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3302_0010,
+        .envelope_fingerprint = 0x3302_0011,
+        .decision_fingerprint = 0x3302_0012,
+        .commit_fingerprint = 0x3302_0013,
+        .response_fingerprint = 0x3302_0014,
+        .frame_response_fingerprint = 0x3302_0015,
+        .actuator_ref_fingerprint = 0x3302_0016,
+        .idempotency_key_fingerprint = 0x3302_0017,
+        .request_fingerprint = 0x3302_0018,
+        .target_ref_fingerprint = 0x3302_0019,
+        .world_surface_fingerprint = 0x3302_001a,
+        .world_port_id = 7,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+        .capsule_fingerprint = image.image_fingerprint,
+    });
+    const raw_receipt_payload = try raw_receipt.encode(allocator);
+    defer allocator.free(raw_receipt_payload);
+    const raw_receipt_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = raw_receipt.format_version,
+        .payload_bytes = raw_receipt_payload,
+        .label = "raw receipt",
+    });
+    try vault.objects.append(allocator, try raw_receipt_envelope.clone(allocator));
+
+    const receipt_claim_image = Capsule.Image.init(.{
+        .manifest = Capsule.Manifest.init(.{
+            .kind = .completed_assembly,
+            .root_target_ref_fingerprint = 0x3302_0020,
+            .actuation_receipt_fingerprints = &.{raw_receipt.receipt_fingerprint},
+            .normal_form = .quiescent_completed,
+        }),
+        .runspace_image = Capsule.RunspaceImage.init(.{
+            .runspace_fingerprint = 0x3302_0021,
+            .runspace_report_fingerprint = 0x3302_0022,
+            .actuation_receipt_refs = &.{raw_receipt.receipt_fingerprint},
+        }),
+        .actuation_receipt_refs = &.{raw_receipt.receipt_fingerprint},
+    });
+    const receipt_claim_ref = try vault.putCapsule(receipt_claim_image);
+
+    const capsule_index = Continuity.CapsuleIndex.init(&vault);
+    const by_target = try capsule_index.capsulesByTarget(image.manifest.root_target_ref_fingerprint);
+    defer allocator.free(by_target);
+    try std.testing.expectEqual(@as(usize, 1), by_target.len);
+    try std.testing.expect(by_target[0].eql(capsule_ref));
+
+    const by_module = try capsule_index.capsulesByModule(0x3302_0001);
+    defer allocator.free(by_module);
+    try std.testing.expectEqual(@as(usize, 0), by_module.len);
+
+    const completed = try capsule_index.completedCapsules();
+    defer allocator.free(completed);
+    const completed_has_raw = for (completed) |ref| {
+        if (ref.eql(raw_capsule_ref)) break true;
+    } else false;
+    try std.testing.expect(!completed_has_raw);
+
+    const committed = try capsule_index.committedActuationCapsules();
+    defer allocator.free(committed);
+    const committed_has_receipt_claim = for (committed) |ref| {
+        if (ref.eql(receipt_claim_ref)) break true;
+    } else false;
+    try std.testing.expect(!committed_has_receipt_claim);
+
+    const actuation_index = Continuity.ActuationIndex.init(&vault);
+    const by_capsule = try actuation_index.receiptsByCapsule(capsule_ref);
+    defer allocator.free(by_capsule);
+    try std.testing.expectEqual(@as(usize, 0), by_capsule.len);
+}
+
+test "direct actuation receipt duplicate checks ignore raw ahead-of-cursor receipts" {
+    const allocator = std.testing.allocator;
+    var vault = Continuity.MemoryVault.init(allocator);
+    defer vault.deinit();
+
+    const key = Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x3303_0001,
+        .world_surface_fingerprint = 0x3303_0002,
+        .world_port_id = 11,
+        .request_fingerprint = 0x3303_0003,
+        .actuator_ref_fingerprint = 0x3303_0004,
+    });
+    const raw_conflict = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3303_0010,
+        .envelope_fingerprint = 0x3303_0011,
+        .decision_fingerprint = 0x3303_0012,
+        .commit_fingerprint = 0x3303_0013,
+        .response_fingerprint = 0x3303_0014,
+        .frame_response_fingerprint = 0x3303_0015,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const raw_conflict_payload = try raw_conflict.encode(allocator);
+    defer allocator.free(raw_conflict_payload);
+    const raw_conflict_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = raw_conflict.format_version,
+        .payload_bytes = raw_conflict_payload,
+        .label = "raw conflicting receipt",
+    });
+    try vault.objects.append(allocator, try raw_conflict_envelope.clone(allocator));
+
+    const committed_receipt = Actuation.Receipt.init(.{
+        .intent_fingerprint = 0x3303_0020,
+        .envelope_fingerprint = 0x3303_0021,
+        .decision_fingerprint = 0x3303_0022,
+        .commit_fingerprint = 0x3303_0023,
+        .response_fingerprint = 0x3303_0024,
+        .frame_response_fingerprint = 0x3303_0025,
+        .actuator_ref_fingerprint = key.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .request_fingerprint = key.request_fingerprint,
+        .target_ref_fingerprint = key.target_ref_fingerprint,
+        .world_surface_fingerprint = key.world_surface_fingerprint,
+        .world_port_id = key.world_port_id,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const committed_ref = try vault.putActuationReceipt(committed_receipt);
+    try std.testing.expect(vault.has(committed_ref));
 }
 
 test "capsule graph treats unresolved intents as pending despite other receipts" {
