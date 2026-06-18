@@ -160,6 +160,45 @@ test "archive partial final seal is not committed" {
     try std.testing.expectEqual(@as(usize, 1), recovery.recovered_moment_count);
 }
 
+test "archive recovery discards complete moment data followed by non-seal segment" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "first-sealed", "first-sealed"));
+    const first_len = archive.bytesView().len;
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_manifest, "second-unsealed", "second-unsealed"));
+    const second_data_end = try archiveSecondMomentDataEnd(archive.bytesView());
+
+    var damaged: std.ArrayList(u8) = .empty;
+    defer damaged.deinit(std.testing.allocator);
+    try damaged.appendSlice(std.testing.allocator, archive.bytesView()[0..second_data_end]);
+    try appendArchiveOptionalExtension(std.testing.allocator, &damaged, 2, "valid-non-seal-tail");
+
+    const reader = world.Archive.Reader.init(std.testing.allocator, damaged.items, .{});
+    var recovery = try reader.recover();
+    defer recovery.deinit(std.testing.allocator);
+    try std.testing.expectEqual(first_len, recovery.committed_prefix_byte_len);
+    try std.testing.expectEqual(damaged.items.len - first_len, recovery.discarded_tail_byte_len);
+    try std.testing.expectEqual(@as(usize, 1), recovery.recovered_moment_count);
+}
+
+test "archive recovery latest cursor is bound to cloned latest moment" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const moment = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "cursor-owned", "cursor-owned"));
+    const reader = world.Archive.Reader.init(std.testing.allocator, archive.bytesView(), .{});
+    var recovery = try reader.recover();
+    defer recovery.deinit(std.testing.allocator);
+
+    try std.testing.expect(recovery.latest_moment != null);
+    try std.testing.expectEqual(moment.moment_fingerprint, recovery.latest_moment.?.moment_fingerprint);
+    try std.testing.expectEqual(
+        recovery.latest_moment.?.chronicle_resulting_cursor.cursor_fingerprint,
+        recovery.latest_cursor.cursor_fingerprint,
+    );
+}
+
 test "archive snapshot reads historical prefix and replay binds cursor" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
@@ -1521,6 +1560,30 @@ fn refSliceContains(refs: []const world.Continuity.ObjectRef, needle: world.Cont
         if (ref.eql(needle)) return true;
     }
     return false;
+}
+
+fn archiveSecondMomentDataEnd(bytes: []const u8) !usize {
+    var cursor: usize = archive_header_encoded_len;
+    cursor = try nextArchiveSegmentOffset(bytes, cursor);
+    cursor = try nextArchiveSegmentOffset(bytes, cursor);
+    return nextArchiveSegmentOffset(bytes, cursor);
+}
+
+const archive_header_encoded_len: usize = 80;
+const archive_segment_header_encoded_len: usize = 46;
+const archive_segment_payload_len_offset: usize = 22;
+
+fn nextArchiveSegmentOffset(bytes: []const u8, segment_start: usize) !usize {
+    if (bytes.len < segment_start + archive_segment_header_encoded_len) return error.InvalidFrameEncoding;
+    const payload_len = std.mem.readInt(
+        u64,
+        bytes[segment_start + archive_segment_payload_len_offset ..][0..8],
+        .little,
+    );
+    const payload_len_usize = std.math.cast(usize, payload_len) orelse return error.InvalidFrameEncoding;
+    const segment_len = archive_segment_header_encoded_len + payload_len_usize;
+    if (bytes.len - segment_start < segment_len) return error.InvalidFrameEncoding;
+    return segment_start + segment_len;
 }
 
 fn appendArchiveOptionalExtension(

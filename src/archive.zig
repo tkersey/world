@@ -1061,9 +1061,10 @@ pub fn Archive(comptime World: type) type {
                     var cleanup = moment;
                     cleanup.deinit(self.allocator);
                 };
+                const latest_cursor = if (latest_moment) |moment| moment.chronicle_resulting_cursor else Chronicle.Cursor.initial();
                 return .{
                     .latest_moment = latest_moment,
-                    .latest_cursor = image.latestCursor(),
+                    .latest_cursor = latest_cursor,
                     .recovered_moment_count = image.moments.len,
                     .recovered_commit_count = image.commits.len,
                     .recovered_object_count = image.objects.len,
@@ -1127,7 +1128,10 @@ pub fn Archive(comptime World: type) type {
                         if (!recoverableTailError(err)) return err;
                         break;
                     };
-                    if (seal_segment.header.segment_kind != .moment_seal or !seal_segment.header.required) return error.InvalidFrameEncoding;
+                    if (seal_segment.header.segment_kind != .moment_seal or !seal_segment.header.required) {
+                        cursor = moment_segment_start;
+                        break;
+                    }
                     if (seal_segment.header.sequence_number != data.moment.sequence_number) {
                         cursor = moment_segment_start;
                         break;
