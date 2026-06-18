@@ -1093,6 +1093,11 @@ pub fn Archive(comptime World: type) type {
                         cursor = moment_segment_start;
                         break;
                     };
+                    validateObjectDependenciesKnown(objects.items, data.objects) catch |err| {
+                        if (!recoverableTailError(err)) return err;
+                        cursor = moment_segment_start;
+                        break;
+                    };
 
                     const owned_moment = try data.moment.clone(self.allocator);
                     var owned_moment_pending = true;
@@ -1291,6 +1296,7 @@ pub fn Archive(comptime World: type) type {
                     return error.StaleProjection;
                 }
                 try validateDomainEventRefsKnown(batch.events, image.objects, batch.objects);
+                try validateObjectDependenciesKnown(image.objects, batch.objects);
             }
 
             fn rejectObjectConflicts(self: *@This(), objects: []const ObjectEnvelope) !void {
@@ -2581,6 +2587,15 @@ pub fn Archive(comptime World: type) type {
         fn validateKnownEventRef(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, ref: ObjectRef) !void {
             if (objectSliceContainsRef(current_objects, ref) or objectSliceContainsRef(prior_objects, ref)) return;
             return error.InvalidFrameEncoding;
+        }
+
+        fn validateObjectDependenciesKnown(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
+            for (current_objects) |object| {
+                for (object.dependency_refs) |dep| {
+                    if (objectSliceContainsRef(current_objects, dep) or objectSliceContainsRef(prior_objects, dep)) continue;
+                    return error.ObjectMissing;
+                }
+            }
         }
 
         fn recoverableTailError(err: anyerror) bool {

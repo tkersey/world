@@ -752,6 +752,48 @@ test "archive append rejects missing domain event refs" {
     try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
 }
 
+test "archive append rejects missing object dependencies" {
+    const missing_dep = archiveEnvelope(.capsule_manifest, "direct-missing-dep", "direct-missing-dep").objectRef();
+    const deps = [_]world.Continuity.ObjectRef{missing_dep};
+    const envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "direct-missing-dep-user",
+        .label = "direct-missing-dep-user",
+        .dependency_refs = &deps,
+    });
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const transaction_fingerprint = 0xD04B;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.ObjectMissing, writer.append(batch, null, null));
+}
+
 test "archive append rejects duplicate object payloads" {
     const envelope = archiveEnvelope(.capsule_image, "duplicate-payload", "duplicate-payload");
     const ref = envelope.objectRef();
