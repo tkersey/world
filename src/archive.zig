@@ -1471,7 +1471,7 @@ pub fn Archive(comptime World: type) type {
                             else => {},
                         }
                     }
-                    const tx_fingerprint = transactionFingerprint(latest, object_refs.items);
+                    const tx_fingerprint = transactionFingerprint(latest, object_refs.items, self.staged_events.items);
                     var normalized_events: std.ArrayList(Chronicle.Event) = .empty;
                     defer {
                         for (normalized_events.items) |*event| event.deinit(self.archive.allocator);
@@ -2691,6 +2691,10 @@ pub fn Archive(comptime World: type) type {
         }
 
         fn bindEventTransaction(event: Chronicle.Event, transaction_fingerprint: u64) Chronicle.Event {
+            return eventWithTransaction(event, transaction_fingerprint);
+        }
+
+        fn eventWithTransaction(event: Chronicle.Event, transaction_fingerprint: ?u64) Chronicle.Event {
             return Chronicle.Event.init(.{
                 .kind = event.kind,
                 .parent_event_fingerprints = event.parent_event_fingerprints,
@@ -2717,11 +2721,20 @@ pub fn Archive(comptime World: type) type {
             });
         }
 
-        fn transactionFingerprint(parent: Chronicle.Cursor, object_refs: []const ObjectRef) u64 {
+        fn transactionFingerprint(parent: Chronicle.Cursor, object_refs: []const ObjectRef, staged_events: []const Chronicle.Event) u64 {
             var hasher = std.hash.Wyhash.init(0);
             hashBytes(&hasher, "world.archive.transaction");
             hashU64(&hasher, parent.cursor_fingerprint);
             hashRefSlice(&hasher, object_refs);
+            var domain_event_count: usize = 0;
+            for (staged_events) |event| {
+                if (event.kind != .object_committed) domain_event_count += 1;
+            }
+            hashU64(&hasher, domain_event_count);
+            for (staged_events) |event| {
+                if (event.kind == .object_committed) continue;
+                hashU64(&hasher, eventWithTransaction(event, null).event_fingerprint);
+            }
             return hasher.final();
         }
 

@@ -1287,6 +1287,66 @@ test "archive transactions overwrite pre-bound domain event transaction" {
     try std.testing.expectEqual(moment.chronicle_commit_ref.transaction_fingerprint, events[1].transaction_fingerprint.?);
 }
 
+test "archive transaction fingerprint binds staged domain events" {
+    var first_archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer first_archive.deinit();
+    var second_archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer second_archive.deinit();
+    const envelope = archiveEnvelope(.bundle, "tx-event-bound", "tx-event-bound");
+
+    var first_tx = try first_archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer first_tx.deinit();
+    const first_ref = try first_tx.putObject(envelope);
+    try first_tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_started,
+        .bundle_ref = first_ref,
+    }));
+    const first_moment = try first_tx.commit();
+
+    var second_tx = try second_archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer second_tx.deinit();
+    const second_ref = try second_tx.putObject(envelope);
+    try second_tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_committed,
+        .bundle_ref = second_ref,
+    }));
+    const second_moment = try second_tx.commit();
+
+    try std.testing.expect(first_ref.eql(second_ref));
+    try std.testing.expect(first_moment.chronicle_commit_ref.transaction_fingerprint != second_moment.chronicle_commit_ref.transaction_fingerprint);
+}
+
+test "archive transaction fingerprint ignores pre-bound staged domain transaction" {
+    var first_archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer first_archive.deinit();
+    var second_archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer second_archive.deinit();
+    const envelope = archiveEnvelope(.bundle, "tx-event-prebound", "tx-event-prebound");
+
+    var first_tx = try first_archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer first_tx.deinit();
+    const first_ref = try first_tx.putObject(envelope);
+    try first_tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_committed,
+        .transaction_fingerprint = 0xA001,
+        .bundle_ref = first_ref,
+    }));
+    const first_moment = try first_tx.commit();
+
+    var second_tx = try second_archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer second_tx.deinit();
+    const second_ref = try second_tx.putObject(envelope);
+    try second_tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_committed,
+        .transaction_fingerprint = 0xA002,
+        .bundle_ref = second_ref,
+    }));
+    const second_moment = try second_tx.commit();
+
+    try std.testing.expect(first_ref.eql(second_ref));
+    try std.testing.expectEqual(first_moment.chronicle_commit_ref.transaction_fingerprint, second_moment.chronicle_commit_ref.transaction_fingerprint);
+}
+
 test "archive append rejects cross-moment object ref conflicts" {
     const first = archiveEnvelope(.capsule_image, "same-ref", "same-ref");
     const dep = archiveEnvelope(.capsule_manifest, "dependency", "dependency").objectRef();
