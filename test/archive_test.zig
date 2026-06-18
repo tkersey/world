@@ -263,7 +263,13 @@ test "archive append rejects stale batches before mutating bytes" {
     const envelope = archiveEnvelope(.capsule_manifest, "second", "second");
     const ref = envelope.objectRef();
     const refs = [_]world.Continuity.ObjectRef{ref};
-    const event = world.Continuity.Chronicle.Event.init(.{ .kind = .object_committed, .object_refs = &refs });
+    const transaction_fingerprint = 0xDAD;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
     const events = [_]world.Continuity.Chronicle.Event{event};
     const fingerprints = [_]u64{event.event_fingerprint};
     const resulting = stale_parent.advance(&fingerprints, refs.len, 1);
@@ -295,23 +301,25 @@ test "archive append allocation failure preserves canonical bytes" {
 
     var induced_failures: usize = 0;
     for (0..64) |fail_index| {
-        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
-            .fail_index = fail_index,
-        });
-        var reopened = world.Archive.Memory.reopenFrom(&archive, failing_allocator.allocator()) catch |err| switch (err) {
-            error.OutOfMemory => continue,
-            else => return err,
-        };
-        defer reopened.deinit();
-        const result = commitArchiveObject(&reopened, archiveEnvelope(.capsule_manifest, "oom", "oom"));
-        if (result) |moment| {
-            try moment.validate();
-        } else |err| switch (err) {
-            error.OutOfMemory => {
-                induced_failures += 1;
-                try std.testing.expectEqualSlices(u8, bytes_before, reopened.bytesView());
-            },
-            else => return err,
+        {
+            var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+                .fail_index = fail_index,
+            });
+            var reopened = world.Archive.Memory.reopenFrom(&archive, failing_allocator.allocator()) catch |err| switch (err) {
+                error.OutOfMemory => continue,
+                else => return err,
+            };
+            defer reopened.deinit();
+            const result = commitArchiveObject(&reopened, archiveEnvelope(.capsule_manifest, "oom", "oom"));
+            if (result) |moment| {
+                try moment.validate();
+            } else |err| switch (err) {
+                error.OutOfMemory => {
+                    induced_failures += 1;
+                    try std.testing.expectEqualSlices(u8, bytes_before, reopened.bytesView());
+                },
+                else => return err,
+            }
         }
     }
     try std.testing.expect(induced_failures > 0);
@@ -400,8 +408,66 @@ test "archive transactions synthesize object commit events" {
     try std.testing.expectEqual(@as(usize, 2), events.len);
     try std.testing.expectEqual(world.Continuity.Chronicle.EventKind.object_committed, events[0].kind);
     try std.testing.expect(refSliceContains(events[0].object_refs, ref));
-    const replay = try archive.replay();
+    var replay = try archive.replay();
+    defer replay.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), replay.mismatch_count);
+}
+
+test "archive writer append allocation failure rolls back bytes" {
+    const envelope = archiveEnvelope(.capsule_image, "writer-oom", "writer-oom");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const transaction_fingerprint = 0xDAD;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var induced_failures: usize = 0;
+    for (0..96) |fail_index| {
+        {
+            var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+                .fail_index = fail_index,
+            });
+            var writer = world.Archive.Writer.init(failing_allocator.allocator(), .{});
+            defer writer.deinit();
+            writer.writeHeader(world.Archive.Header.init(.{})) catch |err| switch (err) {
+                error.OutOfMemory => continue,
+                else => return err,
+            };
+            const len_before = writer.bytes.items.len;
+            if (writer.append(batch, null, null)) |_| {
+                continue;
+            } else |err| switch (err) {
+                error.OutOfMemory => {
+                    induced_failures += 1;
+                    try std.testing.expectEqual(len_before, writer.bytes.items.len);
+                },
+                else => return err,
+            }
+        }
+    }
+    try std.testing.expect(induced_failures > 0);
 }
 
 test "archive multi-object transactions preserve commit ref order" {
@@ -429,6 +495,29 @@ test "archive multi-object transactions preserve commit ref order" {
     try std.testing.expect(moment.committed_object_refs[1].eql(second_ref));
 }
 
+test "archive replay report owns source moment" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    var archive_active = true;
+    defer if (archive_active) archive.deinit();
+
+    {
+        var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+        defer tx.deinit();
+        const envelope = archiveEnvelope(.bundle, "owned-replay-report", "owned-replay-report");
+        const ref = try tx.putObject(envelope);
+        try tx.addEvent(world.Continuity.Chronicle.Event.init(.{ .kind = .bundle_import_committed, .bundle_ref = ref }));
+        _ = try tx.commit();
+    }
+
+    var report = try archive.replay();
+    defer report.deinit(std.testing.allocator);
+    try std.testing.expect(report.source_moment != null);
+    try std.testing.expect(report.source_moment.?.owns_memory);
+    archive.deinit();
+    archive_active = false;
+    try report.validate();
+}
+
 test "archive replay allocation failure keeps vault ownership singular" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
@@ -448,7 +537,9 @@ test "archive replay allocation failure keeps vault ownership singular" {
             defer reopened.deinit();
             const result = reopened.replay();
             if (result) |report| {
-                try report.validate();
+                var cleanup = report;
+                defer cleanup.deinit(failing_allocator.allocator());
+                try cleanup.validate();
             } else |err| switch (err) {
                 error.OutOfMemory => induced_failures += 1,
                 error.InvalidFrameEncoding => {},

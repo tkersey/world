@@ -668,6 +668,11 @@ pub fn Archive(comptime World: type) type {
                 if (self.source_moment) |moment| try moment.validate();
                 if (self.chronicle_report) |report| try report.validate();
             }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.source_moment) |*moment| moment.deinit(allocator);
+                self.* = undefined;
+            }
         };
 
         pub const Image = struct {
@@ -710,8 +715,13 @@ pub fn Archive(comptime World: type) type {
                 var vault = try self.materializeVault(self.allocator, if (self.moments.len == 0) null else self.moments.len - 1);
                 defer vault.deinit();
                 const chronicle_report = try Chronicle.replay(&vault, options);
+                const source_moment = if (self.latestMoment()) |moment| try moment.clone(self.allocator) else null;
+                errdefer if (source_moment) |moment| {
+                    var cleanup = moment;
+                    cleanup.deinit(self.allocator);
+                };
                 return ReplayReport.init(.{
-                    .source_moment = self.latestMoment(),
+                    .source_moment = source_moment,
                     .source_cursor = self.latestCursor(),
                     .chronicle_report = chronicle_report,
                     .replayed_commit_count = self.commits.len,
@@ -1006,7 +1016,8 @@ pub fn Archive(comptime World: type) type {
                         if (!recoverableTailError(err)) return err;
                         break;
                     };
-                    if (data.moment.sequence_number != expected_sequence or
+                    if (moment_segment.header.sequence_number != expected_sequence or
+                        data.moment.sequence_number != expected_sequence or
                         data.moment.parent_moment_fingerprint != parent_moment_fingerprint or
                         data.moment.parent_seal_fingerprint != parent_seal_fingerprint or
                         data.moment.chronicle_parent_cursor.cursor_fingerprint != expected_cursor.cursor_fingerprint)
@@ -1018,6 +1029,10 @@ pub fn Archive(comptime World: type) type {
                         break;
                     };
                     if (seal_segment.header.segment_kind != .moment_seal or !seal_segment.header.required) break;
+                    if (seal_segment.header.sequence_number != data.moment.sequence_number) {
+                        cursor = moment_segment_start;
+                        break;
+                    }
                     const seal = decodeSeal(seal_segment.payload) catch |err| {
                         if (!recoverableTailError(err)) return err;
                         break;
@@ -1184,6 +1199,8 @@ pub fn Archive(comptime World: type) type {
                     .payload = payload.items,
                 });
                 const data_segment_start = self.bytes.items.len;
+                var append_pending = true;
+                errdefer if (append_pending) self.bytes.shrinkRetainingCapacity(data_segment_start);
                 try encodeSegmentHeader(&self.bytes, self.allocator, data_header);
                 try self.bytes.appendSlice(self.allocator, payload.items);
                 const committed_prefix_len = self.bytes.items.len + segmentHeaderEncodedLen() + sealEncodedLen(parent_seal != null);
@@ -1206,6 +1223,7 @@ pub fn Archive(comptime World: type) type {
                 if (data_segment_start >= self.bytes.items.len) return error.InvalidFrameEncoding;
                 try encodeSegmentHeader(&self.bytes, self.allocator, seal_header);
                 try self.bytes.appendSlice(self.allocator, seal_payload.items);
+                append_pending = false;
                 return seal;
             }
 
@@ -1570,7 +1588,8 @@ pub fn Archive(comptime World: type) type {
                 defer reopened.deinit();
                 var recovery = try reopened.recover();
                 defer recovery.deinit(allocator);
-                const replay_report = try reopened.replay();
+                var replay_report = try reopened.replay();
+                defer replay_report.deinit(allocator);
                 try replay_report.validate();
                 const key_commit = try commitMemoryObject(&reopened, .actuation_idempotency_key, "idem-key", "idem-key");
                 var reopened_again = try Memory.reopenFrom(&reopened, allocator);
