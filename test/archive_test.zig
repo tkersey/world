@@ -370,6 +370,18 @@ test "archive latest moment returns borrowed ownership" {
     try std.testing.expect(archive.hasObject(archiveEnvelope(.capsule_image, "borrowed-moment", "borrowed-moment").objectRef()));
 }
 
+test "archive snapshot moment returns borrowed ownership" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    const committed = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "snapshot-borrowed", "snapshot-borrowed"));
+
+    var snapshot = try archive.openMoment(committed);
+    var moment = snapshot.moment();
+    try std.testing.expect(!moment.owns_memory);
+    moment.deinit(std.testing.allocator);
+    try std.testing.expect(archive.hasObject(archiveEnvelope(.capsule_image, "snapshot-borrowed", "snapshot-borrowed").objectRef()));
+}
+
 test "archive rejects non-canonical required segment flag" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
@@ -402,6 +414,18 @@ test "archive readEvents returns only requested commit events" {
     var invalid = first.chronicle_commit_ref;
     invalid.transaction_fingerprint +%= 1;
     try std.testing.expectError(error.ObjectMissing, archive.readEvents(invalid));
+}
+
+test "archive readCommit returns owned commit" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const moment = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "owned-commit", "owned-commit"));
+    var commit = try archive.readCommit(moment.chronicle_commit_ref);
+    defer commit.deinit(std.testing.allocator);
+    try std.testing.expect(commit.owns_memory);
+    try commit.validate();
+    try std.testing.expect(archive.hasObject(archiveEnvelope(.capsule_image, "owned-commit", "owned-commit").objectRef()));
 }
 
 test "archive transactions synthesize object commit events" {

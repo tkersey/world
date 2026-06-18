@@ -708,7 +708,9 @@ pub fn Archive(comptime World: type) type {
             pub fn openSnapshot(self: *const @This(), moment_ref: Moment) !Snapshot {
                 for (self.moments, 0..) |moment, index| {
                     if (moment.moment_fingerprint == moment_ref.moment_fingerprint) {
-                        return .{ .image = self, .moment_value = moment, .moment_index = index };
+                        var borrowed = moment;
+                        borrowed.owns_memory = false;
+                        return .{ .image = self, .moment_value = borrowed, .moment_index = index };
                     }
                 }
                 return error.ObjectMissing;
@@ -833,7 +835,9 @@ pub fn Archive(comptime World: type) type {
             }
 
             pub fn moment(self: @This()) Moment {
-                return self.moment_value;
+                var borrowed = self.moment_value;
+                borrowed.owns_memory = false;
+                return borrowed;
             }
 
             pub fn getObject(self: @This(), ref: ObjectRef) !ObjectEnvelope {
@@ -1501,7 +1505,7 @@ pub fn Archive(comptime World: type) type {
 
             pub fn readCommit(self: @This(), ref: CommitRef) !Chronicle.Commit {
                 for (self.image.commits) |commit| {
-                    if (commitRefMatchesCommit(ref, commit)) return commit;
+                    if (commitRefMatchesCommit(ref, commit)) return commit.clone(self.allocator);
                 }
                 return error.ObjectMissing;
             }
