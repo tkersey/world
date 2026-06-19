@@ -1160,6 +1160,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.latest_archive_cursor) |cursor| {
                     try cursor.validate();
                     if (cursor.metadata_bytes.len != 0) return error.InvalidFrameEncoding;
+                    if (self.latest_chronicle_cursor_fingerprint == null) return error.InvalidFrameEncoding;
                     if (self.latest_chronicle_cursor_fingerprint) |fingerprint| {
                         if (cursor.cursor_fingerprint != fingerprint) return error.InvalidFrameEncoding;
                     }
@@ -1443,6 +1444,8 @@ pub fn Appliance(comptime World: type) type {
                 if (self.status != .needs_host and self.host_requests.len != 0) return error.InvalidFrameEncoding;
                 if (self.quiescence.pending_host_request_count != self.checkpoint.outstanding_host_requests.len) return error.InvalidFrameEncoding;
                 if (self.quiescence.prepared_actuation_count != self.host_requests.len) return error.InvalidFrameEncoding;
+                if (self.quiescence.completed_run_count != if (self.status == .completed) @as(usize, 1) else @as(usize, 0)) return error.InvalidFrameEncoding;
+                if (self.quiescence.failed_run_count != if (self.status == .failed) @as(usize, 1) else @as(usize, 0)) return error.InvalidFrameEncoding;
                 for (self.host_requests, 0..) |request, index| {
                     try request.validate(capacity);
                     if (request.turn_sequence_number > self.turn_sequence_number) return error.InvalidFrameEncoding;
@@ -1473,6 +1476,7 @@ pub fn Appliance(comptime World: type) type {
                 }
                 if (self.run_receipt_fingerprint != self.turn_receipt.run_receipt_fingerprint) return error.InvalidFrameEncoding;
                 if (self.archive_append_batch_fingerprint != self.turn_receipt.archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
+                if (self.archive_append_batch_fingerprint != self.checkpoint.pending_archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
                 if (self.blocker_count != self.turn_receipt.blocker_count or self.blocker_count != self.quiescence.blocker_count) return error.InvalidFrameEncoding;
                 if (self.warning_count != self.turn_receipt.warning_count or self.warning_count != self.quiescence.warning_count) return error.InvalidFrameEncoding;
                 if (self.turn_receipt.emitted_host_request_fingerprints.len != self.host_requests.len) return error.InvalidFrameEncoding;
@@ -1484,6 +1488,15 @@ pub fn Appliance(comptime World: type) type {
                     for (self.host_requests, self.checkpoint.outstanding_host_requests) |request, checkpoint_request| {
                         if (request.request_fingerprint != checkpoint_request.request_fingerprint) return error.InvalidFrameEncoding;
                     }
+                }
+                if (self.status == .inspected or self.checkpoint.core_state == .uninitialized or self.checkpoint.previous_turn_receipt_fingerprint == self.turn_receipt.receipt_fingerprint) {
+                    const expected_resulting_state_fingerprint = if (self.status == .inspected)
+                        self.source_state_fingerprint
+                    else if (self.checkpoint.core_state == .uninitialized)
+                        stateFingerprintFor(.uninitialized, 0, null)
+                    else
+                        stateFingerprintFor(self.checkpoint.core_state, self.turn_sequence_number, self.turn_receipt.receipt_fingerprint);
+                    if (self.resulting_state_fingerprint != expected_resulting_state_fingerprint) return error.InvalidFrameEncoding;
                 }
                 if (self.output_fingerprint != fingerprintTurnOutput(self)) return error.InvalidFrameEncoding;
             }
@@ -2116,11 +2129,20 @@ pub fn Appliance(comptime World: type) type {
                 else
                     null;
                 const warning_count = self.warningCountForCommand(command);
+                var output_archive_append_batch_fingerprint: ?u64 = if (warning_count != 0)
+                    self.pending_archive_append_batch_fingerprint
+                else
+                    null;
+                const output_pending_archive_resulting_cursor = if (output_archive_append_batch_fingerprint != null)
+                    self.pending_archive_resulting_cursor
+                else
+                    planned_archive_resulting_cursor;
                 const quiescence = QuiescenceReport.init(.{
                     .quiescent = true,
                     .pending_host_request_count = checkpoint_outstanding_host_requests.len,
                     .prepared_actuation_count = host_requests.len,
                     .completed_run_count = if (status == .completed) 1 else 0,
+                    .failed_run_count = if (status == .failed) 1 else 0,
                     .blocker_count = if (status == .blocked) 1 else 0,
                     .warning_count = warning_count,
                 });
@@ -2133,7 +2155,7 @@ pub fn Appliance(comptime World: type) type {
                     .emitted_host_request_fingerprints = emitted_host_request_fingerprints,
                     .source_capsule_fingerprint = source_capsule_fingerprint,
                     .resulting_capsule_fingerprint = capsule_fingerprint,
-                    .archive_append_batch_fingerprint = archive_append_batch_fingerprint,
+                    .archive_append_batch_fingerprint = output_archive_append_batch_fingerprint,
                     .resulting_archive_moment_fingerprint = acknowledged_archive_moment,
                     .resulting_archive_seal_fingerprint = acknowledged_archive_seal,
                     .resulting_chronicle_cursor_fingerprint = acknowledged_chronicle_cursor,
@@ -2149,9 +2171,9 @@ pub fn Appliance(comptime World: type) type {
                     .latest_archive_moment_fingerprint = acknowledged_archive_moment,
                     .latest_archive_seal_fingerprint = acknowledged_archive_seal,
                     .latest_chronicle_cursor_fingerprint = acknowledged_chronicle_cursor,
-                    .pending_archive_append_batch_fingerprint = archive_append_batch_fingerprint,
-                    .pending_archive_resulting_cursor = planned_archive_resulting_cursor,
-                    .latest_archive_cursor = acknowledged_archive_cursor_value,
+                    .pending_archive_append_batch_fingerprint = output_archive_append_batch_fingerprint,
+                    .pending_archive_resulting_cursor = output_pending_archive_resulting_cursor,
+                    .latest_archive_cursor = if (acknowledged_chronicle_cursor != null) acknowledged_archive_cursor_value else null,
                     .core_state = resulting_core_state,
                     .previous_turn_receipt_fingerprint = if (command.kind == .inspect)
                         self.previous_turn_receipt_fingerprint
@@ -2179,17 +2201,18 @@ pub fn Appliance(comptime World: type) type {
                     .host_requests = host_requests,
                     .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_fingerprints,
                     .root_result_fingerprint = root_result_fingerprint,
-                    .archive_append_batch_fingerprint = archive_append_batch_fingerprint,
+                    .archive_append_batch_fingerprint = output_archive_append_batch_fingerprint,
                     .checkpoint = checkpoint,
                     .turn_receipt = turn_receipt,
                     .blocker_count = if (status == .blocked) 1 else 0,
                     .warning_count = warning_count,
                     .diagnostic_metadata = "core-shell",
                 });
-                if (self.shouldPlanArchiveAppend(command)) {
+                if (self.shouldPlanArchiveAppend(command) and output_archive_append_batch_fingerprint == null) {
                     var archive_plan = try ArchivePlan.initForTurnOutput(self.allocator, acknowledged_archive_cursor_value, output, self.capacity_value);
                     defer archive_plan.deinit();
                     archive_append_batch_fingerprint = archive_plan.append_batch.append_batch_fingerprint;
+                    output_archive_append_batch_fingerprint = archive_append_batch_fingerprint;
                     planned_archive_resulting_cursor = archive_plan.resulting_cursor;
                     turn_receipt = TurnReceipt.init(.{
                         .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
@@ -2200,7 +2223,7 @@ pub fn Appliance(comptime World: type) type {
                         .emitted_host_request_fingerprints = emitted_host_request_fingerprints,
                         .source_capsule_fingerprint = source_capsule_fingerprint,
                         .resulting_capsule_fingerprint = capsule_fingerprint,
-                        .archive_append_batch_fingerprint = archive_append_batch_fingerprint,
+                        .archive_append_batch_fingerprint = output_archive_append_batch_fingerprint,
                         .resulting_archive_moment_fingerprint = acknowledged_archive_moment,
                         .resulting_archive_seal_fingerprint = acknowledged_archive_seal,
                         .resulting_chronicle_cursor_fingerprint = acknowledged_chronicle_cursor,
@@ -2222,9 +2245,9 @@ pub fn Appliance(comptime World: type) type {
                         .latest_archive_moment_fingerprint = acknowledged_archive_moment,
                         .latest_archive_seal_fingerprint = acknowledged_archive_seal,
                         .latest_chronicle_cursor_fingerprint = acknowledged_chronicle_cursor,
-                        .pending_archive_append_batch_fingerprint = archive_append_batch_fingerprint,
+                        .pending_archive_append_batch_fingerprint = output_archive_append_batch_fingerprint,
                         .pending_archive_resulting_cursor = planned_archive_resulting_cursor,
-                        .latest_archive_cursor = acknowledged_archive_cursor_value,
+                        .latest_archive_cursor = if (acknowledged_chronicle_cursor != null) acknowledged_archive_cursor_value else null,
                         .core_state = resulting_core_state,
                         .previous_turn_receipt_fingerprint = if (command.kind == .inspect)
                             self.previous_turn_receipt_fingerprint
@@ -2246,7 +2269,7 @@ pub fn Appliance(comptime World: type) type {
                         .host_requests = host_requests,
                         .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_fingerprints,
                         .root_result_fingerprint = root_result_fingerprint,
-                        .archive_append_batch_fingerprint = archive_append_batch_fingerprint,
+                        .archive_append_batch_fingerprint = output_archive_append_batch_fingerprint,
                         .checkpoint = checkpoint,
                         .turn_receipt = turn_receipt,
                         .blocker_count = if (status == .blocked) 1 else 0,
@@ -2274,9 +2297,11 @@ pub fn Appliance(comptime World: type) type {
                     } else {
                         self.clearOutstandingHostRequest();
                     }
-                    self.pending_archive_append_batch_fingerprint = archive_append_batch_fingerprint;
                     if (retention_ack != null) self.latest_archive_cursor = acknowledged_archive_cursor_value;
-                    self.pending_archive_resulting_cursor = planned_archive_resulting_cursor;
+                    if (output_archive_append_batch_fingerprint == null or retention_ack != null or self.pending_archive_append_batch_fingerprint == null) {
+                        self.pending_archive_append_batch_fingerprint = output_archive_append_batch_fingerprint;
+                        self.pending_archive_resulting_cursor = planned_archive_resulting_cursor;
+                    }
                     self.latest_archive_moment_fingerprint = acknowledged_archive_moment;
                     self.latest_archive_seal_fingerprint = acknowledged_archive_seal;
                     self.latest_chronicle_cursor_fingerprint = acknowledged_chronicle_cursor;
@@ -2327,16 +2352,18 @@ pub fn Appliance(comptime World: type) type {
                     .restore => {
                         const checkpoint = command.restore_checkpoint orelse return error.RestoreRejected;
                         if (checkpoint.turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
+                        if (checkpointIsTerminal(checkpoint) and checkpoint.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
                         if (command.turn_sequence_number != checkpoint.turn_sequence_number + 1) return error.StaleTurn;
                         if (command.previous_turn_receipt_fingerprint != checkpoint.previous_turn_receipt_fingerprint) return error.StaleTurn;
                         if (self.state != .uninitialized) {
                             if (checkpoint.turn_sequence_number != self.current_turn_sequence_number) return error.StaleTurn;
                             if (checkpoint.previous_turn_receipt_fingerprint != self.previous_turn_receipt_fingerprint) return error.StaleTurn;
+                            try self.validateResidentRestoreCheckpoint(checkpoint);
                         }
                     },
                     .@"continue" => {
                         if (self.last_turn_status) |last_status| {
-                            if (last_status == .failed or last_status == .cancelled) return error.StaleTurn;
+                            if (last_status == .failed or last_status == .blocked or last_status == .cancelled) return error.StaleTurn;
                             if (last_status == .completed and self.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
                         }
                         if (self.current_turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
@@ -2414,6 +2441,25 @@ pub fn Appliance(comptime World: type) type {
                 if (self.pending_archive_append_batch_fingerprint == null) return 0;
                 if ((effectiveRetentionAck(command) catch null) != null) return 0;
                 return 1;
+            }
+
+            fn validateResidentRestoreCheckpoint(self: @This(), checkpoint: Checkpoint) !void {
+                if (checkpoint.core_state != self.state) return error.StaleTurn;
+                if (checkpoint.pending_archive_append_batch_fingerprint != self.pending_archive_append_batch_fingerprint) return error.StaleTurn;
+                if (!optionalCursorMatches(checkpoint.pending_archive_resulting_cursor, self.pending_archive_resulting_cursor)) return error.StaleTurn;
+                if (checkpoint.latest_archive_moment_fingerprint != self.latest_archive_moment_fingerprint) return error.StaleTurn;
+                if (checkpoint.latest_archive_seal_fingerprint != self.latest_archive_seal_fingerprint) return error.StaleTurn;
+                if (checkpoint.latest_chronicle_cursor_fingerprint != self.latest_chronicle_cursor_fingerprint) return error.StaleTurn;
+                if (checkpoint.latest_chronicle_cursor_fingerprint != null and !optionalCursorMatches(checkpoint.latest_archive_cursor, self.latest_archive_cursor)) return error.StaleTurn;
+
+                if (checkpoint.outstanding_host_requests.len == 0) {
+                    if (self.outstanding_host_request != null) return error.StaleTurn;
+                } else if (checkpoint.outstanding_host_requests.len == 1) {
+                    const live_request = self.outstanding_host_request orelse return error.StaleTurn;
+                    if (checkpoint.outstanding_host_requests[0].request_fingerprint != live_request.request_fingerprint) return error.StaleTurn;
+                } else {
+                    return error.StaleTurn;
+                }
             }
 
             fn applyCheckpointState(self: *@This(), checkpoint: Checkpoint) !void {
@@ -4698,6 +4744,15 @@ pub fn Appliance(comptime World: type) type {
                 .failed, .blocked => .failed,
                 .cancelled => .cancelled,
             };
+        }
+
+        fn checkpointIsTerminal(checkpoint: Checkpoint) bool {
+            return checkpoint.core_state == .completed or checkpoint.core_state == .failed or checkpoint.core_state == .cancelled;
+        }
+
+        fn optionalCursorMatches(a: ?World.Continuity.Chronicle.Cursor, b: ?World.Continuity.Chronicle.Cursor) bool {
+            if (a == null or b == null) return a == null and b == null;
+            return a.?.cursor_fingerprint == b.?.cursor_fingerprint;
         }
 
         fn hashU64Slice(hasher: *std.hash.Wyhash, values: []const u64) void {

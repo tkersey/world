@@ -746,6 +746,10 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
     missing_authoritative_cursor.latest_archive_cursor = null;
     try std.testing.expectError(error.InvalidFrameEncoding, missing_authoritative_cursor.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
+    var orphan_authoritative_cursor = checkpoint;
+    orphan_authoritative_cursor.latest_archive_cursor = archive_cursor;
+    try std.testing.expectError(error.InvalidFrameEncoding, orphan_authoritative_cursor.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
     const pending_without_cursor = world.Appliance.Checkpoint.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 11,
@@ -1128,6 +1132,7 @@ test "appliance Core failed HostReply produces failed turn" {
     defer output.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Appliance.TurnStatus.failed, output.status);
     try std.testing.expectEqual(@as(?u64, null), output.root_result_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), output.quiescence.failed_run_count);
 
     const terminal_again = world.Appliance.Command.init(.{
         .kind = .@"continue",
@@ -1246,6 +1251,24 @@ test "appliance Core restore preserves terminal checkpoint status" {
     const continue_bytes = try continue_command.encode(std.testing.allocator);
     defer std.testing.allocator.free(continue_bytes);
     try std.testing.expectError(error.StaleTurn, core.submit(continue_bytes));
+
+    const restore_command = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint,
+        .restore_checkpoint = checkpoint,
+    });
+    const restore_bytes = try restore_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(restore_bytes);
+    var restore_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        StrictAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer restore_core.reset();
+    try std.testing.expectError(error.StaleTurn, restore_core.submit(restore_bytes));
 }
 
 test "appliance Core restore rehydrates outstanding HostRequest for continuation" {
@@ -1517,6 +1540,27 @@ test "appliance Core restore command applies checkpoint and replies without side
     const restore_reemit_bytes = try restore_reemit.encode(std.testing.allocator);
     defer std.testing.allocator.free(restore_reemit_bytes);
 
+    const orphaned_restore_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = resident.current_turn_sequence_number,
+        .capsule_fingerprint = 0xD512,
+        .pending_archive_append_batch_fingerprint = resident.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = resident.pending_archive_resulting_cursor,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+    });
+    const orphaned_restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .restore_checkpoint = orphaned_restore_checkpoint,
+    });
+    const orphaned_restore_bytes = try orphaned_restore.encode(std.testing.allocator);
+    defer std.testing.allocator.free(orphaned_restore_bytes);
+    try std.testing.expectError(error.StaleTurn, resident.submit(orphaned_restore_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, resident.state);
+    try std.testing.expect(resident.outstanding_host_request != null);
+
     var reemit_restored = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
         manifest,
@@ -1593,6 +1637,62 @@ test "appliance Core validates command RetentionAck before advancing" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer boot_output.deinit(std.testing.allocator);
+
+    const missing_pending_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = boot_output.checkpoint.manifest_fingerprint,
+        .turn_sequence_number = boot_output.checkpoint.turn_sequence_number,
+        .capsule_fingerprint = boot_output.checkpoint.capsule_fingerprint,
+        .capsule_image_ref_fingerprint = boot_output.checkpoint.capsule_image_ref_fingerprint,
+        .capsule_image_bytes = boot_output.checkpoint.capsule_image_bytes,
+        .latest_archive_moment_fingerprint = boot_output.checkpoint.latest_archive_moment_fingerprint,
+        .latest_archive_seal_fingerprint = boot_output.checkpoint.latest_archive_seal_fingerprint,
+        .latest_chronicle_cursor_fingerprint = boot_output.checkpoint.latest_chronicle_cursor_fingerprint,
+        .latest_archive_cursor = boot_output.checkpoint.latest_archive_cursor,
+        .core_state = boot_output.checkpoint.core_state,
+        .previous_turn_receipt_fingerprint = boot_output.checkpoint.previous_turn_receipt_fingerprint,
+        .outstanding_host_requests = boot_output.checkpoint.outstanding_host_requests,
+        .execution_mode = boot_output.checkpoint.execution_mode,
+        .metadata = boot_output.checkpoint.metadata,
+    });
+    const mismatched_pending_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = boot_output.manifest_fingerprint,
+        .turn_sequence_number = boot_output.turn_sequence_number,
+        .source_state_fingerprint = boot_output.source_state_fingerprint,
+        .resulting_state_fingerprint = boot_output.resulting_state_fingerprint,
+        .quiescence = boot_output.quiescence,
+        .status = boot_output.status,
+        .host_requests = boot_output.host_requests,
+        .finalized_actuation_receipt_fingerprints = boot_output.finalized_actuation_receipt_fingerprints,
+        .root_result_fingerprint = boot_output.root_result_fingerprint,
+        .run_receipt_fingerprint = boot_output.run_receipt_fingerprint,
+        .archive_append_batch_fingerprint = boot_output.archive_append_batch_fingerprint,
+        .checkpoint = missing_pending_checkpoint,
+        .turn_receipt = boot_output.turn_receipt,
+        .blocker_count = boot_output.blocker_count,
+        .warning_count = boot_output.warning_count,
+        .diagnostic_metadata = boot_output.diagnostic_metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_pending_output.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const mismatched_state_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = boot_output.manifest_fingerprint,
+        .turn_sequence_number = boot_output.turn_sequence_number,
+        .source_state_fingerprint = boot_output.source_state_fingerprint,
+        .resulting_state_fingerprint = boot_output.resulting_state_fingerprint + 1,
+        .quiescence = boot_output.quiescence,
+        .status = boot_output.status,
+        .host_requests = boot_output.host_requests,
+        .finalized_actuation_receipt_fingerprints = boot_output.finalized_actuation_receipt_fingerprints,
+        .root_result_fingerprint = boot_output.root_result_fingerprint,
+        .run_receipt_fingerprint = boot_output.run_receipt_fingerprint,
+        .archive_append_batch_fingerprint = boot_output.archive_append_batch_fingerprint,
+        .checkpoint = boot_output.checkpoint,
+        .turn_receipt = boot_output.turn_receipt,
+        .blocker_count = boot_output.blocker_count,
+        .warning_count = boot_output.warning_count,
+        .diagnostic_metadata = boot_output.diagnostic_metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_state_output.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
@@ -1896,6 +1996,16 @@ test "appliance Core replay evidence completes without fresh HostRequest" {
     try std.testing.expectEqual(@as(usize, 0), blocked_output.host_requests.len);
     try std.testing.expectEqual(@as(usize, 1), blocked_output.blocker_count);
     try std.testing.expectEqual(@as(usize, 1), blocked_output.quiescence.blocker_count);
+
+    const blocked_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = missing_evidence_core.previous_turn_receipt_fingerprint,
+    });
+    const blocked_continue_bytes = try blocked_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(blocked_continue_bytes);
+    try std.testing.expectError(error.StaleTurn, missing_evidence_core.submit(blocked_continue_bytes));
 }
 
 test "appliance Core warns when non-strict archive append advances unacknowledged" {
@@ -1923,6 +2033,7 @@ test "appliance Core warns when non-strict archive append advances unacknowledge
     try unacknowledged.submit(boot_bytes);
     try unacknowledged.executeTurn();
     try std.testing.expect(unacknowledged.pending_archive_append_batch_fingerprint != null);
+    const first_pending_archive = unacknowledged.pending_archive_append_batch_fingerprint.?;
     const prior_receipt = unacknowledged.previous_turn_receipt_fingerprint.?;
 
     const no_ack_continue = world.Appliance.Command.init(.{
@@ -1947,6 +2058,24 @@ test "appliance Core warns when non-strict archive append advances unacknowledge
     try std.testing.expectEqual(@as(usize, 1), warning_output.warning_count);
     try std.testing.expectEqual(@as(usize, 1), warning_output.quiescence.warning_count);
     try std.testing.expectEqual(@as(usize, 1), warning_output.turn_receipt.warning_count);
+    try std.testing.expectEqual(@as(?u64, first_pending_archive), unacknowledged.pending_archive_append_batch_fingerprint);
+    try std.testing.expectEqual(@as(?u64, first_pending_archive), warning_output.archive_append_batch_fingerprint);
+    try std.testing.expectEqual(@as(?u64, first_pending_archive), warning_output.checkpoint.pending_archive_append_batch_fingerprint);
+
+    const late_ack = try applianceRetentionAckForPendingCore(unacknowledged, "late-retained");
+    const late_ack_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = unacknowledged.previous_turn_receipt_fingerprint,
+        .retention_ack = late_ack,
+    });
+    const late_ack_continue_bytes = try late_ack_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(late_ack_continue_bytes);
+    try unacknowledged.submit(late_ack_continue_bytes);
+    try unacknowledged.executeTurn();
+    try std.testing.expect(unacknowledged.pending_archive_append_batch_fingerprint != null);
+    try std.testing.expect(unacknowledged.pending_archive_append_batch_fingerprint.? != first_pending_archive);
 
     var acknowledged = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -2938,10 +3067,13 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
     const archive_append_fingerprint: u64 = 0xD291;
     const run_receipt_fingerprint: u64 = 0xD292;
     const finalized_receipt_fingerprint: u64 = 0xD293;
+    const archive_resulting_cursor = world.Continuity.Chronicle.Cursor.initial();
     const checkpoint = world.Appliance.Checkpoint.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 8,
         .capsule_fingerprint = 0xD294,
+        .pending_archive_append_batch_fingerprint = archive_append_fingerprint,
+        .pending_archive_resulting_cursor = archive_resulting_cursor,
     });
     const receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest_fingerprint,

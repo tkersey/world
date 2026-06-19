@@ -1039,8 +1039,8 @@ pub fn build(b: *std.Build) void {
             \\turn_state=waiting_host
             \\actuation_bindings=1
             \\checkpoint_every_turn=true
-            \\output_bytes=739
-            \\turn_receipt=65dea2f34661e261
+            \\output_bytes=690
+            \\turn_receipt=97257bdee3a65a62
             \\
             ,
         },
@@ -1067,8 +1067,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=ade2d1f7ff36c057
-            \\restored_output=ade2d1f7ff36c057
+            \\resident_output=3d2b90fed2248d4f
+            \\restored_output=3d2b90fed2248d4f
             \\
             ,
         },
@@ -1079,10 +1079,10 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance archive example.",
             .expected_stdout =
             \\archive_batches=1
-            \\output_archive_request=9ffedfdbcb63a4b2
+            \\output_archive_request=b175cf7069866bcd
             \\archive_objects=3
-            \\retention_ack=8c07d393993748a0
-            \\moment=c4a16a7ff45469ab
+            \\retention_ack=41e1f71777e45e3f
+            \\moment=ea2ec0823337f467
             \\
             ,
         },
@@ -1096,7 +1096,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_host_requests=1
             \\replay_status=completed
             \\replay_host_requests=0
-            \\replay_evidence=65dea2f34661e261
+            \\replay_evidence=97257bdee3a65a62
             \\replay_final_result=true
             \\
             ,
