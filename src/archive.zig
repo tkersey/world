@@ -1707,14 +1707,15 @@ pub fn Archive(comptime World: type) type {
                 var next_bytes: std.ArrayList(u8) = .empty;
                 errdefer next_bytes.deinit(self.allocator);
                 try next_bytes.appendSlice(self.allocator, writer.bytes.items);
+                const latest = next_image.latestMoment() orelse return error.ObjectMissing;
+                const stable_latest = try self.stableMoment(latest);
                 self.bytes.deinit(self.allocator);
                 self.bytes = next_bytes;
                 next_bytes = .empty;
                 self.image.deinit();
                 self.image = next_image;
                 next_image_owned = false;
-                const latest = self.image.latestMoment() orelse return error.ObjectMissing;
-                return try self.stableMoment(latest);
+                return stable_latest;
             }
 
             pub fn bytesView(self: @This()) []const u8 {

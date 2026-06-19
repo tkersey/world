@@ -1177,7 +1177,7 @@ test "archive append allocation failure preserves canonical bytes" {
     defer std.testing.allocator.free(bytes_before);
 
     var induced_failures: usize = 0;
-    for (0..64) |fail_index| {
+    for (0..256) |fail_index| {
         {
             var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
                 .fail_index = fail_index,
@@ -1194,6 +1194,8 @@ test "archive append allocation failure preserves canonical bytes" {
                 error.OutOfMemory => {
                     induced_failures += 1;
                     try std.testing.expectEqualSlices(u8, bytes_before, reopened.bytesView());
+                    const latest = try reopened.latestMoment();
+                    try std.testing.expectEqual(@as(u64, 1), latest.sequence_number);
                 },
                 else => return err,
             }
