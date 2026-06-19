@@ -2243,6 +2243,7 @@ pub fn Appliance(comptime World: type) type {
 
             fn validateCommandReplies(self: @This(), command: Command) !void {
                 if (command.kind != .@"continue" and command.kind != .restore) return;
+                if (command.host_replies.len != 0 and command.execution_mode != .fresh) return error.InvalidMode;
                 const outstanding = if (command.kind == .restore) blk: {
                     const checkpoint = command.restore_checkpoint orelse return error.RestoreRejected;
                     if (checkpoint.outstanding_host_requests.len == 0) {

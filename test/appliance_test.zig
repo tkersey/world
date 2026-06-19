@@ -923,6 +923,20 @@ test "appliance Core validates continue host replies before completion" {
     try std.testing.expect(std.mem.eql(u8, first_output, core.readOutput()));
 
     const reply = applianceHostReplyFor(outstanding, 0xD401);
+    const replay_reply_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .execution_mode = .replay,
+        .host_replies = &.{reply},
+    });
+    const replay_reply_continue_bytes = try replay_reply_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(replay_reply_continue_bytes);
+    try std.testing.expectError(error.InvalidMode, core.submit(replay_reply_continue_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
+    try std.testing.expect(std.mem.eql(u8, first_output, core.readOutput()));
+
     const valid_continue = world.Appliance.Command.init(.{
         .kind = .@"continue",
         .manifest_fingerprint = manifest.manifest_fingerprint,
@@ -1251,6 +1265,20 @@ test "appliance Core emitted checkpoint carries current TurnReceipt for restore"
     );
     defer restored.reset();
     try restored.restore(boot_output.checkpoint);
+    const replay_restore_reply = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = boot_output.checkpoint.previous_turn_receipt_fingerprint,
+        .execution_mode = .replay,
+        .host_replies = &.{reply},
+        .restore_checkpoint = boot_output.checkpoint,
+    });
+    const replay_restore_reply_bytes = try replay_restore_reply.encode(std.testing.allocator);
+    defer std.testing.allocator.free(replay_restore_reply_bytes);
+    try std.testing.expectError(error.InvalidMode, restored.submit(replay_restore_reply_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, restored.state);
+
     try restored.submit(continue_bytes);
     try restored.executeTurn();
     try std.testing.expectEqual(world.Appliance.CoreState.completed, restored.state);
