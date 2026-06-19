@@ -2861,6 +2861,26 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     try std.testing.expectEqual(@as(usize, 2), plan.objects[2].dependency_refs.len);
     try std.testing.expect(plan.objects[2].dependency_refs[0].eql(plan.object_refs[0]));
     try std.testing.expect(plan.objects[2].dependency_refs[1].eql(plan.object_refs[1]));
+    for (plan.objects) |object| {
+        try world.Continuity.validateObjectEnvelopeTypedPayload(std.testing.allocator, object);
+        try world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, object);
+    }
+    try world.Continuity.validateObjectEnvelopeDependencyPayloads(std.testing.allocator, plan.objects, plan.objects[2]);
+
+    const malformed_output = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_output,
+        .dependency_refs = plan.objects[2].dependency_refs,
+        .payload_bytes = "not an appliance turn output",
+        .label = "malformed appliance output",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Continuity.validateObjectEnvelopeTypedPayload(std.testing.allocator, malformed_output));
+
+    const missing_required_dependencies = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_output,
+        .payload_bytes = plan.objects[2].payload_bytes,
+        .label = "appliance output without deps",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, missing_required_dependencies));
 
     const moment = try archive.appendBatch(plan.append_batch);
     for (plan.object_refs) |ref| try std.testing.expect(archive.hasObject(ref));

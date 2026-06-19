@@ -1144,6 +1144,28 @@ pub fn Appliance(comptime World: type) type {
                 try writeU8(out, allocator, @intFromEnum(self.execution_mode));
                 try writeBytes(out, allocator, self.metadata);
             }
+
+            pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, expected_manifest_fingerprint: u64, capacity: Capacity) !@This() {
+                var cursor: usize = 0;
+                var checkpoint = try readCheckpointOwned(allocator, bytes, &cursor);
+                errdefer checkpoint.deinit(allocator);
+                if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                try checkpoint.validate(expected_manifest_fingerprint, capacity);
+                return checkpoint;
+            }
+
+            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                var cursor: usize = 0;
+                var checkpoint = try readCheckpointOwned(allocator, bytes, &cursor);
+                errdefer checkpoint.deinit(allocator);
+                if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                try checkpoint.validate(checkpoint.manifest_fingerprint, Capacity.large_native_test);
+                return checkpoint;
+            }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                freeCheckpoint(allocator, self);
+            }
         };
 
         pub const TurnReceipt = struct {
@@ -1259,6 +1281,28 @@ pub fn Appliance(comptime World: type) type {
                 try writeOptionalU64(out, allocator, self.run_receipt_fingerprint);
                 try writeU64(out, allocator, self.blocker_count);
                 try writeU64(out, allocator, self.warning_count);
+            }
+
+            pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, expected_manifest_fingerprint: u64) !@This() {
+                var cursor: usize = 0;
+                var receipt = try readTurnReceiptOwned(allocator, bytes, &cursor);
+                errdefer receipt.deinit(allocator);
+                if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                try receipt.validate(expected_manifest_fingerprint, Capacity.large_native_test);
+                return receipt;
+            }
+
+            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                var cursor: usize = 0;
+                var receipt = try readTurnReceiptOwned(allocator, bytes, &cursor);
+                errdefer receipt.deinit(allocator);
+                if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                try receipt.validate(receipt.manifest_fingerprint, Capacity.large_native_test);
+                return receipt;
+            }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                freeTurnReceipt(allocator, self);
             }
         };
 
@@ -1421,6 +1465,15 @@ pub fn Appliance(comptime World: type) type {
                 errdefer output.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
                 try output.validate(expected_manifest_fingerprint, capacity);
+                return output;
+            }
+
+            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                var cursor: usize = 0;
+                var output = try readTurnOutputOwned(allocator, bytes, &cursor);
+                errdefer output.deinit(allocator);
+                if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                try output.validate(output.manifest_fingerprint, Capacity.large_native_test);
                 return output;
             }
 

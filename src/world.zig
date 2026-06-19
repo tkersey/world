@@ -35662,6 +35662,30 @@ pub const Continuity = struct {
                 defer frame.deinit(allocator);
                 break :blk frame.format_version == envelope.object_format_version;
             },
+            .appliance_checkpoint => blk: {
+                var checkpoint = Appliance.Checkpoint.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                defer checkpoint.deinit(allocator);
+                break :blk checkpoint.checkpoint_format_version == envelope.object_format_version;
+            },
+            .appliance_turn_receipt => blk: {
+                var receipt = Appliance.TurnReceipt.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                defer receipt.deinit(allocator);
+                break :blk receipt.receipt_format_version == envelope.object_format_version;
+            },
+            .appliance_turn_output => blk: {
+                var output = Appliance.TurnOutput.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                defer output.deinit(allocator);
+                break :blk output.output_format_version == envelope.object_format_version;
+            },
             .actuator_ref,
             .actuation_descriptor,
             .actuation_binding,
@@ -35906,8 +35930,37 @@ pub const Continuity = struct {
                 if (!validActuationVerifyReportPayload(report)) break :blk false;
                 break :blk try bundleActuationVerifyReportDependencyPayloadsValid(allocator, envelopes, report);
             },
+            .appliance_turn_output => blk: {
+                var output = Appliance.TurnOutput.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                defer output.deinit(allocator);
+                break :blk try bundleApplianceTurnOutputDependencyPayloadsValid(allocator, envelopes, output);
+            },
             else => true,
         };
+    }
+
+    fn bundleApplianceTurnOutputDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, output: Appliance.TurnOutput) !bool {
+        const checkpoint_ref = try applianceCheckpointObjectRef(allocator, output.checkpoint);
+        const checkpoint_envelope = (try bundleEnvelopeForRef(allocator, envelopes, checkpoint_ref)) orelse return true;
+        var checkpoint = Appliance.Checkpoint.decodeArchivePayload(allocator, checkpoint_envelope.payload_bytes) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        defer checkpoint.deinit(allocator);
+        if (checkpoint.checkpoint_fingerprint != output.checkpoint.checkpoint_fingerprint) return false;
+
+        const receipt_ref = try applianceTurnReceiptObjectRef(allocator, output.turn_receipt);
+        const receipt_envelope = (try bundleEnvelopeForRef(allocator, envelopes, receipt_ref)) orelse return true;
+        var receipt = Appliance.TurnReceipt.decodeArchivePayload(allocator, receipt_envelope.payload_bytes) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        defer receipt.deinit(allocator);
+        if (receipt.receipt_fingerprint != output.turn_receipt.receipt_fingerprint) return false;
+        return true;
     }
 
     fn bundleActuationDescriptorDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, descriptor: Actuation.Descriptor) !bool {
@@ -36688,6 +36741,11 @@ pub const Continuity = struct {
                 defer deinitOwnedValue(allocator, report);
                 break :blk try bundleGuestConformanceReportRequiredDependencyRefs(allocator, report);
             },
+            .appliance_turn_output => blk: {
+                var output = try Appliance.TurnOutput.decodeArchivePayload(allocator, envelope.payload_bytes);
+                defer output.deinit(allocator);
+                break :blk try bundleApplianceTurnOutputRequiredDependencyRefs(allocator, output);
+            },
             .capsule_image => blk: {
                 var image = try Capsule.Image.decode(allocator, envelope.payload_bytes);
                 defer image.deinit(allocator);
@@ -36722,6 +36780,28 @@ pub const Continuity = struct {
             for (mailbox.committed_actuation_receipt_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
         }
         return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleApplianceTurnOutputRequiredDependencyRefs(allocator: std.mem.Allocator, output: Appliance.TurnOutput) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueObjectRef(allocator, &refs, try applianceCheckpointObjectRef(allocator, output.checkpoint));
+        try appendUniqueObjectRef(allocator, &refs, try applianceTurnReceiptObjectRef(allocator, output.turn_receipt));
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn applianceCheckpointObjectRef(allocator: std.mem.Allocator, checkpoint: Appliance.Checkpoint) !ObjectRef {
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(allocator);
+        try checkpoint.encode(&payload, allocator);
+        return ObjectRef.fromPayload(.appliance_checkpoint, world_appliance_checkpoint_format_version, payload.items, "appliance.checkpoint");
+    }
+
+    fn applianceTurnReceiptObjectRef(allocator: std.mem.Allocator, receipt: Appliance.TurnReceipt) !ObjectRef {
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(allocator);
+        try receipt.encode(&payload, allocator);
+        return ObjectRef.fromPayload(.appliance_turn_receipt, world_appliance_turn_receipt_format_version, payload.items, "appliance.turn_receipt");
     }
 
     fn bundleActuationReceiptRequiredDependencyRefs(allocator: std.mem.Allocator, receipt: Actuation.Receipt) ![]ObjectRef {
@@ -36914,6 +36994,11 @@ pub const Continuity = struct {
         if (receipt.provider_run_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .run_receipt, fingerprint);
         if (receipt.actuation_receipt_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
         return refs.toOwnedSlice(allocator);
+    }
+
+    fn appendUniqueObjectRef(allocator: std.mem.Allocator, refs: *std.ArrayList(ObjectRef), ref: ObjectRef) !void {
+        if (containsRef(refs.items, ref)) return;
+        try refs.append(allocator, ref);
     }
 
     fn appendUniqueSemanticRef(allocator: std.mem.Allocator, refs: *std.ArrayList(ObjectRef), kind: ObjectKind, fingerprint: u64) !void {
