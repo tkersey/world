@@ -1433,8 +1433,10 @@ pub fn Archive(comptime World: type) type {
                 committed: bool = false,
 
                 pub fn putObject(self: *@This(), envelope: ObjectEnvelope) !ObjectRef {
+                    if (self.committed) return error.InvalidFrameEncoding;
                     try envelope.validate();
                     try validateTypedObjectPayload(self.archive.allocator, envelope);
+                    try Continuity.validateObjectEnvelopeRequiredDependencies(self.archive.allocator, envelope);
                     const ref = envelope.objectRef();
                     for (self.archive.image.objects) |object| {
                         if (!object.objectRef().eql(ref)) continue;
@@ -1455,10 +1457,18 @@ pub fn Archive(comptime World: type) type {
                     };
                     try self.staged_objects.append(self.archive.allocator, owned);
                     owned_pending = false;
-                    return try self.archive.stableRef(self.staged_objects.items[self.staged_objects.items.len - 1].objectRef());
+                    var staged_pending = true;
+                    errdefer if (staged_pending) {
+                        var cleanup = self.staged_objects.pop().?;
+                        cleanup.deinit(self.archive.allocator);
+                    };
+                    const returned_ref = try self.archive.stableRef(self.staged_objects.items[self.staged_objects.items.len - 1].objectRef());
+                    staged_pending = false;
+                    return returned_ref;
                 }
 
                 pub fn addEvent(self: *@This(), event: Chronicle.Event) !void {
+                    if (self.committed) return error.InvalidFrameEncoding;
                     try event.validate();
                     const owned = try event.clone(self.archive.allocator);
                     errdefer {
@@ -1578,6 +1588,7 @@ pub fn Archive(comptime World: type) type {
                 fn validateDependencies(self: @This(), envelope: ObjectEnvelope) !void {
                     for (envelope.dependency_refs) |dep| {
                         if (self.archive.hasObject(dep) or objectSliceContainsRef(self.staged_objects.items, dep)) continue;
+                        if (dep.byte_len == 0) continue;
                         return error.ObjectMissing;
                     }
                 }
@@ -1817,6 +1828,7 @@ pub fn Archive(comptime World: type) type {
                 try replay_report.validate();
                 const key_envelope = try conformanceIdempotencyKeyEnvelope(allocator, "idem-key", 0xA900);
                 defer allocator.free(key_envelope.payload_bytes);
+                defer allocator.free(key_envelope.dependency_refs);
                 const key_commit = try commitMemoryEnvelope(&reopened, key_envelope);
                 var reopened_again = try Memory.reopenFrom(&reopened, allocator);
                 defer reopened_again.deinit();
@@ -1864,11 +1876,20 @@ pub fn Archive(comptime World: type) type {
             });
             const payload = try Continuity.encodePortableEvidence(Actuation.IdempotencyKey, allocator, key);
             errdefer allocator.free(payload);
+            const seed_envelope = ObjectEnvelope.init(.{
+                .kind = .actuation_idempotency_key,
+                .object_format_version = key.format_version,
+                .payload_bytes = payload,
+                .label = label,
+            });
+            const deps = try Continuity.objectEnvelopeRequiredDependencyRefs(allocator, seed_envelope);
+            errdefer allocator.free(deps);
             return ObjectEnvelope.init(.{
                 .kind = .actuation_idempotency_key,
                 .object_format_version = key.format_version,
                 .payload_bytes = payload,
                 .label = label,
+                .dependency_refs = deps,
             });
         }
 
@@ -2062,7 +2083,7 @@ pub fn Archive(comptime World: type) type {
             var moment_pending = true;
             errdefer if (moment_pending) moment.deinit(allocator);
             moment.committed_event_refs = try readU64SliceOwned(allocator, bytes, cursor, limits.max_event_count_per_moment);
-            moment.committed_object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
+            moment.committed_object_refs = try readRefSliceOwnedMax(allocator, bytes, cursor, limits, limits.max_object_count_per_moment);
             moment.root_object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             moment.capsule_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
             moment.actuation_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
@@ -2181,7 +2202,7 @@ pub fn Archive(comptime World: type) type {
                 .resulting_cursor_fingerprint = try readU64(bytes, cursor),
                 .owns_memory = true,
             };
-            commit.committed_object_refs = try readRefSliceOwned(allocator, bytes, cursor, limits);
+            commit.committed_object_refs = try readRefSliceOwnedMax(allocator, bytes, cursor, limits, limits.max_object_count_per_moment);
             errdefer freeRefSlice(allocator, commit.committed_object_refs);
             commit.committed_event_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, limits.max_event_count_per_moment);
             errdefer allocator.free(commit.committed_event_fingerprints);
@@ -2333,8 +2354,13 @@ pub fn Archive(comptime World: type) type {
         }
 
         fn readRefSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits) ![]ObjectRef {
+            return readRefSliceOwnedMax(allocator, bytes, cursor, limits, limits.max_ref_count);
+        }
+
+        fn readRefSliceOwnedMax(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Limits, max_count: usize) ![]ObjectRef {
             const count = try readU64AsUsize(bytes, cursor);
             if (count > limits.max_ref_count) return error.InvalidFrameEncoding;
+            if (count > max_count) return error.InvalidFrameEncoding;
             const refs = try allocator.alloc(ObjectRef, count);
             errdefer allocator.free(refs);
             var initialized: usize = 0;
@@ -2677,7 +2703,10 @@ pub fn Archive(comptime World: type) type {
         }
 
         fn validateTypedObjectPayloads(allocator: std.mem.Allocator, objects: []const ObjectEnvelope) !void {
-            for (objects) |object| try validateTypedObjectPayload(allocator, object);
+            for (objects) |object| {
+                try validateTypedObjectPayload(allocator, object);
+                try Continuity.validateObjectEnvelopeRequiredDependencies(allocator, object);
+            }
         }
 
         fn validateTypedObjectPayload(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !void {
@@ -2975,6 +3004,7 @@ pub fn Archive(comptime World: type) type {
         fn validateObjectDependenciesKnown(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
             for (current_objects, 0..) |object, index| {
                 for (object.dependency_refs) |dep| {
+                    if (dep.byte_len == 0) continue;
                     if (objectSliceContainsRef(prior_objects, dep) or objectSliceContainsRef(current_objects[0..index], dep)) continue;
                     if (objectSliceContainsRef(current_objects[index..], dep)) return error.InvalidFrameEncoding;
                     return error.ObjectMissing;
