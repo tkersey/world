@@ -742,6 +742,32 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
     try std.testing.expectError(error.InvalidFrameEncoding, pending_without_cursor.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 }
 
+test "appliance borrowed checkpoint and receipt deinit are no-ops" {
+    const manifest_fingerprint: u64 = 0xD038;
+    var checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = 0xD039,
+        .metadata = "borrowed-checkpoint",
+    });
+    checkpoint.deinit(std.testing.allocator);
+    try checkpoint.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
+
+    const applied = [_]u64{0xD03A};
+    const emitted = [_]u64{0xD03B};
+    var receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .command_fingerprint = 0xD03C,
+        .applied_host_reply_fingerprints = &applied,
+        .emitted_host_request_fingerprints = &emitted,
+        .resulting_capsule_fingerprint = 0xD03D,
+        .status = .needs_host,
+    });
+    receipt.deinit(std.testing.allocator);
+    try receipt.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
+}
+
 test "appliance Core submit validates command before mutating state" {
     const StrictAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
@@ -1101,6 +1127,81 @@ test "appliance Core failed HostReply produces failed turn" {
     try std.testing.expectError(error.StaleTurn, core.submit(terminal_again_bytes));
 }
 
+test "appliance Core restore clears stale failed status for checkpoint continuation" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var failed_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer failed_core.reset();
+
+    const failed_boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const failed_boot_bytes = try failed_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(failed_boot_bytes);
+    try failed_core.submit(failed_boot_bytes);
+    try failed_core.executeTurn();
+    const failed_outstanding = failed_core.outstanding_host_request orelse return error.UnknownRequest;
+    const failed_reply = applianceHostReplyWithStatusFor(failed_outstanding, .failed);
+    const failed_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = failed_core.previous_turn_receipt_fingerprint,
+        .host_replies = &.{failed_reply},
+    });
+    const failed_continue_bytes = try failed_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(failed_continue_bytes);
+    try failed_core.submit(failed_continue_bytes);
+    try failed_core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.failed, failed_core.state);
+
+    var resident = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer resident.reset();
+    const boot_bytes = try failed_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try resident.submit(boot_bytes);
+    try resident.executeTurn();
+    const outstanding = resident.outstanding_host_request orelse return error.UnknownRequest;
+    var checkpoint_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        resident.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer checkpoint_output.deinit(std.testing.allocator);
+
+    try failed_core.restore(checkpoint_output.checkpoint);
+    const reply = applianceHostReplyFor(outstanding, 0xD530);
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = checkpoint_output.checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = checkpoint_output.checkpoint.previous_turn_receipt_fingerprint,
+        .host_replies = &.{reply},
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+    try failed_core.submit(continue_bytes);
+    try failed_core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, failed_core.state);
+}
+
 test "appliance Core restore rehydrates outstanding HostRequest for continuation" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
@@ -1446,6 +1547,17 @@ test "appliance Core validates command RetentionAck before advancing" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer boot_output.deinit(std.testing.allocator);
+
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    var recomputed_plan = try world.Appliance.ArchivePlan.initForTurnOutput(
+        std.testing.allocator,
+        archive.image.latestCursor(),
+        boot_output,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer recomputed_plan.deinit();
+    try std.testing.expectEqual(pending_archive, recomputed_plan.append_batch.append_batch_fingerprint);
 
     const missing_ack = world.Appliance.Command.init(.{
         .kind = .@"continue",

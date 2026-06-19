@@ -1038,6 +1038,7 @@ pub fn Appliance(comptime World: type) type {
             outstanding_host_requests: []const HostRequest = &.{},
             execution_mode: ExecutionMode = .fresh,
             metadata: []const u8 = "",
+            owns_payloads: bool = false,
 
             pub fn init(args: struct {
                 manifest_fingerprint: u64,
@@ -1189,6 +1190,7 @@ pub fn Appliance(comptime World: type) type {
             run_receipt_fingerprint: ?u64 = null,
             blocker_count: usize = 0,
             warning_count: usize = 0,
+            owns_payloads: bool = false,
 
             pub fn init(args: struct {
                 manifest_fingerprint: u64,
@@ -2385,6 +2387,10 @@ pub fn Appliance(comptime World: type) type {
                 self.latest_archive_seal_fingerprint = checkpoint.latest_archive_seal_fingerprint;
                 self.latest_chronicle_cursor_fingerprint = checkpoint.latest_chronicle_cursor_fingerprint;
                 self.state = checkpoint.core_state;
+                self.last_turn_status = switch (checkpoint.core_state) {
+                    .uninitialized, .runnable, .completed, .failed, .cancelled => null,
+                    .waiting_host => .needs_host,
+                };
             }
 
             fn clearContinuationState(self: *@This()) void {
@@ -4095,6 +4101,7 @@ pub fn Appliance(comptime World: type) type {
                 .run_receipt_fingerprint = run_receipt_fingerprint,
                 .blocker_count = blocker_count,
                 .warning_count = warning_count,
+                .owns_payloads = true,
             };
         }
 
@@ -4204,6 +4211,7 @@ pub fn Appliance(comptime World: type) type {
                 .outstanding_host_requests = outstanding_host_requests,
                 .execution_mode = execution_mode,
                 .metadata = metadata,
+                .owns_payloads = true,
             };
         }
 
@@ -4247,16 +4255,20 @@ pub fn Appliance(comptime World: type) type {
         }
 
         fn freeCheckpoint(allocator: std.mem.Allocator, checkpoint: *Checkpoint) void {
+            if (!checkpoint.owns_payloads) return;
             allocator.free(checkpoint.capsule_image_bytes);
             if (checkpoint.pending_archive_resulting_cursor) |cursor| allocator.free(cursor.metadata_bytes);
             if (checkpoint.latest_archive_cursor) |cursor| allocator.free(cursor.metadata_bytes);
             freeHostRequests(allocator, checkpoint.outstanding_host_requests);
             allocator.free(checkpoint.metadata);
+            checkpoint.owns_payloads = false;
         }
 
         fn freeTurnReceipt(allocator: std.mem.Allocator, receipt: *TurnReceipt) void {
+            if (!receipt.owns_payloads) return;
             allocator.free(receipt.applied_host_reply_fingerprints);
             allocator.free(receipt.emitted_host_request_fingerprints);
+            receipt.owns_payloads = false;
         }
 
         fn freeTurnOutput(allocator: std.mem.Allocator, output: *TurnOutput) void {
@@ -4409,11 +4421,17 @@ pub fn Appliance(comptime World: type) type {
                 .execution_mode = output.checkpoint.execution_mode,
                 .metadata = output.checkpoint.metadata,
             });
+            const neutral_resulting_state_fingerprint = if (output.status == .inspected)
+                output.source_state_fingerprint
+            else if (neutral_checkpoint.core_state == .uninitialized)
+                stateFingerprintFor(.uninitialized, 0, null)
+            else
+                stateFingerprintFor(neutral_checkpoint.core_state, output.turn_sequence_number, neutral_receipt.receipt_fingerprint);
             return TurnOutput.init(.{
                 .manifest_fingerprint = output.manifest_fingerprint,
                 .turn_sequence_number = output.turn_sequence_number,
                 .source_state_fingerprint = output.source_state_fingerprint,
-                .resulting_state_fingerprint = output.resulting_state_fingerprint,
+                .resulting_state_fingerprint = neutral_resulting_state_fingerprint,
                 .quiescence = output.quiescence,
                 .status = output.status,
                 .host_requests = output.host_requests,

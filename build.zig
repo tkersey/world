@@ -1081,8 +1081,8 @@ pub fn build(b: *std.Build) void {
             \\archive_batches=1
             \\output_archive_request=9ffedfdbcb63a4b2
             \\archive_objects=3
-            \\retention_ack=f00e93245c9ff7fd
-            \\moment=2289e551e0a37be0
+            \\retention_ack=8c07d393993748a0
+            \\moment=c4a16a7ff45469ab
             \\
             ,
         },
