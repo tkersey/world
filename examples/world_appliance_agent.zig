@@ -53,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
     var plan = try world.Appliance.ArchivePlan.initForTurnOutput(
         allocator,
         archive.image.latestCursor(),
-        final_output,
+        pending_output,
         capacity,
     );
     defer plan.deinit();

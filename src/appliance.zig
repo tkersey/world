@@ -261,6 +261,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.max_host_requests_per_turn > self.max_pending_ports) return error.CapacityExceeded;
                 if (self.max_host_replies_per_turn > self.max_pending_ports) return error.CapacityExceeded;
                 if (self.max_command_bytes == 0 or self.max_output_bytes == 0 or self.max_error_bytes == 0) return error.CapacityExceeded;
+                if (self.max_metadata_bytes < "core-shell.host-request".len) return error.CapacityExceeded;
                 if (self.max_metadata_bytes > World.world_max_decoded_byte_field_len) return error.CapacityExceeded;
                 _ = MemoryPlan.deriveChecked(self, Profile.wasm_small) catch return error.CapacityExceeded;
             }
@@ -688,6 +689,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.restore_checkpoint) |checkpoint| {
                     if (self.kind != .restore) return error.InvalidFrameEncoding;
                     try checkpoint.validate(expected_manifest_fingerprint, capacity);
+                    if (checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
                 } else if (self.kind == .restore) {
                     return error.RestoreRejected;
                 }
@@ -1061,6 +1063,7 @@ pub fn Appliance(comptime World: type) type {
                 errdefer reply.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
                 try reply.validateShape(Capacity.large_native_test);
+                if (reply.outcome.host_request_fingerprint != reply.target_host_request_fingerprint) return error.InvalidFrameEncoding;
                 return reply;
             }
 
@@ -1276,6 +1279,7 @@ pub fn Appliance(comptime World: type) type {
                 errdefer checkpoint.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
                 try checkpoint.validate(checkpoint.manifest_fingerprint, Capacity.large_native_test);
+                if (checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
                 return checkpoint;
             }
 
@@ -1515,6 +1519,9 @@ pub fn Appliance(comptime World: type) type {
                 for (self.finalized_actuation_receipt_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
+                if (self.finalized_actuation_receipt_fingerprints.len != 0 and self.finalized_actuation_receipt_fingerprints.len != self.turn_receipt.applied_host_reply_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.turn_receipt.applied_host_reply_fingerprints.len != 0 and self.status != .needs_host and self.finalized_actuation_receipt_fingerprints.len != self.turn_receipt.applied_host_reply_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.status == .needs_host and self.finalized_actuation_receipt_fingerprints.len != 0) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.run_receipt_fingerprint);
                 try validateOptionalFingerprint(self.archive_append_batch_fingerprint);
                 try validateOptionalFingerprint(self.archive_append_batch_ref_fingerprint);
@@ -1539,6 +1546,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.archive_append_batch_fingerprint != self.checkpoint.pending_archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
                 if (self.blocker_count != self.turn_receipt.blocker_count or self.blocker_count != self.quiescence.blocker_count) return error.InvalidFrameEncoding;
                 if (self.warning_count != self.turn_receipt.warning_count or self.warning_count != self.quiescence.warning_count) return error.InvalidFrameEncoding;
+                if (self.status == .blocked and self.blocker_count == 0) return error.InvalidFrameEncoding;
                 if (self.turn_receipt.emitted_host_request_fingerprints.len != self.host_requests.len) return error.InvalidFrameEncoding;
                 for (self.host_requests, self.turn_receipt.emitted_host_request_fingerprints) |request, receipt_fingerprint| {
                     if (request.request_fingerprint != receipt_fingerprint) return error.InvalidFrameEncoding;
@@ -1721,10 +1729,21 @@ pub fn Appliance(comptime World: type) type {
                 refs[0] = objects[0].objectRef();
                 refs[1] = objects[1].objectRef();
 
-                const output_deps = [_]World.Continuity.ObjectRef{ refs[0], refs[1] };
+                const output_deps = try allocator.alloc(World.Continuity.ObjectRef, 2 + archive_output.finalized_actuation_receipt_fingerprints.len);
+                defer allocator.free(output_deps);
+                output_deps[0] = refs[0];
+                output_deps[1] = refs[1];
+                for (archive_output.finalized_actuation_receipt_fingerprints, 0..) |fingerprint, index| {
+                    output_deps[2 + index] = World.Continuity.ObjectRef.init(.{
+                        .kind = .actuation_receipt,
+                        .object_format_version = World.Continuity.ObjectKind.actuation_receipt.defaultFormatVersion(),
+                        .object_fingerprint = fingerprint,
+                        .byte_len = 0,
+                    });
+                }
                 objects[2] = try cloneEnvelope(allocator, World.Continuity.ObjectEnvelope.init(.{
                     .kind = .appliance_turn_output,
-                    .dependency_refs = &output_deps,
+                    .dependency_refs = output_deps,
                     .payload_bytes = output_payload,
                     .label = "appliance.turn_output",
                 }));
@@ -2929,6 +2948,7 @@ pub fn Appliance(comptime World: type) type {
                 var metadata_signature_mask: u64 = 0;
                 var metadata_value_mask: u64 = 0;
                 var memory_count: u32 = 0;
+                var memory_section: WasmMemorySection = .{};
                 var type_sigs: [wasm_max_inspected_types]WasmFuncSignature = undefined;
                 var type_count: usize = 0;
                 var function_type_indices: [wasm_max_inspected_functions]u32 = undefined;
@@ -2947,6 +2967,7 @@ pub fn Appliance(comptime World: type) type {
                         3 => function_count = try inspectWasmFunctions(section, &function_type_indices),
                         5 => {
                             const memory = try inspectWasmMemory(section);
+                            memory_section = memory;
                             memory_count = memory.count;
                             inspection.memory_initial_pages = memory.initial_pages;
                             inspection.memory_max_pages = memory.max_pages;
@@ -2954,6 +2975,7 @@ pub fn Appliance(comptime World: type) type {
                         7 => try inspectWasmExports(
                             section,
                             memory_count,
+                            memory_section,
                             type_sigs[0..type_count],
                             function_type_indices[0..function_count],
                             &inspection,
@@ -3106,7 +3128,10 @@ pub fn Appliance(comptime World: type) type {
             count: u32 = 0,
             initial_pages: u32 = 0,
             max_pages: ?u32 = null,
+            limits: [wasm_max_inspected_memories]WasmLimits = [_]WasmLimits{.{ .min = 0 }} ** wasm_max_inspected_memories,
         };
+
+        const wasm_max_inspected_memories = 16;
 
         const WasmLimits = struct {
             min: u32,
@@ -3116,11 +3141,14 @@ pub fn Appliance(comptime World: type) type {
         fn inspectWasmMemory(section: []const u8) !WasmMemorySection {
             var cursor: usize = 0;
             const count = try wasmReadU32(section, &cursor);
+            if (count > wasm_max_inspected_memories) return error.CapacityExceeded;
             var index: u32 = 0;
             var initial_pages: u32 = 0;
             var max_pages: ?u32 = null;
+            var limits_by_index: [wasm_max_inspected_memories]WasmLimits = [_]WasmLimits{.{ .min = 0 }} ** wasm_max_inspected_memories;
             while (index < count) : (index += 1) {
                 const limits = try wasmReadLimits(section, &cursor);
+                limits_by_index[index] = limits;
                 if (index == 0) {
                     initial_pages = limits.min;
                     max_pages = limits.max;
@@ -3131,12 +3159,14 @@ pub fn Appliance(comptime World: type) type {
                 .count = count,
                 .initial_pages = initial_pages,
                 .max_pages = max_pages,
+                .limits = limits_by_index,
             };
         }
 
         fn inspectWasmExports(
             section: []const u8,
             memory_count: u32,
+            memory_section: WasmMemorySection,
             type_sigs: []const WasmFuncSignature,
             function_type_indices: []const u32,
             inspection: *Abi.WasmInspection,
@@ -3156,7 +3186,10 @@ pub fn Appliance(comptime World: type) type {
                 const export_index = try wasmReadU32(section, &cursor);
                 inspection.export_count += 1;
                 if (kind == 2 and export_index < memory_count and std.mem.eql(u8, name, "memory")) {
+                    const exported_memory = memory_section.limits[export_index];
                     inspection.memory_export_present = true;
+                    inspection.memory_initial_pages = exported_memory.min;
+                    inspection.memory_max_pages = exported_memory.max;
                 }
                 if (kind == 0 and std.mem.eql(u8, name, "world_alloc")) inspection.alloc_export_present = true;
                 if (kind == 0 and std.mem.eql(u8, name, "world_free")) inspection.free_export_present = true;

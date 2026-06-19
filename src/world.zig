@@ -30914,6 +30914,7 @@ pub const Continuity = struct {
                 .guest_conformance_report,
                 .fabric_receipt,
                 .appliance_turn_output,
+                .appliance_conformance_report,
                 => true,
                 else => false,
             };
@@ -35340,6 +35341,79 @@ pub const Continuity = struct {
                 if (!validGuestConformanceReportPayload(report)) break :blk null;
                 break :blk report.report_fingerprint;
             },
+            .appliance_manifest => blk: {
+                var manifest = Appliance.Manifest.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer manifest.deinit(allocator);
+                break :blk manifest.manifest_fingerprint;
+            },
+            .appliance_command => blk: {
+                var command = Appliance.Command.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer command.deinit(allocator);
+                command.validate(command.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk null;
+                break :blk command.command_fingerprint;
+            },
+            .appliance_host_request => blk: {
+                var request = Appliance.HostRequest.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer request.deinit(allocator);
+                break :blk request.request_fingerprint;
+            },
+            .appliance_host_reply => blk: {
+                var reply = Appliance.HostReply.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer reply.deinit(allocator);
+                break :blk reply.reply_fingerprint;
+            },
+            .appliance_turn_output => blk: {
+                var output = Appliance.TurnOutput.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer output.deinit(allocator);
+                break :blk output.output_fingerprint;
+            },
+            .appliance_checkpoint => blk: {
+                var checkpoint = Appliance.Checkpoint.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer checkpoint.deinit(allocator);
+                break :blk checkpoint.checkpoint_fingerprint;
+            },
+            .appliance_turn_receipt => blk: {
+                var receipt = Appliance.TurnReceipt.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                defer receipt.deinit(allocator);
+                break :blk receipt.receipt_fingerprint;
+            },
+            .appliance_reconstruction_report => blk: {
+                const report = decodePortableEvidence(Appliance.ReconstructionReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                report.validate(report.manifest_fingerprint) catch break :blk null;
+                break :blk report.report_fingerprint;
+            },
+            .appliance_conformance_report => blk: {
+                const report = decodePortableEvidence(Appliance.ConformanceReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk null,
+                };
+                if (!validApplianceConformanceReportPayload(report)) break :blk null;
+                break :blk report.report_fingerprint;
+            },
             else => null,
         };
     }
@@ -35559,6 +35633,11 @@ pub const Continuity = struct {
         return true;
     }
 
+    fn validApplianceConformanceReportPayload(report: Appliance.ConformanceReport) bool {
+        report.validate(report.manifest_fingerprint) catch return false;
+        return report.report_fingerprint != 0;
+    }
+
     fn validGuestConformanceRunResult(summary: Guest.RunResultSummary) bool {
         if (summary.result_fingerprint) |fingerprint| if (fingerprint == 0) return false;
         if (summary.transcript_fingerprint) |fingerprint| if (fingerprint == 0) return false;
@@ -35689,6 +35768,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer request.deinit(allocator);
+                request.validate(Appliance.Capacity.large_native_test) catch break :blk false;
                 break :blk request.request_format_version == envelope.object_format_version;
             },
             .appliance_host_reply => blk: {
@@ -35697,6 +35777,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer reply.deinit(allocator);
+                reply.validateShape(Appliance.Capacity.large_native_test) catch break :blk false;
                 break :blk reply.reply_format_version == envelope.object_format_version;
             },
             .appliance_checkpoint => blk: {
@@ -35705,6 +35786,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer checkpoint.deinit(allocator);
+                checkpoint.validate(checkpoint.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk false;
                 break :blk checkpoint.checkpoint_format_version == envelope.object_format_version;
             },
             .appliance_turn_receipt => blk: {
@@ -35713,6 +35795,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer receipt.deinit(allocator);
+                receipt.validate(receipt.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk false;
                 break :blk receipt.receipt_format_version == envelope.object_format_version;
             },
             .appliance_turn_output => blk: {
@@ -35721,6 +35804,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer output.deinit(allocator);
+                output.validate(output.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk false;
                 break :blk output.output_format_version == envelope.object_format_version;
             },
             .appliance_reconstruction_report => blk: {
@@ -35991,6 +36075,14 @@ pub const Continuity = struct {
                 defer output.deinit(allocator);
                 break :blk try bundleApplianceTurnOutputDependencyPayloadsValid(allocator, envelopes, output);
             },
+            .appliance_conformance_report => blk: {
+                const report = decodePortableEvidence(Appliance.ConformanceReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                if (!validApplianceConformanceReportPayload(report)) break :blk false;
+                break :blk try bundleApplianceConformanceReportDependencyPayloadsValid(allocator, envelopes, report);
+            },
             else => true,
         };
     }
@@ -36013,6 +36105,51 @@ pub const Continuity = struct {
         };
         defer receipt.deinit(allocator);
         if (receipt.receipt_fingerprint != output.turn_receipt.receipt_fingerprint) return false;
+        for (output.finalized_actuation_receipt_fingerprints) |fingerprint| {
+            const ref = semanticObjectRef(.actuation_receipt, fingerprint);
+            if (try bundleEnvelopeForRef(allocator, envelopes, ref)) |actuation_receipt_envelope| {
+                var actuation_receipt = Actuation.Receipt.decode(allocator, actuation_receipt_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer actuation_receipt.deinit(allocator);
+                if (actuation_receipt.receipt_fingerprint != fingerprint) return false;
+            }
+        }
+        return true;
+    }
+
+    fn bundleApplianceConformanceReportDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, report: Appliance.ConformanceReport) !bool {
+        if (try bundleEnvelopeForRef(allocator, envelopes, semanticObjectRef(.appliance_manifest, report.manifest_fingerprint))) |manifest_envelope| {
+            var manifest = Appliance.Manifest.decodeArchivePayload(allocator, manifest_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer manifest.deinit(allocator);
+            if (manifest.manifest_fingerprint != report.manifest_fingerprint) return false;
+        }
+
+        const output_fingerprints = [_]?u64{
+            report.direct_native_owner_output_fingerprint,
+            report.appliance_native_output_fingerprint,
+            report.native_core_output_fingerprint,
+            report.resident_core_output_fingerprint,
+            report.reconstructed_core_output_fingerprint,
+            report.external_runtime_output_fingerprint,
+            report.replay_output_fingerprint,
+        };
+        for (output_fingerprints) |maybe_fingerprint| {
+            const fingerprint = maybe_fingerprint orelse continue;
+            const ref = semanticObjectRef(.appliance_turn_output, fingerprint);
+            if (try bundleEnvelopeForRef(allocator, envelopes, ref)) |output_envelope| {
+                var output = Appliance.TurnOutput.decodeArchivePayload(allocator, output_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer output.deinit(allocator);
+                if (output.output_fingerprint != fingerprint) return false;
+            }
+        }
         return true;
     }
 
@@ -36799,6 +36936,10 @@ pub const Continuity = struct {
                 defer output.deinit(allocator);
                 break :blk try bundleApplianceTurnOutputRequiredDependencyRefs(allocator, output);
             },
+            .appliance_conformance_report => blk: {
+                const report = try decodePortableEvidence(Appliance.ConformanceReport, allocator, envelope.payload_bytes);
+                break :blk try bundleApplianceConformanceReportRequiredDependencyRefs(allocator, report);
+            },
             .capsule_image => blk: {
                 var image = try Capsule.Image.decode(allocator, envelope.payload_bytes);
                 defer image.deinit(allocator);
@@ -36840,6 +36981,21 @@ pub const Continuity = struct {
         errdefer deinitRefList(allocator, &refs);
         try appendUniqueObjectRef(allocator, &refs, try applianceCheckpointObjectRef(allocator, output.checkpoint));
         try appendUniqueObjectRef(allocator, &refs, try applianceTurnReceiptObjectRef(allocator, output.turn_receipt));
+        for (output.finalized_actuation_receipt_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleApplianceConformanceReportRequiredDependencyRefs(allocator: std.mem.Allocator, report: Appliance.ConformanceReport) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .appliance_manifest, report.manifest_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, report.native_core_output_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, report.resident_core_output_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, report.reconstructed_core_output_fingerprint);
+        if (report.direct_native_owner_output_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, fingerprint);
+        if (report.appliance_native_output_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, fingerprint);
+        if (report.external_runtime_output_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, fingerprint);
+        if (report.replay_output_fingerprint) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, fingerprint);
         return refs.toOwnedSlice(allocator);
     }
 
@@ -38081,6 +38237,15 @@ pub const Continuity = struct {
             .admission_receipt,
             .fabric_receipt,
             .guest_conformance_report,
+            .appliance_manifest,
+            .appliance_command,
+            .appliance_host_request,
+            .appliance_host_reply,
+            .appliance_turn_output,
+            .appliance_checkpoint,
+            .appliance_turn_receipt,
+            .appliance_reconstruction_report,
+            .appliance_conformance_report,
             => true,
             else => false,
         };
