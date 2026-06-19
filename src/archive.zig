@@ -1312,7 +1312,7 @@ pub fn Archive(comptime World: type) type {
                     self.header_written = header_written_before;
                 };
                 try batch.validate();
-                try validateAppendBatchLimits(batch, self.limits);
+                try validateAppendBatchLimits(self.allocator, batch, self.limits);
                 try validateTypedObjectPayloads(self.allocator, batch.objects);
                 if (!self.header_written) try self.writeHeader(Header.init(.{}));
                 try self.validateAppendParent(batch, parent_moment, parent_seal);
@@ -2655,7 +2655,7 @@ pub fn Archive(comptime World: type) type {
             return refsEquivalent(object.objectRef(), ref);
         }
 
-        fn validateAppendBatchLimits(batch: AppendBatch, limits: Limits) !void {
+        fn validateAppendBatchLimits(allocator: std.mem.Allocator, batch: AppendBatch, limits: Limits) !void {
             try validateRefSliceLimit(batch.commit.committed_object_refs, limits);
             try validateRefSliceLimit(batch.commit.bundle_refs, limits);
             try validateRefSliceLimit(batch.commit.capsule_refs, limits);
@@ -2674,6 +2674,11 @@ pub fn Archive(comptime World: type) type {
             }
             for (batch.objects) |object| {
                 try validateRefSliceLimit(object.dependency_refs, limits);
+                {
+                    const encoded = try Continuity.ObjectCodec.encodeEnvelope(object, allocator);
+                    defer allocator.free(encoded);
+                    try validateByteFieldPayloadLimit(encoded, limits);
+                }
                 try validateEnvelopePayloadLimits(object, limits);
             }
         }

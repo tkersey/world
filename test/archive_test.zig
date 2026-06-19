@@ -618,6 +618,41 @@ test "archive writer enforces configured payload limit before append" {
     try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
 }
 
+test "archive writer rejects encoded envelopes over configured payload limit" {
+    const envelope = archiveEnvelope(.bundle, "p", "l");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = 0xA941,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xA941,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{ .max_payload_bytes = 16 });
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+}
+
 test "archive reader honors configured payload limit while decoding" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
