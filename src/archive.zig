@@ -469,11 +469,9 @@ pub fn Archive(comptime World: type) type {
                 if (!cursorsEqual(recomputed_cursor, self.moment.chronicle_resulting_cursor)) return error.InvalidFrameEncoding;
                 var committed_ref_index: usize = 0;
                 for (self.events) |event| {
-                    if (event.transaction_fingerprint) |transaction_fingerprint| {
-                        if (transaction_fingerprint != self.commit.transaction_fingerprint) return error.InvalidFrameEncoding;
-                    }
+                    const transaction_fingerprint = event.transaction_fingerprint orelse return error.InvalidFrameEncoding;
+                    if (transaction_fingerprint != self.commit.transaction_fingerprint) return error.InvalidFrameEncoding;
                     if (event.kind != .object_committed) continue;
-                    if (event.transaction_fingerprint == null) return error.InvalidFrameEncoding;
                     for (event.object_refs) |ref| {
                         if (committed_ref_index >= self.commit.committed_object_refs.len) return error.InvalidFrameEncoding;
                         if (!ref.eql(self.commit.committed_object_refs[committed_ref_index])) return error.InvalidFrameEncoding;
@@ -495,8 +493,8 @@ pub fn Archive(comptime World: type) type {
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.bundle_refs, .bundle)) return error.InvalidFrameEncoding;
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.capsule_refs, .capsule)) return error.InvalidFrameEncoding;
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.actuation_refs, .actuation)) return error.InvalidFrameEncoding;
-                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.commit.idempotency_key_refs);
-                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.commit.validation_report_refs);
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.idempotency_key_refs, .idempotency_key)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.validation_report_refs, .validation_report)) return error.InvalidFrameEncoding;
                 if (!refSlicesEqual(self.commit.committed_object_refs, self.moment.root_object_refs)) return error.InvalidFrameEncoding;
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.moment.admission_refs, .admission)) return error.InvalidFrameEncoding;
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.moment.environment_certificate_refs, .environment_certificate)) return error.InvalidFrameEncoding;
@@ -1515,6 +1513,10 @@ pub fn Archive(comptime World: type) type {
                     defer capsule_refs.deinit(self.archive.allocator);
                     var actuation_refs: std.ArrayList(ObjectRef) = .empty;
                     defer actuation_refs.deinit(self.archive.allocator);
+                    var idempotency_key_refs: std.ArrayList(ObjectRef) = .empty;
+                    defer idempotency_key_refs.deinit(self.archive.allocator);
+                    var validation_report_refs: std.ArrayList(ObjectRef) = .empty;
+                    defer validation_report_refs.deinit(self.archive.allocator);
                     var bundle_refs: std.ArrayList(ObjectRef) = .empty;
                     defer bundle_refs.deinit(self.archive.allocator);
                     for (self.staged_objects.items) |object| {
@@ -1529,8 +1531,12 @@ pub fn Archive(comptime World: type) type {
                             .actuation_response,
                             .actuation_receipt,
                             .actuation_journal,
-                            .actuation_idempotency_key,
                             => try actuation_refs.append(self.archive.allocator, ref),
+                            .actuation_idempotency_key => {
+                                try actuation_refs.append(self.archive.allocator, ref);
+                                try idempotency_key_refs.append(self.archive.allocator, ref);
+                            },
+                            .actuation_verify_report => try validation_report_refs.append(self.archive.allocator, ref),
                             .bundle => try bundle_refs.append(self.archive.allocator, ref),
                             else => {},
                         }
@@ -1585,6 +1591,8 @@ pub fn Archive(comptime World: type) type {
                         .bundle_refs = bundle_refs.items,
                         .capsule_refs = capsule_refs.items,
                         .actuation_refs = actuation_refs.items,
+                        .idempotency_key_refs = idempotency_key_refs.items,
+                        .validation_report_refs = validation_report_refs.items,
                     });
                     const batch = AppendBatch.init(.{
                         .parent_cursor = latest,
@@ -2890,6 +2898,8 @@ pub fn Archive(comptime World: type) type {
             bundle,
             capsule,
             actuation,
+            idempotency_key,
+            validation_report,
             admission,
             environment_certificate,
             permit_receipt,
@@ -2960,6 +2970,8 @@ pub fn Archive(comptime World: type) type {
                     => true,
                     else => false,
                 },
+                .idempotency_key => ref.kind == .actuation_idempotency_key,
+                .validation_report => ref.kind == .actuation_verify_report,
                 .admission => ref.kind == .admission_receipt,
                 .environment_certificate => ref.kind == .environment_certificate,
                 .permit_receipt => ref.kind == .run_permit or ref.kind == .run_receipt,
@@ -2984,12 +2996,6 @@ pub fn Archive(comptime World: type) type {
                 owned_pending = false;
             }
             return refs.toOwnedSlice(allocator);
-        }
-
-        fn validateSummaryRefsSubset(committed_refs: []const ObjectRef, summary_refs: []const ObjectRef) !void {
-            for (summary_refs) |ref| {
-                if (!containsRef(committed_refs, ref)) return error.InvalidFrameEncoding;
-            }
         }
 
         fn validateRefSliceUnique(refs: []const ObjectRef) !void {

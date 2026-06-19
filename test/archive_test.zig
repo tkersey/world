@@ -717,6 +717,7 @@ test "archive writer accepts semantic evidence refs in domain events" {
     });
     const event = world.Continuity.Chronicle.Event.init(.{
         .kind = .bundle_import_committed,
+        .transaction_fingerprint = 0xAA10,
         .capsule_ref = capsule_ref,
         .bundle_ref = bundle_ref,
         .recovery_plan_ref = recovery_plan_ref,
@@ -1264,6 +1265,53 @@ test "archive append batch rejects missing committed objects" {
     try std.testing.expectError(error.InvalidFrameEncoding, batch.validate());
 }
 
+test "archive moment data rejects committed events without transaction fingerprints" {
+    const bundle = archiveEnvelope(.bundle, "unbound-event-bundle", "unbound-event-bundle");
+    const bundle_ref = bundle.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{bundle_ref};
+    const transaction_fingerprint = 0x7E11;
+    const object_event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = bundle_ref,
+    });
+    const domain_event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_committed,
+        .bundle_ref = bundle_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{ object_event, domain_event };
+    const fingerprints = [_]u64{ object_event.event_fingerprint, domain_event.event_fingerprint };
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &refs,
+    });
+    const moment = world.Archive.Moment.init(.{
+        .sequence_number = 1,
+        .chronicle_parent_cursor = parent,
+        .chronicle_resulting_cursor = resulting,
+        .chronicle_commit_ref = world.Archive.CommitRef.fromCommit(commit),
+        .committed_event_refs = &fingerprints,
+        .committed_object_refs = &refs,
+        .bundle_refs = &refs,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{bundle};
+    const data = world.Archive.MomentData{
+        .moment = moment,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    };
+
+    try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
+}
+
 test "archive moment data rejects forged summary refs" {
     const capsule = archiveEnvelope(.capsule_image, "summary-capsule", "summary-capsule");
     const bundle = archiveEnvelope(.bundle, "summary-bundle", "summary-bundle");
@@ -1366,6 +1414,66 @@ test "archive moment data rejects forged commit summary refs" {
 
     {
         const validation_report_refs = [_]world.Continuity.ObjectRef{forged_report_ref};
+        const commit = world.Continuity.Chronicle.Commit.init(.{
+            .transaction_fingerprint = transaction_fingerprint,
+            .parent_cursor_fingerprint = parent.cursor_fingerprint,
+            .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+            .committed_object_refs = &refs,
+            .committed_event_fingerprints = &fingerprints,
+            .bundle_refs = &bundle_refs,
+            .validation_report_refs = &validation_report_refs,
+        });
+        const moment = world.Archive.Moment.init(.{
+            .sequence_number = 1,
+            .chronicle_parent_cursor = parent,
+            .chronicle_resulting_cursor = resulting,
+            .chronicle_commit_ref = world.Archive.CommitRef.fromCommit(commit),
+            .committed_event_refs = &fingerprints,
+            .committed_object_refs = &refs,
+            .bundle_refs = &bundle_refs,
+        });
+        const data = world.Archive.MomentData{
+            .moment = moment,
+            .commit = commit,
+            .events = &events,
+            .objects = &objects,
+        };
+
+        try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
+    }
+
+    {
+        const idempotency_key_refs = [_]world.Continuity.ObjectRef{bundle_ref};
+        const commit = world.Continuity.Chronicle.Commit.init(.{
+            .transaction_fingerprint = transaction_fingerprint,
+            .parent_cursor_fingerprint = parent.cursor_fingerprint,
+            .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+            .committed_object_refs = &refs,
+            .committed_event_fingerprints = &fingerprints,
+            .bundle_refs = &bundle_refs,
+            .idempotency_key_refs = &idempotency_key_refs,
+        });
+        const moment = world.Archive.Moment.init(.{
+            .sequence_number = 1,
+            .chronicle_parent_cursor = parent,
+            .chronicle_resulting_cursor = resulting,
+            .chronicle_commit_ref = world.Archive.CommitRef.fromCommit(commit),
+            .committed_event_refs = &fingerprints,
+            .committed_object_refs = &refs,
+            .bundle_refs = &bundle_refs,
+        });
+        const data = world.Archive.MomentData{
+            .moment = moment,
+            .commit = commit,
+            .events = &events,
+            .objects = &objects,
+        };
+
+        try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
+    }
+
+    {
+        const validation_report_refs = [_]world.Continuity.ObjectRef{bundle_ref};
         const commit = world.Continuity.Chronicle.Commit.init(.{
             .transaction_fingerprint = transaction_fingerprint,
             .parent_cursor_fingerprint = parent.cursor_fingerprint,
