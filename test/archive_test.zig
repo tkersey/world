@@ -126,6 +126,11 @@ fn commitArchiveObject(
     return tx.commit();
 }
 
+fn initializedArchiveParentCursor() world.Continuity.Chronicle.Cursor {
+    const event = world.Continuity.Chronicle.Event.init(.{ .kind = .vault_initialized });
+    return world.Continuity.Chronicle.Cursor.initial().advance(&.{event.event_fingerprint}, 0, 0);
+}
+
 test "archive memory stores canonical bytes and sealed moments" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
@@ -147,6 +152,90 @@ test "archive memory stores canonical bytes and sealed moments" {
     const scan = try reader.scan();
     try std.testing.expectEqual(@as(usize, 1), scan.committed_moment_count);
     try std.testing.expectEqual(archive.bytesView().len, scan.committed_prefix_byte_len);
+}
+
+test "archive append derives moment summaries for summaryless Chronicle commits" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const envelope = archiveEnvelope(.bundle, "summaryless-bundle", "summaryless-bundle");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const transaction_fingerprint = 0xA5C0_0101;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    const moment = try archive.appendBatch(batch);
+    try std.testing.expectEqual(@as(usize, 1), moment.bundle_refs.len);
+    try std.testing.expect(moment.bundle_refs[0].eql(ref));
+    var stored_commit = try archive.readCommit(moment.chronicle_commit_ref);
+    defer stored_commit.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), stored_commit.bundle_refs.len);
+}
+
+test "archive append accepts initialized Chronicle parent on empty archive" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const envelope = archiveEnvelope(.bundle, "initialized-parent", "initialized-parent");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const transaction_fingerprint = 0xA5C0_0102;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = initializedArchiveParentCursor();
+    const resulting = parent.advance(&event_fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    const moment = try archive.appendBatch(batch);
+    try std.testing.expectEqual(parent.cursor_fingerprint, moment.chronicle_parent_cursor.cursor_fingerprint);
+    const reader = world.Archive.Reader.init(std.testing.allocator, archive.bytesView(), .{});
+    const scan = try reader.scan();
+    try std.testing.expectEqual(@as(usize, 1), scan.committed_moment_count);
+    var replay = try archive.replay();
+    defer replay.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), replay.mismatch_count);
 }
 
 test "archive valid-prefix recovery discards unsealed tail" {
@@ -598,6 +687,92 @@ test "archive writer rejects malformed typed payloads before append" {
     try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
 }
 
+test "archive writer rejects typed dependency payload mismatches before append" {
+    const allocator = std.testing.allocator;
+    const request_fingerprint = 0xA5C0_0203;
+    const wrong_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = 0xA5C0_0201,
+        .target_certificate_fingerprint = 0xA5C0_0202,
+        .world_port_id = 7,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0xA5C0_0204,
+        .request_fingerprint = request_fingerprint,
+        .turn_index = 0,
+    });
+    const declared_request = world.Frame.Request.init(.{
+        .world_surface_fingerprint = 0xA5C0_0211,
+        .target_certificate_fingerprint = 0xA5C0_0212,
+        .world_port_id = 8,
+        .residual_site_index = 0,
+        .residual_site_fingerprint = 0xA5C0_0214,
+        .request_fingerprint = request_fingerprint,
+        .turn_index = 0,
+    });
+    const response_fingerprint = 0xA5C0_0220;
+    const response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = declared_request.world_surface_fingerprint,
+        .target_certificate_fingerprint = declared_request.target_certificate_fingerprint,
+        .world_port_id = declared_request.world_port_id,
+        .request_fingerprint = request_fingerprint,
+        .response_fingerprint = response_fingerprint,
+        .replay_key = declared_request.replay_key_seed.withResponse(response_fingerprint).fingerprint(),
+    });
+    const wrong_request_payload = try wrong_request.encode(allocator);
+    defer allocator.free(wrong_request_payload);
+    const response_payload = try response.encode(allocator);
+    defer allocator.free(response_payload);
+    const request_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .frame_request,
+        .object_fingerprint = request_fingerprint,
+        .byte_len = 0,
+    });
+    const response_deps = [_]world.Continuity.ObjectRef{request_ref};
+    const wrong_request_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_request,
+        .object_format_version = world.world_frame_request_format_version,
+        .payload_bytes = wrong_request_payload,
+    });
+    const response_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .frame_response,
+        .object_format_version = world.world_frame_response_format_version,
+        .dependency_refs = &response_deps,
+        .payload_bytes = response_payload,
+    });
+    const wrong_request_ref = wrong_request_envelope.objectRef();
+    const response_ref = response_envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ wrong_request_ref, response_ref };
+    const transaction_fingerprint = 0xA5C0_0200;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = response_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{ wrong_request_envelope, response_envelope };
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+}
+
 test "archive writer rejects malformed capsule image payloads before append" {
     const envelope = world.Continuity.ObjectEnvelope.init(.{
         .kind = .capsule_image,
@@ -770,17 +945,34 @@ test "archive writer accepts semantic evidence refs in domain events" {
         .object_fingerprint = 0xAA05,
         .byte_len = 0,
     });
-    const event = world.Continuity.Chronicle.Event.init(.{
+    const bundle_event = world.Continuity.Chronicle.Event.init(.{
         .kind = .bundle_import_committed,
         .transaction_fingerprint = 0xAA10,
         .capsule_ref = capsule_ref,
         .bundle_ref = bundle_ref,
+    });
+    const recovery_event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .recovery_blocked,
+        .transaction_fingerprint = 0xAA10,
         .recovery_plan_ref = recovery_plan_ref,
+    });
+    const recovery_report_event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .recovery_report_stored,
+        .transaction_fingerprint = 0xAA10,
         .recovery_report_ref = recovery_report_ref,
+    });
+    const handoff_event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .inbox_item_created,
+        .transaction_fingerprint = 0xAA10,
         .inbox_outbox_item_ref = handoff_ref,
     });
-    const events = [_]world.Continuity.Chronicle.Event{event};
-    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const events = [_]world.Continuity.Chronicle.Event{ bundle_event, recovery_event, recovery_report_event, handoff_event };
+    const event_fingerprints = [_]u64{
+        bundle_event.event_fingerprint,
+        recovery_event.event_fingerprint,
+        recovery_report_event.event_fingerprint,
+        handoff_event.event_fingerprint,
+    };
     const parent = world.Continuity.Chronicle.Cursor.initial();
     const resulting = parent.advance(&event_fingerprints, 0, 1);
     const commit = world.Continuity.Chronicle.Commit.init(.{
@@ -802,6 +994,40 @@ test "archive writer accepts semantic evidence refs in domain events" {
     const reader = world.Archive.Reader.init(std.testing.allocator, writer.bytes.items, .{});
     const scan = try reader.scan();
     try std.testing.expectEqual(@as(usize, 1), scan.committed_moment_count);
+}
+
+test "archive writer rejects semantic refs on stored object events" {
+    const capsule_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .capsule_image,
+        .object_fingerprint = 0xAA22,
+        .byte_len = 0,
+    });
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .capsule_stored,
+        .transaction_fingerprint = 0xAA23,
+        .capsule_ref = capsule_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, 0, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xAA23,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &.{},
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
 }
 
 test "archive putObject rejects malformed typed actuation receipt payloads" {
@@ -1064,6 +1290,19 @@ test "archive latest moment returns borrowed ownership" {
     try std.testing.expect(!moment.owns_memory);
     moment.deinit(std.testing.allocator);
     try std.testing.expect(archive.hasObject(archiveEnvelope(.capsule_image, "borrowed-moment", "borrowed-moment").objectRef()));
+}
+
+test "archive append returned moment remains stable after later refresh" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const first = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "stable-return-one", "stable-return-one"));
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_manifest, "stable-return-two", "stable-return-two"));
+
+    try first.validate();
+    try std.testing.expect(!first.owns_memory);
+    try std.testing.expectEqual(@as(u64, 1), first.sequence_number);
+    try std.testing.expectEqual(@as(usize, 1), first.capsule_refs.len);
 }
 
 test "archive snapshot moment returns borrowed ownership" {

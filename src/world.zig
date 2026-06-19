@@ -34982,6 +34982,15 @@ pub const Continuity = struct {
         if (!(try storableEnvelopeDeclaresRequiredDependencies(allocator, envelope))) return error.InvalidFrameEncoding;
     }
 
+    pub fn validateObjectEnvelopeDependencyPayloads(
+        allocator: std.mem.Allocator,
+        envelopes: []const ObjectEnvelope,
+        envelope: ObjectEnvelope,
+    ) !void {
+        try envelope.validate();
+        if (!(try bundleEnvelopeDependencyPayloadsValid(allocator, envelopes, envelope))) return error.InvalidFrameEncoding;
+    }
+
     pub fn objectEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: ObjectEnvelope) ![]ObjectRef {
         try envelope.validate();
         return try bundleEnvelopeRequiredDependencyRefs(allocator, envelope);
