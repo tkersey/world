@@ -637,6 +637,22 @@ pub fn Archive(comptime World: type) type {
             }
         };
 
+        pub fn appendBatchSerializedByteLen(allocator: std.mem.Allocator, batch: AppendBatch) !usize {
+            var out: std.ArrayList(u8) = .empty;
+            defer out.deinit(allocator);
+            try writeU32(&out, allocator, batch.append_batch_format_version);
+            try writeU32(&out, allocator, batch.append_batch_fingerprint_version);
+            try writeU64(&out, allocator, batch.append_batch_fingerprint);
+            try encodeCursor(&out, allocator, batch.parent_cursor);
+            try encodeCommit(&out, allocator, batch.commit);
+            try writeU64(&out, allocator, batch.events.len);
+            for (batch.events) |event| try encodeEvent(&out, allocator, event);
+            try writeU64(&out, allocator, batch.objects.len);
+            for (batch.objects) |object| try encodeEnvelope(&out, allocator, object);
+            try writeBytes(&out, allocator, batch.diagnostic_metadata_bytes);
+            return out.items.len;
+        }
+
         pub const ScanReport = struct {
             header: ?Header = null,
             committed_moment_count: usize = 0,

@@ -526,6 +526,9 @@ pub fn Appliance(comptime World: type) type {
                 if (self.appliance_abi_version != World.world_appliance_abi_version) return error.InvalidFrameEncoding;
                 if (self.root_target_ref_fingerprint == 0 or self.root_world_surface_fingerprint == 0 or self.root_target_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
                 if (self.capacity_fingerprint == 0 or self.memory_plan_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.supported_execution_modes._reserved != 0) return error.InvalidFrameEncoding;
+                if (self.enabled_features._reserved != 0) return error.InvalidFrameEncoding;
+                if (self.required_host_capabilities._reserved != 0) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_binding_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_actuator_ref_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_classes.len) return error.InvalidFrameEncoding;
@@ -1699,10 +1702,6 @@ pub fn Appliance(comptime World: type) type {
                 const output_payload = try archive_output.encode(allocator);
                 defer allocator.free(output_payload);
 
-                if (checkpoint_payload.len + receipt_payload.len + output_payload.len > capacity.max_archive_append_bytes) {
-                    return error.CapacityExceeded;
-                }
-
                 var objects = try allocator.alloc(World.Continuity.ObjectEnvelope, 3);
                 var object_count: usize = 0;
                 errdefer {
@@ -1785,6 +1784,8 @@ pub fn Appliance(comptime World: type) type {
                     .diagnostic_metadata_bytes = "appliance.turn",
                 });
                 try append_batch.validate();
+                const append_batch_byte_len = try World.Archive.appendBatchSerializedByteLen(allocator, append_batch);
+                if (append_batch_byte_len > capacity.max_archive_append_bytes) return error.CapacityExceeded;
 
                 return .{
                     .allocator = allocator,

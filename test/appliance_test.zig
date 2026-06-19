@@ -130,7 +130,7 @@ fn applianceManifestVariant(base: world.Appliance.Manifest, args: anytype) world
         .capsule_profile_fingerprint = base.capsule_profile_fingerprint,
         .archive_profile_fingerprint = base.archive_profile_fingerprint,
         .supported_execution_modes = if (@hasField(@TypeOf(args), "supported_execution_modes")) args.supported_execution_modes else base.supported_execution_modes,
-        .enabled_features = base.enabled_features,
+        .enabled_features = if (@hasField(@TypeOf(args), "enabled_features")) args.enabled_features else base.enabled_features,
         .capacity_fingerprint = base.capacity_fingerprint,
         .memory_plan_fingerprint = base.memory_plan_fingerprint,
         .required_host_capabilities = if (@hasField(@TypeOf(args), "required_host_capabilities")) args.required_host_capabilities else base.required_host_capabilities,
@@ -3962,6 +3962,19 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     defer plan.deinit();
 
     try plan.append_batch.validate();
+    const serialized_append_batch_len = try world.Archive.appendBatchSerializedByteLen(std.testing.allocator, plan.append_batch);
+    try std.testing.expect(serialized_append_batch_len <= capacity.max_archive_append_bytes);
+    var serialized_tight_capacity = capacity;
+    serialized_tight_capacity.max_archive_append_bytes = serialized_append_batch_len - 1;
+    try std.testing.expectError(
+        error.CapacityExceeded,
+        world.Appliance.ArchivePlan.initForTurnOutput(
+            std.testing.allocator,
+            archive.image.latestCursor(),
+            output,
+            serialized_tight_capacity,
+        ),
+    );
     try std.testing.expectEqual(@as(usize, 3), plan.objects.len);
     try std.testing.expectEqual(@as(usize, 1), plan.events.len);
     try std.testing.expectEqual(plan.parent_cursor.cursor_fingerprint, plan.append_batch.parent_cursor.cursor_fingerprint);
@@ -4462,6 +4475,27 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
         .required_host_capabilities = replay_evidence_capabilities,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, replay_evidence_manifest.validate());
+
+    var reserved_modes = manifest.supported_execution_modes;
+    reserved_modes._reserved = 1;
+    const reserved_modes_manifest = applianceManifestVariant(manifest, .{
+        .supported_execution_modes = reserved_modes,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, reserved_modes_manifest.validate());
+
+    var reserved_features = manifest.enabled_features;
+    reserved_features._reserved = 1;
+    const reserved_features_manifest = applianceManifestVariant(manifest, .{
+        .enabled_features = reserved_features,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, reserved_features_manifest.validate());
+
+    var reserved_capabilities = manifest.required_host_capabilities;
+    reserved_capabilities._reserved = 1;
+    const reserved_capabilities_manifest = applianceManifestVariant(manifest, .{
+        .required_host_capabilities = reserved_capabilities,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, reserved_capabilities_manifest.validate());
 }
 
 test "appliance Continuity object kinds are canonical evidence kinds" {
