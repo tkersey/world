@@ -18,6 +18,7 @@ const ApplianceActuator = world.actuator(.{
     .kind = .fixture,
     .class = .deterministic_fixture,
     .label = "appliance.model",
+    .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
     .value_policy = world.ValuePolicy.portable,
 });
 const AgentToolImport = world.ImportRequirement.fromTargetPort(fixtures.Agent.Target, 1);
@@ -50,6 +51,12 @@ pub const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
     .actuation_bindings = .{world.bindActuator(ApplianceAgentDecideDecl, ApplianceActuator)},
     .metadata = "example-agent",
 });
+
+pub const agent_wasm_manifest_fingerprint: u64 = 0xd14c37e5eccc0151;
+pub const agent_wasm_capacity_fingerprint: u64 = 0x5fcf964fbaa4a66b;
+pub const agent_wasm_memory_plan_fingerprint: u64 = 0xed1c9222ab3bed1d;
+pub const agent_wasm_required_memory_bytes: u64 = 4_259_840;
+pub const agent_wasm_max_linear_memory_pages: u32 = 65;
 
 pub fn bootCommand(manifest: world.Appliance.Manifest) world.Appliance.Command {
     return world.Appliance.Command.init(.{

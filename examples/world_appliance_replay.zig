@@ -25,6 +25,16 @@ pub fn main(init: std.process.Init) !void {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer fresh_output.deinit(allocator);
+    const fresh_reply = common.hostReplyFor(fresh_output.host_requests[0], 0xA6E7_2001);
+    const fresh_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = fresh_output.turn_receipt.receipt_fingerprint,
+        .host_replies = &.{fresh_reply},
+    });
+    var terminal_output = try common.submitAndDecode(&fresh_core, allocator, manifest, fresh_continue);
+    defer terminal_output.deinit(allocator);
 
     var replay_core = world.Appliance.Core.initWithCapacity(
         allocator,
@@ -33,7 +43,10 @@ pub fn main(init: std.process.Init) !void {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer replay_core.reset();
-    const replay_evidence = [_]u64{fresh_output.turn_receipt.receipt_fingerprint};
+    const replay_evidence = [_]u64{
+        terminal_output.turn_receipt.receipt_fingerprint,
+        terminal_output.finalized_actuation_receipt_fingerprints[0],
+    };
     const replay_command = world.Appliance.Command.init(.{
         .kind = .boot,
         .manifest_fingerprint = manifest.manifest_fingerprint,

@@ -25,35 +25,35 @@ export fn world_appliance_manifest_len() usize {
 }
 
 export fn world_appliance_manifest_fingerprint_lo() u32 {
-    return @truncate(manifest.manifest_fingerprint);
+    return @truncate(common.agent_wasm_manifest_fingerprint);
 }
 
 export fn world_appliance_manifest_fingerprint_hi() u32 {
-    return @truncate(manifest.manifest_fingerprint >> 32);
+    return @truncate(common.agent_wasm_manifest_fingerprint >> 32);
 }
 
 export fn world_appliance_capacity_fingerprint_lo() u32 {
-    return @truncate(capacity.fingerprint());
+    return @truncate(common.agent_wasm_capacity_fingerprint);
 }
 
 export fn world_appliance_capacity_fingerprint_hi() u32 {
-    return @truncate(capacity.fingerprint() >> 32);
+    return @truncate(common.agent_wasm_capacity_fingerprint >> 32);
 }
 
 export fn world_appliance_memory_plan_fingerprint_lo() u32 {
-    return @truncate(memory_plan.plan_fingerprint);
+    return @truncate(common.agent_wasm_memory_plan_fingerprint);
 }
 
 export fn world_appliance_memory_plan_fingerprint_hi() u32 {
-    return @truncate(memory_plan.plan_fingerprint >> 32);
+    return @truncate(common.agent_wasm_memory_plan_fingerprint >> 32);
 }
 
 export fn world_appliance_required_memory_bytes() usize {
-    return memory_plan.maximum_linear_memory_bytes;
+    return common.agent_wasm_required_memory_bytes;
 }
 
 export fn world_appliance_max_linear_memory_pages() usize {
-    return memory_plan.maximum_linear_memory_pages;
+    return common.agent_wasm_max_linear_memory_pages;
 }
 
 export fn world_appliance_read_manifest(ptr: usize, cap: usize) usize {

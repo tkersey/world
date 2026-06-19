@@ -359,13 +359,13 @@ pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 3;
 pub const world_guest_conformance_report_fingerprint_version: u32 = 1;
 pub const world_appliance_abi_version: u32 = 1;
-pub const world_appliance_manifest_format_version: u32 = 1;
-pub const world_appliance_manifest_fingerprint_version: u32 = 1;
+pub const world_appliance_manifest_format_version: u32 = 2;
+pub const world_appliance_manifest_fingerprint_version: u32 = 2;
 pub const world_appliance_memory_plan_fingerprint_version: u32 = 1;
 pub const world_appliance_command_format_version: u32 = 1;
 pub const world_appliance_command_fingerprint_version: u32 = 1;
-pub const world_appliance_host_request_format_version: u32 = 1;
-pub const world_appliance_host_request_fingerprint_version: u32 = 1;
+pub const world_appliance_host_request_format_version: u32 = 3;
+pub const world_appliance_host_request_fingerprint_version: u32 = 3;
 pub const world_appliance_host_outcome_format_version: u32 = 1;
 pub const world_appliance_host_outcome_fingerprint_version: u32 = 1;
 pub const world_appliance_host_reply_format_version: u32 = 1;
@@ -19875,6 +19875,10 @@ pub const Actuation = struct {
             }
             if (self.descriptor.class != self.intent.class) return error.InvalidFrameEncoding;
             if (!self.descriptor.supported_modes.allows(self.intent.requested_mode)) return error.InvalidMode;
+            if (!self.policy.allowsValuePolicy(self.descriptor.value_policy)) {
+                if (self.policy.require_portable_value_images and !self.descriptor.value_policy.require_portable_values) return error.PortableValueRequired;
+                if (self.policy.reject_native_only_values and self.descriptor.value_policy.allow_native_only_values) return error.NativeValueRejected;
+            }
             if (self.binding) |binding| {
                 try binding.validateForDescriptor(self.descriptor);
                 if (self.intent.binding_fingerprint == null or self.intent.binding_fingerprint.? != binding.binding_fingerprint) return error.InvalidFrameEncoding;
@@ -19995,7 +19999,6 @@ pub const Actuation = struct {
                 const report = self.verify_report orelse return error.InvalidFrameEncoding;
                 try report.validate();
                 if (report.intent_fingerprint != self.commit_value.intent_fingerprint) return error.InvalidFrameEncoding;
-                if (report.fresh_receipt_fingerprint != self.receipt.receipt_fingerprint) return error.InvalidFrameEncoding;
             } else if (self.verify_report != null) {
                 return error.InvalidFrameEncoding;
             }

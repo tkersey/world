@@ -18,11 +18,56 @@ const ApplianceActuator = world.actuator(.{
     .kind = .fixture,
     .class = .deterministic_fixture,
     .label = "appliance.model",
+    .supported_response_statuses = world.Actuation.ResponseStatusSet.all,
     .value_policy = world.ValuePolicy.portable,
 });
 const ApplianceActuationBinding = world.bindActuator(AppliancePortsDecl, ApplianceActuator);
 const ApplianceAgentActuationBinding = world.bindActuator(ApplianceAgentDecideDecl, ApplianceActuator);
 const ApplianceAgentToolImport = world.ImportRequirement.fromTargetPort(fixtures.Agent.Target, 1);
+
+fn applianceSyntheticHostRequestArgs(comptime T: type, args: T) struct {
+    turn_sequence_number: u64,
+    request_ordinal: u32,
+    run_handle_fingerprint: u64,
+    pending_port_fingerprint: u64,
+    world_port_id: u32 = 0,
+    target_ref_fingerprint: u64 = 0xD0F0_0001,
+    world_surface_fingerprint: u64 = 0xD0F0_0002,
+    actuator_ref_fingerprint: u64 = 0xD0F0_0003,
+    actuation_class: world.Actuation.Class = .deterministic_fixture,
+    allowed_response_statuses: world.Actuation.ResponseStatusSet = .terminal_with_errors,
+    intent_fingerprint: u64,
+    envelope_fingerprint: u64,
+    decision_fingerprint: u64,
+    expected_response_descriptor_fingerprint: u64,
+    idempotency_key_fingerprint: u64,
+    supervision_ref_fingerprint: ?u64 = null,
+    metadata: []const u8 = "",
+} {
+    return .{
+        .turn_sequence_number = args.turn_sequence_number,
+        .request_ordinal = args.request_ordinal,
+        .run_handle_fingerprint = args.run_handle_fingerprint,
+        .pending_port_fingerprint = args.pending_port_fingerprint,
+        .world_port_id = if (@hasField(T, "world_port_id")) args.world_port_id else 0,
+        .target_ref_fingerprint = if (@hasField(T, "target_ref_fingerprint")) args.target_ref_fingerprint else 0xD0F0_0001,
+        .world_surface_fingerprint = if (@hasField(T, "world_surface_fingerprint")) args.world_surface_fingerprint else 0xD0F0_0002,
+        .actuator_ref_fingerprint = if (@hasField(T, "actuator_ref_fingerprint")) args.actuator_ref_fingerprint else 0xD0F0_0003,
+        .actuation_class = if (@hasField(T, "actuation_class")) args.actuation_class else .deterministic_fixture,
+        .allowed_response_statuses = if (@hasField(T, "allowed_response_statuses")) args.allowed_response_statuses else .terminal_with_errors,
+        .intent_fingerprint = args.intent_fingerprint,
+        .envelope_fingerprint = args.envelope_fingerprint,
+        .decision_fingerprint = args.decision_fingerprint,
+        .expected_response_descriptor_fingerprint = args.expected_response_descriptor_fingerprint,
+        .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
+        .supervision_ref_fingerprint = if (@hasField(T, "supervision_ref_fingerprint")) args.supervision_ref_fingerprint else null,
+        .metadata = if (@hasField(T, "metadata")) args.metadata else "",
+    };
+}
+
+fn applianceSyntheticHostRequest(args: anytype) world.Appliance.HostRequest {
+    return world.Appliance.HostRequest.init(applianceSyntheticHostRequestArgs(@TypeOf(args), args));
+}
 
 fn applianceHostReplyFor(request: world.Appliance.HostRequest, response_fingerprint: u64) world.Appliance.HostReply {
     const outcome = world.Appliance.HostOutcome.init(.{
@@ -62,6 +107,72 @@ fn applianceHostReplyWithStatusFor(
         .target_host_request_fingerprint = request.request_fingerprint,
         .outcome = outcome,
     });
+}
+
+fn expectedFinalizedActuationReceiptFingerprint(
+    request: world.Appliance.HostRequest,
+    reply: world.Appliance.HostReply,
+) !u64 {
+    const commit_status: world.Actuation.CommitStatus = switch (reply.outcome.status) {
+        .responded => .committed,
+        .rejected => .rejected,
+        .failed => .commit_failed,
+        .cancelled => .cancelled,
+        .pending, .deferred => return error.InvalidFrameEncoding,
+    };
+    const fresh_called = commit_status != .not_started and commit_status != .replayed and commit_status != .verified and commit_status != .cancelled;
+    const commit_value = world.Actuation.Commit.init(.{
+        .intent_fingerprint = request.intent_fingerprint,
+        .decision_fingerprint = request.decision_fingerprint,
+        .envelope_fingerprint = request.envelope_fingerprint,
+        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+        .attempt_number = reply.outcome.attempt_number,
+        .status = commit_status,
+        .fresh_called = fresh_called,
+    });
+    const response = world.Actuation.Response.init(.{
+        .intent_fingerprint = request.intent_fingerprint,
+        .commit_fingerprint = commit_value.commit_fingerprint,
+        .actuator_ref_fingerprint = request.actuator_ref_fingerprint,
+        .world_port_id = request.world_port_id,
+        .request_fingerprint = request.request_fingerprint,
+        .status = switch (reply.outcome.status) {
+            .responded => .responded,
+            .rejected => .rejected,
+            .failed => .failed,
+            .cancelled => .cancelled,
+            .pending, .deferred => unreachable,
+        },
+        .response_kind = .@"resume",
+        .frame_response_fingerprint = reply.outcome.response_fingerprint,
+        .metadata = reply.outcome.metadata,
+    });
+    const receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = request.intent_fingerprint,
+        .envelope_fingerprint = request.envelope_fingerprint,
+        .decision_fingerprint = request.decision_fingerprint,
+        .commit_fingerprint = commit_value.commit_fingerprint,
+        .response_fingerprint = response.response_fingerprint,
+        .response_kind = response.response_kind,
+        .frame_response_fingerprint = response.frame_response_fingerprint,
+        .actuator_ref_fingerprint = request.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+        .request_fingerprint = request.request_fingerprint,
+        .target_ref_fingerprint = request.target_ref_fingerprint,
+        .world_surface_fingerprint = request.world_surface_fingerprint,
+        .world_port_id = request.world_port_id,
+        .class = request.actuation_class,
+        .mode = .fresh,
+        .fresh_called = commit_value.fresh_called,
+        .rejected = response.status == .rejected,
+        .failed = response.status == .failed,
+        .cancelled = response.status == .cancelled,
+        .attempt_number = commit_value.attempt_number,
+        .capsule_fingerprint = request.pending_port_fingerprint,
+        .metadata = "appliance.finalized_actuation_receipt",
+    });
+    try receipt.validate();
+    return receipt.receipt_fingerprint;
 }
 
 fn applianceRetentionAckFor(append_batch_fingerprint: u64, metadata: []const u8) world.Appliance.RetentionAck {
@@ -112,6 +223,19 @@ fn appendApplianceWasmU32(out: *std.ArrayList(u8), value: u32) !void {
     }
 }
 
+fn appendApplianceWasmI32Bits(out: *std.ArrayList(u8), value: u32) !void {
+    var remaining: i32 = @bitCast(value);
+    while (true) {
+        var byte: u8 = @intCast(@as(u32, @bitCast(remaining)) & 0x7f);
+        const sign_bit_set = (byte & 0x40) != 0;
+        remaining >>= 7;
+        const done = (remaining == 0 and !sign_bit_set) or (remaining == -1 and sign_bit_set);
+        if (!done) byte |= 0x80;
+        try out.append(std.testing.allocator, byte);
+        if (done) break;
+    }
+}
+
 fn appendApplianceWasmName(out: *std.ArrayList(u8), name: []const u8) !void {
     try appendApplianceWasmU32(out, @intCast(name.len));
     try out.appendSlice(std.testing.allocator, name);
@@ -140,7 +264,27 @@ fn applianceRequiredExportParamCount(index: usize) u32 {
     };
 }
 
+fn minimalApplianceMetadataValues(memory_pages: u32) [world.Appliance.Abi.metadata_exports.len]u32 {
+    var metadata_values = [_]u32{0} ** world.Appliance.Abi.metadata_exports.len;
+    metadata_values[7] = memory_pages;
+    return metadata_values;
+}
+
 fn buildMinimalApplianceWasm(abi_version: u32) !std.ArrayList(u8) {
+    return buildMinimalApplianceWasmWithMetadata(
+        abi_version,
+        minimalApplianceMetadataValues(1),
+        1,
+        1,
+    );
+}
+
+fn buildMinimalApplianceWasmWithMetadata(
+    abi_version: u32,
+    metadata_values: [world.Appliance.Abi.metadata_exports.len]u32,
+    memory_initial_pages: u32,
+    memory_max_pages: ?u32,
+) !std.ArrayList(u8) {
     const required_len = world.Appliance.Abi.required_exports.len;
     const metadata_len = world.Appliance.Abi.metadata_exports.len;
     const function_count = required_len + metadata_len;
@@ -168,8 +312,9 @@ fn buildMinimalApplianceWasm(abi_version: u32) !std.ArrayList(u8) {
     var memory: std.ArrayList(u8) = .empty;
     defer memory.deinit(std.testing.allocator);
     try appendApplianceWasmU32(&memory, 1);
-    try memory.append(std.testing.allocator, 0);
-    try appendApplianceWasmU32(&memory, 1);
+    try memory.append(std.testing.allocator, if (memory_max_pages == null) 0 else 1);
+    try appendApplianceWasmU32(&memory, memory_initial_pages);
+    if (memory_max_pages) |max_pages| try appendApplianceWasmU32(&memory, max_pages);
     try appendApplianceWasmSection(&module, 5, memory.items);
 
     var exports: std.ArrayList(u8) = .empty;
@@ -199,7 +344,13 @@ fn buildMinimalApplianceWasm(abi_version: u32) !std.ArrayList(u8) {
         defer body.deinit(std.testing.allocator);
         try appendApplianceWasmU32(&body, 0);
         try body.append(std.testing.allocator, 0x41);
-        try appendApplianceWasmU32(&body, if (index == 0) abi_version else 0);
+        const value = if (index == 0)
+            abi_version
+        else if (index >= required_len)
+            metadata_values[index - required_len]
+        else
+            0;
+        try appendApplianceWasmI32Bits(&body, value);
         try body.append(std.testing.allocator, 0x0b);
         try appendApplianceWasmU32(&code, @intCast(body.items.len));
         try code.appendSlice(std.testing.allocator, body.items);
@@ -210,8 +361,8 @@ fn buildMinimalApplianceWasm(abi_version: u32) !std.ArrayList(u8) {
 
 test "appliance static contract exposes root namespace and versions" {
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_abi_version);
-    try std.testing.expectEqual(@as(u32, 1), world.world_appliance_manifest_format_version);
-    try std.testing.expectEqual(@as(u32, 1), world.world_appliance_manifest_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_manifest_format_version);
+    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_manifest_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_memory_plan_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_command_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_output_format_version);
@@ -251,6 +402,68 @@ test "appliance wasm inspector validates ABI version from code" {
         0xff, 0x7f,
     };
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(&malformed_section_len));
+}
+
+test "appliance wasm inspector binds metadata values and memory limits" {
+    const metadata_values = [_]u32{
+        0x89abcdef,
+        0x01234567,
+        0xfedcba98,
+        0x76543210,
+        0x12345678,
+        0x9abcdef0,
+        4_259_840,
+        65,
+    };
+    var module = try buildMinimalApplianceWasmWithMetadata(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+    );
+    defer module.deinit(std.testing.allocator);
+
+    const inspection = try world.Appliance.Abi.inspectWasm(module.items);
+    try std.testing.expect(inspection.passed());
+    try std.testing.expect(inspection.metadata_export_values_valid);
+    try std.testing.expectEqual(@as(u64, 0x0123456789abcdef), inspection.manifest_fingerprint);
+    try std.testing.expectEqual(@as(u64, 0x76543210fedcba98), inspection.capacity_fingerprint);
+    try std.testing.expectEqual(@as(u64, 0x9abcdef012345678), inspection.memory_plan_fingerprint);
+    try std.testing.expectEqual(@as(u64, 4_259_840), inspection.required_memory_bytes);
+    try std.testing.expectEqual(@as(u32, 65), inspection.max_linear_memory_pages);
+    try std.testing.expectEqual(@as(u32, 65), inspection.memory_initial_pages);
+    try std.testing.expectEqual(@as(?u32, 65), inspection.memory_max_pages);
+
+    var unbounded = try buildMinimalApplianceWasmWithMetadata(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        null,
+    );
+    defer unbounded.deinit(std.testing.allocator);
+    const unbounded_inspection = try world.Appliance.Abi.inspectWasm(unbounded.items);
+    try std.testing.expectEqual(@as(?u32, null), unbounded_inspection.memory_max_pages);
+    try std.testing.expect(!unbounded_inspection.passed());
+
+    var too_small = try buildMinimalApplianceWasmWithMetadata(
+        world.Appliance.Abi.version,
+        metadata_values,
+        64,
+        65,
+    );
+    defer too_small.deinit(std.testing.allocator);
+    const too_small_inspection = try world.Appliance.Abi.inspectWasm(too_small.items);
+    try std.testing.expect(!too_small_inspection.passed());
+
+    var too_large = try buildMinimalApplianceWasmWithMetadata(
+        world.Appliance.Abi.version,
+        metadata_values,
+        66,
+        66,
+    );
+    defer too_large.deinit(std.testing.allocator);
+    const too_large_inspection = try world.Appliance.Abi.inspectWasm(too_large.items);
+    try std.testing.expect(!too_large_inspection.passed());
 }
 
 test "appliance profile presets are strict and identity-bearing" {
@@ -363,6 +576,12 @@ test "appliance capacity presets validate and fingerprint deterministically" {
     var overflowing = tiny;
     overflowing.max_runs = std.math.maxInt(usize);
     try std.testing.expectError(error.CapacityExceeded, overflowing.validate());
+
+    var no_archive_buffer = tiny;
+    no_archive_buffer.max_archive_append_bytes = 0;
+    try no_archive_buffer.validate();
+    try std.testing.expectError(error.CapacityExceeded, no_archive_buffer.validateForProfile(world.Appliance.Profile.wasm_small));
+    try no_archive_buffer.validateForProfile(world.Appliance.Profile.minimal);
 }
 
 test "appliance memory plan is bounded and derived from capacity and profile" {
@@ -396,7 +615,7 @@ test "appliance Define computes deterministic manifest before boot" {
     try std.testing.expectEqual(root_ref.target_certificate_fingerprint, same.root_target_certificate_fingerprint);
     try std.testing.expectEqual(StrictAppliance.memoryPlan().plan_fingerprint, same.memory_plan_fingerprint);
     try std.testing.expectEqual(StrictAppliance.requiredMemoryBytes(), StrictAppliance.memoryPlan().maximum_linear_memory_bytes);
-    try std.testing.expect(same.required_host_capabilities.actuation);
+    try std.testing.expect(!same.required_host_capabilities.actuation);
     try std.testing.expect(same.required_host_capabilities.capsule_retention);
 
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
@@ -404,6 +623,7 @@ test "appliance Define computes deterministic manifest before boot" {
         .capacity = world.Appliance.Capacity.tiny_one_port,
         .actuation_bindings = .{ApplianceActuationBinding},
     });
+    try std.testing.expect(PortsAppliance.manifest().required_host_capabilities.actuation);
     const paired = PortsAppliance.manifest();
     try paired.validate();
 
@@ -474,7 +694,7 @@ test "appliance command encodes decodes and validates host replies" {
         .actuation_bindings = .{ApplianceActuationBinding},
     });
     const manifest = PortsAppliance.manifest();
-    const request = world.Appliance.HostRequest.init(.{
+    const request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 0,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD300,
@@ -486,7 +706,7 @@ test "appliance command encodes decodes and validates host replies" {
         .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
         .idempotency_key_fingerprint = 0xD305,
     });
-    const second_request = world.Appliance.HostRequest.init(.{
+    const second_request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 0,
         .request_ordinal = 1,
         .run_handle_fingerprint = 0xD310,
@@ -1015,7 +1235,87 @@ test "appliance Core validates continue host replies before completion" {
     );
     defer terminal_output.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
-    try std.testing.expectEqual(reply.outcome.outcome_fingerprint, terminal_output.finalized_actuation_receipt_fingerprints[0]);
+    try std.testing.expectEqual(
+        try expectedFinalizedActuationReceiptFingerprint(outstanding, reply),
+        terminal_output.finalized_actuation_receipt_fingerprints[0],
+    );
+}
+
+test "appliance finalized HostReply validation uses active capacity" {
+    const roomy_capacity = comptime blk: {
+        var capacity = world.Appliance.Capacity.large_native_test;
+        capacity.max_metadata_bytes = 128 * 1024;
+        break :blk capacity;
+    };
+    const RoomyAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = roomy_capacity,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = RoomyAppliance.manifest();
+
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        RoomyAppliance.memoryPlan(),
+        roomy_capacity,
+    );
+    defer core.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .root_argument_image = "roomy-start",
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try core.submit(boot_bytes);
+    try core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
+    const outstanding = core.outstanding_host_request orelse return error.StaleTurn;
+    const prior_receipt = core.previous_turn_receipt_fingerprint.?;
+
+    const roomy_metadata = [_]u8{'m'} ** (70 * 1024);
+    const outcome = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = outstanding.request_fingerprint,
+        .intent_fingerprint = outstanding.intent_fingerprint,
+        .envelope_fingerprint = outstanding.envelope_fingerprint,
+        .idempotency_key_fingerprint = outstanding.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = 0xD4F1,
+        .response_kind = .frame_value_image,
+        .response_bytes = "frame-value:approved",
+        .host_evidence_fingerprint = 0xD4F2,
+        .host_evidence_bytes = "host-claim:fixture",
+        .attempt_number = 1,
+        .metadata = roomy_metadata[0..],
+    });
+    const reply = world.Appliance.HostReply.init(.{
+        .target_host_request_fingerprint = outstanding.request_fingerprint,
+        .outcome = outcome,
+    });
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .host_replies = &.{reply},
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+
+    try core.submit(continue_bytes);
+    try core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, core.state);
+    var terminal_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        manifest.manifest_fingerprint,
+        roomy_capacity,
+    );
+    defer terminal_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
 }
 
 test "appliance Core pending and deferred HostReplies keep request outstanding" {
@@ -1902,11 +2202,49 @@ test "appliance Core applies HostReply RetentionAck before archive-gated advance
     try std.testing.expectEqual(@as(?u64, ack.resulting_moment_fingerprint), core.latest_archive_moment_fingerprint);
     try std.testing.expectEqual(@as(?u64, ack.resulting_seal_fingerprint), core.latest_archive_seal_fingerprint);
     try std.testing.expectEqual(@as(?u64, ack.resulting_chronicle_cursor_fingerprint), core.latest_chronicle_cursor_fingerprint);
+
+    var terminal_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer terminal_output.deinit(std.testing.allocator);
+    const terminal_archive_ack = try applianceRetentionAckForPendingCore(core, "terminal-retained");
+    const terminal_again = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .retention_ack = terminal_archive_ack,
+    });
+    const terminal_again_bytes = try terminal_again.encode(std.testing.allocator);
+    defer std.testing.allocator.free(terminal_again_bytes);
+    try std.testing.expectError(error.StaleTurn, core.submit(terminal_again_bytes));
+
+    var restore_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        ArchiveAckAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer restore_core.reset();
+    const terminal_restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = terminal_output.checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = terminal_output.checkpoint.previous_turn_receipt_fingerprint,
+        .restore_checkpoint = terminal_output.checkpoint,
+        .retention_ack = terminal_archive_ack,
+    });
+    const terminal_restore_bytes = try terminal_restore.encode(std.testing.allocator);
+    defer std.testing.allocator.free(terminal_restore_bytes);
+    try std.testing.expectError(error.StaleTurn, restore_core.submit(terminal_restore_bytes));
 }
 
 test "appliance Core replay evidence completes without fresh HostRequest" {
     const ReplayAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
-        .profile = world.Appliance.Profile.wasm_agent,
+        .profile = world.Appliance.Profile.wasm_small,
         .capacity = world.Appliance.Capacity.tiny_one_port,
         .actuation_bindings = .{ApplianceActuationBinding},
     });
@@ -1939,6 +2277,52 @@ test "appliance Core replay evidence completes without fresh HostRequest" {
     defer fresh_output.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Appliance.TurnStatus.needs_host, fresh_output.status);
     try std.testing.expectEqual(@as(usize, 1), fresh_output.host_requests.len);
+    try std.testing.expectEqualStrings("", fresh_output.diagnostic_metadata);
+
+    const fresh_request = fresh_core.outstanding_host_request orelse return error.UnknownRequest;
+    const fresh_reply = applianceHostReplyFor(fresh_request, 0xD501);
+    const fresh_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = fresh_core.previous_turn_receipt_fingerprint,
+        .host_replies = &.{fresh_reply},
+    });
+    const fresh_continue_bytes = try fresh_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(fresh_continue_bytes);
+    try fresh_core.submit(fresh_continue_bytes);
+    try fresh_core.executeTurn();
+    var terminal_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        fresh_core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer terminal_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, terminal_output.status);
+    try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqualStrings("", terminal_output.diagnostic_metadata);
+
+    var incomplete_replay_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        ReplayAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer incomplete_replay_core.reset();
+    const incomplete_replay_evidence = [_]u64{fresh_output.turn_receipt.receipt_fingerprint};
+    const incomplete_replay_boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .execution_mode = .replay,
+        .receiver_evidence_fingerprints = &incomplete_replay_evidence,
+    });
+    const incomplete_replay_boot_bytes = try incomplete_replay_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(incomplete_replay_boot_bytes);
+    try incomplete_replay_core.submit(incomplete_replay_boot_bytes);
+    try incomplete_replay_core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.failed, incomplete_replay_core.state);
 
     var replay_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -1947,7 +2331,10 @@ test "appliance Core replay evidence completes without fresh HostRequest" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer replay_core.reset();
-    const replay_evidence = [_]u64{0xD500};
+    const replay_evidence = [_]u64{
+        terminal_output.turn_receipt.receipt_fingerprint,
+        terminal_output.finalized_actuation_receipt_fingerprints[0],
+    };
     const replay_boot = world.Appliance.Command.init(.{
         .kind = .boot,
         .manifest_fingerprint = manifest.manifest_fingerprint,
@@ -2346,7 +2733,7 @@ test "appliance Core restore rolls back allocation failure" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer core.reset();
-    const old_request = world.Appliance.HostRequest.init(.{
+    const old_request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 6,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD6A0,
@@ -2364,7 +2751,7 @@ test "appliance Core restore rolls back allocation failure" {
     core.previous_turn_receipt_fingerprint = 0xD6A6;
     core.outstanding_host_request = old_request;
 
-    const new_request = world.Appliance.HostRequest.init(.{
+    const new_request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 7,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD6B0,
@@ -2409,6 +2796,15 @@ test "appliance Core cancel produces deterministic cancelled output" {
     );
     defer core.reset();
 
+    const future_cancel = world.Appliance.Command.init(.{
+        .kind = .cancel,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+    });
+    const future_cancel_bytes = try future_cancel.encode(std.testing.allocator);
+    defer std.testing.allocator.free(future_cancel_bytes);
+    try std.testing.expectError(error.StaleTurn, core.submit(future_cancel_bytes));
+
     const cancel = world.Appliance.Command.init(.{
         .kind = .cancel,
         .manifest_fingerprint = manifest.manifest_fingerprint,
@@ -2452,6 +2848,16 @@ test "appliance Core reset command clears continuation state and allows fresh bo
     try std.testing.expect(core.previous_turn_receipt_fingerprint != null);
     try std.testing.expect(core.outstanding_host_request != null);
     try std.testing.expect(core.pending_archive_append_batch_fingerprint != null);
+
+    const future_reset = world.Appliance.Command.init(.{
+        .kind = .reset,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 3,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+    });
+    const future_reset_bytes = try future_reset.encode(std.testing.allocator);
+    defer std.testing.allocator.free(future_reset_bytes);
+    try std.testing.expectError(error.StaleTurn, core.submit(future_reset_bytes));
 
     const reset = world.Appliance.Command.init(.{
         .kind = .reset,
@@ -2514,7 +2920,7 @@ test "appliance host request validates and is carried by needs-host TurnOutput" 
         .actuation_bindings = .{ApplianceActuationBinding},
     });
     const manifest = PortsAppliance.manifest();
-    const request = world.Appliance.HostRequest.init(.{
+    const request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 1,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD100,
@@ -2588,7 +2994,7 @@ test "appliance host request validates and is carried by needs-host TurnOutput" 
 }
 
 test "appliance host reply validates against outstanding request identity" {
-    const request = world.Appliance.HostRequest.init(.{
+    const request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 3,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD200,
@@ -2655,6 +3061,22 @@ test "appliance host reply validates against outstanding request identity" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, pending_with_payload.validate(request, world.Appliance.Capacity.tiny_one_port));
 
+    const pending_outcome = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = request.request_fingerprint,
+        .intent_fingerprint = request.intent_fingerprint,
+        .envelope_fingerprint = request.envelope_fingerprint,
+        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+        .status = .pending,
+        .host_evidence_fingerprint = 0xD21C,
+        .host_evidence_bytes = "local-pending-claim",
+        .attempt_number = 1,
+    });
+    const pending_reply = world.Appliance.HostReply.init(.{
+        .target_host_request_fingerprint = request.request_fingerprint,
+        .outcome = pending_outcome,
+    });
+    try std.testing.expectError(error.PortRuleDenied, pending_reply.validate(&.{request}, world.Appliance.Capacity.tiny_one_port));
+
     const rejected_with_payload = world.Appliance.HostOutcome.init(.{
         .host_request_fingerprint = request.request_fingerprint,
         .intent_fingerprint = request.intent_fingerprint,
@@ -2704,7 +3126,7 @@ test "appliance continuity typed payload validation accepts advertised appliance
     defer std.testing.allocator.free(command_bytes);
     try expectApplianceTypedPayloadValid(.appliance_command, world.world_appliance_command_format_version, command_bytes);
 
-    const request = world.Appliance.HostRequest.init(.{
+    const request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 1,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD300,
@@ -2779,7 +3201,7 @@ test "appliance continuity typed payload validation accepts advertised appliance
 }
 
 test "appliance turn receipt binds host reply and request evidence" {
-    const request = world.Appliance.HostRequest.init(.{
+    const request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 4,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD240,
@@ -2992,7 +3414,7 @@ test "appliance TurnOutput binds root result through receipt parity" {
 
 test "appliance TurnOutput deinit does not free borrowed init slices" {
     const manifest_fingerprint: u64 = 0xD2A0;
-    const request = world.Appliance.HostRequest.init(.{
+    const request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 3,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD2A1,
@@ -3683,6 +4105,12 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
         manifest.actuation_binding_fingerprints[0],
         manifest.actuation_binding_fingerprints[0] ^ 0x10,
     };
+    const actuator_ref_fingerprints = [_]u64{
+        manifest.actuation_actuator_ref_fingerprints[0],
+        manifest.actuation_actuator_ref_fingerprints[0] ^ 0x10,
+    };
+    const actuation_classes = [_]world.Actuation.Class{ .deterministic_fixture, .deterministic_fixture };
+    const allowed_response_statuses = [_]world.Actuation.ResponseStatusSet{ .terminal_with_errors, .terminal_with_errors };
     const multi_binding_manifest = world.Appliance.Manifest.init(.{
         .root_target_ref_fingerprint = manifest.root_target_ref_fingerprint,
         .root_world_surface_fingerprint = manifest.root_world_surface_fingerprint,
@@ -3695,6 +4123,9 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
         .residual_import_set_fingerprint = manifest.residual_import_set_fingerprint,
         .actuation_descriptor_fingerprints = &descriptor_fingerprints,
         .actuation_binding_fingerprints = &binding_fingerprints,
+        .actuation_actuator_ref_fingerprints = &actuator_ref_fingerprints,
+        .actuation_classes = &actuation_classes,
+        .actuation_allowed_response_statuses = &allowed_response_statuses,
         .supervision_policy_fingerprint = manifest.supervision_policy_fingerprint,
         .default_permit_requirement_fingerprints = manifest.default_permit_requirement_fingerprints,
         .capsule_profile_fingerprint = manifest.capsule_profile_fingerprint,
@@ -3740,6 +4171,45 @@ test "appliance actuation prepareHost emits prepared evidence without host effec
     try std.testing.expectEqual(fixture.intent.intent_fingerprint, prepared.intent.intent_fingerprint);
     try std.testing.expectEqual(fixture.envelope.envelope_fingerprint, prepared.envelope.envelope_fingerprint);
     try std.testing.expectEqual(fixture.descriptor.descriptor_fingerprint, prepared.expected_response_descriptor_fingerprint);
+}
+
+test "appliance actuation Prepared rejects descriptor value policy mismatch" {
+    const fixture = applianceActuationFixture(.deterministic_fixture);
+    const native_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = fixture.ref,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_port_id = 0,
+        .allowed_response_kinds = .all,
+        .value_policy = world.ValuePolicy.native_compatible,
+    });
+    const native_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = fixture.ref.ref_fingerprint,
+        .descriptor_fingerprint = native_descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = fixture.intent.frame_request_fingerprint,
+        .idempotency_key_fingerprint = fixture.key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const native_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = native_intent.intent_fingerprint,
+        .idempotency_key = fixture.key,
+    });
+    const forged_prepared = world.Actuation.Prepared.init(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = native_intent,
+        .envelope = native_envelope,
+        .descriptor = native_descriptor,
+        .decision = world.Actuation.Decision.approvedDecision(native_intent, world.Actuation.Policy.strict_fresh, null),
+        .expected_response_descriptor_fingerprint = native_descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+    });
+
+    try std.testing.expectError(error.PortableValueRequired, forged_prepared.validate());
 }
 
 test "appliance actuation prepareHost denies before HostRequest emission" {

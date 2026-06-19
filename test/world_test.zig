@@ -3372,6 +3372,13 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!verify_exec.fresh_called);
     try std.testing.expect(verify_exec.verify_report != null);
     try std.testing.expect(!verify_exec.verify_report.?.matched);
+    const verify_finalized = world.Actuation.Finalized.init(.{
+        .commit_value = verify_exec.commit_value,
+        .response = verify_exec.response,
+        .receipt = verify_exec.receipt,
+        .verify_report = verify_exec.verify_report,
+    });
+    try verify_finalized.validate();
     var missing_verify_report = verify_exec;
     missing_verify_report.verify_report = null;
     try std.testing.expectError(error.InvalidFrameEncoding, missing_verify_report.validate());

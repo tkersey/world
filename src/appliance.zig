@@ -265,6 +265,11 @@ pub fn Appliance(comptime World: type) type {
                 _ = MemoryPlan.deriveChecked(self, Profile.wasm_small) catch return error.CapacityExceeded;
             }
 
+            pub fn validateForProfile(self: @This(), profile: Profile) !void {
+                try self.validate();
+                if (profile.enable_archive_append and self.max_archive_append_bytes == 0) return error.CapacityExceeded;
+            }
+
             pub fn fingerprint(self: @This()) u64 {
                 var hasher = std.hash.Wyhash.init(0);
                 hashU64(&hasher, self.max_runs);
@@ -300,7 +305,7 @@ pub fn Appliance(comptime World: type) type {
             enabled_feature_summary: FeatureSet,
 
             pub fn derive(capacity: Capacity, profile: Profile) @This() {
-                capacity.validate() catch unreachable;
+                capacity.validateForProfile(profile) catch unreachable;
                 return deriveChecked(capacity, profile) catch unreachable;
             }
 
@@ -346,6 +351,12 @@ pub fn Appliance(comptime World: type) type {
                     .capsule_retention = profile.enable_capsules,
                     .replay_evidence = profile.enable_transcripts or profile.enable_archive_append,
                 };
+            }
+
+            pub fn forManifest(profile: Profile, actuation_binding_count: usize) @This() {
+                var flags = fromProfile(profile);
+                flags.actuation = actuation_binding_count != 0;
+                return flags;
             }
         };
 
@@ -424,6 +435,9 @@ pub fn Appliance(comptime World: type) type {
             residual_import_set_fingerprint: u64 = 0,
             actuation_descriptor_fingerprints: []const u64 = &.{},
             actuation_binding_fingerprints: []const u64 = &.{},
+            actuation_actuator_ref_fingerprints: []const u64 = &.{},
+            actuation_classes: []const World.Actuation.Class = &.{},
+            actuation_allowed_response_statuses: []const World.Actuation.ResponseStatusSet = &.{},
             supervision_policy_fingerprint: u64 = 0,
             default_permit_requirement_fingerprints: []const u64 = &.{},
             capsule_profile_fingerprint: u64 = 0,
@@ -448,6 +462,9 @@ pub fn Appliance(comptime World: type) type {
                 residual_import_set_fingerprint: u64 = 0,
                 actuation_descriptor_fingerprints: []const u64 = &.{},
                 actuation_binding_fingerprints: []const u64 = &.{},
+                actuation_actuator_ref_fingerprints: []const u64 = &.{},
+                actuation_classes: []const World.Actuation.Class = &.{},
+                actuation_allowed_response_statuses: []const World.Actuation.ResponseStatusSet = &.{},
                 supervision_policy_fingerprint: u64 = 0,
                 default_permit_requirement_fingerprints: []const u64 = &.{},
                 capsule_profile_fingerprint: u64 = 0,
@@ -472,6 +489,9 @@ pub fn Appliance(comptime World: type) type {
                     .residual_import_set_fingerprint = args.residual_import_set_fingerprint,
                     .actuation_descriptor_fingerprints = args.actuation_descriptor_fingerprints,
                     .actuation_binding_fingerprints = args.actuation_binding_fingerprints,
+                    .actuation_actuator_ref_fingerprints = args.actuation_actuator_ref_fingerprints,
+                    .actuation_classes = args.actuation_classes,
+                    .actuation_allowed_response_statuses = args.actuation_allowed_response_statuses,
                     .supervision_policy_fingerprint = args.supervision_policy_fingerprint,
                     .default_permit_requirement_fingerprints = args.default_permit_requirement_fingerprints,
                     .capsule_profile_fingerprint = args.capsule_profile_fingerprint,
@@ -494,12 +514,24 @@ pub fn Appliance(comptime World: type) type {
                 if (self.root_target_ref_fingerprint == 0 or self.root_world_surface_fingerprint == 0 or self.root_target_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
                 if (self.capacity_fingerprint == 0 or self.memory_plan_fingerprint == 0) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_binding_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.actuation_descriptor_fingerprints.len != self.actuation_actuator_ref_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.actuation_descriptor_fingerprints.len != self.actuation_classes.len) return error.InvalidFrameEncoding;
+                if (self.actuation_descriptor_fingerprints.len != self.actuation_allowed_response_statuses.len) return error.InvalidFrameEncoding;
                 if (self.actuation_binding_fingerprints.len > 1) return error.InvalidFrameEncoding;
                 for (self.actuation_descriptor_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
                 for (self.actuation_binding_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
+                }
+                for (self.actuation_actuator_ref_fingerprints) |fingerprint| {
+                    if (fingerprint == 0) return error.InvalidFrameEncoding;
+                }
+                for (self.actuation_classes) |class| {
+                    if (class == .unknown_effect) return error.InvalidFrameEncoding;
+                }
+                for (self.actuation_allowed_response_statuses) |statuses| {
+                    if (!responseStatusSetAllowsAny(statuses)) return error.InvalidFrameEncoding;
                 }
                 if (self.metadata.len > World.world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
                 if (self.manifest_fingerprint != fingerprintManifest(self)) return error.InvalidFrameEncoding;
@@ -537,6 +569,9 @@ pub fn Appliance(comptime World: type) type {
                     allocator.free(self.fabric_plan_fingerprints);
                     allocator.free(self.actuation_descriptor_fingerprints);
                     allocator.free(self.actuation_binding_fingerprints);
+                    allocator.free(self.actuation_actuator_ref_fingerprints);
+                    allocator.free(self.actuation_classes);
+                    allocator.free(self.actuation_allowed_response_statuses);
                     allocator.free(self.default_permit_requirement_fingerprints);
                     allocator.free(self.metadata);
                 }
@@ -753,6 +788,11 @@ pub fn Appliance(comptime World: type) type {
             run_handle_fingerprint: u64,
             pending_port_fingerprint: u64,
             world_port_id: u32,
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            actuator_ref_fingerprint: u64,
+            actuation_class: World.Actuation.Class,
+            allowed_response_statuses: World.Actuation.ResponseStatusSet,
             intent_fingerprint: u64,
             envelope_fingerprint: u64,
             decision_fingerprint: u64,
@@ -762,33 +802,25 @@ pub fn Appliance(comptime World: type) type {
             metadata: []const u8 = "",
             owns_metadata: bool = false,
 
-            pub fn init(args: struct {
-                turn_sequence_number: u64,
-                request_ordinal: u32,
-                run_handle_fingerprint: u64,
-                pending_port_fingerprint: u64,
-                world_port_id: u32,
-                intent_fingerprint: u64,
-                envelope_fingerprint: u64,
-                decision_fingerprint: u64,
-                expected_response_descriptor_fingerprint: u64,
-                idempotency_key_fingerprint: u64,
-                supervision_ref_fingerprint: ?u64 = null,
-                metadata: []const u8 = "",
-            }) @This() {
+            pub fn init(args: anytype) @This() {
                 var result = @This(){
                     .turn_sequence_number = args.turn_sequence_number,
                     .request_ordinal = args.request_ordinal,
                     .run_handle_fingerprint = args.run_handle_fingerprint,
                     .pending_port_fingerprint = args.pending_port_fingerprint,
                     .world_port_id = args.world_port_id,
+                    .target_ref_fingerprint = args.target_ref_fingerprint,
+                    .world_surface_fingerprint = args.world_surface_fingerprint,
+                    .actuator_ref_fingerprint = args.actuator_ref_fingerprint,
+                    .actuation_class = args.actuation_class,
+                    .allowed_response_statuses = args.allowed_response_statuses,
                     .intent_fingerprint = args.intent_fingerprint,
                     .envelope_fingerprint = args.envelope_fingerprint,
                     .decision_fingerprint = args.decision_fingerprint,
                     .expected_response_descriptor_fingerprint = args.expected_response_descriptor_fingerprint,
                     .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
-                    .supervision_ref_fingerprint = args.supervision_ref_fingerprint,
-                    .metadata = args.metadata,
+                    .supervision_ref_fingerprint = if (@hasField(@TypeOf(args), "supervision_ref_fingerprint")) args.supervision_ref_fingerprint else null,
+                    .metadata = if (@hasField(@TypeOf(args), "metadata")) args.metadata else "",
                 };
                 result.request_fingerprint = fingerprintHostRequest(result);
                 return result;
@@ -799,6 +831,9 @@ pub fn Appliance(comptime World: type) type {
                 if (self.request_fingerprint_version != World.world_appliance_host_request_fingerprint_version) return error.InvalidFrameEncoding;
                 if (self.request_ordinal >= capacity.max_host_requests_per_turn) return error.CapacityExceeded;
                 if (self.run_handle_fingerprint == 0 or self.pending_port_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.target_ref_fingerprint == 0 or self.world_surface_fingerprint == 0 or self.actuator_ref_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.actuation_class == .unknown_effect) return error.InvalidFrameEncoding;
+                if (!responseStatusSetAllowsAny(self.allowed_response_statuses)) return error.InvalidFrameEncoding;
                 if (self.intent_fingerprint == 0 or self.envelope_fingerprint == 0 or self.decision_fingerprint == 0) return error.InvalidFrameEncoding;
                 if (self.expected_response_descriptor_fingerprint == 0 or self.idempotency_key_fingerprint == 0) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.supervision_ref_fingerprint);
@@ -815,6 +850,11 @@ pub fn Appliance(comptime World: type) type {
                 try writeU64(out, allocator, self.run_handle_fingerprint);
                 try writeU64(out, allocator, self.pending_port_fingerprint);
                 try writeU32(out, allocator, self.world_port_id);
+                try writeU64(out, allocator, self.target_ref_fingerprint);
+                try writeU64(out, allocator, self.world_surface_fingerprint);
+                try writeU64(out, allocator, self.actuator_ref_fingerprint);
+                try writeU8(out, allocator, @intFromEnum(self.actuation_class));
+                try writeResponseStatusSet(out, allocator, self.allowed_response_statuses);
                 try writeU64(out, allocator, self.intent_fingerprint);
                 try writeU64(out, allocator, self.envelope_fingerprint);
                 try writeU64(out, allocator, self.decision_fingerprint);
@@ -974,6 +1014,7 @@ pub fn Appliance(comptime World: type) type {
                 const request = findHostRequest(outstanding_requests, self.target_host_request_fingerprint) orelse return error.UnknownRequest;
                 if (self.outcome.host_request_fingerprint != self.target_host_request_fingerprint) return error.UnknownRequest;
                 try self.outcome.validate(request, capacity);
+                if (!request.allowed_response_statuses.allows(actuationStatusForHostOutcome(self.outcome.status))) return error.PortRuleDenied;
             }
 
             pub fn validateShape(self: @This(), capacity: Capacity) !void {
@@ -2118,7 +2159,8 @@ pub fn Appliance(comptime World: type) type {
                 } else &.{};
                 var finalized_actuation_receipt_fingerprint_storage: [1]u64 = undefined;
                 const finalized_actuation_receipt_fingerprints: []const u64 = if (command.host_replies.len != 0 and hostOutcomeStatusIsTerminal(command.host_replies[0].outcome.status)) blk: {
-                    finalized_actuation_receipt_fingerprint_storage[0] = command.host_replies[0].outcome.outcome_fingerprint;
+                    const request = self.outstanding_host_request orelse return error.StaleTurn;
+                    finalized_actuation_receipt_fingerprint_storage[0] = try finalizedActuationReceiptFingerprintFor(request, command.host_replies[0], self.capacity_value);
                     break :blk finalized_actuation_receipt_fingerprint_storage[0..1];
                 } else &.{};
                 var emitted_host_request_fingerprint_storage: [1]u64 = undefined;
@@ -2148,6 +2190,7 @@ pub fn Appliance(comptime World: type) type {
                     self.pending_archive_resulting_cursor
                 else
                     planned_archive_resulting_cursor;
+                const diagnostic_metadata = self.diagnosticMetadata();
                 const quiescence = QuiescenceReport.init(.{
                     .quiescent = true,
                     .pending_host_request_count = checkpoint_outstanding_host_requests.len,
@@ -2217,7 +2260,7 @@ pub fn Appliance(comptime World: type) type {
                     .turn_receipt = turn_receipt,
                     .blocker_count = if (status == .blocked) 1 else 0,
                     .warning_count = warning_count,
-                    .diagnostic_metadata = "core-shell",
+                    .diagnostic_metadata = diagnostic_metadata,
                 });
                 if (self.shouldPlanArchiveAppend(command) and output_archive_append_batch_fingerprint == null) {
                     var archive_plan = try ArchivePlan.initForTurnOutput(self.allocator, acknowledged_archive_cursor_value, output, self.capacity_value);
@@ -2285,7 +2328,7 @@ pub fn Appliance(comptime World: type) type {
                         .turn_receipt = turn_receipt,
                         .blocker_count = if (status == .blocked) 1 else 0,
                         .warning_count = warning_count,
-                        .diagnostic_metadata = "core-shell",
+                        .diagnostic_metadata = diagnostic_metadata,
                     });
                 }
                 try output.validate(self.manifest_value.manifest_fingerprint, self.capacity_value);
@@ -2363,7 +2406,10 @@ pub fn Appliance(comptime World: type) type {
                     .restore => {
                         const checkpoint = command.restore_checkpoint orelse return error.RestoreRejected;
                         if (checkpoint.turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
-                        if (checkpointIsTerminal(checkpoint) and checkpoint.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
+                        if (checkpointIsTerminal(checkpoint)) {
+                            if (checkpoint.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
+                            if (self.manifest_value.actuation_binding_fingerprints.len != 0) return error.StaleTurn;
+                        }
                         if (command.turn_sequence_number != checkpoint.turn_sequence_number + 1) return error.StaleTurn;
                         if (command.previous_turn_receipt_fingerprint != checkpoint.previous_turn_receipt_fingerprint) return error.StaleTurn;
                         if (self.state != .uninitialized) {
@@ -2375,6 +2421,7 @@ pub fn Appliance(comptime World: type) type {
                     .@"continue" => {
                         if (self.last_turn_status) |last_status| {
                             if (last_status == .failed or last_status == .blocked or last_status == .cancelled) return error.StaleTurn;
+                            if (last_status == .completed and self.manifest_value.actuation_binding_fingerprints.len != 0) return error.StaleTurn;
                             if (last_status == .completed and self.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
                         }
                         if (self.current_turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
@@ -2386,7 +2433,14 @@ pub fn Appliance(comptime World: type) type {
                         if (command.turn_sequence_number != self.current_turn_sequence_number) return error.StaleTurn;
                     },
                     .cancel, .reset => {
-                        if (command.turn_sequence_number < self.current_turn_sequence_number) return error.StaleTurn;
+                        if (self.previous_turn_receipt_fingerprint == null) {
+                            if (command.turn_sequence_number != self.current_turn_sequence_number) return error.StaleTurn;
+                            if (command.previous_turn_receipt_fingerprint != null) return error.StaleTurn;
+                        } else {
+                            if (self.current_turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
+                            if (command.turn_sequence_number != self.current_turn_sequence_number + 1) return error.StaleTurn;
+                            if (command.previous_turn_receipt_fingerprint != self.previous_turn_receipt_fingerprint) return error.StaleTurn;
+                        }
                     },
                 }
             }
@@ -2541,8 +2595,17 @@ pub fn Appliance(comptime World: type) type {
                 if (command.host_replies.len != 0) return turnStatusForHostOutcome(command.host_replies[0].outcome.status);
                 if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
                 if (command.execution_mode == .fresh) return .needs_host;
-                if (commandHasReplayEvidence(command)) return .completed;
+                if (self.commandHasReplayEvidence(command)) return .completed;
                 return .blocked;
+            }
+
+            fn commandHasReplayEvidence(self: @This(), command: Command) bool {
+                if (command.receiver_evidence_fingerprints.len == 0) return false;
+                return command.receiver_evidence_fingerprints.len >= 1 + self.manifest_value.actuation_binding_fingerprints.len;
+            }
+
+            fn diagnosticMetadata(self: @This()) []const u8 {
+                return if (self.manifest_value.enabled_features.diagnostic_metadata) "core-shell" else "";
             }
 
             fn turnStatusForHostOutcome(status: HostOutcomeStatus) TurnStatus {
@@ -2568,6 +2631,11 @@ pub fn Appliance(comptime World: type) type {
                     .run_handle_fingerprint = stateFingerprintFor(self.state, self.current_turn_sequence_number, self.previous_turn_receipt_fingerprint),
                     .pending_port_fingerprint = capsule_fingerprint,
                     .world_port_id = 0,
+                    .target_ref_fingerprint = self.manifest_value.root_target_ref_fingerprint,
+                    .world_surface_fingerprint = self.manifest_value.root_world_surface_fingerprint,
+                    .actuator_ref_fingerprint = self.manifest_value.actuation_actuator_ref_fingerprints[0],
+                    .actuation_class = self.manifest_value.actuation_classes[0],
+                    .allowed_response_statuses = self.manifest_value.actuation_allowed_response_statuses[0],
                     .intent_fingerprint = intent_fingerprint,
                     .envelope_fingerprint = envelope_fingerprint,
                     .decision_fingerprint = decision_fingerprint,
@@ -2806,8 +2874,16 @@ pub fn Appliance(comptime World: type) type {
                 metadata_exports_present: bool = false,
                 required_export_signatures_valid: bool = false,
                 metadata_export_signatures_valid: bool = false,
+                metadata_export_values: [Abi.metadata_exports.len]u32 = [_]u32{0} ** Abi.metadata_exports.len,
+                metadata_export_values_valid: bool = false,
+                manifest_fingerprint: u64 = 0,
+                capacity_fingerprint: u64 = 0,
+                memory_plan_fingerprint: u64 = 0,
+                required_memory_bytes: u64 = 0,
+                max_linear_memory_pages: u32 = 0,
                 memory_export_present: bool = false,
                 memory_initial_pages: u32 = 0,
+                memory_max_pages: ?u32 = null,
                 alloc_export_present: bool = false,
                 free_export_present: bool = false,
 
@@ -2817,8 +2893,12 @@ pub fn Appliance(comptime World: type) type {
                         self.metadata_exports_present and
                         self.required_export_signatures_valid and
                         self.metadata_export_signatures_valid and
+                        self.metadata_export_values_valid and
                         self.memory_export_present and
-                        self.memory_initial_pages > 0 and
+                        self.max_linear_memory_pages > 0 and
+                        self.memory_initial_pages == self.max_linear_memory_pages and
+                        self.memory_max_pages != null and
+                        self.memory_max_pages.? == self.max_linear_memory_pages and
                         self.import_count == 0 and
                         self.forbidden_import_count == 0;
                 }
@@ -2834,12 +2914,14 @@ pub fn Appliance(comptime World: type) type {
                 var required_signature_mask: u64 = 0;
                 var metadata_mask: u64 = 0;
                 var metadata_signature_mask: u64 = 0;
+                var metadata_value_mask: u64 = 0;
                 var memory_count: u32 = 0;
                 var type_sigs: [wasm_max_inspected_types]WasmFuncSignature = undefined;
                 var type_count: usize = 0;
                 var function_type_indices: [wasm_max_inspected_functions]u32 = undefined;
                 var function_count: usize = 0;
                 var abi_export_function_index: ?u32 = null;
+                var metadata_export_function_indices: [metadata_exports.len]?u32 = [_]?u32{null} ** metadata_exports.len;
                 var cursor: usize = 8;
                 while (cursor < bytes.len) {
                     const section_id = try wasmReadU8(bytes, &cursor);
@@ -2854,6 +2936,7 @@ pub fn Appliance(comptime World: type) type {
                             const memory = try inspectWasmMemory(section);
                             memory_count = memory.count;
                             inspection.memory_initial_pages = memory.initial_pages;
+                            inspection.memory_max_pages = memory.max_pages;
                         },
                         7 => try inspectWasmExports(
                             section,
@@ -2866,8 +2949,17 @@ pub fn Appliance(comptime World: type) type {
                             &metadata_mask,
                             &metadata_signature_mask,
                             &abi_export_function_index,
+                            &metadata_export_function_indices,
                         ),
-                        10 => try inspectWasmCode(section, function_count, inspection.import_function_count, abi_export_function_index, &inspection),
+                        10 => try inspectWasmCode(
+                            section,
+                            function_count,
+                            inspection.import_function_count,
+                            abi_export_function_index,
+                            &metadata_export_function_indices,
+                            &metadata_value_mask,
+                            &inspection,
+                        ),
                         else => {},
                     }
                     cursor += section_len;
@@ -2884,7 +2976,28 @@ pub fn Appliance(comptime World: type) type {
                     (@as(u64, 1) << @intCast(metadata_exports.len)) - 1;
                 inspection.metadata_exports_present = (metadata_mask & all_metadata) == all_metadata;
                 inspection.metadata_export_signatures_valid = (metadata_signature_mask & all_metadata) == all_metadata;
+                inspection.metadata_export_values_valid = (metadata_value_mask & all_metadata) == all_metadata;
+                if (inspection.metadata_export_values_valid) {
+                    inspection.manifest_fingerprint = combineWasmU64(
+                        inspection.metadata_export_values[0],
+                        inspection.metadata_export_values[1],
+                    );
+                    inspection.capacity_fingerprint = combineWasmU64(
+                        inspection.metadata_export_values[2],
+                        inspection.metadata_export_values[3],
+                    );
+                    inspection.memory_plan_fingerprint = combineWasmU64(
+                        inspection.metadata_export_values[4],
+                        inspection.metadata_export_values[5],
+                    );
+                    inspection.required_memory_bytes = inspection.metadata_export_values[6];
+                    inspection.max_linear_memory_pages = inspection.metadata_export_values[7];
+                }
                 return inspection;
+            }
+
+            fn combineWasmU64(lo: u32, hi: u32) u64 {
+                return @as(u64, lo) | (@as(u64, hi) << 32);
             }
         };
 
@@ -2979,6 +3092,7 @@ pub fn Appliance(comptime World: type) type {
         const WasmMemorySection = struct {
             count: u32 = 0,
             initial_pages: u32 = 0,
+            max_pages: ?u32 = null,
         };
 
         const WasmLimits = struct {
@@ -2991,14 +3105,19 @@ pub fn Appliance(comptime World: type) type {
             const count = try wasmReadU32(section, &cursor);
             var index: u32 = 0;
             var initial_pages: u32 = 0;
+            var max_pages: ?u32 = null;
             while (index < count) : (index += 1) {
                 const limits = try wasmReadLimits(section, &cursor);
-                if (index == 0) initial_pages = limits.min;
+                if (index == 0) {
+                    initial_pages = limits.min;
+                    max_pages = limits.max;
+                }
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
             return .{
                 .count = count,
                 .initial_pages = initial_pages,
+                .max_pages = max_pages,
             };
         }
 
@@ -3013,6 +3132,7 @@ pub fn Appliance(comptime World: type) type {
             metadata_mask: *u64,
             metadata_signature_mask: *u64,
             abi_export_function_index: *?u32,
+            metadata_export_function_indices: *[Abi.metadata_exports.len]?u32,
         ) !void {
             var cursor: usize = 0;
             const count = try wasmReadU32(section, &cursor);
@@ -3042,6 +3162,7 @@ pub fn Appliance(comptime World: type) type {
                             metadata_mask.* |= @as(u64, 1) << @intCast(metadata_index);
                             if (applianceExportSignatureMatches(export_index, inspection.import_function_count, type_sigs, function_type_indices, 0, 1)) {
                                 metadata_signature_mask.* |= @as(u64, 1) << @intCast(metadata_index);
+                                metadata_export_function_indices[metadata_index] = export_index;
                             }
                         }
                     }
@@ -3078,26 +3199,49 @@ pub fn Appliance(comptime World: type) type {
             function_count: usize,
             import_function_count: usize,
             abi_export_function_index: ?u32,
+            metadata_export_function_indices: *const [Abi.metadata_exports.len]?u32,
+            metadata_value_mask: *u64,
             inspection: *Abi.WasmInspection,
         ) !void {
             var cursor: usize = 0;
             const count = try wasmReadU32(section, &cursor);
             if (count != function_count) return error.InvalidFrameEncoding;
-            const abi_defined_index = if (abi_export_function_index) |function_index| blk: {
-                if (function_index < import_function_count) break :blk null;
-                break :blk function_index - @as(u32, @intCast(import_function_count));
-            } else null;
+            const abi_defined_index = wasmDefinedFunctionIndex(abi_export_function_index, import_function_count);
+            var metadata_defined_indices: [Abi.metadata_exports.len]?u32 = [_]?u32{null} ** Abi.metadata_exports.len;
+            for (metadata_export_function_indices.*, 0..) |function_index, metadata_index| {
+                metadata_defined_indices[metadata_index] = wasmDefinedFunctionIndex(function_index, import_function_count);
+            }
             var index: u32 = 0;
             while (index < count) : (index += 1) {
                 const body_len = try wasmReadU32(section, &cursor);
                 if (body_len > section.len - cursor) return error.InvalidFrameEncoding;
                 const body = section[cursor .. cursor + body_len];
-                if (abi_defined_index != null and index == abi_defined_index.?) {
-                    inspection.abi_version = try readWasmConstantU32FunctionBody(body);
+                var metadata_body_index: ?usize = null;
+                for (metadata_defined_indices, 0..) |defined_index, metadata_index| {
+                    if (defined_index != null and index == defined_index.?) {
+                        metadata_body_index = metadata_index;
+                        break;
+                    }
+                }
+                if ((abi_defined_index != null and index == abi_defined_index.?) or metadata_body_index != null) {
+                    const value = try readWasmConstantU32FunctionBody(body);
+                    if (abi_defined_index != null and index == abi_defined_index.?) {
+                        inspection.abi_version = value;
+                    }
+                    if (metadata_body_index) |metadata_index| {
+                        inspection.metadata_export_values[metadata_index] = value;
+                        metadata_value_mask.* |= @as(u64, 1) << @intCast(metadata_index);
+                    }
                 }
                 cursor += body_len;
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn wasmDefinedFunctionIndex(function_index: ?u32, import_function_count: usize) ?u32 {
+            const index = function_index orelse return null;
+            if (index < import_function_count) return null;
+            return index - @as(u32, @intCast(import_function_count));
         }
 
         fn readWasmConstantU32FunctionBody(body: []const u8) !u32 {
@@ -3110,7 +3254,7 @@ pub fn Appliance(comptime World: type) type {
             }
             const opcode = try wasmReadU8(body, &cursor);
             if (opcode != 0x41) return error.InvalidFrameEncoding;
-            const value = try wasmReadU32(body, &cursor);
+            const value = try wasmReadI32Bits(body, &cursor);
             const terminator = try wasmReadU8(body, &cursor);
             if (terminator == 0x0f) {
                 if ((try wasmReadU8(body, &cursor)) != 0x0b) return error.InvalidFrameEncoding;
@@ -3119,6 +3263,27 @@ pub fn Appliance(comptime World: type) type {
             }
             if (cursor != body.len) return error.InvalidFrameEncoding;
             return value;
+        }
+
+        fn wasmReadI32Bits(bytes: []const u8, cursor: *usize) !u32 {
+            var result: i64 = 0;
+            var shift: u6 = 0;
+            var count: u8 = 0;
+            var byte: u8 = 0;
+            while (true) {
+                if (cursor.* >= bytes.len or count == 5) return error.InvalidFrameEncoding;
+                byte = bytes[cursor.*];
+                cursor.* += 1;
+                result |= @as(i64, byte & 0x7f) << shift;
+                count += 1;
+                if ((byte & 0x80) == 0) break;
+                shift += 7;
+            }
+            if (shift < 32 and (byte & 0x40) != 0) {
+                result |= -(@as(i64, 1) << (shift + 7));
+            }
+            if (result < std.math.minInt(i32) or result > std.math.maxInt(i32)) return error.InvalidFrameEncoding;
+            return @bitCast(@as(i32, @intCast(result)));
         }
 
         fn wasmSkipImportDesc(section: []const u8, cursor: *usize, kind: u8) !void {
@@ -3199,7 +3364,7 @@ pub fn Appliance(comptime World: type) type {
             @setEvalBranchQuota(2_000_000);
             const profile = configProfile(config);
             const capacity = configCapacity(config);
-            capacity.validate() catch @compileError("World Appliance capacity is invalid");
+            capacity.validateForProfile(profile) catch @compileError("World Appliance capacity is invalid for profile");
             const metadata = configMetadata(config);
             const providers = if (@hasField(@TypeOf(config), "providers")) config.providers else .{};
             const actuation_bindings = if (@hasField(@TypeOf(config), "actuation_bindings")) config.actuation_bindings else .{};
@@ -3211,6 +3376,9 @@ pub fn Appliance(comptime World: type) type {
             const provider_target_refs = providerTargetRefFingerprints(providers);
             const actuation_descriptor_fingerprints = actuationDescriptorFingerprints(actuation_bindings);
             const actuation_binding_fingerprints = actuationBindingFingerprints(actuation_bindings);
+            const actuation_actuator_ref_fingerprints = actuationActuatorRefFingerprints(actuation_bindings);
+            const actuation_classes = actuationClasses(actuation_bindings);
+            const actuation_allowed_response_statuses = actuationAllowedResponseStatuses(actuation_bindings);
             const plan = MemoryPlan.derive(capacity, profile);
             const manifest_value = Manifest.init(.{
                 .root_target_ref_fingerprint = root_ref.target_ref_fingerprint,
@@ -3224,11 +3392,14 @@ pub fn Appliance(comptime World: type) type {
                 .residual_import_set_fingerprint = assemblyResidualImportSetFingerprint(config) orelse import_set.import_set_fingerprint,
                 .actuation_descriptor_fingerprints = &actuation_descriptor_fingerprints,
                 .actuation_binding_fingerprints = &actuation_binding_fingerprints,
+                .actuation_actuator_ref_fingerprints = &actuation_actuator_ref_fingerprints,
+                .actuation_classes = &actuation_classes,
+                .actuation_allowed_response_statuses = &actuation_allowed_response_statuses,
                 .supported_execution_modes = ExecutionModeSet.fromProfile(profile),
                 .enabled_features = FeatureSet.fromProfile(profile),
                 .capacity_fingerprint = capacity.fingerprint(),
                 .memory_plan_fingerprint = plan.plan_fingerprint,
-                .required_host_capabilities = HostCapabilityFlags.fromProfile(profile),
+                .required_host_capabilities = HostCapabilityFlags.forManifest(profile, actuation_bindings.len),
                 .metadata = metadata,
             });
             const definition_report = DefinitionReport{
@@ -3353,6 +3524,30 @@ pub fn Appliance(comptime World: type) type {
             var values: [actuation_bindings.len]u64 = undefined;
             inline for (actuation_bindings, 0..) |BindingDecl, index| {
                 values[index] = BindingDecl.actuationBindingRecord().binding_fingerprint;
+            }
+            return values;
+        }
+
+        fn actuationActuatorRefFingerprints(comptime actuation_bindings: anytype) [actuation_bindings.len]u64 {
+            var values: [actuation_bindings.len]u64 = undefined;
+            inline for (actuation_bindings, 0..) |BindingDecl, index| {
+                values[index] = BindingDecl.actuator_ref.ref_fingerprint;
+            }
+            return values;
+        }
+
+        fn actuationClasses(comptime actuation_bindings: anytype) [actuation_bindings.len]World.Actuation.Class {
+            var values: [actuation_bindings.len]World.Actuation.Class = undefined;
+            inline for (actuation_bindings, 0..) |BindingDecl, index| {
+                values[index] = BindingDecl.actuator_ref.class;
+            }
+            return values;
+        }
+
+        fn actuationAllowedResponseStatuses(comptime actuation_bindings: anytype) [actuation_bindings.len]World.Actuation.ResponseStatusSet {
+            var values: [actuation_bindings.len]World.Actuation.ResponseStatusSet = undefined;
+            inline for (actuation_bindings, 0..) |BindingDecl, index| {
+                values[index] = BindingDecl.actuationDescriptor().allowed_response_kinds;
             }
             return values;
         }
@@ -3507,6 +3702,9 @@ pub fn Appliance(comptime World: type) type {
             hashU64(&hasher, manifest.residual_import_set_fingerprint);
             hashU64Slice(&hasher, manifest.actuation_descriptor_fingerprints);
             hashU64Slice(&hasher, manifest.actuation_binding_fingerprints);
+            hashU64Slice(&hasher, manifest.actuation_actuator_ref_fingerprints);
+            hashActuationClassSlice(&hasher, manifest.actuation_classes);
+            hashResponseStatusSetSlice(&hasher, manifest.actuation_allowed_response_statuses);
             hashU64(&hasher, manifest.supervision_policy_fingerprint);
             hashU64Slice(&hasher, manifest.default_permit_requirement_fingerprints);
             hashU64(&hasher, manifest.capsule_profile_fingerprint);
@@ -3540,6 +3738,12 @@ pub fn Appliance(comptime World: type) type {
             errdefer allocator.free(actuation_descriptor_fingerprints);
             const actuation_binding_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(actuation_binding_fingerprints);
+            const actuation_actuator_ref_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(actuation_actuator_ref_fingerprints);
+            const actuation_classes = try readActuationClassSliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(actuation_classes);
+            const actuation_allowed_response_statuses = try readResponseStatusSetSliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(actuation_allowed_response_statuses);
             const supervision_policy_fingerprint = try readU64(bytes, cursor);
             const default_permit_requirement_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(default_permit_requirement_fingerprints);
@@ -3568,6 +3772,9 @@ pub fn Appliance(comptime World: type) type {
                 .residual_import_set_fingerprint = residual_import_set_fingerprint,
                 .actuation_descriptor_fingerprints = actuation_descriptor_fingerprints,
                 .actuation_binding_fingerprints = actuation_binding_fingerprints,
+                .actuation_actuator_ref_fingerprints = actuation_actuator_ref_fingerprints,
+                .actuation_classes = actuation_classes,
+                .actuation_allowed_response_statuses = actuation_allowed_response_statuses,
                 .supervision_policy_fingerprint = supervision_policy_fingerprint,
                 .default_permit_requirement_fingerprints = default_permit_requirement_fingerprints,
                 .capsule_profile_fingerprint = capsule_profile_fingerprint,
@@ -3590,6 +3797,9 @@ pub fn Appliance(comptime World: type) type {
                 @sizeOf(u64) +
                 u64SliceEncodedLen(manifest.actuation_descriptor_fingerprints) +
                 u64SliceEncodedLen(manifest.actuation_binding_fingerprints) +
+                u64SliceEncodedLen(manifest.actuation_actuator_ref_fingerprints) +
+                actuationClassSliceEncodedLen(manifest.actuation_classes) +
+                responseStatusSetSliceEncodedLen(manifest.actuation_allowed_response_statuses) +
                 @sizeOf(u64) +
                 u64SliceEncodedLen(manifest.default_permit_requirement_fingerprints) +
                 @sizeOf(u64) +
@@ -3604,6 +3814,14 @@ pub fn Appliance(comptime World: type) type {
 
         fn u64SliceEncodedLen(values: []const u64) usize {
             return @sizeOf(u64) + values.len * @sizeOf(u64);
+        }
+
+        fn actuationClassSliceEncodedLen(values: []const World.Actuation.Class) usize {
+            return @sizeOf(u64) + values.len * @sizeOf(u8);
+        }
+
+        fn responseStatusSetSliceEncodedLen(values: []const World.Actuation.ResponseStatusSet) usize {
+            return @sizeOf(u64) + values.len * @sizeOf(u8);
         }
 
         fn byteFieldEncodedLen(bytes: []const u8) usize {
@@ -3629,6 +3847,9 @@ pub fn Appliance(comptime World: type) type {
             try putU64(dest, &cursor, manifest.residual_import_set_fingerprint);
             try putU64Slice(dest, &cursor, manifest.actuation_descriptor_fingerprints);
             try putU64Slice(dest, &cursor, manifest.actuation_binding_fingerprints);
+            try putU64Slice(dest, &cursor, manifest.actuation_actuator_ref_fingerprints);
+            try putActuationClassSlice(dest, &cursor, manifest.actuation_classes);
+            try putResponseStatusSetSlice(dest, &cursor, manifest.actuation_allowed_response_statuses);
             try putU64(dest, &cursor, manifest.supervision_policy_fingerprint);
             try putU64Slice(dest, &cursor, manifest.default_permit_requirement_fingerprints);
             try putU64(dest, &cursor, manifest.capsule_profile_fingerprint);
@@ -3670,6 +3891,16 @@ pub fn Appliance(comptime World: type) type {
         fn putU64Slice(dest: []u8, cursor: *usize, values: []const u64) !void {
             try putU64(dest, cursor, @intCast(values.len));
             for (values) |value| try putU64(dest, cursor, value);
+        }
+
+        fn putActuationClassSlice(dest: []u8, cursor: *usize, values: []const World.Actuation.Class) !void {
+            try putU64(dest, cursor, @intCast(values.len));
+            for (values) |value| try putU8(dest, cursor, @intFromEnum(value));
+        }
+
+        fn putResponseStatusSetSlice(dest: []u8, cursor: *usize, values: []const World.Actuation.ResponseStatusSet) !void {
+            try putU64(dest, cursor, @intCast(values.len));
+            for (values) |value| try putU8(dest, cursor, responseStatusSetByte(value));
         }
 
         fn putBytes(dest: []u8, cursor: *usize, bytes: []const u8) !void {
@@ -3823,6 +4054,11 @@ pub fn Appliance(comptime World: type) type {
             hashU64(&hasher, request.run_handle_fingerprint);
             hashU64(&hasher, request.pending_port_fingerprint);
             hashU64(&hasher, request.world_port_id);
+            hashU64(&hasher, request.target_ref_fingerprint);
+            hashU64(&hasher, request.world_surface_fingerprint);
+            hashU64(&hasher, request.actuator_ref_fingerprint);
+            hashU64(&hasher, @intFromEnum(request.actuation_class));
+            hashResponseStatusSet(&hasher, request.allowed_response_statuses);
             hashU64(&hasher, request.intent_fingerprint);
             hashU64(&hasher, request.envelope_fingerprint);
             hashU64(&hasher, request.decision_fingerprint);
@@ -3982,14 +4218,91 @@ pub fn Appliance(comptime World: type) type {
             return false;
         }
 
-        fn commandHasReplayEvidence(command: Command) bool {
-            return command.receiver_evidence_fingerprints.len != 0;
-        }
-
         fn hostOutcomeStatusIsTerminal(status: HostOutcomeStatus) bool {
             return switch (status) {
                 .responded, .rejected, .failed, .cancelled => true,
                 .pending, .deferred => false,
+            };
+        }
+
+        fn finalizedActuationReceiptFingerprintFor(request: HostRequest, reply: HostReply, capacity: Capacity) !u64 {
+            try request.validate(capacity);
+            try reply.validate(&.{request}, capacity);
+            if (!hostOutcomeStatusIsTerminal(reply.outcome.status)) return error.InvalidFrameEncoding;
+
+            const status = actuationStatusForHostOutcome(reply.outcome.status);
+            const commit_status = actuationCommitStatusForHostOutcome(reply.outcome.status);
+            const fresh_called = commit_status != .not_started and commit_status != .replayed and commit_status != .verified and commit_status != .cancelled;
+            const commit_value = World.Actuation.Commit.init(.{
+                .intent_fingerprint = request.intent_fingerprint,
+                .decision_fingerprint = request.decision_fingerprint,
+                .envelope_fingerprint = request.envelope_fingerprint,
+                .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+                .attempt_number = reply.outcome.attempt_number,
+                .status = commit_status,
+                .fresh_called = fresh_called,
+            });
+            try commit_value.validate();
+
+            const response = World.Actuation.Response.init(.{
+                .intent_fingerprint = request.intent_fingerprint,
+                .commit_fingerprint = commit_value.commit_fingerprint,
+                .actuator_ref_fingerprint = request.actuator_ref_fingerprint,
+                .world_port_id = request.world_port_id,
+                .request_fingerprint = request.request_fingerprint,
+                .status = status,
+                .response_kind = .@"resume",
+                .frame_response_fingerprint = reply.outcome.response_fingerprint,
+                .metadata = reply.outcome.metadata,
+            });
+            try response.validate(.fixture_test, null);
+
+            const receipt = World.Actuation.Receipt.init(.{
+                .intent_fingerprint = request.intent_fingerprint,
+                .envelope_fingerprint = request.envelope_fingerprint,
+                .decision_fingerprint = request.decision_fingerprint,
+                .commit_fingerprint = commit_value.commit_fingerprint,
+                .response_fingerprint = response.response_fingerprint,
+                .response_kind = response.response_kind,
+                .frame_response_fingerprint = response.frame_response_fingerprint,
+                .actuator_ref_fingerprint = request.actuator_ref_fingerprint,
+                .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+                .request_fingerprint = request.request_fingerprint,
+                .target_ref_fingerprint = request.target_ref_fingerprint,
+                .world_surface_fingerprint = request.world_surface_fingerprint,
+                .world_port_id = request.world_port_id,
+                .class = request.actuation_class,
+                .mode = .fresh,
+                .fresh_called = commit_value.fresh_called,
+                .rejected = status == .rejected,
+                .failed = status == .failed,
+                .cancelled = status == .cancelled,
+                .attempt_number = commit_value.attempt_number,
+                .capsule_fingerprint = request.pending_port_fingerprint,
+                .metadata = "appliance.finalized_actuation_receipt",
+            });
+            try receipt.validate();
+            return receipt.receipt_fingerprint;
+        }
+
+        fn actuationStatusForHostOutcome(status: HostOutcomeStatus) World.Actuation.ResponseStatus {
+            return switch (status) {
+                .responded => .responded,
+                .rejected => .rejected,
+                .failed => .failed,
+                .pending => .pending,
+                .deferred => .deferred,
+                .cancelled => .cancelled,
+            };
+        }
+
+        fn actuationCommitStatusForHostOutcome(status: HostOutcomeStatus) World.Actuation.CommitStatus {
+            return switch (status) {
+                .responded => .committed,
+                .rejected => .rejected,
+                .failed => .commit_failed,
+                .pending, .deferred => .commit_pending,
+                .cancelled => .cancelled,
             };
         }
 
@@ -4008,6 +4321,10 @@ pub fn Appliance(comptime World: type) type {
             for (values) |value| try writeU64(out, allocator, value);
         }
 
+        fn writeResponseStatusSet(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: World.Actuation.ResponseStatusSet) !void {
+            try writeU8(out, allocator, responseStatusSetByte(value));
+        }
+
         fn readU64SliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]u64 {
             const count = try readU64(bytes, cursor);
             if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
@@ -4017,6 +4334,30 @@ pub fn Appliance(comptime World: type) type {
             const values = try allocator.alloc(u64, value_count);
             errdefer allocator.free(values);
             for (values) |*value| value.* = try readU64(bytes, cursor);
+            return values;
+        }
+
+        fn readActuationClassSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]World.Actuation.Class {
+            const count = try readU64(bytes, cursor);
+            if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
+            if (count > bytes.len) return error.InvalidFrameEncoding;
+            if (count > World.world_max_decoded_byte_field_len / @sizeOf(World.Actuation.Class)) return error.InvalidFrameEncoding;
+            const value_count: usize = @intCast(count);
+            const values = try allocator.alloc(World.Actuation.Class, value_count);
+            errdefer allocator.free(values);
+            for (values) |*value| value.* = try enumFromByte(World.Actuation.Class, try readU8(bytes, cursor));
+            return values;
+        }
+
+        fn readResponseStatusSetSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]World.Actuation.ResponseStatusSet {
+            const count = try readU64(bytes, cursor);
+            if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
+            if (count > bytes.len) return error.InvalidFrameEncoding;
+            if (count > World.world_max_decoded_byte_field_len / @sizeOf(u8)) return error.InvalidFrameEncoding;
+            const value_count: usize = @intCast(count);
+            const values = try allocator.alloc(World.Actuation.ResponseStatusSet, value_count);
+            errdefer allocator.free(values);
+            for (values) |*value| value.* = try readResponseStatusSet(bytes, cursor);
             return values;
         }
 
@@ -4047,6 +4388,11 @@ pub fn Appliance(comptime World: type) type {
             const run_handle_fingerprint = try readU64(bytes, cursor);
             const pending_port_fingerprint = try readU64(bytes, cursor);
             const world_port_id = try readU32(bytes, cursor);
+            const target_ref_fingerprint = try readU64(bytes, cursor);
+            const world_surface_fingerprint = try readU64(bytes, cursor);
+            const actuator_ref_fingerprint = try readU64(bytes, cursor);
+            const actuation_class = try enumFromByte(World.Actuation.Class, try readU8(bytes, cursor));
+            const allowed_response_statuses = try readResponseStatusSet(bytes, cursor);
             const intent_fingerprint = try readU64(bytes, cursor);
             const envelope_fingerprint = try readU64(bytes, cursor);
             const decision_fingerprint = try readU64(bytes, cursor);
@@ -4064,6 +4410,11 @@ pub fn Appliance(comptime World: type) type {
                 .run_handle_fingerprint = run_handle_fingerprint,
                 .pending_port_fingerprint = pending_port_fingerprint,
                 .world_port_id = world_port_id,
+                .target_ref_fingerprint = target_ref_fingerprint,
+                .world_surface_fingerprint = world_surface_fingerprint,
+                .actuator_ref_fingerprint = actuator_ref_fingerprint,
+                .actuation_class = actuation_class,
+                .allowed_response_statuses = allowed_response_statuses,
                 .intent_fingerprint = intent_fingerprint,
                 .envelope_fingerprint = envelope_fingerprint,
                 .decision_fingerprint = decision_fingerprint,
@@ -4823,6 +5174,33 @@ pub fn Appliance(comptime World: type) type {
             hashU64(hasher, @intFromBool(value));
         }
 
+        fn hashActuationClassSlice(hasher: *std.hash.Wyhash, values: []const World.Actuation.Class) void {
+            hashU64(hasher, values.len);
+            for (values) |value| hashU64(hasher, @intFromEnum(value));
+        }
+
+        fn hashResponseStatusSet(hasher: *std.hash.Wyhash, value: World.Actuation.ResponseStatusSet) void {
+            hashU64(hasher, responseStatusSetByte(value));
+        }
+
+        fn hashResponseStatusSetSlice(hasher: *std.hash.Wyhash, values: []const World.Actuation.ResponseStatusSet) void {
+            hashU64(hasher, values.len);
+            for (values) |value| hashResponseStatusSet(hasher, value);
+        }
+
+        fn responseStatusSetAllowsAny(value: World.Actuation.ResponseStatusSet) bool {
+            return value.responded or value.rejected or value.failed or value.pending or value.deferred or value.cancelled;
+        }
+
+        fn responseStatusSetByte(value: World.Actuation.ResponseStatusSet) u8 {
+            return (@as(u8, @intFromBool(value.responded)) << 0) |
+                (@as(u8, @intFromBool(value.rejected)) << 1) |
+                (@as(u8, @intFromBool(value.failed)) << 2) |
+                (@as(u8, @intFromBool(value.pending)) << 3) |
+                (@as(u8, @intFromBool(value.deferred)) << 4) |
+                (@as(u8, @intFromBool(value.cancelled)) << 5);
+        }
+
         fn hashOptionalU64(hasher: *std.hash.Wyhash, value: ?u64) void {
             if (value) |actual| {
                 hashBool(hasher, true);
@@ -4903,6 +5281,19 @@ pub fn Appliance(comptime World: type) type {
                 0 => false,
                 1 => true,
                 else => error.InvalidFrameEncoding,
+            };
+        }
+
+        fn readResponseStatusSet(bytes: []const u8, cursor: *usize) !World.Actuation.ResponseStatusSet {
+            const bits = try readU8(bytes, cursor);
+            if (bits & 0b1100_0000 != 0) return error.InvalidFrameEncoding;
+            return .{
+                .responded = bits & (1 << 0) != 0,
+                .rejected = bits & (1 << 1) != 0,
+                .failed = bits & (1 << 2) != 0,
+                .pending = bits & (1 << 3) != 0,
+                .deferred = bits & (1 << 4) != 0,
+                .cancelled = bits & (1 << 5) != 0,
             };
         }
 

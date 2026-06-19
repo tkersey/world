@@ -140,6 +140,8 @@ pub fn build(b: *std.Build) void {
     appliance_wasm.entry = .disabled;
     appliance_wasm.rdynamic = true;
     appliance_wasm.export_memory = true;
+    appliance_wasm.initial_memory = 4_259_840;
+    appliance_wasm.max_memory = 4_259_840;
     const install_appliance_wasm = b.addInstallArtifact(appliance_wasm, .{});
     const world_appliance_wasm_step = b.step("world-appliance-wasm", "Build World Appliance wasm artifact.");
     world_appliance_wasm_step.dependOn(&install_appliance_wasm.step);
@@ -275,7 +277,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     appliance_invalid_capacity_test.expect_errors = .{
-        .contains = "World Appliance capacity is invalid",
+        .contains = "World Appliance capacity is invalid for profile",
     };
     const appliance_actuation_disabled_binding_test = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1039,8 +1041,8 @@ pub fn build(b: *std.Build) void {
             \\turn_state=waiting_host
             \\actuation_bindings=1
             \\checkpoint_every_turn=true
-            \\output_bytes=690
-            \\turn_receipt=97257bdee3a65a62
+            \\output_bytes=732
+            \\turn_receipt=48a4ddf202f66a06
             \\
             ,
         },
@@ -1067,8 +1069,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=3d2b90fed2248d4f
-            \\restored_output=3d2b90fed2248d4f
+            \\resident_output=b523bbaff1ab8c0f
+            \\restored_output=b523bbaff1ab8c0f
             \\
             ,
         },
@@ -1079,10 +1081,10 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance archive example.",
             .expected_stdout =
             \\archive_batches=1
-            \\output_archive_request=b175cf7069866bcd
+            \\output_archive_request=cbb1164f33a802f0
             \\archive_objects=3
-            \\retention_ack=41e1f71777e45e3f
-            \\moment=ea2ec0823337f467
+            \\retention_ack=ba852ca593622b18
+            \\moment=4820eccaf5601aae
             \\
             ,
         },
@@ -1096,7 +1098,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_host_requests=1
             \\replay_status=completed
             \\replay_host_requests=0
-            \\replay_evidence=97257bdee3a65a62
+            \\replay_evidence=1c925bc54a46a627
             \\replay_final_result=true
             \\
             ,
@@ -1108,7 +1110,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance WASM probe example.",
             .expected_stdout =
             \\appliance_abi_version=1
-            \\manifest=7e146fac61929201
+            \\manifest=2ee796f830abd938
             \\capacity=5fcf964fbaa4a66b
             \\memory_plan=ed1c9222ab3bed1d
             \\required_exports=9
