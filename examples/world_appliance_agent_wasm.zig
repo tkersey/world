@@ -2,7 +2,6 @@ const common = @import("world_appliance_common.zig");
 const std = @import("std");
 const world = @import("world");
 
-const wasm_page_bytes: usize = 64 * 1024;
 const max_memory: usize = 2 * 1024 * 1024;
 const core_storage_bytes: usize = 1024 * 1024;
 const manifest = common.AgentAppliance.manifest();
@@ -50,11 +49,11 @@ export fn world_appliance_memory_plan_fingerprint_hi() u32 {
 }
 
 export fn world_appliance_required_memory_bytes() usize {
-    return @wasmMemorySize(0) * wasm_page_bytes;
+    return memory_plan.maximum_linear_memory_bytes;
 }
 
 export fn world_appliance_max_linear_memory_pages() usize {
-    return @wasmMemorySize(0);
+    return memory_plan.maximum_linear_memory_pages;
 }
 
 export fn world_appliance_read_manifest(ptr: usize, cap: usize) usize {

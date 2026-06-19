@@ -732,6 +732,14 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
     var missing_authoritative_cursor = archive_anchor;
     missing_authoritative_cursor.latest_archive_cursor = null;
     try std.testing.expectError(error.InvalidFrameEncoding, missing_authoritative_cursor.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const pending_without_cursor = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 11,
+        .capsule_fingerprint = 0xD036,
+        .pending_archive_append_batch_fingerprint = 0xD037,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, pending_without_cursor.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 }
 
 test "appliance Core submit validates command before mutating state" {
@@ -1125,6 +1133,7 @@ test "appliance Core restore rehydrates outstanding HostRequest for continuation
         .turn_sequence_number = resident.current_turn_sequence_number,
         .capsule_fingerprint = 0xD500,
         .pending_archive_append_batch_fingerprint = resident.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = resident.pending_archive_resulting_cursor,
         .previous_turn_receipt_fingerprint = prior_receipt,
         .outstanding_host_requests = &.{outstanding},
     });
@@ -1335,6 +1344,7 @@ test "appliance Core restore command applies checkpoint and replies without side
         .turn_sequence_number = resident.current_turn_sequence_number,
         .capsule_fingerprint = 0xD510,
         .pending_archive_append_batch_fingerprint = resident.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = resident.pending_archive_resulting_cursor,
         .previous_turn_receipt_fingerprint = prior_receipt,
         .outstanding_host_requests = &.{outstanding},
     });

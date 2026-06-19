@@ -1096,6 +1096,7 @@ pub fn Appliance(comptime World: type) type {
                 try validateOptionalFingerprint(self.latest_chronicle_cursor_fingerprint);
                 try validateArchiveAnchorTuple(self.latest_archive_moment_fingerprint, self.latest_archive_seal_fingerprint, self.latest_chronicle_cursor_fingerprint);
                 try validateOptionalFingerprint(self.pending_archive_append_batch_fingerprint);
+                if (self.pending_archive_append_batch_fingerprint != null and self.pending_archive_resulting_cursor == null) return error.InvalidFrameEncoding;
                 if (self.pending_archive_resulting_cursor) |cursor| {
                     try cursor.validate();
                     if (cursor.metadata_bytes.len != 0) return error.InvalidFrameEncoding;
