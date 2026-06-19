@@ -262,6 +262,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.max_host_replies_per_turn > self.max_pending_ports) return error.CapacityExceeded;
                 if (self.max_command_bytes == 0 or self.max_output_bytes == 0 or self.max_error_bytes == 0) return error.CapacityExceeded;
                 if (self.max_metadata_bytes > World.world_max_decoded_byte_field_len) return error.CapacityExceeded;
+                _ = MemoryPlan.deriveChecked(self, Profile.wasm_small) catch return error.CapacityExceeded;
             }
 
             pub fn fingerprint(self: @This()) u64 {
@@ -299,13 +300,18 @@ pub fn Appliance(comptime World: type) type {
             enabled_feature_summary: FeatureSet,
 
             pub fn derive(capacity: Capacity, profile: Profile) @This() {
-                const persistent = alignBytes(1024 + capacity.max_runs * 256 + capacity.max_pending_ports * 192 + capacity.max_actuation_records * 128);
-                const scratch = alignBytes(2048 + capacity.max_runspace_events * 32 + capacity.max_fabric_invocations * 64);
-                const checkpoint = alignBytes(capacity.max_capsule_bytes);
-                const archive = alignBytes(capacity.max_archive_append_bytes);
-                const input = alignBytes(capacity.max_command_bytes);
-                const output = alignBytes(capacity.max_output_bytes);
-                const maximum = alignPage(persistent + scratch + input + output + checkpoint + archive + capacity.max_error_bytes + capacity.max_metadata_bytes);
+                capacity.validate() catch unreachable;
+                return deriveChecked(capacity, profile) catch unreachable;
+            }
+
+            fn deriveChecked(capacity: Capacity, profile: Profile) !@This() {
+                const persistent = try alignBytesChecked(try checkedAdd(try checkedAdd(try checkedAdd(1024, try checkedMul(capacity.max_runs, 256)), try checkedMul(capacity.max_pending_ports, 192)), try checkedMul(capacity.max_actuation_records, 128)));
+                const scratch = try alignBytesChecked(try checkedAdd(try checkedAdd(2048, try checkedMul(capacity.max_runspace_events, 32)), try checkedMul(capacity.max_fabric_invocations, 64)));
+                const checkpoint = try alignBytesChecked(capacity.max_capsule_bytes);
+                const archive = try alignBytesChecked(capacity.max_archive_append_bytes);
+                const input = try alignBytesChecked(capacity.max_command_bytes);
+                const output = try alignBytesChecked(capacity.max_output_bytes);
+                const maximum = try alignPageChecked(try checkedAdd(try checkedAdd(try checkedAdd(try checkedAdd(try checkedAdd(try checkedAdd(try checkedAdd(persistent, scratch), input), output), checkpoint), archive), capacity.max_error_bytes), capacity.max_metadata_bytes));
                 var result = @This(){
                     .plan_fingerprint = 0,
                     .persistent_core_bytes = persistent,
@@ -1489,15 +1495,15 @@ pub fn Appliance(comptime World: type) type {
                         if (request.request_fingerprint != checkpoint_request.request_fingerprint) return error.InvalidFrameEncoding;
                     }
                 }
-                if (self.status == .inspected or self.checkpoint.core_state == .uninitialized or self.checkpoint.previous_turn_receipt_fingerprint == self.turn_receipt.receipt_fingerprint) {
-                    const expected_resulting_state_fingerprint = if (self.status == .inspected)
-                        self.source_state_fingerprint
-                    else if (self.checkpoint.core_state == .uninitialized)
-                        stateFingerprintFor(.uninitialized, 0, null)
-                    else
-                        stateFingerprintFor(self.checkpoint.core_state, self.turn_sequence_number, self.turn_receipt.receipt_fingerprint);
-                    if (self.resulting_state_fingerprint != expected_resulting_state_fingerprint) return error.InvalidFrameEncoding;
-                }
+                const expected_resulting_state_fingerprint = if (self.status == .inspected)
+                    self.source_state_fingerprint
+                else if (self.checkpoint.core_state == .uninitialized)
+                    stateFingerprintFor(.uninitialized, 0, null)
+                else blk: {
+                    if (self.checkpoint.previous_turn_receipt_fingerprint != self.turn_receipt.receipt_fingerprint) return error.InvalidFrameEncoding;
+                    break :blk stateFingerprintFor(self.checkpoint.core_state, self.turn_sequence_number, self.turn_receipt.receipt_fingerprint);
+                };
+                if (self.resulting_state_fingerprint != expected_resulting_state_fingerprint) return error.InvalidFrameEncoding;
                 if (self.output_fingerprint != fingerprintTurnOutput(self)) return error.InvalidFrameEncoding;
             }
 
@@ -2890,6 +2896,10 @@ pub fn Appliance(comptime World: type) type {
             return memoryPlan(capacity, profile).maximum_linear_memory_bytes;
         }
 
+        pub fn coreStateFingerprint(state: CoreState, turn_sequence_number: u64, previous_turn_receipt_fingerprint: ?u64) u64 {
+            return stateFingerprintFor(state, turn_sequence_number, previous_turn_receipt_fingerprint);
+        }
+
         fn inspectWasmImports(section: []const u8, inspection: *Abi.WasmInspection) !void {
             var cursor: usize = 0;
             const count = try wasmReadU32(section, &cursor);
@@ -3439,6 +3449,30 @@ pub fn Appliance(comptime World: type) type {
 
         fn alignPage(value: usize) usize {
             return std.mem.alignForward(usize, value, wasm_page_size);
+        }
+
+        fn checkedAdd(a: usize, b: usize) !usize {
+            const result = @addWithOverflow(a, b);
+            if (result[1] != 0) return error.CapacityExceeded;
+            return result[0];
+        }
+
+        fn checkedMul(a: usize, b: usize) !usize {
+            const result = @mulWithOverflow(a, b);
+            if (result[1] != 0) return error.CapacityExceeded;
+            return result[0];
+        }
+
+        fn alignBytesChecked(value: usize) !usize {
+            const remainder = value % default_alignment;
+            if (remainder == 0) return value;
+            return checkedAdd(value, default_alignment - remainder);
+        }
+
+        fn alignPageChecked(value: usize) !usize {
+            const remainder = value % wasm_page_size;
+            if (remainder == 0) return value;
+            return checkedAdd(value, wasm_page_size - remainder);
         }
 
         fn fingerprintMemoryPlan(plan: MemoryPlan) u64 {

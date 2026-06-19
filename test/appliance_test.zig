@@ -359,6 +359,10 @@ test "appliance capacity presets validate and fingerprint deterministically" {
     var invalid = tiny;
     invalid.max_provider_runs = invalid.max_runs + 1;
     try std.testing.expectError(error.CapacityExceeded, invalid.validate());
+
+    var overflowing = tiny;
+    overflowing.max_runs = std.math.maxInt(usize);
+    try std.testing.expectError(error.CapacityExceeded, overflowing.validate());
 }
 
 test "appliance memory plan is bounded and derived from capacity and profile" {
@@ -2525,24 +2529,27 @@ test "appliance host request validates and is carried by needs-host TurnOutput" 
     });
     try request.validate(world.Appliance.Capacity.tiny_one_port);
 
-    const checkpoint = world.Appliance.Checkpoint.init(.{
-        .manifest_fingerprint = manifest.manifest_fingerprint,
-        .turn_sequence_number = 1,
-        .capsule_fingerprint = 0xD106,
-    });
+    const capsule_fingerprint: u64 = 0xD106;
     const receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 1,
         .command_fingerprint = 0xD107,
         .emitted_host_request_fingerprints = &.{request.request_fingerprint},
-        .resulting_capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
         .status = .needs_host,
+    });
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+        .outstanding_host_requests = &.{request},
     });
     const output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 1,
         .source_state_fingerprint = 0xD108,
-        .resulting_state_fingerprint = 0xD109,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.waiting_host, 1, receipt.receipt_fingerprint),
         .quiescence = world.Appliance.QuiescenceReport.init(.{
             .quiescent = true,
             .pending_host_request_count = 1,
@@ -2550,12 +2557,7 @@ test "appliance host request validates and is carried by needs-host TurnOutput" 
         }),
         .status = .needs_host,
         .host_requests = &.{request},
-        .checkpoint = world.Appliance.Checkpoint.init(.{
-            .manifest_fingerprint = checkpoint.manifest_fingerprint,
-            .turn_sequence_number = checkpoint.turn_sequence_number,
-            .capsule_fingerprint = checkpoint.capsule_fingerprint,
-            .outstanding_host_requests = &.{request},
-        }),
+        .checkpoint = checkpoint,
         .turn_receipt = receipt,
     });
     try output.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
@@ -2882,24 +2884,26 @@ test "appliance turn receipt binds archive result anchors" {
 test "appliance TurnOutput binds root result through receipt parity" {
     const manifest_fingerprint: u64 = 0xD280;
     const root_result_fingerprint: u64 = 0xD281;
-    const checkpoint = world.Appliance.Checkpoint.init(.{
-        .manifest_fingerprint = manifest_fingerprint,
-        .turn_sequence_number = 7,
-        .capsule_fingerprint = 0xD282,
-    });
+    const capsule_fingerprint: u64 = 0xD282;
     const receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 7,
         .command_fingerprint = 0xD283,
-        .resulting_capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
         .root_result_fingerprint = root_result_fingerprint,
         .status = .completed,
+    });
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .capsule_fingerprint = capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
     });
     const output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 7,
         .source_state_fingerprint = 0xD284,
-        .resulting_state_fingerprint = 0xD285,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 7, receipt.receipt_fingerprint),
         .quiescence = world.Appliance.QuiescenceReport.init(.{
             .quiescent = true,
             .completed_run_count = 1,
@@ -3003,25 +3007,27 @@ test "appliance TurnOutput deinit does not free borrowed init slices" {
     const requests = [_]world.Appliance.HostRequest{request};
     const emitted = [_]u64{request.request_fingerprint};
     const finalized = [_]u64{0xD2A8};
-    const checkpoint = world.Appliance.Checkpoint.init(.{
-        .manifest_fingerprint = manifest_fingerprint,
-        .turn_sequence_number = 3,
-        .capsule_fingerprint = 0xD2A9,
-        .outstanding_host_requests = requests[0..],
-    });
+    const capsule_fingerprint: u64 = 0xD2A9;
     const receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 3,
         .command_fingerprint = 0xD2AA,
         .emitted_host_request_fingerprints = emitted[0..],
-        .resulting_capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
         .status = .needs_host,
+    });
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 3,
+        .capsule_fingerprint = capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+        .outstanding_host_requests = requests[0..],
     });
     var output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 3,
         .source_state_fingerprint = 0xD2AB,
-        .resulting_state_fingerprint = 0xD2AC,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.waiting_host, 3, receipt.receipt_fingerprint),
         .quiescence = world.Appliance.QuiescenceReport.init(.{
             .quiescent = true,
             .pending_host_request_count = 1,
@@ -3071,29 +3077,32 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
     const run_receipt_fingerprint: u64 = 0xD292;
     const finalized_receipt_fingerprint: u64 = 0xD293;
     const archive_resulting_cursor = world.Continuity.Chronicle.Cursor.initial();
-    const checkpoint = world.Appliance.Checkpoint.init(.{
-        .manifest_fingerprint = manifest_fingerprint,
-        .turn_sequence_number = 8,
-        .capsule_fingerprint = 0xD294,
-        .pending_archive_append_batch_fingerprint = archive_append_fingerprint,
-        .pending_archive_resulting_cursor = archive_resulting_cursor,
-    });
+    const capsule_fingerprint: u64 = 0xD294;
     const receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 8,
         .command_fingerprint = 0xD295,
-        .resulting_capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
         .archive_append_batch_fingerprint = archive_append_fingerprint,
         .status = .blocked,
         .run_receipt_fingerprint = run_receipt_fingerprint,
         .blocker_count = 1,
         .warning_count = 1,
     });
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 8,
+        .capsule_fingerprint = capsule_fingerprint,
+        .pending_archive_append_batch_fingerprint = archive_append_fingerprint,
+        .pending_archive_resulting_cursor = archive_resulting_cursor,
+        .core_state = .failed,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+    });
     const output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 8,
         .source_state_fingerprint = 0xD296,
-        .resulting_state_fingerprint = 0xD297,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.failed, 8, receipt.receipt_fingerprint),
         .quiescence = world.Appliance.QuiescenceReport.init(.{
             .quiescent = true,
             .blocker_count = 1,
@@ -3204,25 +3213,27 @@ test "appliance archive plan commits turn evidence through Archive owner" {
         .quiescent = true,
         .completed_run_count = 1,
     });
-    const checkpoint = world.Appliance.Checkpoint.init(.{
-        .manifest_fingerprint = manifest.manifest_fingerprint,
-        .turn_sequence_number = 1,
-        .capsule_fingerprint = 0xA001,
-    });
+    const capsule_fingerprint: u64 = 0xA001;
     const root_result_fingerprint: u64 = 0xA005;
     const receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 1,
         .command_fingerprint = 0xA002,
-        .resulting_capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
         .root_result_fingerprint = root_result_fingerprint,
         .status = .completed,
+    });
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
     });
     const output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 1,
         .source_state_fingerprint = 0xA003,
-        .resulting_state_fingerprint = 0xA004,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 1, receipt.receipt_fingerprint),
         .quiescence = quiescence,
         .status = .completed,
         .root_result_fingerprint = root_result_fingerprint,
@@ -3369,11 +3380,20 @@ test "appliance conformance report binds native resident reconstructed replay ar
     const reconstructed_output_fingerprint = std.hash.Wyhash.hash(0, reconstructed.readOutput());
 
     const root_result_fingerprint: u64 = 0xC0F0_0006;
+    const output_capsule_fingerprint: u64 = 0xC0F0_0005;
+    const output_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .command_fingerprint = command.command_fingerprint,
+        .resulting_capsule_fingerprint = output_capsule_fingerprint,
+        .root_result_fingerprint = root_result_fingerprint,
+        .status = .completed,
+    });
     const output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 2,
         .source_state_fingerprint = 0xC0F0_0003,
-        .resulting_state_fingerprint = 0xC0F0_0004,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 2, output_receipt.receipt_fingerprint),
         .quiescence = world.Appliance.QuiescenceReport.init(.{
             .quiescent = true,
             .completed_run_count = 1,
@@ -3383,17 +3403,10 @@ test "appliance conformance report binds native resident reconstructed replay ar
         .checkpoint = world.Appliance.Checkpoint.init(.{
             .manifest_fingerprint = manifest.manifest_fingerprint,
             .turn_sequence_number = 2,
-            .capsule_fingerprint = 0xC0F0_0005,
-            .previous_turn_receipt_fingerprint = resident.previous_turn_receipt_fingerprint,
+            .capsule_fingerprint = output_capsule_fingerprint,
+            .previous_turn_receipt_fingerprint = output_receipt.receipt_fingerprint,
         }),
-        .turn_receipt = world.Appliance.TurnReceipt.init(.{
-            .manifest_fingerprint = manifest.manifest_fingerprint,
-            .turn_sequence_number = 2,
-            .command_fingerprint = command.command_fingerprint,
-            .resulting_capsule_fingerprint = 0xC0F0_0005,
-            .root_result_fingerprint = root_result_fingerprint,
-            .status = .completed,
-        }),
+        .turn_receipt = output_receipt,
     });
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
