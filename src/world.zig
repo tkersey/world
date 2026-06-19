@@ -358,6 +358,27 @@ pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 3;
 pub const world_guest_conformance_report_fingerprint_version: u32 = 1;
+pub const world_appliance_abi_version: u32 = 1;
+pub const world_appliance_manifest_format_version: u32 = 1;
+pub const world_appliance_manifest_fingerprint_version: u32 = 1;
+pub const world_appliance_memory_plan_fingerprint_version: u32 = 1;
+pub const world_appliance_command_format_version: u32 = 1;
+pub const world_appliance_command_fingerprint_version: u32 = 1;
+pub const world_appliance_host_request_format_version: u32 = 1;
+pub const world_appliance_host_request_fingerprint_version: u32 = 1;
+pub const world_appliance_host_outcome_format_version: u32 = 1;
+pub const world_appliance_host_outcome_fingerprint_version: u32 = 1;
+pub const world_appliance_host_reply_format_version: u32 = 1;
+pub const world_appliance_host_reply_fingerprint_version: u32 = 1;
+pub const world_appliance_turn_output_format_version: u32 = 1;
+pub const world_appliance_turn_output_fingerprint_version: u32 = 1;
+pub const world_appliance_checkpoint_format_version: u32 = 1;
+pub const world_appliance_checkpoint_fingerprint_version: u32 = 1;
+pub const world_appliance_turn_receipt_format_version: u32 = 1;
+pub const world_appliance_turn_receipt_fingerprint_version: u32 = 1;
+pub const world_appliance_reconstruction_report_fingerprint_version: u32 = 1;
+pub const world_appliance_conformance_vector_fingerprint_version: u32 = 1;
+pub const world_appliance_conformance_report_fingerprint_version: u32 = 1;
 
 var next_runspace_instance_id = std.atomic.Value(u64).init(0);
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
@@ -1196,6 +1217,7 @@ pub const ConduitRoute = Fabric.Route;
 pub const Archive = @import("archive.zig").Archive(@This());
 pub const Linker = @import("linker.zig").Linker(@This());
 pub const Assembly = Linker.Assembly;
+pub const Appliance = @import("appliance.zig").Appliance(@This());
 pub const ActuatorRef = Actuation.Ref;
 pub const ActuationKind = Actuation.Kind;
 pub const ActuationClass = Actuation.Class;
@@ -1224,6 +1246,20 @@ test "linker kernel boundary source guard rejects forbidden hot path imports" {
         "string_match_" ++ "dispatch",
         "request_" ++ "token",
         "thread_" ++ "id",
+    }) |forbidden| {
+        try std.testing.expect(std.mem.indexOf(u8, source, forbidden) == null);
+    }
+}
+
+test "appliance kernel boundary source guard rejects forbidden hot path discovery" {
+    const source = @embedFile("appliance.zig");
+    inline for (.{
+        "Treaty" ++ "Resolver",
+        "Provider" ++ "Harness",
+        "operation" ++ "-name dispatch",
+        "runtime" ++ " provider discovery",
+        "host" ++ " callback identity",
+        "thread" ++ "_id",
     }) |forbidden| {
         try std.testing.expect(std.mem.indexOf(u8, source, forbidden) == null);
     }
@@ -19735,6 +19771,287 @@ pub const Actuation = struct {
         }
     };
 
+    pub const Prepared = struct {
+        prepared_fingerprint: u64,
+        policy: Policy,
+        intent: Intent,
+        envelope: Envelope,
+        descriptor: Descriptor,
+        binding: ?Actuation.Binding = null,
+        decision: Decision,
+        expected_response_descriptor_fingerprint: u64,
+        target_ref_fingerprint: u64,
+        world_surface_fingerprint: u64,
+        key_present: bool = true,
+        explicit_mutation_approval: bool = false,
+        explicit_irreversible_approval: bool = false,
+        attempt_number: u32 = 0,
+        run_receipt_fingerprint: ?u64 = null,
+        capsule_fingerprint: ?u64 = null,
+        pending_actuation_receipt_fingerprint: ?u64 = null,
+
+        pub fn init(args: struct {
+            policy: Policy,
+            intent: Intent,
+            envelope: Envelope,
+            descriptor: Descriptor,
+            binding: ?Actuation.Binding = null,
+            decision: Decision,
+            expected_response_descriptor_fingerprint: u64,
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            key_present: bool = true,
+            explicit_mutation_approval: bool = false,
+            explicit_irreversible_approval: bool = false,
+            attempt_number: u32 = 0,
+            run_receipt_fingerprint: ?u64 = null,
+            capsule_fingerprint: ?u64 = null,
+            pending_actuation_receipt_fingerprint: ?u64 = null,
+        }) @This() {
+            var result = @This(){
+                .prepared_fingerprint = 0,
+                .policy = args.policy,
+                .intent = args.intent,
+                .envelope = args.envelope,
+                .descriptor = args.descriptor,
+                .binding = args.binding,
+                .decision = args.decision,
+                .expected_response_descriptor_fingerprint = args.expected_response_descriptor_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .key_present = args.key_present,
+                .explicit_mutation_approval = args.explicit_mutation_approval,
+                .explicit_irreversible_approval = args.explicit_irreversible_approval,
+                .attempt_number = args.attempt_number,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .capsule_fingerprint = args.capsule_fingerprint,
+                .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
+            };
+            result.prepared_fingerprint = fingerprintPrepared(result);
+            return result;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.prepared_fingerprint == 0) return error.InvalidFrameEncoding;
+            try self.policy.validate();
+            try self.intent.validate();
+            try self.envelope.validate(self.policy);
+            try self.descriptor.validate();
+            try self.decision.validate();
+            try self.validatePreparedBindings();
+            try self.validateDecisionBinding();
+            if (!self.decision.approved) return error.SupervisionDenied;
+            if (self.expected_response_descriptor_fingerprint != self.descriptor.descriptor_fingerprint) return error.InvalidFrameEncoding;
+            if (self.target_ref_fingerprint != self.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (self.world_surface_fingerprint != self.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
+            if (self.capsule_fingerprint) |capsule_fingerprint| {
+                if (self.intent.capsule_fingerprint == null or self.intent.capsule_fingerprint.? != capsule_fingerprint) return error.InvalidFrameEncoding;
+            }
+            try validateOptionalFingerprint(self.run_receipt_fingerprint);
+            try validateOptionalFingerprint(self.capsule_fingerprint);
+            if (self.pending_actuation_receipt_fingerprint) |fingerprint| {
+                if (fingerprint == 0) return error.InvalidFrameEncoding;
+                switch (self.intent.requested_mode) {
+                    .replay, .verify => {},
+                    .fresh, .audit => return error.InvalidFrameEncoding,
+                }
+            }
+            if (self.prepared_fingerprint != fingerprintPrepared(self)) return error.InvalidFrameEncoding;
+        }
+
+        fn validatePreparedBindings(self: @This()) !void {
+            if (self.envelope.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+            if (self.envelope.encoded_frame_request_fingerprint != self.intent.encoded_frame_request_fingerprint) return error.InvalidFrameEncoding;
+            if (self.envelope.payload_value_image_fingerprint != self.intent.payload_value_image_fingerprint) return error.InvalidFrameEncoding;
+            try validateIdempotencyKeyForIntent(self.envelope.idempotency_key, self.intent);
+            if (self.descriptor.descriptor_fingerprint != self.intent.descriptor_fingerprint) return error.InvalidFrameEncoding;
+            if (self.descriptor.actuator_ref_fingerprint != self.intent.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (self.descriptor.world_surface_fingerprint != self.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
+            if (self.descriptor.target_ref_fingerprint) |target_ref_fingerprint| {
+                if (target_ref_fingerprint != self.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
+            }
+            if (self.descriptor.world_port_id) |world_port_id| {
+                if (world_port_id != self.intent.world_port_id) return error.InvalidFrameEncoding;
+            }
+            if (self.descriptor.class != self.intent.class) return error.InvalidFrameEncoding;
+            if (!self.descriptor.supported_modes.allows(self.intent.requested_mode)) return error.InvalidMode;
+            if (self.binding) |binding| {
+                try binding.validateForDescriptor(self.descriptor);
+                if (self.intent.binding_fingerprint == null or self.intent.binding_fingerprint.? != binding.binding_fingerprint) return error.InvalidFrameEncoding;
+            } else if (self.intent.binding_fingerprint != null) {
+                return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn validateDecisionBinding(self: @This()) !void {
+            if (self.decision.intent_fingerprint != self.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+            if (self.decision.policy_fingerprint != self.policy.policy_fingerprint) return error.InvalidFrameEncoding;
+            if (self.decision.run_permit_fingerprint != self.intent.run_permit_fingerprint) return error.InvalidFrameEncoding;
+            const expected = Membrane.decide(.{
+                .policy = self.policy,
+                .intent = self.intent,
+                .key_present = self.key_present,
+                .explicit_mutation_approval = self.explicit_mutation_approval,
+                .explicit_irreversible_approval = self.explicit_irreversible_approval,
+                .attempt_number = self.attempt_number,
+            });
+            if (self.decision.decision_fingerprint != expected.decision_fingerprint) return error.InvalidFrameEncoding;
+        }
+    };
+
+    pub const HostOutcomeInput = struct {
+        host_request_fingerprint: ?u64 = null,
+        intent_fingerprint: u64,
+        envelope_fingerprint: u64,
+        idempotency_key_fingerprint: u64,
+        status: Actuation.ResponseStatus,
+        response_kind: ResponseKind = .@"resume",
+        frame_response_fingerprint: ?u64 = null,
+        value_image_fingerprint: ?u64 = null,
+        response_image: ?Frame.ValueImage = null,
+        recorded_response_fingerprint: ?u64 = null,
+        code: ?u32 = null,
+        reason: []const u8 = "",
+        metadata: []const u8 = "",
+        attempt_number: u32 = 0,
+
+        pub fn validateForPrepared(self: @This(), prepared: Prepared) !void {
+            try validateOptionalFingerprint(self.host_request_fingerprint);
+            if (self.host_request_fingerprint) |fingerprint| {
+                if (fingerprint != prepared.intent.frame_request_fingerprint) return error.InvalidFrameEncoding;
+            }
+            if (self.intent_fingerprint != prepared.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+            if (self.envelope_fingerprint != prepared.envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
+            if (self.idempotency_key_fingerprint != prepared.envelope.idempotency_key.key_fingerprint) return error.InvalidFrameEncoding;
+            if (self.attempt_number != prepared.attempt_number) return error.InvalidFrameEncoding;
+            if (!prepared.policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
+            if (self.status != .responded and (self.response_image != null or self.value_image_fingerprint != null)) return error.InvalidFrameEncoding;
+            if (self.status == .responded and self.recorded_response_fingerprint != null) return error.InvalidFrameEncoding;
+            if (self.status == .pending or self.status == .deferred) {
+                if (self.frame_response_fingerprint != null or self.recorded_response_fingerprint != null) return error.InvalidFrameEncoding;
+            }
+            try validateOptionalFingerprint(self.frame_response_fingerprint);
+            try validateOptionalFingerprint(self.value_image_fingerprint);
+            try validateOptionalFingerprint(self.recorded_response_fingerprint);
+            if (self.reason.len > world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (self.metadata.len > (prepared.policy.max_actuation_metadata_bytes orelse world_max_decoded_byte_field_len)) return error.InvalidFrameEncoding;
+        }
+
+        pub fn responseFor(self: @This(), prepared: Prepared, commit_value: Commit) Response {
+            return Response.init(.{
+                .intent_fingerprint = prepared.intent.intent_fingerprint,
+                .commit_fingerprint = commit_value.commit_fingerprint,
+                .actuator_ref_fingerprint = prepared.intent.actuator_ref_fingerprint,
+                .world_port_id = prepared.intent.world_port_id,
+                .request_fingerprint = prepared.intent.frame_request_fingerprint,
+                .status = self.status,
+                .response_kind = self.response_kind,
+                .frame_response_fingerprint = self.frame_response_fingerprint,
+                .value_image_fingerprint = self.value_image_fingerprint,
+                .response_image = self.response_image,
+                .recorded_response_fingerprint = self.recorded_response_fingerprint,
+                .code = self.code,
+                .reason = self.reason,
+                .metadata = self.metadata,
+            });
+        }
+    };
+
+    pub const Finalized = struct {
+        finalized_fingerprint: u64,
+        commit_value: Commit,
+        response: Response,
+        receipt: Receipt,
+        verify_report: ?VerifyReport = null,
+        mailbox_response: ?Frame.Response = null,
+
+        pub fn init(args: struct {
+            commit_value: Commit,
+            response: Response,
+            receipt: Receipt,
+            verify_report: ?VerifyReport = null,
+            mailbox_response: ?Frame.Response = null,
+        }) @This() {
+            var result = @This(){
+                .finalized_fingerprint = 0,
+                .commit_value = args.commit_value,
+                .response = args.response,
+                .receipt = args.receipt,
+                .verify_report = args.verify_report,
+                .mailbox_response = args.mailbox_response,
+            };
+            result.finalized_fingerprint = fingerprintFinalized(result);
+            return result;
+        }
+
+        pub fn validate(self: @This()) !void {
+            if (self.finalized_fingerprint == 0) return error.InvalidFrameEncoding;
+            try self.commit_value.validate();
+            if (self.response.response_fingerprint == 0) return error.InvalidFrameEncoding;
+            if (self.response.response_fingerprint != Actuation.fingerprintResponse(self.response)) return error.InvalidFrameEncoding;
+            try self.receipt.validate();
+            try self.validateTupleBindings();
+            if (self.commit_value.verified) {
+                const report = self.verify_report orelse return error.InvalidFrameEncoding;
+                try report.validate();
+                if (report.intent_fingerprint != self.commit_value.intent_fingerprint) return error.InvalidFrameEncoding;
+                if (report.fresh_receipt_fingerprint != self.receipt.receipt_fingerprint) return error.InvalidFrameEncoding;
+            } else if (self.verify_report != null) {
+                return error.InvalidFrameEncoding;
+            }
+            try self.validateMailboxResponseBinding();
+            if (self.finalized_fingerprint != fingerprintFinalized(self)) return error.InvalidFrameEncoding;
+        }
+
+        fn validateTupleBindings(self: @This()) !void {
+            const response_commit_fingerprint = self.response.commit_fingerprint orelse return error.InvalidFrameEncoding;
+            if (response_commit_fingerprint != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.commit_fingerprint != self.commit_value.commit_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.response_fingerprint != self.response.response_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.intent_fingerprint != self.commit_value.intent_fingerprint) return error.InvalidFrameEncoding;
+            if (self.response.intent_fingerprint != self.commit_value.intent_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.decision_fingerprint != self.commit_value.decision_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.envelope_fingerprint != self.commit_value.envelope_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.idempotency_key_fingerprint != self.commit_value.idempotency_key_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.response_kind != self.response.response_kind) return error.InvalidFrameEncoding;
+            if (self.receipt.frame_response_fingerprint != self.response.frame_response_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.response_value_image_fingerprint != self.response.value_image_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.recorded_response_fingerprint != self.response.recorded_response_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.actuator_ref_fingerprint != self.response.actuator_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (self.receipt.world_port_id != self.response.world_port_id) return error.InvalidFrameEncoding;
+            if (self.receipt.request_fingerprint) |request_fingerprint| {
+                if (request_fingerprint != self.response.request_fingerprint) return error.InvalidFrameEncoding;
+            } else {
+                return error.InvalidFrameEncoding;
+            }
+            if (self.receipt.responseStatus() != self.response.status) return error.InvalidFrameEncoding;
+            if (self.receipt.attempt_number != self.commit_value.attempt_number) return error.InvalidFrameEncoding;
+            if (self.receipt.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
+            if (self.receipt.replayed != self.commit_value.replayed) return error.InvalidFrameEncoding;
+            if (self.receipt.verified != self.commit_value.verified) return error.InvalidFrameEncoding;
+        }
+
+        fn validateMailboxResponseBinding(self: @This()) !void {
+            const frame = self.mailbox_response orelse return;
+            if (!self.response.isTerminalForParent()) return error.InvalidFrameEncoding;
+            try validateResponseFrameImage(frame, false);
+            if (frame.world_surface_fingerprint != self.receipt.world_surface_fingerprint) return error.InvalidFrameEncoding;
+            if (frame.world_port_id != self.response.world_port_id) return error.InvalidFrameEncoding;
+            if (frame.request_fingerprint != self.response.request_fingerprint) return error.InvalidFrameEncoding;
+            if (frame.response_kind != self.response.response_kind) return error.InvalidFrameEncoding;
+            switch (self.response.status) {
+                .responded => if (frame.status != .responded) return error.InvalidFrameEncoding,
+                .pending, .deferred => if (frame.status != .pending) return error.InvalidFrameEncoding,
+                .rejected, .cancelled => if (frame.status != .rejected) return error.InvalidFrameEncoding,
+                .failed => if (frame.status != .failed) return error.InvalidFrameEncoding,
+            }
+            if (self.response.frame_response_fingerprint) |fingerprint| {
+                if (frame.frame_fingerprint != fingerprint) return error.InvalidFrameEncoding;
+            }
+            if (self.response.value_image_fingerprint != frame.response_value_fingerprint) return error.InvalidFrameEncoding;
+        }
+    };
+
     pub const Journal = struct {
         pub const Entry = struct {
             order: u64,
@@ -20622,6 +20939,32 @@ pub const Actuation = struct {
             pending_actuation_receipt_fingerprint: ?u64 = null,
         };
 
+        pub const PrepareHostArgs = struct {
+            policy: Policy,
+            intent: Intent,
+            envelope: Envelope,
+            descriptor: Descriptor,
+            binding: ?Actuation.Binding = null,
+            run_permit: ?RunPermit = null,
+            precommit_ledger: ?*const Supervision.UsageLedger = null,
+            key_present: bool = true,
+            explicit_mutation_approval: bool = false,
+            explicit_irreversible_approval: bool = false,
+            attempt_number: u32 = 0,
+            target_ref_fingerprint: u64,
+            world_surface_fingerprint: u64,
+            run_receipt_fingerprint: ?u64 = null,
+            capsule_fingerprint: ?u64 = null,
+            pending_actuation_receipt_fingerprint: ?u64 = null,
+        };
+
+        pub const FinalizeHostArgs = struct {
+            mailbox_response: ?Frame.Response = null,
+            verify_report: ?VerifyReport = null,
+            run_permit: ?RunPermit = null,
+            precommit_ledger: ?*const Supervision.UsageLedger = null,
+        };
+
         pub const Execution = struct {
             policy: Policy = Policy.strict_fresh,
             intent: Intent,
@@ -20739,6 +21082,100 @@ pub const Actuation = struct {
                 if (self.decision.decision_fingerprint != expected.decision_fingerprint) return error.InvalidFrameEncoding;
             }
         };
+
+        pub fn prepareHost(args: PrepareHostArgs) !Prepared {
+            try args.intent.validate();
+            try args.policy.validate();
+            try args.envelope.validate(args.policy);
+            try validateHostPreparationBindings(args);
+            try validatePendingActuationReceiptLink(args.intent.requested_mode, args.pending_actuation_receipt_fingerprint);
+            if (args.intent.requested_mode == .replay or args.intent.requested_mode == .verify) return error.InvalidMode;
+            const decision = decide(.{
+                .policy = args.policy,
+                .intent = args.intent,
+                .key_present = args.key_present,
+                .explicit_mutation_approval = args.explicit_mutation_approval,
+                .explicit_irreversible_approval = args.explicit_irreversible_approval,
+                .attempt_number = args.attempt_number,
+            });
+            try decision.validate();
+            if (!decision.approved) return error.SupervisionDenied;
+            try validatePrecommitHostPermit(args, null);
+            const prepared = Prepared.init(.{
+                .policy = args.policy,
+                .intent = args.intent,
+                .envelope = args.envelope,
+                .descriptor = args.descriptor,
+                .binding = args.binding,
+                .decision = decision,
+                .expected_response_descriptor_fingerprint = args.descriptor.descriptor_fingerprint,
+                .target_ref_fingerprint = args.target_ref_fingerprint,
+                .world_surface_fingerprint = args.world_surface_fingerprint,
+                .key_present = args.key_present,
+                .explicit_mutation_approval = args.explicit_mutation_approval,
+                .explicit_irreversible_approval = args.explicit_irreversible_approval,
+                .attempt_number = args.attempt_number,
+                .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                .capsule_fingerprint = args.capsule_fingerprint,
+                .pending_actuation_receipt_fingerprint = args.pending_actuation_receipt_fingerprint,
+            });
+            try prepared.validate();
+            return prepared;
+        }
+
+        pub fn finalizeHost(prepared: Prepared, host_outcome: HostOutcomeInput, args: FinalizeHostArgs) !Finalized {
+            try prepared.validate();
+            if (prepared.intent.requested_mode == .replay or prepared.intent.requested_mode == .verify) return error.InvalidMode;
+            try host_outcome.validateForPrepared(prepared);
+            try validatePrecommitHostPermit(.{
+                .policy = prepared.policy,
+                .intent = prepared.intent,
+                .envelope = prepared.envelope,
+                .descriptor = prepared.descriptor,
+                .binding = prepared.binding,
+                .run_permit = args.run_permit,
+                .precommit_ledger = args.precommit_ledger,
+                .key_present = prepared.key_present,
+                .explicit_mutation_approval = prepared.explicit_mutation_approval,
+                .explicit_irreversible_approval = prepared.explicit_irreversible_approval,
+                .attempt_number = prepared.attempt_number,
+                .target_ref_fingerprint = prepared.target_ref_fingerprint,
+                .world_surface_fingerprint = prepared.world_surface_fingerprint,
+                .run_receipt_fingerprint = prepared.run_receipt_fingerprint,
+                .capsule_fingerprint = prepared.capsule_fingerprint,
+                .pending_actuation_receipt_fingerprint = prepared.pending_actuation_receipt_fingerprint,
+            }, host_outcome.status);
+            const commit_status = commitStatusForHostOutcome(host_outcome.status);
+            const commit_value = try commit(prepared.decision, prepared.envelope, commit_status, host_outcome.attempt_number);
+            try commit_value.validateAfterDecision(prepared.decision);
+            const response = host_outcome.responseFor(prepared, commit_value);
+            try response.validate(prepared.policy, prepared.descriptor);
+            try validateMailboxResponseForHostOutcome(args.mailbox_response, response, prepared);
+            const receipt = Receipt.fromResponse(.{
+                .intent = prepared.intent,
+                .envelope = prepared.envelope,
+                .decision = prepared.decision,
+                .commit = commit_value,
+                .response = response,
+                .target_ref_fingerprint = prepared.target_ref_fingerprint,
+                .world_surface_fingerprint = prepared.world_surface_fingerprint,
+                .class = prepared.intent.class,
+                .mode = prepared.intent.requested_mode,
+                .run_receipt_fingerprint = prepared.run_receipt_fingerprint,
+                .capsule_fingerprint = prepared.capsule_fingerprint,
+                .pending_actuation_receipt_fingerprint = prepared.pending_actuation_receipt_fingerprint,
+            });
+            try receipt.validate();
+            const finalized = Finalized.init(.{
+                .commit_value = commit_value,
+                .response = response,
+                .receipt = receipt,
+                .verify_report = args.verify_report,
+                .mailbox_response = args.mailbox_response,
+            });
+            try finalized.validate();
+            return finalized;
+        }
 
         pub fn execute(args: ExecuteArgs) !Execution {
             try args.intent.validate();
@@ -21094,6 +21531,96 @@ pub const Actuation = struct {
             }
         }
 
+        fn validateHostPreparationBindings(args: PrepareHostArgs) !void {
+            if (args.envelope.intent_fingerprint != args.intent.intent_fingerprint) return error.InvalidFrameEncoding;
+            try validateEnvelopeKeyForIntent(args.envelope, args.intent);
+            if (args.capsule_fingerprint) |capsule_fingerprint| {
+                if (args.intent.capsule_fingerprint == null or args.intent.capsule_fingerprint.? != capsule_fingerprint) return error.InvalidFrameEncoding;
+            }
+            if (args.envelope.encoded_frame_request_fingerprint != args.intent.encoded_frame_request_fingerprint) return error.InvalidFrameEncoding;
+            if (args.envelope.payload_value_image_fingerprint != args.intent.payload_value_image_fingerprint) return error.InvalidFrameEncoding;
+            if (args.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (args.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.InvalidFrameEncoding;
+            try validateDescriptorValuePolicy(args.policy, args.descriptor.value_policy);
+            try validateDescriptorBindingForIntent(args.descriptor, args.intent, args.envelope);
+            try validateActuationBindingWitness(args.binding, args.descriptor, args.intent);
+        }
+
+        fn validatePrecommitHostPermit(args: PrepareHostArgs, actual_response_status: ?Actuation.ResponseStatus) !void {
+            if (args.intent.run_permit_fingerprint == null) {
+                try validateUnsupervisedStatefulHostPolicy(args);
+                return;
+            }
+            const permit = args.run_permit orelse return error.SupervisionDenied;
+            try validateActuationRunPermitIntegrity(permit);
+            if (permit.permit_fingerprint != args.intent.run_permit_fingerprint.?) return error.SupervisionDenied;
+            if (permit.target_ref_fingerprint != args.intent.target_ref_fingerprint) return error.SupervisionDenied;
+            if (permit.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
+            try validatePermitEnvironmentCertificateBinding(permit, args.intent.environment_certificate_fingerprint);
+            const policy = permit.policy;
+            if (!Supervision.modeAllowedByPolicy(policy, permit.mode)) return error.SupervisionDenied;
+            if (!permitModeAllowsActuationIntent(permit.mode, args.intent.requested_mode, args.pending_actuation_receipt_fingerprint)) return error.SupervisionDenied;
+            if (!policy.allow_actuation) return error.SupervisionDenied;
+            switch (args.intent.requested_mode) {
+                .fresh => if (!policy.allow_fresh_actuation) return error.SupervisionDenied,
+                .replay => if (!policy.allow_replay_actuation) return error.SupervisionDenied,
+                .verify => if (!policy.allow_verify_actuation) return error.SupervisionDenied,
+                .audit => if (!policy.allow_audit_only) return error.SupervisionDenied,
+            }
+            if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
+            if (args.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
+            const response_status = actual_response_status orelse .pending;
+            if (actual_response_status) |status| {
+                if (!permitPolicyAllowsActuationResponseStatus(policy, status)) return error.SupervisionDenied;
+            }
+            try validatePermitPrecommitActuationBudget(
+                permit,
+                args.intent,
+                args.precommit_ledger,
+                args.pending_actuation_receipt_fingerprint,
+                responseStatusCreatesPendingActuation(response_status),
+                response_status,
+            );
+            if (!permitAllowsDescriptorValuePolicy(permit, args.intent.world_port_id, args.descriptor)) return error.SupervisionDenied;
+            if (permit.ruleFor(args.intent.world_port_id)) |rule| {
+                if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
+                if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
+                if (!rule.permitsMode(args.intent.requested_mode)) return error.SupervisionDenied;
+                if (actual_response_status) |status| {
+                    if (!portRuleAllowsActuationReceiptStatus(rule, status)) return error.PortRuleDenied;
+                }
+                if (authorityKindForHostPreparation(args.descriptor)) |kind| {
+                    if (!rule.allowed_authority_kinds.allows(kind)) return error.AuthorityDenied;
+                } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
+                    return error.AuthorityDenied;
+                }
+            }
+        }
+
+        fn validateUnsupervisedStatefulHostPolicy(args: PrepareHostArgs) !void {
+            if (args.policy.max_actuation_calls != null) return error.SupervisionDenied;
+            if (args.policy.max_pending_actuations != null) return error.SupervisionDenied;
+        }
+
+        fn validateMailboxResponseForHostOutcome(mailbox_response: ?Frame.Response, response: Response, prepared: Prepared) !void {
+            const frame = mailbox_response orelse return;
+            if (!response.isTerminalForParent()) return error.InvalidFrameEncoding;
+            if (frame.world_surface_fingerprint != prepared.world_surface_fingerprint) return error.InvalidFrameEncoding;
+            if (frame.world_port_id != prepared.intent.world_port_id) return error.InvalidFrameEncoding;
+            if (frame.request_fingerprint != prepared.intent.frame_request_fingerprint) return error.InvalidFrameEncoding;
+            if (frame.response_kind != response.response_kind) return error.InvalidFrameEncoding;
+            switch (response.status) {
+                .responded => if (frame.status != .responded) return error.InvalidFrameEncoding,
+                .pending, .deferred => if (frame.status != .pending) return error.InvalidFrameEncoding,
+                .rejected, .cancelled => if (frame.status != .rejected) return error.InvalidFrameEncoding,
+                .failed => if (frame.status != .failed) return error.InvalidFrameEncoding,
+            }
+            if (response.frame_response_fingerprint) |fingerprint| {
+                if (frame.frame_fingerprint != fingerprint) return error.InvalidFrameEncoding;
+            }
+            if (response.value_image_fingerprint != frame.response_value_fingerprint) return error.InvalidFrameEncoding;
+        }
+
         fn validateEnvelopeKeyForIntent(envelope: Envelope, intent: Intent) !void {
             try validateIdempotencyKeyForIntent(envelope.idempotency_key, intent);
         }
@@ -21322,6 +21849,10 @@ pub const Actuation = struct {
             return authorityKindForActuationKind(descriptor.kind);
         }
 
+        fn authorityKindForHostPreparation(descriptor: Descriptor) ?PortAuthority.Kind {
+            return authorityKindForActuationKind(descriptor.kind);
+        }
+
         fn validateSelectedActuatorAuthority(args: ExecuteArgs, rule: Supervision.PortRule) !void {
             if (std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) return;
             const descriptor = args.descriptor orelse return error.AuthorityDenied;
@@ -21374,6 +21905,16 @@ pub const Actuation = struct {
         }
 
         fn commitStatusForFreshResponse(status: Actuation.ResponseStatus) CommitStatus {
+            return switch (status) {
+                .responded => .committed,
+                .rejected => .rejected,
+                .failed => .commit_failed,
+                .pending, .deferred => .commit_pending,
+                .cancelled => .cancelled,
+            };
+        }
+
+        fn commitStatusForHostOutcome(status: Actuation.ResponseStatus) CommitStatus {
             return switch (status) {
                 .responded => .committed,
                 .rejected => .rejected,
@@ -21666,6 +22207,39 @@ pub const Actuation = struct {
         hashU64Slice(&hasher, receipt.blockers);
         hashU64Slice(&hasher, receipt.warnings);
         hashBytesWithLen(&hasher, receipt.metadata);
+        return hasher.final();
+    }
+
+    fn fingerprintPrepared(prepared: Prepared) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.prepared.fingerprint");
+        hashU64(&hasher, prepared.policy.policy_fingerprint);
+        hashU64(&hasher, prepared.intent.intent_fingerprint);
+        hashU64(&hasher, prepared.envelope.envelope_fingerprint);
+        hashU64(&hasher, prepared.descriptor.descriptor_fingerprint);
+        hashOptionalU64(&hasher, if (prepared.binding) |binding| binding.binding_fingerprint else null);
+        hashU64(&hasher, prepared.decision.decision_fingerprint);
+        hashU64(&hasher, prepared.expected_response_descriptor_fingerprint);
+        hashU64(&hasher, prepared.target_ref_fingerprint);
+        hashU64(&hasher, prepared.world_surface_fingerprint);
+        hashBool(&hasher, prepared.key_present);
+        hashBool(&hasher, prepared.explicit_mutation_approval);
+        hashBool(&hasher, prepared.explicit_irreversible_approval);
+        hashU64(&hasher, prepared.attempt_number);
+        hashOptionalU64(&hasher, prepared.run_receipt_fingerprint);
+        hashOptionalU64(&hasher, prepared.capsule_fingerprint);
+        hashOptionalU64(&hasher, prepared.pending_actuation_receipt_fingerprint);
+        return hasher.final();
+    }
+
+    fn fingerprintFinalized(finalized: Finalized) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hashBytes(&hasher, "world.actuation.finalized.fingerprint");
+        hashU64(&hasher, finalized.commit_value.commit_fingerprint);
+        hashU64(&hasher, finalized.response.response_fingerprint);
+        hashU64(&hasher, finalized.receipt.receipt_fingerprint);
+        hashOptionalU64(&hasher, if (finalized.verify_report) |report| report.report_fingerprint else null);
+        hashOptionalU64(&hasher, if (finalized.mailbox_response) |response| response.frame_fingerprint else null);
         return hasher.final();
     }
 
@@ -27920,6 +28494,15 @@ pub const Continuity = struct {
         guest_conformance_report = 36,
         bundle = 37,
         handoff_envelope = 38,
+        appliance_manifest = 39,
+        appliance_command = 40,
+        appliance_host_request = 41,
+        appliance_host_reply = 42,
+        appliance_turn_output = 43,
+        appliance_checkpoint = 44,
+        appliance_turn_receipt = 45,
+        appliance_reconstruction_report = 46,
+        appliance_conformance_report = 47,
 
         pub fn defaultFormatVersion(self: @This()) u32 {
             return switch (self) {
@@ -27949,6 +28532,15 @@ pub const Continuity = struct {
                 .run_permit => world_run_permit_format_version,
                 .linker_certificate => world_linker_certificate_format_version,
                 .fabric_receipt => world_fabric_receipt_format_version,
+                .appliance_manifest => world_appliance_manifest_format_version,
+                .appliance_command => world_appliance_command_format_version,
+                .appliance_host_request => world_appliance_host_request_format_version,
+                .appliance_host_reply => world_appliance_host_reply_format_version,
+                .appliance_turn_output => world_appliance_turn_output_format_version,
+                .appliance_checkpoint => world_appliance_checkpoint_format_version,
+                .appliance_turn_receipt => world_appliance_turn_receipt_format_version,
+                .appliance_reconstruction_report => world_appliance_reconstruction_report_fingerprint_version,
+                .appliance_conformance_report => world_appliance_conformance_report_fingerprint_version,
                 .bundle => world_continuity_object_envelope_format_version,
                 else => 1,
             };

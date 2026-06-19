@@ -53,6 +53,7 @@ The public root is intentionally small:
 - `world.Capsule`
 - `world.AssemblyCapsule`
 - `world.Actuation`
+- `world.Appliance`
 - `world.Continuity`
 - `world.Archive`
 - `world.MemoryVault`
@@ -211,6 +212,28 @@ Environment says what the host can provide. Actuation says how the host is allow
 `world.Actuation.Journal` is an in-memory run-local sequence of intents, decisions, commits, responses, receipts, and idempotency keys. `Actuation.ReplaySource` satisfies intents from receipts or a journal without a fresh host call. `Actuation.VerifyReport` compares expected and fresh receipt behavior. Pending and deferred responses do not resume the parent run; Capsules can freeze pending intents and completed receipts when policy allows, then thaw under receiver-local policy.
 
 Actuation comes before the future Continuity Vault because future storage should persist stable intent, envelope, commit, response, receipt, and journal objects without knowing any real model, tool, file, browser, network, or human integration.
+
+## World Appliance
+
+World Appliance is the vertical integration layer for deployment. It composes the existing World kernels into a closed, reconstructible execution fabric driven by one canonical host-turn protocol.
+
+An appliance is defined at comptime with `world.Appliance.Define(RootTarget, config)`. The definition derives a deterministic `Appliance.Manifest`, `Appliance.Profile`, `Appliance.Capacity`, and `Appliance.MemoryPlan`; validates strict closed-world port coverage; and requires explicit Actuation bindings for external ports. Runtime does not discover providers, synthesize routes, resolve operation names, call TreatyResolver, or call ProviderHarness.
+
+The host submits an `Appliance.Command` byte image for boot, restore, continue, inspect, cancel, or reset. Commands may bind receiver permit and evidence refs; boot commands bind the canonical root argument image; non-boot commands reject root arguments. The command execution mode must be advertised by the immutable Manifest's supported execution mode set, and unsupported modes are rejected before Core mutation. Reset emits deterministic host-visible output, then abandons pending continuation state so the Core can boot fresh again without retaining hidden archive, receipt, or host-request anchors. `Appliance.Core` advances to the next quiescent boundary and returns an `Appliance.TurnOutput`: status, quiescence report, prepared host requests, finalized Actuation receipt refs, optional root result, optional RunReceipt ref, checkpoint, TurnReceipt, optional Archive append batch fingerprint and canonical ref, blockers, warnings, and diagnostic metadata. Creating a TurnOutput performs no real host effect.
+
+External effects cross the HostRequest/HostReply protocol. Appliance prepares host-visible work through `Actuation.Membrane.prepareHost`; hosts return `Appliance.HostOutcome` inside `Appliance.HostReply`, including a terminal response kind, bounded response bytes, bounded host-evidence bytes, and optional canonical `RetentionAck` evidence when applicable. A retention acknowledgment may be submitted at the command level or on a host reply; conflicting acknowledgments are rejected before Core mutation. Pending and deferred host outcomes remain nonterminal: Appliance records the reply evidence and keeps the same HostRequest parked until a terminal outcome arrives. World finalizes through `Actuation.Membrane.finalizeHost` and constructs its own Commit, Response, and Receipt evidence. Hosts cannot author World receipts directly.
+
+Replay, verify, and audit commands do not ask the host for a fresh external effect. If replay evidence refs are present, Core consumes them as receiver-local replay evidence and advances without emitting a HostRequest. If an external port is still required and no replay evidence is present, Core returns a deterministic blocked TurnOutput.
+
+`Appliance.Checkpoint` is the portable reconstruction unit. It binds the Capsule fingerprint plus explicit Capsule image bytes or a canonical Capsule image ref, and it carries pending Archive append acknowledgment state, so a host can carry the reconstruction source without hidden process state. A resident fast path may keep Core alive, but a fresh process or WASM instance must be able to restore from a completed turn's checkpoint and produce the same next semantic result. `Appliance.ReconstructionReport` records that resident/reconstructed equivalence.
+
+When Archive evidence is enabled, Appliance plans at most one `Archive.AppendBatch` per advancing turn. The host owns retaining those bytes and may return `Appliance.RetentionAck` either on the next command or alongside a host reply. Strict profiles refuse to advance until the pending append is acknowledged, while non-strict profiles continue with an unacknowledged-archive warning in the next TurnOutput, TurnReceipt, and QuiescenceReport. Appliance performs no file or database operation.
+
+Appliance ABI v1 is separate from Guest ABI v1. Guest ABI v1 is frame-shaped execution inside a guest. Appliance ABI v1 is the higher-level deployment ABI: canonical Manifest byte read, Capacity/MemoryPlan identity and memory-bound inspection, command submit, output read, last-error read, and reset. `needs_host`, `completed`, `failed`, `blocked`, `cancelled`, and `output_ready` are output-producing submit statuses; command errors use the remaining rejection/status ordinals plus last-error bytes. `Appliance.Native` exposes the same ABI-shaped manifest, output, last-error, submit, and reset operations over Core for CI and conformance. It requires no WASI, filesystem, network, clock, randomness, actuator imports, storage imports, or hidden runtime state.
+
+Host responsibilities stay outside World: real effects, credentials, network clients, files, humans and approvals, Archive byte retention, checkpoint transport, WASM runtime choice, process lifecycle, and durability policy. World owns deterministic execution, effect intent and validation, internal composition, supervision evidence, portable state, causal history, and canonical host protocol.
+
+See [docs/appliance.md](docs/appliance.md) for the full Appliance contract.
 
 ## World Continuity
 

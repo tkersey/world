@@ -104,6 +104,11 @@ pub fn build(b: *std.Build) void {
     });
     archive_wasm_probe.entry = .disabled;
     archive_wasm_probe.rdynamic = true;
+    const install_archive_wasm_probe = b.addInstallArtifact(archive_wasm_probe, .{});
+    const world_archive_wasm_step = b.step("world-archive-wasm", "Build World Archive wasm probe artifact.");
+    world_archive_wasm_step.dependOn(&install_archive_wasm_probe.step);
+    const check_world_archive_wasm_step = b.step("check-world-archive-wasm", "Build and inspect World Archive wasm probe artifact.");
+    check_world_archive_wasm_step.dependOn(&archive_wasm_probe.step);
     check_world_wasm_step.dependOn(&archive_wasm_probe.step);
 
     const fixtures = b.createModule(.{
@@ -113,6 +118,33 @@ pub fn build(b: *std.Build) void {
     });
     fixtures.addImport("world", world);
     fixtures.addImport("boundary", boundary);
+
+    const wasm_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/fixtures.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    wasm_fixtures.addImport("world", wasm_world);
+    wasm_fixtures.addImport("boundary", wasm_boundary);
+    const appliance_wasm_module = b.createModule(.{
+        .root_source_file = b.path("examples/world_appliance_agent_wasm.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    appliance_wasm_module.addImport("world", wasm_world);
+    appliance_wasm_module.addImport("world_fixtures", wasm_fixtures);
+    const appliance_wasm = b.addExecutable(.{
+        .name = "world_appliance_agent_wasm",
+        .root_module = appliance_wasm_module,
+    });
+    appliance_wasm.entry = .disabled;
+    appliance_wasm.rdynamic = true;
+    appliance_wasm.export_memory = true;
+    const install_appliance_wasm = b.addInstallArtifact(appliance_wasm, .{});
+    const world_appliance_wasm_step = b.step("world-appliance-wasm", "Build World Appliance wasm artifact.");
+    world_appliance_wasm_step.dependOn(&install_appliance_wasm.step);
+    const check_world_appliance_wasm_step = b.step("check-world-appliance-wasm", "Build and inspect World Appliance wasm artifact.");
+    check_world_appliance_wasm_step.dependOn(&appliance_wasm.step);
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -134,6 +166,18 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
+            },
+        }),
+        .filters = test_args.filters,
+    });
+    const appliance_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/appliance_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
             },
         }),
         .filters = test_args.filters,
@@ -163,14 +207,17 @@ pub fn build(b: *std.Build) void {
     if (target.query.isNative()) {
         test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
         test_step.dependOn(&addRunArtifactWithArgs(b, archive_tests, test_args.passthrough).step);
+        test_step.dependOn(&addRunArtifactWithArgs(b, appliance_tests, test_args.passthrough).step);
         test_step.dependOn(&addRunArtifactWithArgs(b, world_module_tests, test_args.passthrough).step);
         b.default_step.dependOn(test_step);
     } else {
         test_step.dependOn(&tests.step);
         test_step.dependOn(&archive_tests.step);
+        test_step.dependOn(&appliance_tests.step);
         test_step.dependOn(&world_module_tests.step);
         b.default_step.dependOn(&tests.step);
         b.default_step.dependOn(&archive_tests.step);
+        b.default_step.dependOn(&appliance_tests.step);
         b.default_step.dependOn(&world_module_tests.step);
     }
 
@@ -188,8 +235,143 @@ pub fn build(b: *std.Build) void {
     forged_descriptor_test.expect_errors = .{
         .contains = "World port descriptor metadata does not match target WorldPortTable",
     };
+    const appliance_missing_binding_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/appliance_missing_actuation_binding.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    appliance_missing_binding_test.expect_errors = .{
+        .contains = "World Appliance strict closed-world definition requires explicit actuation binding for every unresolved external port",
+    };
+    const appliance_covered_port_bound_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/appliance_covered_port_also_bound.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    appliance_covered_port_bound_test.expect_errors = .{
+        .contains = "World Appliance assembly-covered port must not also be exposed as external Actuation",
+    };
+    const appliance_invalid_capacity_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/appliance_invalid_capacity.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    appliance_invalid_capacity_test.expect_errors = .{
+        .contains = "World Appliance capacity is invalid",
+    };
+    const appliance_actuation_disabled_binding_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/appliance_actuation_disabled_binding.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    appliance_actuation_disabled_binding_test.expect_errors = .{
+        .contains = "World Appliance actuation bindings require a profile with actuation enabled",
+    };
+    const appliance_multiple_external_bindings_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/appliance_multiple_external_bindings.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    appliance_multiple_external_bindings_test.expect_errors = .{
+        .contains = "World Appliance Core currently supports one external Actuation binding",
+    };
+    const appliance_nonstrict_multiple_external_bindings_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/appliance_nonstrict_multiple_external_bindings.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    appliance_nonstrict_multiple_external_bindings_test.expect_errors = .{
+        .contains = "World Appliance Core currently supports one external Actuation binding",
+    };
+    const appliance_zero_host_request_capacity_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/appliance_zero_host_request_capacity.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    appliance_zero_host_request_capacity_test.expect_errors = .{
+        .contains = "World Appliance external Actuation bindings exceed Capacity.max_host_requests_per_turn",
+    };
+    const appliance_zero_host_reply_capacity_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/appliance_zero_host_reply_capacity.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    appliance_zero_host_reply_capacity_test.expect_errors = .{
+        .contains = "World Appliance external Actuation bindings exceed Capacity.max_host_replies_per_turn",
+    };
+    const appliance_zero_actuation_record_capacity_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/appliance_zero_actuation_record_capacity.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+    });
+    appliance_zero_actuation_record_capacity_test.expect_errors = .{
+        .contains = "World Appliance external Actuation bindings exceed Capacity.max_actuation_records",
+    };
     const compile_fail_step = b.step("compile-fail", "Run compile-fail tests.");
     compile_fail_step.dependOn(&forged_descriptor_test.step);
+    compile_fail_step.dependOn(&appliance_missing_binding_test.step);
+    compile_fail_step.dependOn(&appliance_covered_port_bound_test.step);
+    compile_fail_step.dependOn(&appliance_invalid_capacity_test.step);
+    compile_fail_step.dependOn(&appliance_actuation_disabled_binding_test.step);
+    compile_fail_step.dependOn(&appliance_multiple_external_bindings_test.step);
+    compile_fail_step.dependOn(&appliance_nonstrict_multiple_external_bindings_test.step);
+    compile_fail_step.dependOn(&appliance_zero_host_request_capacity_test.step);
+    compile_fail_step.dependOn(&appliance_zero_host_reply_capacity_test.step);
+    compile_fail_step.dependOn(&appliance_zero_actuation_record_capacity_test.step);
 
     const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
     check_step.dependOn(test_step);
@@ -200,6 +382,7 @@ pub fn build(b: *std.Build) void {
         path: []const u8,
         step: []const u8,
         desc: []const u8,
+        serial_after_tests: bool = false,
         expected_stdout: []const u8,
     }{
         .{
@@ -245,6 +428,7 @@ pub fn build(b: *std.Build) void {
             .path = "examples/world_agent_loop.zig",
             .step = "run-world-agent-loop",
             .desc = "Run the agent-shaped World port example.",
+            .serial_after_tests = true,
             .expected_stdout =
             \\skeleton final=final=actuate skeleton complete events=6 tool_calls=1 responses=3
             \\fixture final=final=fixture updated events=10 tool_calls=2 responses=5
@@ -846,6 +1030,93 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-appliance-one-port",
+            .path = "examples/world_appliance_one_port.zig",
+            .step = "run-world-appliance-one-port",
+            .desc = "Run the World Appliance one-port example.",
+            .expected_stdout =
+            \\appliance=one_port
+            \\turn_state=waiting_host
+            \\actuation_bindings=1
+            \\checkpoint_every_turn=true
+            \\output_bytes=739
+            \\turn_receipt=65dea2f34661e261
+            \\
+            ,
+        },
+        .{
+            .name = "world-appliance-agent",
+            .path = "examples/world_appliance_agent.zig",
+            .step = "run-world-appliance-agent",
+            .desc = "Run the World Appliance agent protocol example.",
+            .expected_stdout =
+            \\agent_appliance=core-protocol
+            \\external_model_requests=2
+            \\internal_tool_provider_targets=1
+            \\fabric_plans=1
+            \\finalized_actuation_receipts=1
+            \\archive_objects=3
+            \\final_result=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-appliance-reconstruct",
+            .path = "examples/world_appliance_reconstruct.zig",
+            .step = "run-world-appliance-reconstruct",
+            .desc = "Run the World Appliance reconstruction example.",
+            .expected_stdout =
+            \\reconstruction_equivalent=true
+            \\resident_output=20f975c026424dfe
+            \\restored_output=20f975c026424dfe
+            \\
+            ,
+        },
+        .{
+            .name = "world-appliance-archive",
+            .path = "examples/world_appliance_archive.zig",
+            .step = "run-world-appliance-archive",
+            .desc = "Run the World Appliance archive example.",
+            .expected_stdout =
+            \\archive_batches=1
+            \\output_archive_request=9ffedfdbcb63a4b2
+            \\archive_objects=3
+            \\retention_ack=f00e93245c9ff7fd
+            \\moment=2289e551e0a37be0
+            \\
+            ,
+        },
+        .{
+            .name = "world-appliance-replay",
+            .path = "examples/world_appliance_replay.zig",
+            .step = "run-world-appliance-replay",
+            .desc = "Run the World Appliance replay example.",
+            .expected_stdout =
+            \\fresh_status=needs_host
+            \\fresh_host_requests=1
+            \\replay_status=completed
+            \\replay_host_requests=0
+            \\replay_evidence=65dea2f34661e261
+            \\replay_final_result=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-appliance-wasm-probe",
+            .path = "examples/world_appliance_wasm_probe.zig",
+            .step = "run-world-appliance-wasm-probe",
+            .desc = "Run the World Appliance WASM probe example.",
+            .expected_stdout =
+            \\appliance_abi_version=1
+            \\manifest=7e146fac61929201
+            \\capacity=5fcf964fbaa4a66b
+            \\memory_plan=ed1c9222ab3bed1d
+            \\required_exports=9
+            \\forbidden_import_count=0
+            \\
+            ,
+        },
+        .{
             .name = "world-continuity-capsule-basic",
             .path = "examples/world_continuity_capsule_basic.zig",
             .step = "run-world-continuity-capsule-basic",
@@ -1064,6 +1335,7 @@ pub fn build(b: *std.Build) void {
         if (target.query.isNative()) {
             const run = addRunArtifactWithArgs(b, exe, if (b.args) |args| args else &.{});
             run.expectStdOutEqual(example.expected_stdout);
+            if (example.serial_after_tests) run.step.dependOn(test_step);
             run_step.dependOn(&run.step);
         } else {
             run_step.dependOn(&exe.step);
@@ -1096,6 +1368,20 @@ pub fn build(b: *std.Build) void {
     wasm_export_check_step.dependOn(&run_wasm_export_check.step);
     check_world_wasm_step.dependOn(&run_wasm_export_check.step);
     check_step.dependOn(check_world_wasm_step);
+    const appliance_wasm_export_check_mod = b.createModule(.{
+        .root_source_file = b.path("examples/world_appliance_wasm_export_check.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    appliance_wasm_export_check_mod.addImport("world", host_world);
+    appliance_wasm_export_check_mod.addImport("world_fixtures", fixtures);
+    const appliance_wasm_export_check = b.addExecutable(.{ .name = "world-appliance-wasm-export-check", .root_module = appliance_wasm_export_check_mod });
+    const run_appliance_wasm_export_check = b.addRunArtifact(appliance_wasm_export_check);
+    run_appliance_wasm_export_check.addFileArg(appliance_wasm.getEmittedBin());
+    const appliance_wasm_export_check_step = b.step("run-world-appliance-wasm-export-check", "Inspect World Appliance wasm exports and imports.");
+    appliance_wasm_export_check_step.dependOn(&run_appliance_wasm_export_check.step);
+    check_world_appliance_wasm_step.dependOn(&run_appliance_wasm_export_check.step);
+    check_step.dependOn(check_world_appliance_wasm_step);
     const run_wasm_one_port_step = b.step("run-world-wasm-one-port", "Optionally run the World wasm one-port guest with an external runtime.");
     const skip_wasm_runtime = b.addSystemCommand(&.{
         "sh",
