@@ -14,6 +14,7 @@ pub fn main(init: std.process.Init) !void {
         .turn_sequence_number = 1,
         .capsule_fingerprint = 0xC0DE_0001,
         .previous_turn_receipt_fingerprint = 0xC0DE_0002,
+        .core_state = .runnable,
     });
 
     var resident = world.Appliance.Core.initWithCapacity(

@@ -1202,6 +1202,39 @@ test "appliance Core restore clears stale failed status for checkpoint continuat
     try std.testing.expectEqual(world.Appliance.CoreState.completed, failed_core.state);
 }
 
+test "appliance Core restore preserves terminal checkpoint status" {
+    const StrictAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+    });
+    const manifest = StrictAppliance.manifest();
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        StrictAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer core.reset();
+
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = 0xD531,
+        .previous_turn_receipt_fingerprint = 0xD532,
+        .core_state = .completed,
+    });
+    try core.restore(checkpoint);
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint,
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+    try std.testing.expectError(error.StaleTurn, core.submit(continue_bytes));
+}
+
 test "appliance Core restore rehydrates outstanding HostRequest for continuation" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
@@ -3045,6 +3078,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
         .turn_sequence_number = 1,
         .capsule_fingerprint = 0xC0F0_0001,
         .previous_turn_receipt_fingerprint = 0xC0F0_0002,
+        .core_state = .runnable,
     });
     const command = world.Appliance.Command.init(.{
         .kind = .@"continue",

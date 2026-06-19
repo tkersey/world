@@ -2388,8 +2388,11 @@ pub fn Appliance(comptime World: type) type {
                 self.latest_chronicle_cursor_fingerprint = checkpoint.latest_chronicle_cursor_fingerprint;
                 self.state = checkpoint.core_state;
                 self.last_turn_status = switch (checkpoint.core_state) {
-                    .uninitialized, .runnable, .completed, .failed, .cancelled => null,
+                    .uninitialized, .runnable => null,
                     .waiting_host => .needs_host,
+                    .completed => .completed,
+                    .failed => .failed,
+                    .cancelled => .cancelled,
                 };
             }
 
