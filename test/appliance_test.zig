@@ -709,13 +709,15 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
     tight.max_capsule_bytes = 4;
     try std.testing.expectError(error.CapacityExceeded, with_bytes.validate(manifest_fingerprint, tight));
 
+    const archive_cursor = world.Continuity.Chronicle.Cursor.initial();
     const archive_anchor = world.Appliance.Checkpoint.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 10,
         .capsule_fingerprint = 0xD032,
         .latest_archive_moment_fingerprint = 0xD033,
         .latest_archive_seal_fingerprint = 0xD034,
-        .latest_chronicle_cursor_fingerprint = 0xD035,
+        .latest_chronicle_cursor_fingerprint = archive_cursor.cursor_fingerprint,
+        .latest_archive_cursor = archive_cursor,
     });
     try archive_anchor.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
 
@@ -726,6 +728,10 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
     var missing_cursor = archive_anchor;
     missing_cursor.latest_chronicle_cursor_fingerprint = null;
     try std.testing.expectError(error.InvalidFrameEncoding, missing_cursor.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    var missing_authoritative_cursor = archive_anchor;
+    missing_authoritative_cursor.latest_archive_cursor = null;
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_authoritative_cursor.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 }
 
 test "appliance Core submit validates command before mutating state" {
@@ -1053,6 +1059,16 @@ test "appliance Core failed HostReply produces failed turn" {
     defer output.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Appliance.TurnStatus.failed, output.status);
     try std.testing.expectEqual(@as(?u64, null), output.root_result_fingerprint);
+
+    const terminal_again = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+    });
+    const terminal_again_bytes = try terminal_again.encode(std.testing.allocator);
+    defer std.testing.allocator.free(terminal_again_bytes);
+    try std.testing.expectError(error.StaleTurn, core.submit(terminal_again_bytes));
 }
 
 test "appliance Core restore rehydrates outstanding HostRequest for continuation" {
@@ -1237,6 +1253,18 @@ test "appliance Core emitted checkpoint carries current TurnReceipt for restore"
     try restored.restore(boot_output.checkpoint);
     try restored.submit(continue_bytes);
     try restored.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, restored.state);
+
+    const stale_restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = boot_output.checkpoint.previous_turn_receipt_fingerprint,
+        .restore_checkpoint = boot_output.checkpoint,
+    });
+    const stale_restore_bytes = try stale_restore.encode(std.testing.allocator);
+    defer std.testing.allocator.free(stale_restore_bytes);
+    try std.testing.expectError(error.StaleTurn, restored.submit(stale_restore_bytes));
     try std.testing.expectEqual(world.Appliance.CoreState.completed, restored.state);
 }
 
@@ -2377,6 +2405,46 @@ test "appliance TurnOutput binds root result through receipt parity" {
     });
     try output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
 
+    const missing_root_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .command_fingerprint = 0xD283,
+        .resulting_capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .status = .completed,
+    });
+    const missing_root_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .source_state_fingerprint = 0xD284,
+        .resulting_state_fingerprint = 0xD285,
+        .quiescence = output.quiescence,
+        .status = .completed,
+        .checkpoint = checkpoint,
+        .turn_receipt = missing_root_receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_root_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const failed_root_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .command_fingerprint = 0xD283,
+        .resulting_capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .root_result_fingerprint = root_result_fingerprint,
+        .status = .failed,
+    });
+    const failed_root_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .source_state_fingerprint = 0xD284,
+        .resulting_state_fingerprint = 0xD285,
+        .quiescence = output.quiescence,
+        .status = .failed,
+        .root_result_fingerprint = root_result_fingerprint,
+        .checkpoint = checkpoint,
+        .turn_receipt = failed_root_receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, failed_root_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
     const mismatched_output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 7,
@@ -2632,11 +2700,13 @@ test "appliance archive plan commits turn evidence through Archive owner" {
         .turn_sequence_number = 1,
         .capsule_fingerprint = 0xA001,
     });
+    const root_result_fingerprint: u64 = 0xA005;
     const receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 1,
         .command_fingerprint = 0xA002,
         .resulting_capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .root_result_fingerprint = root_result_fingerprint,
         .status = .completed,
     });
     const output = world.Appliance.TurnOutput.init(.{
@@ -2646,6 +2716,7 @@ test "appliance archive plan commits turn evidence through Archive owner" {
         .resulting_state_fingerprint = 0xA004,
         .quiescence = quiescence,
         .status = .completed,
+        .root_result_fingerprint = root_result_fingerprint,
         .checkpoint = checkpoint,
         .turn_receipt = receipt,
     });
@@ -2767,6 +2838,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
     try reconstructed.executeTurn();
     const reconstructed_output_fingerprint = std.hash.Wyhash.hash(0, reconstructed.readOutput());
 
+    const root_result_fingerprint: u64 = 0xC0F0_0006;
     const output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 2,
@@ -2777,6 +2849,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
             .completed_run_count = 1,
         }),
         .status = .completed,
+        .root_result_fingerprint = root_result_fingerprint,
         .checkpoint = world.Appliance.Checkpoint.init(.{
             .manifest_fingerprint = manifest.manifest_fingerprint,
             .turn_sequence_number = 2,
@@ -2788,6 +2861,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
             .turn_sequence_number = 2,
             .command_fingerprint = command.command_fingerprint,
             .resulting_capsule_fingerprint = 0xC0F0_0005,
+            .root_result_fingerprint = root_result_fingerprint,
             .status = .completed,
         }),
     });

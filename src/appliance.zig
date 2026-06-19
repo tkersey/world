@@ -1108,6 +1108,7 @@ pub fn Appliance(comptime World: type) type {
                         if (cursor.cursor_fingerprint != fingerprint) return error.InvalidFrameEncoding;
                     }
                 }
+                if (self.latest_chronicle_cursor_fingerprint != null and self.latest_archive_cursor == null) return error.InvalidFrameEncoding;
                 if (self.outstanding_host_requests.len != 0 and self.core_state != .waiting_host) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.previous_turn_receipt_fingerprint);
                 if (self.outstanding_host_requests.len > capacity.max_pending_ports) return error.CapacityExceeded;
@@ -1362,6 +1363,11 @@ pub fn Appliance(comptime World: type) type {
                 if (self.checkpoint.capsule_fingerprint != self.turn_receipt.resulting_capsule_fingerprint) return error.InvalidFrameEncoding;
                 if (self.status != self.turn_receipt.status) return error.InvalidFrameEncoding;
                 if (self.root_result_fingerprint != self.turn_receipt.root_result_fingerprint) return error.InvalidFrameEncoding;
+                if (self.status == .completed) {
+                    if (self.root_result_fingerprint == null) return error.InvalidFrameEncoding;
+                } else if (self.root_result_fingerprint != null) {
+                    return error.InvalidFrameEncoding;
+                }
                 if (self.run_receipt_fingerprint != self.turn_receipt.run_receipt_fingerprint) return error.InvalidFrameEncoding;
                 if (self.archive_append_batch_fingerprint != self.turn_receipt.archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
                 if (self.blocker_count != self.turn_receipt.blocker_count or self.blocker_count != self.quiescence.blocker_count) return error.InvalidFrameEncoding;
@@ -2207,8 +2213,16 @@ pub fn Appliance(comptime World: type) type {
                         if (checkpoint.turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
                         if (command.turn_sequence_number != checkpoint.turn_sequence_number + 1) return error.StaleTurn;
                         if (command.previous_turn_receipt_fingerprint != checkpoint.previous_turn_receipt_fingerprint) return error.StaleTurn;
+                        if (self.state != .uninitialized) {
+                            if (checkpoint.turn_sequence_number != self.current_turn_sequence_number) return error.StaleTurn;
+                            if (checkpoint.previous_turn_receipt_fingerprint != self.previous_turn_receipt_fingerprint) return error.StaleTurn;
+                        }
                     },
                     .@"continue" => {
+                        if (self.last_turn_status) |last_status| {
+                            if (last_status == .failed or last_status == .cancelled) return error.StaleTurn;
+                            if (last_status == .completed and self.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
+                        }
                         if (self.current_turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
                         if (command.turn_sequence_number != self.current_turn_sequence_number + 1) return error.StaleTurn;
                         if (command.previous_turn_receipt_fingerprint == null) return error.StaleTurn;

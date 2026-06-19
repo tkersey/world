@@ -21089,7 +21089,7 @@ pub const Actuation = struct {
             try args.envelope.validate(args.policy);
             try validateHostPreparationBindings(args);
             try validatePendingActuationReceiptLink(args.intent.requested_mode, args.pending_actuation_receipt_fingerprint);
-            if (args.intent.requested_mode == .replay or args.intent.requested_mode == .verify) return error.InvalidMode;
+            if (args.intent.requested_mode != .fresh) return error.InvalidMode;
             const decision = decide(.{
                 .policy = args.policy,
                 .intent = args.intent,
@@ -21125,7 +21125,7 @@ pub const Actuation = struct {
 
         pub fn finalizeHost(prepared: Prepared, host_outcome: HostOutcomeInput, args: FinalizeHostArgs) !Finalized {
             try prepared.validate();
-            if (prepared.intent.requested_mode == .replay or prepared.intent.requested_mode == .verify) return error.InvalidMode;
+            if (prepared.intent.requested_mode != .fresh) return error.InvalidMode;
             try host_outcome.validateForPrepared(prepared);
             try validatePrecommitHostPermit(.{
                 .policy = prepared.policy,

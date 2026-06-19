@@ -1697,6 +1697,17 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
     try std.testing.expect(!audit_execution.receipt.fresh_called);
     try std.testing.expect(!audit_execution.receipt.replayed);
     try std.testing.expect(!audit_execution.receipt.verified);
+    try std.testing.expectError(error.InvalidMode, world.Actuation.Membrane.prepareHost(.{
+        .policy = world.Actuation.Policy.audit_only,
+        .intent = audit_execution_intent,
+        .envelope = world.Actuation.Envelope.init(.{
+            .intent_fingerprint = audit_execution_intent.intent_fingerprint,
+            .idempotency_key = audit_key,
+        }),
+        .descriptor = audit_descriptor,
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
 
     const wrong_request_envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
