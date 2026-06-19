@@ -1380,6 +1380,11 @@ pub fn Appliance(comptime World: type) type {
                 try validateOptionalFingerprint(self.resulting_chronicle_cursor_fingerprint);
                 try validateArchiveAnchorTuple(self.resulting_archive_moment_fingerprint, self.resulting_archive_seal_fingerprint, self.resulting_chronicle_cursor_fingerprint);
                 try validateOptionalFingerprint(self.root_result_fingerprint);
+                if (self.status == .completed) {
+                    if (self.root_result_fingerprint == null) return error.InvalidFrameEncoding;
+                } else if (self.root_result_fingerprint != null) {
+                    return error.InvalidFrameEncoding;
+                }
                 try validateOptionalFingerprint(self.run_receipt_fingerprint);
                 if (self.receipt_fingerprint != fingerprintTurnReceipt(self)) return error.InvalidFrameEncoding;
             }
@@ -2456,7 +2461,7 @@ pub fn Appliance(comptime World: type) type {
                     .@"continue" => {
                         if (self.last_turn_status) |last_status| {
                             if (last_status == .failed or last_status == .blocked or last_status == .cancelled) return error.StaleTurn;
-                            if (last_status == .completed and self.manifest_value.actuation_binding_fingerprints.len != 0) return error.StaleTurn;
+                            if (last_status == .completed and self.manifest_value.actuation_binding_fingerprints.len != 0 and !commandHasRetentionAck(command)) return error.StaleTurn;
                             if (last_status == .completed and self.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
                         }
                         if (self.current_turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
@@ -2531,7 +2536,16 @@ pub fn Appliance(comptime World: type) type {
             }
 
             fn shouldPlanArchiveAppend(self: @This(), command: Command) bool {
+                if (self.commandIsTerminalArchiveAckOnly(command)) return false;
                 return self.manifest_value.enabled_features.archive_append and command.kind != .inspect and command.kind != .reset;
+            }
+
+            fn commandIsTerminalArchiveAckOnly(self: @This(), command: Command) bool {
+                return command.kind == .@"continue" and
+                    self.last_turn_status == .completed and
+                    self.manifest_value.actuation_binding_fingerprints.len != 0 and
+                    command.host_replies.len == 0 and
+                    commandHasRetentionAck(command);
             }
 
             fn warningCountForCommand(self: @This(), command: Command) usize {
@@ -2628,6 +2642,7 @@ pub fn Appliance(comptime World: type) type {
             fn statusForAdvancingCommand(self: @This(), command: Command) TurnStatus {
                 if (commandHasNonTerminalHostReply(command)) return .needs_host;
                 if (command.host_replies.len != 0) return turnStatusForHostOutcome(command.host_replies[0].outcome.status);
+                if (self.commandIsTerminalArchiveAckOnly(command)) return .completed;
                 if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
                 if (command.execution_mode == .fresh) return .needs_host;
                 if (self.commandHasReplayEvidence(command)) return .completed;
@@ -2930,6 +2945,7 @@ pub fn Appliance(comptime World: type) type {
                         self.required_export_signatures_valid and
                         self.metadata_export_signatures_valid and
                         self.metadata_export_values_valid and
+                        self.required_memory_bytes <= @as(u64, self.max_linear_memory_pages) * wasm_page_size and
                         self.memory_count == 1 and
                         self.memory_export_present and
                         self.max_linear_memory_pages > 0 and
@@ -4280,6 +4296,14 @@ pub fn Appliance(comptime World: type) type {
         fn commandHasNonTerminalHostReply(command: Command) bool {
             for (command.host_replies) |reply| {
                 if (!hostOutcomeStatusIsTerminal(reply.outcome.status)) return true;
+            }
+            return false;
+        }
+
+        fn commandHasRetentionAck(command: Command) bool {
+            if (command.retention_ack != null) return true;
+            for (command.host_replies) |reply| {
+                if (reply.retention_ack != null) return true;
             }
             return false;
         }

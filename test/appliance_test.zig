@@ -499,6 +499,19 @@ test "appliance wasm inspector binds metadata values and memory limits" {
     try std.testing.expectEqual(@as(?u32, null), unbounded_inspection.memory_max_pages);
     try std.testing.expect(!unbounded_inspection.passed());
 
+    var oversized_required_values = metadata_values;
+    oversized_required_values[6] = 65 * 64 * 1024 + 1;
+    var oversized_required = try buildMinimalApplianceWasmWithMetadata(
+        world.Appliance.Abi.version,
+        oversized_required_values,
+        65,
+        65,
+    );
+    defer oversized_required.deinit(std.testing.allocator);
+    const oversized_required_inspection = try world.Appliance.Abi.inspectWasm(oversized_required.items);
+    try std.testing.expect(oversized_required_inspection.metadata_export_values_valid);
+    try std.testing.expect(!oversized_required_inspection.passed());
+
     var too_small = try buildMinimalApplianceWasmWithMetadata(
         world.Appliance.Abi.version,
         metadata_values,
@@ -2484,7 +2497,13 @@ test "appliance Core applies HostReply RetentionAck before archive-gated advance
     });
     const terminal_again_bytes = try terminal_again.encode(std.testing.allocator);
     defer std.testing.allocator.free(terminal_again_bytes);
-    try std.testing.expectError(error.StaleTurn, core.submit(terminal_again_bytes));
+    try core.submit(terminal_again_bytes);
+    try core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, core.state);
+    try std.testing.expectEqual(@as(?u64, null), core.pending_archive_append_batch_fingerprint);
+    try std.testing.expectEqual(@as(?u64, terminal_archive_ack.resulting_moment_fingerprint), core.latest_archive_moment_fingerprint);
+    try std.testing.expectEqual(@as(?u64, terminal_archive_ack.resulting_seal_fingerprint), core.latest_archive_seal_fingerprint);
+    try std.testing.expectEqual(@as(?u64, terminal_archive_ack.resulting_chronicle_cursor_fingerprint), core.latest_chronicle_cursor_fingerprint);
 
     var restore_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -3594,6 +3613,7 @@ test "appliance turn receipt binds restore source evidence" {
         .prior_checkpoint_fingerprint = 0xD262,
         .source_capsule_fingerprint = 0xD263,
         .resulting_capsule_fingerprint = 0xD264,
+        .root_result_fingerprint = 0xD266,
         .status = .completed,
     });
     try receipt.validate(0xD260, world.Appliance.Capacity.tiny_one_port);
@@ -3603,6 +3623,7 @@ test "appliance turn receipt binds restore source evidence" {
         .turn_sequence_number = 5,
         .command_fingerprint = 0xD261,
         .resulting_capsule_fingerprint = 0xD264,
+        .root_result_fingerprint = 0xD266,
         .status = .completed,
     });
     try without_source.validate(0xD260, world.Appliance.Capacity.tiny_one_port);
@@ -3627,6 +3648,7 @@ test "appliance turn receipt binds archive result anchors" {
         .resulting_archive_moment_fingerprint = 0xD274,
         .resulting_archive_seal_fingerprint = 0xD275,
         .resulting_chronicle_cursor_fingerprint = 0xD276,
+        .root_result_fingerprint = 0xD278,
         .status = .completed,
     });
     try receipt.validate(0xD270, world.Appliance.Capacity.tiny_one_port);
@@ -3637,6 +3659,7 @@ test "appliance turn receipt binds archive result anchors" {
         .command_fingerprint = 0xD271,
         .resulting_capsule_fingerprint = 0xD272,
         .archive_append_batch_fingerprint = 0xD273,
+        .root_result_fingerprint = 0xD278,
         .status = .completed,
     });
     try without_anchors.validate(0xD270, world.Appliance.Capacity.tiny_one_port);
@@ -3692,6 +3715,7 @@ test "appliance TurnOutput binds root result through receipt parity" {
         .resulting_capsule_fingerprint = checkpoint.capsule_fingerprint,
         .status = .completed,
     });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_root_receipt.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
     const missing_root_output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 7,
@@ -3712,6 +3736,7 @@ test "appliance TurnOutput binds root result through receipt parity" {
         .root_result_fingerprint = root_result_fingerprint,
         .status = .failed,
     });
+    try std.testing.expectError(error.InvalidFrameEncoding, failed_root_receipt.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
     const failed_root_output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 7,
