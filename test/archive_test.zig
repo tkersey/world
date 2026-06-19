@@ -216,6 +216,26 @@ test "archive recovery discards complete moment data followed by non-seal segmen
     try std.testing.expectEqual(@as(usize, 1), recovery.recovered_moment_count);
 }
 
+test "archive recovery discards stray complete seal tail" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "stray-seal-first", "stray-seal-first"));
+    const first_len = archive.bytesView().len;
+
+    var damaged: std.ArrayList(u8) = .empty;
+    defer damaged.deinit(std.testing.allocator);
+    try damaged.appendSlice(std.testing.allocator, archive.bytesView());
+    try appendArchiveRequiredSegment(std.testing.allocator, &damaged, .moment_seal, 2, "stray-seal-tail");
+
+    const reader = world.Archive.Reader.init(std.testing.allocator, damaged.items, .{});
+    var recovery = try reader.recover();
+    defer recovery.deinit(std.testing.allocator);
+    try std.testing.expectEqual(first_len, recovery.committed_prefix_byte_len);
+    try std.testing.expectEqual(damaged.items.len - first_len, recovery.discarded_tail_byte_len);
+    try std.testing.expectEqual(@as(usize, 1), recovery.recovered_moment_count);
+}
+
 test "archive recovery latest cursor is bound to cloned latest moment" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
@@ -869,6 +889,37 @@ test "archive recovery truncates memory bytes to valid sealed prefix" {
     const reader = world.Archive.Reader.init(std.testing.allocator, archive.bytesView(), .{});
     const scan = try reader.scan();
     try std.testing.expectEqual(@as(usize, 2), scan.committed_moment_count);
+}
+
+test "archive recovery allocation failure preserves canonical bytes" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    _ = try commitArchiveObject(&archive, archiveEnvelope(.capsule_image, "recovery-oom", "recovery-oom"));
+    try archive.bytes.appendSlice(std.testing.allocator, "recovery-tail");
+    const bytes_before = try std.testing.allocator.dupe(u8, archive.bytesView());
+    defer std.testing.allocator.free(bytes_before);
+
+    var induced_failures: usize = 0;
+    for (0..128) |fail_index| {
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        var reopened = world.Archive.Memory.reopenFrom(&archive, failing_allocator.allocator()) catch |err| switch (err) {
+            error.OutOfMemory => continue,
+            else => return err,
+        };
+        defer reopened.deinit();
+        var recovery = reopened.recover() catch |err| switch (err) {
+            error.OutOfMemory => {
+                induced_failures += 1;
+                try std.testing.expectEqualSlices(u8, bytes_before, reopened.bytesView());
+                continue;
+            },
+            else => return err,
+        };
+        recovery.deinit(failing_allocator.allocator());
+    }
+    try std.testing.expect(induced_failures > 0);
 }
 
 test "archive append ignores stale unsealed tail" {
@@ -1823,6 +1874,52 @@ test "archive append rejects same-batch object dependency cycles" {
     try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
 }
 
+test "archive append accepts later same-batch object dependencies" {
+    const dependency = archiveEnvelope(.capsule_manifest, "later-dependency", "later-dependency");
+    const dependency_ref = dependency.objectRef();
+    const dependency_refs = [_]world.Continuity.ObjectRef{dependency_ref};
+    const dependent = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "dependent-before-dependency",
+        .label = "dependent-before-dependency",
+        .dependency_refs = &dependency_refs,
+    });
+    const dependent_ref = dependent.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ dependent_ref, dependency_ref };
+    const bundle_refs = [_]world.Continuity.ObjectRef{dependent_ref};
+    const transaction_fingerprint = 0xD3F0;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = dependent_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &bundle_refs,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{ dependent, dependency };
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    const seal = try writer.append(batch, null, null);
+    try seal.validate();
+}
+
 test "archive append rejects duplicate object payloads" {
     const envelope = archiveEnvelope(.capsule_image, "duplicate-payload", "duplicate-payload");
     const ref = envelope.objectRef();
@@ -2502,6 +2599,30 @@ fn appendArchiveOptionalExtension(
     const header = world.Archive.SegmentHeader.init(.{
         .segment_kind = .optional_extension,
         .required = false,
+        .sequence_number = sequence_number,
+        .payload = payload,
+    });
+    try bytes.appendSlice(allocator, &header.magic);
+    try appendTestU32(allocator, bytes, header.segment_format_version);
+    try appendTestU8(allocator, bytes, @intFromEnum(header.segment_kind));
+    try appendTestU8(allocator, bytes, if (header.required) 1 else 0);
+    try appendTestU64(allocator, bytes, header.sequence_number);
+    try appendTestU64(allocator, bytes, header.payload_byte_len);
+    try appendTestU64(allocator, bytes, header.payload_fingerprint);
+    try appendTestU64(allocator, bytes, header.segment_header_fingerprint);
+    try bytes.appendSlice(allocator, payload);
+}
+
+fn appendArchiveRequiredSegment(
+    allocator: std.mem.Allocator,
+    bytes: *std.ArrayList(u8),
+    segment_kind: world.Archive.SegmentKind,
+    sequence_number: u64,
+    payload: []const u8,
+) !void {
+    const header = world.Archive.SegmentHeader.init(.{
+        .segment_kind = segment_kind,
+        .required = true,
         .sequence_number = sequence_number,
         .payload = payload,
     });

@@ -1112,7 +1112,10 @@ pub fn Archive(comptime World: type) type {
                         if (moment_segment.header.required) return error.UnsupportedMapping;
                         continue;
                     }
-                    if (moment_segment.header.segment_kind != .moment_data or !moment_segment.header.required) return error.InvalidFrameEncoding;
+                    if (moment_segment.header.segment_kind != .moment_data or !moment_segment.header.required) {
+                        cursor = moment_segment_start;
+                        break;
+                    }
                     var data = decodeMomentData(self.allocator, moment_segment.payload, self.limits) catch |err| {
                         if (!recoverableTailError(err)) return err;
                         break;
@@ -1180,7 +1183,7 @@ pub fn Archive(comptime World: type) type {
                         cursor = moment_segment_start;
                         break;
                     };
-                    validateObjectDependenciesKnown(objects.items, data.objects) catch |err| {
+                    validateObjectDependenciesKnown(self.allocator, objects.items, data.objects) catch |err| {
                         if (!recoverableTailError(err)) return err;
                         cursor = moment_segment_start;
                         break;
@@ -1401,7 +1404,7 @@ pub fn Archive(comptime World: type) type {
                     return error.StaleProjection;
                 }
                 try validateDomainEventRefsKnown(self.allocator, batch.events, image.objects, batch.objects);
-                try validateObjectDependenciesKnown(image.objects, batch.objects);
+                try validateObjectDependenciesKnown(self.allocator, image.objects, batch.objects);
                 try rejectAlreadyCommittedObjectRefs(image.objects, batch.objects);
             }
 
@@ -1671,7 +1674,15 @@ pub fn Archive(comptime World: type) type {
                 var report = try reader.recover();
                 errdefer report.deinit(self.allocator);
                 if (report.committed_prefix_byte_len < self.bytes.items.len) {
+                    var prefix_reader = Reader.init(self.allocator, self.bytes.items[0..report.committed_prefix_byte_len], .{});
+                    var next_image = try prefix_reader.readImage();
+                    var next_image_owned = true;
+                    errdefer if (next_image_owned) next_image.deinit();
                     self.bytes.shrinkRetainingCapacity(report.committed_prefix_byte_len);
+                    self.image.deinit();
+                    self.image = next_image;
+                    next_image_owned = false;
+                    return report;
                 }
                 try self.refreshImage();
                 return report;
@@ -3004,15 +3015,52 @@ pub fn Archive(comptime World: type) type {
             return false;
         }
 
-        fn validateObjectDependenciesKnown(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
-            for (current_objects, 0..) |object, index| {
+        fn validateObjectDependenciesKnown(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
+            for (current_objects) |object| {
                 for (object.dependency_refs) |dep| {
                     if (dep.byte_len == 0) continue;
-                    if (objectSliceContainsRef(prior_objects, dep) or objectSliceContainsRef(current_objects[0..index], dep)) continue;
-                    if (objectSliceContainsRef(current_objects[index..], dep)) return error.InvalidFrameEncoding;
+                    if (objectSliceContainsRef(prior_objects, dep) or objectSliceContainsRef(current_objects, dep)) continue;
                     return error.ObjectMissing;
                 }
             }
+            try rejectObjectDependencyCycles(allocator, current_objects);
+        }
+
+        const ObjectDependencyVisitState = enum(u2) {
+            unvisited,
+            visiting,
+            visited,
+        };
+
+        fn rejectObjectDependencyCycles(allocator: std.mem.Allocator, current_objects: []const ObjectEnvelope) !void {
+            const states = try allocator.alloc(ObjectDependencyVisitState, current_objects.len);
+            defer allocator.free(states);
+            @memset(states, .unvisited);
+            for (current_objects, 0..) |_, index| {
+                try visitObjectDependency(current_objects, states, index);
+            }
+        }
+
+        fn visitObjectDependency(current_objects: []const ObjectEnvelope, states: []ObjectDependencyVisitState, index: usize) !void {
+            switch (states[index]) {
+                .visited => return,
+                .visiting => return error.InvalidFrameEncoding,
+                .unvisited => {},
+            }
+            states[index] = .visiting;
+            for (current_objects[index].dependency_refs) |dep| {
+                if (dep.byte_len == 0) continue;
+                const dependency_index = objectSliceIndexOfRef(current_objects, dep) orelse continue;
+                try visitObjectDependency(current_objects, states, dependency_index);
+            }
+            states[index] = .visited;
+        }
+
+        fn objectSliceIndexOfRef(objects: []const ObjectEnvelope, ref: ObjectRef) ?usize {
+            for (objects, 0..) |object, index| {
+                if (object.objectRef().eql(ref)) return index;
+            }
+            return null;
         }
 
         fn rejectAlreadyCommittedObjectRefs(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
