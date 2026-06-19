@@ -428,6 +428,7 @@ pub fn Appliance(comptime World: type) type {
             memory_plan_fingerprint: u64,
             required_host_capabilities: HostCapabilityFlags,
             metadata: []const u8 = "",
+            owns_payloads: bool = false,
 
             pub fn init(args: struct {
                 root_target_ref_fingerprint: u64,
@@ -510,9 +511,30 @@ pub fn Appliance(comptime World: type) type {
                 return bytes;
             }
 
+            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                var cursor: usize = 0;
+                var manifest = try readManifestOwned(allocator, bytes, &cursor);
+                errdefer manifest.deinit(allocator);
+                if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                try manifest.validate();
+                return manifest;
+            }
+
             pub fn writeCanonicalBytes(self: @This(), dest: []u8) !usize {
                 try self.validate();
                 return writeManifestCanonicalBytes(self, dest);
+            }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.owns_payloads) {
+                    allocator.free(self.provider_target_ref_fingerprints);
+                    allocator.free(self.fabric_plan_fingerprints);
+                    allocator.free(self.actuation_descriptor_fingerprints);
+                    allocator.free(self.actuation_binding_fingerprints);
+                    allocator.free(self.default_permit_requirement_fingerprints);
+                    allocator.free(self.metadata);
+                }
+                self.* = undefined;
             }
         };
 
@@ -732,6 +754,7 @@ pub fn Appliance(comptime World: type) type {
             idempotency_key_fingerprint: u64,
             supervision_ref_fingerprint: ?u64 = null,
             metadata: []const u8 = "",
+            owns_metadata: bool = false,
 
             pub fn init(args: struct {
                 turn_sequence_number: u64,
@@ -794,6 +817,20 @@ pub fn Appliance(comptime World: type) type {
                 try writeOptionalU64(out, allocator, self.supervision_ref_fingerprint);
                 try writeBytes(out, allocator, self.metadata);
             }
+
+            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                var cursor: usize = 0;
+                var request = try readHostRequestOwned(allocator, bytes, &cursor);
+                errdefer request.deinit(allocator);
+                if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                try request.validate(Capacity.large_native_test);
+                return request;
+            }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.owns_metadata) allocator.free(self.metadata);
+                self.* = undefined;
+            }
         };
 
         pub const HostOutcome = struct {
@@ -812,6 +849,7 @@ pub fn Appliance(comptime World: type) type {
             host_evidence_bytes: []const u8 = "",
             attempt_number: u32 = 0,
             metadata: []const u8 = "",
+            owns_payloads: bool = false,
 
             pub fn init(args: struct {
                 host_request_fingerprint: u64,
@@ -905,6 +943,7 @@ pub fn Appliance(comptime World: type) type {
             retention_ack_fingerprint: ?u64 = null,
             retention_ack: ?RetentionAck = null,
             metadata: []const u8 = "",
+            owns_payloads: bool = false,
 
             pub fn init(args: struct {
                 target_host_request_fingerprint: u64,
@@ -954,6 +993,20 @@ pub fn Appliance(comptime World: type) type {
                 try writeOptionalU64(out, allocator, self.retention_ack_fingerprint);
                 try writeOptionalRetentionAck(out, allocator, self.retention_ack);
                 try writeBytes(out, allocator, self.metadata);
+            }
+
+            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                var cursor: usize = 0;
+                var reply = try readHostReplyOwned(allocator, bytes, &cursor);
+                errdefer reply.deinit(allocator);
+                if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                try reply.validateShape(Capacity.large_native_test);
+                return reply;
+            }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                freeHostReply(allocator, self);
+                self.* = undefined;
             }
         };
 
@@ -3382,6 +3435,68 @@ pub fn Appliance(comptime World: type) type {
             return nonzero(hasher.final());
         }
 
+        fn readManifestOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Manifest {
+            const manifest_format_version = try readU32(bytes, cursor);
+            const manifest_fingerprint_version = try readU32(bytes, cursor);
+            const manifest_fingerprint = try readU64(bytes, cursor);
+            const appliance_abi_version = try readU32(bytes, cursor);
+            const root_target_ref_fingerprint = try readU64(bytes, cursor);
+            const root_world_surface_fingerprint = try readU64(bytes, cursor);
+            const root_target_certificate_fingerprint = try readU64(bytes, cursor);
+            const link_plan_fingerprint = try readU64(bytes, cursor);
+            const link_certificate_fingerprint = try readU64(bytes, cursor);
+            const assembly_fingerprint = try readU64(bytes, cursor);
+            const provider_target_ref_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(provider_target_ref_fingerprints);
+            const fabric_plan_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(fabric_plan_fingerprints);
+            const residual_import_set_fingerprint = try readU64(bytes, cursor);
+            const actuation_descriptor_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(actuation_descriptor_fingerprints);
+            const actuation_binding_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(actuation_binding_fingerprints);
+            const supervision_policy_fingerprint = try readU64(bytes, cursor);
+            const default_permit_requirement_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(default_permit_requirement_fingerprints);
+            const capsule_profile_fingerprint = try readU64(bytes, cursor);
+            const archive_profile_fingerprint = try readU64(bytes, cursor);
+            const supported_execution_modes: ExecutionModeSet = @bitCast(try readU8(bytes, cursor));
+            const enabled_features: FeatureSet = @bitCast(try readU16(bytes, cursor));
+            const capacity_fingerprint = try readU64(bytes, cursor);
+            const memory_plan_fingerprint = try readU64(bytes, cursor);
+            const required_host_capabilities: HostCapabilityFlags = @bitCast(try readU8(bytes, cursor));
+            const metadata = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(metadata);
+            return .{
+                .manifest_format_version = manifest_format_version,
+                .manifest_fingerprint_version = manifest_fingerprint_version,
+                .manifest_fingerprint = manifest_fingerprint,
+                .appliance_abi_version = appliance_abi_version,
+                .root_target_ref_fingerprint = root_target_ref_fingerprint,
+                .root_world_surface_fingerprint = root_world_surface_fingerprint,
+                .root_target_certificate_fingerprint = root_target_certificate_fingerprint,
+                .link_plan_fingerprint = link_plan_fingerprint,
+                .link_certificate_fingerprint = link_certificate_fingerprint,
+                .assembly_fingerprint = assembly_fingerprint,
+                .provider_target_ref_fingerprints = provider_target_ref_fingerprints,
+                .fabric_plan_fingerprints = fabric_plan_fingerprints,
+                .residual_import_set_fingerprint = residual_import_set_fingerprint,
+                .actuation_descriptor_fingerprints = actuation_descriptor_fingerprints,
+                .actuation_binding_fingerprints = actuation_binding_fingerprints,
+                .supervision_policy_fingerprint = supervision_policy_fingerprint,
+                .default_permit_requirement_fingerprints = default_permit_requirement_fingerprints,
+                .capsule_profile_fingerprint = capsule_profile_fingerprint,
+                .archive_profile_fingerprint = archive_profile_fingerprint,
+                .supported_execution_modes = supported_execution_modes,
+                .enabled_features = enabled_features,
+                .capacity_fingerprint = capacity_fingerprint,
+                .memory_plan_fingerprint = memory_plan_fingerprint,
+                .required_host_capabilities = required_host_capabilities,
+                .metadata = metadata,
+                .owns_payloads = true,
+            };
+        }
+
         fn manifestEncodedLen(manifest: Manifest) usize {
             return @sizeOf(u32) + @sizeOf(u32) + @sizeOf(u64) + @sizeOf(u32) +
                 (6 * @sizeOf(u64)) +
@@ -3871,6 +3986,7 @@ pub fn Appliance(comptime World: type) type {
                 .idempotency_key_fingerprint = idempotency_key_fingerprint,
                 .supervision_ref_fingerprint = supervision_ref_fingerprint,
                 .metadata = metadata,
+                .owns_metadata = true,
             };
         }
 
@@ -3901,6 +4017,7 @@ pub fn Appliance(comptime World: type) type {
                 .retention_ack_fingerprint = retention_ack_fingerprint,
                 .retention_ack = retention_ack,
                 .metadata = metadata,
+                .owns_payloads = true,
             };
         }
 
@@ -3939,6 +4056,7 @@ pub fn Appliance(comptime World: type) type {
                 .host_evidence_bytes = host_evidence_bytes,
                 .attempt_number = attempt_number,
                 .metadata = metadata,
+                .owns_payloads = true,
             };
         }
 
@@ -4236,22 +4354,26 @@ pub fn Appliance(comptime World: type) type {
         }
 
         fn freeHostRequest(allocator: std.mem.Allocator, request: *HostRequest) void {
-            allocator.free(request.metadata);
+            if (request.owns_metadata) allocator.free(request.metadata);
         }
 
         fn freeHostReply(allocator: std.mem.Allocator, reply: *HostReply) void {
-            freeHostOutcome(allocator, &reply.outcome);
-            if (reply.retention_ack) |ack| {
-                var cleanup = ack;
-                freeRetentionAck(allocator, &cleanup);
+            if (reply.owns_payloads) {
+                freeHostOutcome(allocator, &reply.outcome);
+                if (reply.retention_ack) |ack| {
+                    var cleanup = ack;
+                    freeRetentionAck(allocator, &cleanup);
+                }
+                allocator.free(reply.metadata);
             }
-            allocator.free(reply.metadata);
         }
 
         fn freeHostOutcome(allocator: std.mem.Allocator, outcome: *HostOutcome) void {
-            allocator.free(outcome.response_bytes);
-            allocator.free(outcome.host_evidence_bytes);
-            allocator.free(outcome.metadata);
+            if (outcome.owns_payloads) {
+                allocator.free(outcome.response_bytes);
+                allocator.free(outcome.host_evidence_bytes);
+                allocator.free(outcome.metadata);
+            }
         }
 
         fn freeRetentionAck(allocator: std.mem.Allocator, ack: *RetentionAck) void {
@@ -4658,6 +4780,13 @@ pub fn Appliance(comptime World: type) type {
             if (cursor.* > bytes.len or 1 > bytes.len - cursor.*) return error.InvalidFrameEncoding;
             const value = bytes[cursor.*];
             cursor.* += 1;
+            return value;
+        }
+
+        fn readU16(bytes: []const u8, cursor: *usize) !u16 {
+            if (cursor.* > bytes.len or 2 > bytes.len - cursor.*) return error.InvalidFrameEncoding;
+            const value = std.mem.readInt(u16, bytes[cursor.*..][0..2], .little);
+            cursor.* += 2;
             return value;
         }
 

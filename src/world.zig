@@ -35662,6 +35662,39 @@ pub const Continuity = struct {
                 defer frame.deinit(allocator);
                 break :blk frame.format_version == envelope.object_format_version;
             },
+            .appliance_manifest => blk: {
+                var manifest = Appliance.Manifest.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                defer manifest.deinit(allocator);
+                break :blk manifest.manifest_format_version == envelope.object_format_version;
+            },
+            .appliance_command => blk: {
+                var command = Appliance.Command.decode(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                defer command.deinit(allocator);
+                command.validate(command.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk false;
+                break :blk command.command_format_version == envelope.object_format_version;
+            },
+            .appliance_host_request => blk: {
+                var request = Appliance.HostRequest.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                defer request.deinit(allocator);
+                break :blk request.request_format_version == envelope.object_format_version;
+            },
+            .appliance_host_reply => blk: {
+                var reply = Appliance.HostReply.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                defer reply.deinit(allocator);
+                break :blk reply.reply_format_version == envelope.object_format_version;
+            },
             .appliance_checkpoint => blk: {
                 var checkpoint = Appliance.Checkpoint.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return err,
@@ -35685,6 +35718,22 @@ pub const Continuity = struct {
                 };
                 defer output.deinit(allocator);
                 break :blk output.output_format_version == envelope.object_format_version;
+            },
+            .appliance_reconstruction_report => blk: {
+                const report = decodePortableEvidence(Appliance.ReconstructionReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                report.validate(report.manifest_fingerprint) catch break :blk false;
+                break :blk envelope.object_format_version == world_appliance_reconstruction_report_fingerprint_version;
+            },
+            .appliance_conformance_report => blk: {
+                const report = decodePortableEvidence(Appliance.ConformanceReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => break :blk false,
+                };
+                report.validate(report.manifest_fingerprint) catch break :blk false;
+                break :blk envelope.object_format_version == world_appliance_conformance_report_fingerprint_version;
             },
             .actuator_ref,
             .actuation_descriptor,

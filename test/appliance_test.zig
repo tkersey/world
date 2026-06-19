@@ -88,6 +88,19 @@ fn applianceRetentionAckForPendingCore(core: anytype, metadata: []const u8) !wor
     });
 }
 
+fn expectApplianceTypedPayloadValid(
+    kind: world.Continuity.ObjectKind,
+    format_version: u32,
+    payload: []const u8,
+) !void {
+    const envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = kind,
+        .object_format_version = format_version,
+        .payload_bytes = payload,
+    });
+    try world.Continuity.validateObjectEnvelopeTypedPayload(std.testing.allocator, envelope);
+}
+
 fn appendApplianceWasmU32(out: *std.ArrayList(u8), value: u32) !void {
     var remaining = value;
     while (true) {
@@ -2534,6 +2547,101 @@ test "appliance host reply validates against outstanding request identity" {
         .host_evidence_bytes = "too-large",
     });
     try std.testing.expectError(error.CapacityExceeded, oversized_evidence.validate(request, tight));
+}
+
+test "appliance continuity typed payload validation accepts advertised appliance objects" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    const manifest_bytes = try manifest.encode(std.testing.allocator);
+    defer std.testing.allocator.free(manifest_bytes);
+    try expectApplianceTypedPayloadValid(.appliance_manifest, world.world_appliance_manifest_format_version, manifest_bytes);
+
+    const command = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .root_argument_image = "typed-payload",
+    });
+    const command_bytes = try command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(command_bytes);
+    try expectApplianceTypedPayloadValid(.appliance_command, world.world_appliance_command_format_version, command_bytes);
+
+    const request = world.Appliance.HostRequest.init(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD300,
+        .pending_port_fingerprint = 0xD301,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD302,
+        .envelope_fingerprint = 0xD303,
+        .decision_fingerprint = 0xD304,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+        .idempotency_key_fingerprint = 0xD305,
+        .metadata = "typed-request",
+    });
+    var request_payload: std.ArrayList(u8) = .empty;
+    defer request_payload.deinit(std.testing.allocator);
+    try request.encode(&request_payload, std.testing.allocator);
+    try expectApplianceTypedPayloadValid(.appliance_host_request, world.world_appliance_host_request_format_version, request_payload.items);
+
+    const reply = applianceHostReplyFor(request, 0xD306);
+    var reply_payload: std.ArrayList(u8) = .empty;
+    defer reply_payload.deinit(std.testing.allocator);
+    try reply.encode(&reply_payload, std.testing.allocator);
+    try expectApplianceTypedPayloadValid(.appliance_host_reply, world.world_appliance_host_reply_format_version, reply_payload.items);
+
+    const reconstruction = world.Appliance.ReconstructionReport.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .resident_turn_output_fingerprint = 0xD307,
+        .reconstructed_turn_output_fingerprint = 0xD307,
+    });
+    const reconstruction_payload = try world.Continuity.encodePortableEvidence(
+        world.Appliance.ReconstructionReport,
+        std.testing.allocator,
+        reconstruction,
+    );
+    defer std.testing.allocator.free(reconstruction_payload);
+    try expectApplianceTypedPayloadValid(
+        .appliance_reconstruction_report,
+        world.world_appliance_reconstruction_report_fingerprint_version,
+        reconstruction_payload,
+    );
+
+    const conformance = world.Appliance.ConformanceReport.init(.{
+        .vector_fingerprint = 0xD308,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .native_core_output_fingerprint = 0xD309,
+        .resident_core_output_fingerprint = 0xD309,
+        .reconstructed_core_output_fingerprint = 0xD309,
+    });
+    const conformance_payload = try world.Continuity.encodePortableEvidence(
+        world.Appliance.ConformanceReport,
+        std.testing.allocator,
+        conformance,
+    );
+    defer std.testing.allocator.free(conformance_payload);
+    try expectApplianceTypedPayloadValid(
+        .appliance_conformance_report,
+        world.world_appliance_conformance_report_fingerprint_version,
+        conformance_payload,
+    );
+
+    var corrupt_payload = try std.testing.allocator.dupe(u8, request_payload.items);
+    defer std.testing.allocator.free(corrupt_payload);
+    corrupt_payload[8] = 0;
+    const corrupt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_host_request,
+        .object_format_version = world.world_appliance_host_request_format_version,
+        .payload_bytes = corrupt_payload,
+    });
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        world.Continuity.validateObjectEnvelopeTypedPayload(std.testing.allocator, corrupt_envelope),
+    );
 }
 
 test "appliance turn receipt binds host reply and request evidence" {

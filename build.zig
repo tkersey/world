@@ -1355,6 +1355,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     host_world.addImport("boundary", host_boundary);
+    const host_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/fixtures.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    host_fixtures.addImport("world", host_world);
+    host_fixtures.addImport("boundary", host_boundary);
     const wasm_export_check_mod = b.createModule(.{
         .root_source_file = b.path("examples/world_wasm_export_check.zig"),
         .target = b.graph.host,
@@ -1374,7 +1381,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     appliance_wasm_export_check_mod.addImport("world", host_world);
-    appliance_wasm_export_check_mod.addImport("world_fixtures", fixtures);
+    appliance_wasm_export_check_mod.addImport("world_fixtures", host_fixtures);
     const appliance_wasm_export_check = b.addExecutable(.{ .name = "world-appliance-wasm-export-check", .root_module = appliance_wasm_export_check_mod });
     const run_appliance_wasm_export_check = b.addRunArtifact(appliance_wasm_export_check);
     run_appliance_wasm_export_check.addFileArg(appliance_wasm.getEmittedBin());
