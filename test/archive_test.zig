@@ -2043,7 +2043,7 @@ test "archive append rejects same-batch object dependency cycles" {
 
     var writer = world.Archive.Writer.init(std.testing.allocator, .{});
     defer writer.deinit();
-    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectError(error.ObjectMissing, writer.append(batch, null, null));
 }
 
 test "archive append rejects semantic same-batch object dependency cycles" {
@@ -2108,7 +2108,7 @@ test "archive append rejects semantic same-batch object dependency cycles" {
 
     var writer = world.Archive.Writer.init(std.testing.allocator, .{});
     defer writer.deinit();
-    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectError(error.ObjectMissing, writer.append(batch, null, null));
 }
 
 test "archive append rejects cross-moment semantic object dependency cycles" {
@@ -2149,7 +2149,7 @@ test "archive append rejects cross-moment semantic object dependency cycles" {
     try std.testing.expectError(error.InvalidFrameEncoding, tx.commit());
 }
 
-test "archive append accepts later same-batch object dependencies" {
+test "archive append rejects forward same-batch object dependencies" {
     const dependency = archiveEnvelope(.capsule_manifest, "later-dependency", "later-dependency");
     const dependency_ref = dependency.objectRef();
     const dependency_refs = [_]world.Continuity.ObjectRef{dependency_ref};
@@ -2191,8 +2191,7 @@ test "archive append accepts later same-batch object dependencies" {
 
     var writer = world.Archive.Writer.init(std.testing.allocator, .{});
     defer writer.deinit();
-    const seal = try writer.append(batch, null, null);
-    try seal.validate();
+    try std.testing.expectError(error.ObjectMissing, writer.append(batch, null, null));
 }
 
 test "archive append rejects duplicate object payloads" {

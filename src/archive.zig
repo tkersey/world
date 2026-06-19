@@ -3072,9 +3072,9 @@ pub fn Archive(comptime World: type) type {
         }
 
         fn validateObjectDependenciesKnown(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
-            for (current_objects) |object| {
+            for (current_objects, 0..) |object, object_index| {
                 for (object.dependency_refs) |dep| {
-                    if (objectSliceContainsRef(prior_objects, dep) or objectSliceContainsRef(current_objects, dep)) continue;
+                    if (objectSliceContainsRef(prior_objects, dep) or objectSliceContainsRef(current_objects[0..object_index], dep)) continue;
                     if (dep.byte_len == 0 and envelopeKindAllowsUnresolvedSemanticDependency(object.kind)) continue;
                     return error.ObjectMissing;
                 }
