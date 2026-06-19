@@ -250,6 +250,15 @@ test "archive snapshot reads historical prefix and replay binds cursor" {
     var visible = try snapshot.getObject(first_ref);
     defer visible.deinit(std.testing.allocator);
     try std.testing.expectEqual(first_ref.ref_fingerprint, visible.objectRef().ref_fingerprint);
+    const semantic_first_ref = world.Continuity.ObjectRef.init(.{
+        .kind = first_ref.kind,
+        .object_format_version = first_ref.object_format_version,
+        .object_fingerprint = first_ref.object_fingerprint,
+        .byte_len = 0,
+    });
+    var semantic_visible = try snapshot.getObject(semantic_first_ref);
+    defer semantic_visible.deinit(std.testing.allocator);
+    try std.testing.expectEqual(first_ref.ref_fingerprint, semantic_visible.objectRef().ref_fingerprint);
     try std.testing.expectError(error.ObjectMissing, snapshot.getObject(second_ref));
     try std.testing.expectEqual(@as(usize, 1), try snapshot.objectCount());
     try std.testing.expectEqual(@as(usize, 1), try snapshot.commitCount());
@@ -1120,6 +1129,59 @@ test "archive moment data rejects forged summary refs" {
         .capsule_refs = &forged_capsule_refs,
     });
     const objects = [_]world.Continuity.ObjectEnvelope{ capsule, bundle };
+    const data = world.Archive.MomentData{
+        .moment = forged_moment,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    };
+
+    try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
+}
+
+test "archive moment data rejects forged dependency summaries" {
+    const dependency = archiveEnvelope(.capsule_manifest, "dependency-summary-dep", "dependency-summary-dep");
+    const dependency_ref = dependency.objectRef();
+    const dependency_refs = [_]world.Continuity.ObjectRef{dependency_ref};
+    const dependent = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "dependency-summary-user",
+        .label = "dependency-summary-user",
+        .dependency_refs = &dependency_refs,
+    });
+    const dependent_ref = dependent.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ dependency_ref, dependent_ref };
+    const bundle_refs = [_]world.Continuity.ObjectRef{dependent_ref};
+    const transaction_fingerprint = 0xD3D3;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = dependent_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &bundle_refs,
+    });
+    const forged_moment = world.Archive.Moment.init(.{
+        .sequence_number = 1,
+        .chronicle_parent_cursor = parent,
+        .chronicle_resulting_cursor = resulting,
+        .chronicle_commit_ref = world.Archive.CommitRef.fromCommit(commit),
+        .committed_event_refs = &fingerprints,
+        .committed_object_refs = &refs,
+        .bundle_refs = &bundle_refs,
+        .dependency_refs = &.{},
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{ dependency, dependent };
     const data = world.Archive.MomentData{
         .moment = forged_moment,
         .commit = commit,

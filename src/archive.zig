@@ -491,6 +491,7 @@ pub fn Archive(comptime World: type) type {
                     if (!objectSliceContainsRef(self.objects, ref)) return error.InvalidFrameEncoding;
                 }
                 try rejectConflictingObjectBytes(self.objects);
+                if (!dependencyRefsMatchCommittedObjects(self.moment.dependency_refs, self.objects)) return error.InvalidFrameEncoding;
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.bundle_refs, .bundle)) return error.InvalidFrameEncoding;
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.capsule_refs, .capsule)) return error.InvalidFrameEncoding;
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.actuation_refs, .actuation)) return error.InvalidFrameEncoding;
@@ -933,7 +934,7 @@ pub fn Archive(comptime World: type) type {
 
             pub fn getObject(self: @This(), ref: ObjectRef) !ObjectEnvelope {
                 for (self.image.objects) |envelope| {
-                    if (envelope.objectRef().eql(ref) and self.refCommittedAtOrBeforeMoment(ref)) return envelope.clone(self.image.allocator);
+                    if (refMatchesObject(envelope, ref) and self.refCommittedAtOrBeforeMoment(ref)) return envelope.clone(self.image.allocator);
                 }
                 return error.ObjectMissing;
             }
@@ -1020,7 +1021,7 @@ pub fn Archive(comptime World: type) type {
 
             fn refCommittedAtOrBeforeMoment(self: @This(), ref: ObjectRef) bool {
                 for (self.image.moments[0 .. self.moment_index + 1]) |moment_item| {
-                    if (containsRef(moment_item.committed_object_refs, ref)) return true;
+                    if (containsEquivalentRef(moment_item.committed_object_refs, ref)) return true;
                 }
                 return false;
             }
@@ -2574,6 +2575,13 @@ pub fn Archive(comptime World: type) type {
             return false;
         }
 
+        fn containsEquivalentRef(refs: []const ObjectRef, ref: ObjectRef) bool {
+            for (refs) |candidate| {
+                if (refsEquivalent(candidate, ref)) return true;
+            }
+            return false;
+        }
+
         fn refsEquivalent(lhs: ObjectRef, rhs: ObjectRef) bool {
             return lhs.eql(rhs) or
                 (lhs.kind == rhs.kind and
@@ -2839,6 +2847,26 @@ pub fn Archive(comptime World: type) type {
                 summary_index += 1;
             }
             return summary_index == summary_refs.len;
+        }
+
+        fn dependencyRefsMatchCommittedObjects(summary_refs: []const ObjectRef, objects: []const ObjectEnvelope) bool {
+            var summary_index: usize = 0;
+            for (objects, 0..) |object, object_index| {
+                for (object.dependency_refs, 0..) |dep, dep_index| {
+                    if (dependencyRefSeenBefore(objects, object_index, dep_index, dep)) continue;
+                    if (summary_index >= summary_refs.len) return false;
+                    if (!summary_refs[summary_index].eql(dep)) return false;
+                    summary_index += 1;
+                }
+            }
+            return summary_index == summary_refs.len;
+        }
+
+        fn dependencyRefSeenBefore(objects: []const ObjectEnvelope, object_index: usize, dep_index: usize, dep: ObjectRef) bool {
+            for (objects[0..object_index]) |object| {
+                if (containsRef(object.dependency_refs, dep)) return true;
+            }
+            return containsRef(objects[object_index].dependency_refs[0..dep_index], dep);
         }
 
         fn refMatchesSummaryKind(ref: ObjectRef, summary_kind: SummaryRefKind) bool {
