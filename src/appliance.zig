@@ -1968,15 +1968,7 @@ pub fn Appliance(comptime World: type) type {
                     applied_host_reply_fingerprint_storage[0] = command.host_replies[0].reply_fingerprint;
                     break :blk applied_host_reply_fingerprint_storage[0..1];
                 } else &.{};
-                var finalized_actuation_receipt_fingerprint_storage: [1]u64 = undefined;
-                const finalized_actuation_receipt_fingerprints = if (commandHasTerminalHostReply(command)) blk: {
-                    finalized_actuation_receipt_fingerprint_storage[0] = fingerprintCoreFinalizedActuationReceipt(
-                        self.manifest_value.manifest_fingerprint,
-                        command.host_replies[0].reply_fingerprint,
-                        capsule_fingerprint,
-                    );
-                    break :blk finalized_actuation_receipt_fingerprint_storage[0..1];
-                } else &.{};
+                const finalized_actuation_receipt_fingerprints: []const u64 = &.{};
                 var emitted_host_request_fingerprint_storage: [1]u64 = undefined;
                 const emitted_host_request_fingerprints = if (host_requests.len != 0) blk: {
                     emitted_host_request_fingerprint_storage[0] = host_requests[0].request_fingerprint;
@@ -4249,15 +4241,6 @@ pub fn Appliance(comptime World: type) type {
             hashU64(&hasher, command.command_fingerprint);
             hashU64(&hasher, capsule_fingerprint);
             hashU64(&hasher, @intFromEnum(status));
-            return nonzero(hasher.final());
-        }
-
-        fn fingerprintCoreFinalizedActuationReceipt(manifest_fingerprint: u64, host_reply_fingerprint: u64, capsule_fingerprint: u64) u64 {
-            var hasher = std.hash.Wyhash.init(0);
-            hashBytes(&hasher, "world.appliance.core_shell.finalized_actuation_receipt.fingerprint");
-            hashU64(&hasher, manifest_fingerprint);
-            hashU64(&hasher, host_reply_fingerprint);
-            hashU64(&hasher, capsule_fingerprint);
             return nonzero(hasher.final());
         }
 

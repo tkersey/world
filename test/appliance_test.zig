@@ -952,6 +952,14 @@ test "appliance Core validates continue host replies before completion" {
     try std.testing.expect(core.outstanding_host_request == null);
     try std.testing.expect(core.previous_turn_receipt_fingerprint != null);
     try std.testing.expect(!std.mem.eql(u8, first_output, core.readOutput()));
+    var terminal_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer terminal_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), terminal_output.finalized_actuation_receipt_fingerprints.len);
 }
 
 test "appliance Core pending and deferred HostReplies keep request outstanding" {

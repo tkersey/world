@@ -1054,7 +1054,7 @@ pub fn build(b: *std.Build) void {
             \\external_model_requests=2
             \\internal_tool_provider_targets=1
             \\fabric_plans=1
-            \\finalized_actuation_receipts=1
+            \\finalized_actuation_receipts=0
             \\archive_objects=3
             \\final_result=true
             \\
