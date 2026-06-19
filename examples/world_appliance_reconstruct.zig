@@ -8,34 +8,46 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_writer.interface;
     const allocator = std.heap.page_allocator;
 
-    const manifest = common.StrictAppliance.manifest();
-    const checkpoint = world.Appliance.Checkpoint.init(.{
+    const manifest = common.PortsAppliance.manifest();
+    var seed = world.Appliance.Core.initWithCapacity(
+        allocator,
+        manifest,
+        common.PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer seed.reset();
+    try common.submit(&seed, allocator, common.bootCommand(manifest));
+    var boot_output = try common.decodeOutput(allocator, manifest, seed.readOutput());
+    defer boot_output.deinit(allocator);
+    const checkpoint = boot_output.checkpoint;
+    const reply = common.hostReplyFor(checkpoint.outstanding_host_requests[0], 0xC0DE_0003);
+    const command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
         .manifest_fingerprint = manifest.manifest_fingerprint,
-        .turn_sequence_number = 1,
-        .capsule_fingerprint = 0xC0DE_0001,
-        .previous_turn_receipt_fingerprint = 0xC0DE_0002,
-        .core_state = .runnable,
+        .turn_sequence_number = checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint,
+        .host_replies = &.{reply},
     });
 
     var resident = world.Appliance.Core.initWithCapacity(
         allocator,
         manifest,
-        common.StrictAppliance.memoryPlan(),
+        common.PortsAppliance.memoryPlan(),
         world.Appliance.Capacity.tiny_one_port,
     );
     defer resident.reset();
     try resident.restore(checkpoint);
-    try common.submit(&resident, allocator, common.continueCommand(manifest, 2, checkpoint.previous_turn_receipt_fingerprint.?));
+    try common.submit(&resident, allocator, command);
 
     var restored = world.Appliance.Core.initWithCapacity(
         allocator,
         manifest,
-        common.StrictAppliance.memoryPlan(),
+        common.PortsAppliance.memoryPlan(),
         world.Appliance.Capacity.tiny_one_port,
     );
     defer restored.reset();
     try restored.restore(checkpoint);
-    try common.submit(&restored, allocator, common.continueCommand(manifest, 2, checkpoint.previous_turn_receipt_fingerprint.?));
+    try common.submit(&restored, allocator, command);
 
     const report = world.Appliance.ReconstructionReport.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,

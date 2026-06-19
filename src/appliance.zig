@@ -2428,6 +2428,7 @@ pub fn Appliance(comptime World: type) type {
 
             pub fn restore(self: *@This(), checkpoint: Checkpoint) !void {
                 try checkpoint.validate(self.manifest_value.manifest_fingerprint, self.capacity_value);
+                if (checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
                 var rollback = try ContinuationSnapshot.capture(self);
                 errdefer rollback.restore(self);
                 try self.applyCheckpointState(checkpoint);
@@ -2461,7 +2462,7 @@ pub fn Appliance(comptime World: type) type {
                     .@"continue" => {
                         if (self.last_turn_status) |last_status| {
                             if (last_status == .failed or last_status == .blocked or last_status == .cancelled) return error.StaleTurn;
-                            if (last_status == .completed and self.manifest_value.actuation_binding_fingerprints.len != 0 and !commandHasRetentionAck(command)) return error.StaleTurn;
+                            if (last_status == .completed and self.manifest_value.actuation_binding_fingerprints.len != 0 and self.manifest_value.enabled_features.archive_ack_gate and !commandHasRetentionAck(command)) return error.StaleTurn;
                             if (last_status == .completed and self.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
                         }
                         if (self.current_turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
