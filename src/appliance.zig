@@ -4129,8 +4129,21 @@ pub fn Appliance(comptime World: type) type {
 
         fn effectiveRetentionAck(command: Command) !?RetentionAck {
             var ack = command.retention_ack;
+            var ack_fingerprint: ?u64 = if (ack) |existing| existing.ack_fingerprint else null;
             for (command.host_replies) |reply| {
+                if (reply.retention_ack_fingerprint) |reply_ack_fingerprint| {
+                    if (ack_fingerprint) |existing_fingerprint| {
+                        if (existing_fingerprint != reply_ack_fingerprint) return error.InvalidFrameEncoding;
+                    } else {
+                        ack_fingerprint = reply_ack_fingerprint;
+                    }
+                }
                 const reply_ack = reply.retention_ack orelse continue;
+                if (ack_fingerprint) |existing_fingerprint| {
+                    if (existing_fingerprint != reply_ack.ack_fingerprint) return error.InvalidFrameEncoding;
+                } else {
+                    ack_fingerprint = reply_ack.ack_fingerprint;
+                }
                 if (ack) |existing| {
                     if (existing.ack_fingerprint != reply_ack.ack_fingerprint) return error.InvalidFrameEncoding;
                 } else {

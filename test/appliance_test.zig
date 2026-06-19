@@ -2151,6 +2151,51 @@ test "appliance Core validates command RetentionAck before advancing" {
     try std.testing.expectEqual(@as(?u64, pending_archive), core.pending_archive_append_batch_fingerprint);
 
     const ack = try applianceRetentionAckForPendingCore(core, "retained");
+    var fingerprint_conflict_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        ArchiveAckAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer fingerprint_conflict_core.reset();
+    const outstanding_request = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD40A,
+        .pending_port_fingerprint = 0xD40B,
+        .intent_fingerprint = 0xD40C,
+        .envelope_fingerprint = 0xD40D,
+        .decision_fingerprint = 0xD40E,
+        .expected_response_descriptor_fingerprint = 0xD40F,
+        .idempotency_key_fingerprint = 0xD410,
+    });
+    const fingerprint_only_reply_base = applianceHostReplyFor(outstanding_request, 0xD411);
+    const conflicting_ack = applianceRetentionAckFor(pending_archive, "conflicting-fingerprint-only");
+    const fingerprint_only_reply = world.Appliance.HostReply.init(.{
+        .target_host_request_fingerprint = fingerprint_only_reply_base.target_host_request_fingerprint,
+        .outcome = fingerprint_only_reply_base.outcome,
+        .retention_ack_fingerprint = conflicting_ack.ack_fingerprint,
+        .metadata = "fingerprint-only-conflict",
+    });
+    fingerprint_conflict_core.state = .waiting_host;
+    fingerprint_conflict_core.current_turn_sequence_number = 0;
+    fingerprint_conflict_core.previous_turn_receipt_fingerprint = prior_receipt;
+    fingerprint_conflict_core.outstanding_host_request = outstanding_request;
+    fingerprint_conflict_core.pending_archive_append_batch_fingerprint = pending_archive;
+    fingerprint_conflict_core.pending_archive_resulting_cursor = core.pending_archive_resulting_cursor;
+    const fingerprint_conflict_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .host_replies = &.{fingerprint_only_reply},
+        .retention_ack = ack,
+    });
+    const fingerprint_conflict_continue_bytes = try fingerprint_conflict_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(fingerprint_conflict_continue_bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, fingerprint_conflict_core.submit(fingerprint_conflict_continue_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, fingerprint_conflict_core.state);
+
     const valid_continue = world.Appliance.Command.init(.{
         .kind = .@"continue",
         .manifest_fingerprint = manifest.manifest_fingerprint,
