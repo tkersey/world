@@ -495,6 +495,8 @@ pub fn Archive(comptime World: type) type {
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.bundle_refs, .bundle)) return error.InvalidFrameEncoding;
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.capsule_refs, .capsule)) return error.InvalidFrameEncoding;
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.actuation_refs, .actuation)) return error.InvalidFrameEncoding;
+                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.commit.idempotency_key_refs);
+                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.commit.validation_report_refs);
                 try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.root_object_refs);
                 try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.admission_refs);
                 try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.environment_certificate_refs);

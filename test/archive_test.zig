@@ -1155,6 +1155,87 @@ test "archive moment data rejects forged summary refs" {
     try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
 }
 
+test "archive moment data rejects forged commit summary refs" {
+    const bundle = archiveEnvelope(.bundle, "commit-summary-bundle", "commit-summary-bundle");
+    const bundle_ref = bundle.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{bundle_ref};
+    const bundle_refs = [_]world.Continuity.ObjectRef{bundle_ref};
+    const transaction_fingerprint = 0xC055;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = bundle_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const forged_key_ref = archiveEnvelope(.actuation_idempotency_key, "forged-commit-key", "forged-commit-key").objectRef();
+    const forged_report_ref = archiveEnvelope(.actuation_verify_report, "forged-validation-report", "forged-validation-report").objectRef();
+    const objects = [_]world.Continuity.ObjectEnvelope{bundle};
+
+    {
+        const idempotency_key_refs = [_]world.Continuity.ObjectRef{forged_key_ref};
+        const commit = world.Continuity.Chronicle.Commit.init(.{
+            .transaction_fingerprint = transaction_fingerprint,
+            .parent_cursor_fingerprint = parent.cursor_fingerprint,
+            .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+            .committed_object_refs = &refs,
+            .committed_event_fingerprints = &fingerprints,
+            .bundle_refs = &bundle_refs,
+            .idempotency_key_refs = &idempotency_key_refs,
+        });
+        const moment = world.Archive.Moment.init(.{
+            .sequence_number = 1,
+            .chronicle_parent_cursor = parent,
+            .chronicle_resulting_cursor = resulting,
+            .chronicle_commit_ref = world.Archive.CommitRef.fromCommit(commit),
+            .committed_event_refs = &fingerprints,
+            .committed_object_refs = &refs,
+            .bundle_refs = &bundle_refs,
+        });
+        const data = world.Archive.MomentData{
+            .moment = moment,
+            .commit = commit,
+            .events = &events,
+            .objects = &objects,
+        };
+
+        try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
+    }
+
+    {
+        const validation_report_refs = [_]world.Continuity.ObjectRef{forged_report_ref};
+        const commit = world.Continuity.Chronicle.Commit.init(.{
+            .transaction_fingerprint = transaction_fingerprint,
+            .parent_cursor_fingerprint = parent.cursor_fingerprint,
+            .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+            .committed_object_refs = &refs,
+            .committed_event_fingerprints = &fingerprints,
+            .bundle_refs = &bundle_refs,
+            .validation_report_refs = &validation_report_refs,
+        });
+        const moment = world.Archive.Moment.init(.{
+            .sequence_number = 1,
+            .chronicle_parent_cursor = parent,
+            .chronicle_resulting_cursor = resulting,
+            .chronicle_commit_ref = world.Archive.CommitRef.fromCommit(commit),
+            .committed_event_refs = &fingerprints,
+            .committed_object_refs = &refs,
+            .bundle_refs = &bundle_refs,
+        });
+        const data = world.Archive.MomentData{
+            .moment = moment,
+            .commit = commit,
+            .events = &events,
+            .objects = &objects,
+        };
+
+        try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
+    }
+}
+
 test "archive moment data rejects forged dependency summaries" {
     const dependency = archiveEnvelope(.capsule_manifest, "dependency-summary-dep", "dependency-summary-dep");
     const dependency_ref = dependency.objectRef();
