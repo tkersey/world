@@ -3411,6 +3411,49 @@ test "appliance Define requires explicit strict actuation bindings and derives d
     try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint, manifest.residual_import_set_fingerprint);
 }
 
+test "appliance manifest rejects multiple runtime actuation bindings" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+        .metadata = "ports-appliance",
+    });
+    const manifest = PortsAppliance.manifest();
+    const descriptor_fingerprints = [_]u64{
+        manifest.actuation_descriptor_fingerprints[0],
+        manifest.actuation_descriptor_fingerprints[0] ^ 0x10,
+    };
+    const binding_fingerprints = [_]u64{
+        manifest.actuation_binding_fingerprints[0],
+        manifest.actuation_binding_fingerprints[0] ^ 0x10,
+    };
+    const multi_binding_manifest = world.Appliance.Manifest.init(.{
+        .root_target_ref_fingerprint = manifest.root_target_ref_fingerprint,
+        .root_world_surface_fingerprint = manifest.root_world_surface_fingerprint,
+        .root_target_certificate_fingerprint = manifest.root_target_certificate_fingerprint,
+        .link_plan_fingerprint = manifest.link_plan_fingerprint,
+        .link_certificate_fingerprint = manifest.link_certificate_fingerprint,
+        .assembly_fingerprint = manifest.assembly_fingerprint,
+        .provider_target_ref_fingerprints = manifest.provider_target_ref_fingerprints,
+        .fabric_plan_fingerprints = manifest.fabric_plan_fingerprints,
+        .residual_import_set_fingerprint = manifest.residual_import_set_fingerprint,
+        .actuation_descriptor_fingerprints = &descriptor_fingerprints,
+        .actuation_binding_fingerprints = &binding_fingerprints,
+        .supervision_policy_fingerprint = manifest.supervision_policy_fingerprint,
+        .default_permit_requirement_fingerprints = manifest.default_permit_requirement_fingerprints,
+        .capsule_profile_fingerprint = manifest.capsule_profile_fingerprint,
+        .archive_profile_fingerprint = manifest.archive_profile_fingerprint,
+        .supported_execution_modes = manifest.supported_execution_modes,
+        .enabled_features = manifest.enabled_features,
+        .capacity_fingerprint = manifest.capacity_fingerprint,
+        .memory_plan_fingerprint = manifest.memory_plan_fingerprint,
+        .required_host_capabilities = manifest.required_host_capabilities,
+        .metadata = manifest.metadata,
+    });
+
+    try std.testing.expectError(error.InvalidFrameEncoding, multi_binding_manifest.validate());
+}
+
 test "appliance Continuity object kinds are canonical evidence kinds" {
     try std.testing.expectEqual(world.world_appliance_manifest_format_version, world.Continuity.ObjectKind.appliance_manifest.defaultFormatVersion());
     try std.testing.expectEqual(world.world_appliance_command_format_version, world.Continuity.ObjectKind.appliance_command.defaultFormatVersion());

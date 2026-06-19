@@ -487,6 +487,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.root_target_ref_fingerprint == 0 or self.root_world_surface_fingerprint == 0 or self.root_target_certificate_fingerprint == 0) return error.InvalidFrameEncoding;
                 if (self.capacity_fingerprint == 0 or self.memory_plan_fingerprint == 0) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_binding_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.actuation_binding_fingerprints.len > 1) return error.InvalidFrameEncoding;
                 for (self.actuation_descriptor_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
