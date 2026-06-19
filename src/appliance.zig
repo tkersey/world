@@ -1111,6 +1111,7 @@ pub fn Appliance(comptime World: type) type {
                 }
                 if (self.latest_chronicle_cursor_fingerprint != null and self.latest_archive_cursor == null) return error.InvalidFrameEncoding;
                 if (self.outstanding_host_requests.len != 0 and self.core_state != .waiting_host) return error.InvalidFrameEncoding;
+                if (self.core_state == .waiting_host and self.outstanding_host_requests.len == 0) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.previous_turn_receipt_fingerprint);
                 if (self.outstanding_host_requests.len > capacity.max_pending_ports) return error.CapacityExceeded;
                 for (self.outstanding_host_requests, 0..) |request, index| {
@@ -1340,7 +1341,8 @@ pub fn Appliance(comptime World: type) type {
                 if (self.host_requests.len > capacity.max_host_requests_per_turn) return error.CapacityExceeded;
                 if (self.status == .needs_host and self.host_requests.len == 0) return error.InvalidFrameEncoding;
                 if (self.status != .needs_host and self.host_requests.len != 0) return error.InvalidFrameEncoding;
-                if (self.quiescence.pending_host_request_count != self.host_requests.len) return error.InvalidFrameEncoding;
+                if (self.quiescence.pending_host_request_count != self.checkpoint.outstanding_host_requests.len) return error.InvalidFrameEncoding;
+                if (self.quiescence.prepared_actuation_count != self.host_requests.len) return error.InvalidFrameEncoding;
                 for (self.host_requests, 0..) |request, index| {
                     try request.validate(capacity);
                     if (request.turn_sequence_number > self.turn_sequence_number) return error.InvalidFrameEncoding;
@@ -1377,9 +1379,11 @@ pub fn Appliance(comptime World: type) type {
                 for (self.host_requests, self.turn_receipt.emitted_host_request_fingerprints) |request, receipt_fingerprint| {
                     if (request.request_fingerprint != receipt_fingerprint) return error.InvalidFrameEncoding;
                 }
-                if (self.checkpoint.outstanding_host_requests.len != self.host_requests.len) return error.InvalidFrameEncoding;
-                for (self.host_requests, self.checkpoint.outstanding_host_requests) |request, checkpoint_request| {
-                    if (request.request_fingerprint != checkpoint_request.request_fingerprint) return error.InvalidFrameEncoding;
+                if (self.status == .needs_host) {
+                    if (self.checkpoint.outstanding_host_requests.len != self.host_requests.len) return error.InvalidFrameEncoding;
+                    for (self.host_requests, self.checkpoint.outstanding_host_requests) |request, checkpoint_request| {
+                        if (request.request_fingerprint != checkpoint_request.request_fingerprint) return error.InvalidFrameEncoding;
+                    }
                 }
                 if (self.output_fingerprint != fingerprintTurnOutput(self)) return error.InvalidFrameEncoding;
             }
@@ -1950,6 +1954,11 @@ pub fn Appliance(comptime World: type) type {
                     self.pending_archive_resulting_cursor orelse self.latest_archive_cursor
                 else
                     self.latest_archive_cursor;
+                const resulting_core_state = switch (command.kind) {
+                    .inspect => self.state,
+                    .reset => .uninitialized,
+                    else => stateForStatus(status),
+                };
                 var archive_append_batch_fingerprint: ?u64 = null;
                 var planned_archive_resulting_cursor: ?World.Continuity.Chronicle.Cursor = null;
                 var host_request_storage: [1]HostRequest = undefined;
@@ -1963,6 +1972,16 @@ pub fn Appliance(comptime World: type) type {
                     }
                     host_request_storage[0] = self.hostRequestFor(command, turn_sequence_number, capsule_fingerprint);
                     break :blk host_request_storage[0..1];
+                } else &.{};
+                var checkpoint_outstanding_host_request_storage: [1]HostRequest = undefined;
+                const checkpoint_outstanding_host_requests = if (host_requests.len != 0)
+                    host_requests
+                else if (resulting_core_state == .waiting_host) blk: {
+                    if (self.outstanding_host_request) |request| {
+                        checkpoint_outstanding_host_request_storage[0] = request;
+                        break :blk checkpoint_outstanding_host_request_storage[0..1];
+                    }
+                    return error.InvalidFrameEncoding;
                 } else &.{};
                 var applied_host_reply_fingerprint_storage: [1]u64 = undefined;
                 const applied_host_reply_fingerprints = if (command.host_replies.len != 0) blk: {
@@ -1990,7 +2009,7 @@ pub fn Appliance(comptime World: type) type {
                 const warning_count = self.warningCountForCommand(command);
                 const quiescence = QuiescenceReport.init(.{
                     .quiescent = true,
-                    .pending_host_request_count = host_requests.len,
+                    .pending_host_request_count = checkpoint_outstanding_host_requests.len,
                     .prepared_actuation_count = host_requests.len,
                     .completed_run_count = if (status == .completed) 1 else 0,
                     .blocker_count = if (status == .blocked) 1 else 0,
@@ -2024,22 +2043,17 @@ pub fn Appliance(comptime World: type) type {
                     .pending_archive_append_batch_fingerprint = archive_append_batch_fingerprint,
                     .pending_archive_resulting_cursor = planned_archive_resulting_cursor,
                     .latest_archive_cursor = acknowledged_archive_cursor_value,
-                    .core_state = if (command.kind == .inspect) self.state else if (command.kind == .reset) .uninitialized else stateForStatus(status),
+                    .core_state = resulting_core_state,
                     .previous_turn_receipt_fingerprint = if (command.kind == .inspect)
                         self.previous_turn_receipt_fingerprint
                     else if (resets_core)
                         null
                     else
                         turn_receipt.receipt_fingerprint,
-                    .outstanding_host_requests = host_requests,
+                    .outstanding_host_requests = checkpoint_outstanding_host_requests,
                     .execution_mode = command.execution_mode,
                     .metadata = "core-shell",
                 });
-                const resulting_core_state = switch (command.kind) {
-                    .inspect => self.state,
-                    .reset => .uninitialized,
-                    else => stateForStatus(status),
-                };
                 var resulting_state_fingerprint = if (command.kind == .inspect)
                     source_state_fingerprint
                 else if (command.kind == .reset)
@@ -2109,7 +2123,7 @@ pub fn Appliance(comptime World: type) type {
                             null
                         else
                             turn_receipt.receipt_fingerprint,
-                        .outstanding_host_requests = host_requests,
+                        .outstanding_host_requests = checkpoint_outstanding_host_requests,
                         .execution_mode = command.execution_mode,
                         .metadata = "core-shell",
                     });

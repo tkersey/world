@@ -1872,6 +1872,81 @@ test "appliance Core executeTurn emits deterministic output and receipt" {
     try std.testing.expect(!std.mem.eql(u8, first_output_copy, core.readOutput()));
 }
 
+test "appliance inspect checkpoint preserves waiting host request" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var resident = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer resident.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try resident.submit(boot_bytes);
+    try resident.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, resident.state);
+    const outstanding = resident.outstanding_host_request orelse return error.UnknownRequest;
+    const prior_receipt = resident.previous_turn_receipt_fingerprint.?;
+
+    const inspect = world.Appliance.Command.init(.{
+        .kind = .inspect,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+    });
+    const inspect_bytes = try inspect.encode(std.testing.allocator);
+    defer std.testing.allocator.free(inspect_bytes);
+    try resident.submit(inspect_bytes);
+    try resident.executeTurn();
+    var inspect_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        resident.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer inspect_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.inspected, inspect_output.status);
+    try std.testing.expectEqual(@as(usize, 0), inspect_output.host_requests.len);
+    try std.testing.expectEqual(@as(usize, 1), inspect_output.checkpoint.outstanding_host_requests.len);
+    try std.testing.expectEqual(outstanding.request_fingerprint, inspect_output.checkpoint.outstanding_host_requests[0].request_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), inspect_output.quiescence.pending_host_request_count);
+
+    var restored = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer restored.reset();
+    const reply = applianceHostReplyFor(outstanding, 0xD520);
+    const restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .host_replies = &.{reply},
+        .restore_checkpoint = inspect_output.checkpoint,
+    });
+    const restore_bytes = try restore.encode(std.testing.allocator);
+    defer std.testing.allocator.free(restore_bytes);
+    try restored.submit(restore_bytes);
+    try restored.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, restored.state);
+    try std.testing.expect(restored.outstanding_host_request == null);
+}
+
 test "appliance Core executeTurn enforces output capacity deterministically" {
     const tight = comptime blk: {
         var capacity = world.Appliance.Capacity.tiny_one_port;
