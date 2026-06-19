@@ -3018,25 +3018,25 @@ pub fn Archive(comptime World: type) type {
             for (events) |event| {
                 try validateKnownEventRefSlice(allocator, prior_objects, current_objects, event.object_refs);
                 try validateKnownEventRefSlice(allocator, prior_objects, current_objects, event.root_refs);
-                if (event.capsule_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.capsule_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
                 try validateKnownEventRefSlice(allocator, prior_objects, current_objects, event.actuation_refs);
                 if (event.actuation_idempotency_key_ref) |ref| try validateKnownActuationIdempotencyKeyRef(allocator, prior_objects, current_objects, event, ref);
-                if (event.bundle_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.recovery_plan_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.recovery_report_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.inbox_outbox_item_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.target_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.module_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.assembly_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.run_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.run_permit_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.admission_receipt_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
-                if (event.environment_certificate_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.bundle_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.recovery_plan_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.recovery_report_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.inbox_outbox_item_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.target_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.module_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.assembly_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.run_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.run_permit_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.admission_receipt_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
+                if (event.environment_certificate_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, event.kind, ref);
             }
         }
 
-        fn validateKnownOrSemanticEventRef(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, ref: ObjectRef) !void {
-            if (ref.byte_len == 0) return ref.validate();
+        fn validateKnownOrSemanticEventRef(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, event_kind: Chronicle.EventKind, ref: ObjectRef) !void {
+            if (event_kind != .object_committed and ref.byte_len == 0) return ref.validate();
             return validateKnownEventRef(allocator, prior_objects, current_objects, ref);
         }
 

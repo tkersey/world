@@ -2026,6 +2026,48 @@ test "archive append rejects object commit events with missing extra refs" {
     try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
 }
 
+test "archive append rejects object commit events with unresolved semantic extra refs" {
+    const envelope = archiveEnvelope(.bundle, "object-commit-semantic-extra-ref", "object-commit-semantic-extra-ref");
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const missing_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .bundle,
+        .object_fingerprint = 0xBADC_0DE,
+        .byte_len = 0,
+    });
+    const transaction_fingerprint = 0x5E04;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+        .bundle_ref = missing_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &refs,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+}
+
 test "archive append rejects mismatched domain event transaction" {
     const envelope = archiveEnvelope(.bundle, "mismatched-domain-tx", "mismatched-domain-tx");
     const ref = envelope.objectRef();
