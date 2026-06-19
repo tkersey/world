@@ -3079,7 +3079,7 @@ pub fn Archive(comptime World: type) type {
                     return error.ObjectMissing;
                 }
             }
-            try rejectObjectDependencyCycles(allocator, current_objects);
+            try rejectObjectDependencyCycles(allocator, prior_objects, current_objects);
         }
 
         const ObjectDependencyVisitState = enum(u2) {
@@ -3088,12 +3088,17 @@ pub fn Archive(comptime World: type) type {
             visited,
         };
 
-        fn rejectObjectDependencyCycles(allocator: std.mem.Allocator, current_objects: []const ObjectEnvelope) !void {
-            const states = try allocator.alloc(ObjectDependencyVisitState, current_objects.len);
+        fn rejectObjectDependencyCycles(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
+            const objects = try allocator.alloc(ObjectEnvelope, prior_objects.len + current_objects.len);
+            defer allocator.free(objects);
+            @memcpy(objects[0..prior_objects.len], prior_objects);
+            @memcpy(objects[prior_objects.len..], current_objects);
+
+            const states = try allocator.alloc(ObjectDependencyVisitState, objects.len);
             defer allocator.free(states);
             @memset(states, .unvisited);
-            for (current_objects, 0..) |_, index| {
-                try visitObjectDependency(current_objects, states, index);
+            for (objects, 0..) |_, index| {
+                try visitObjectDependency(objects, states, index);
             }
         }
 

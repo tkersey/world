@@ -2111,6 +2111,44 @@ test "archive append rejects semantic same-batch object dependency cycles" {
     try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
 }
 
+test "archive append rejects cross-moment semantic object dependency cycles" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const future_bundle_seed = archiveEnvelope(.bundle, "cross-cycle-bundle", "cross-cycle-bundle");
+    const future_bundle_ref = future_bundle_seed.objectRef();
+    const semantic_future_bundle_ref = world.Continuity.ObjectRef.init(.{
+        .kind = future_bundle_ref.kind,
+        .object_format_version = future_bundle_ref.object_format_version,
+        .object_fingerprint = future_bundle_ref.object_fingerprint,
+        .byte_len = 0,
+    });
+    const first_deps = [_]world.Continuity.ObjectRef{semantic_future_bundle_ref};
+    const capsule_seed = archiveEnvelope(.capsule_image, "cross-cycle-capsule", "cross-cycle-capsule");
+    const capsule = world.Continuity.ObjectEnvelope.init(.{
+        .kind = capsule_seed.kind,
+        .object_format_version = capsule_seed.object_format_version,
+        .payload_bytes = capsule_seed.payload_bytes,
+        .label = capsule_seed.label,
+        .dependency_refs = &first_deps,
+    });
+    const capsule_ref = capsule.objectRef();
+    _ = try commitArchiveObject(&archive, capsule);
+
+    const second_deps = [_]world.Continuity.ObjectRef{capsule_ref};
+    const bundle = world.Continuity.ObjectEnvelope.init(.{
+        .kind = future_bundle_seed.kind,
+        .payload_bytes = future_bundle_seed.payload_bytes,
+        .label = future_bundle_seed.label,
+        .dependency_refs = &second_deps,
+    });
+
+    var tx = try archive.begin(archive.image.latestMoment().?.chronicle_resulting_cursor, .{});
+    defer tx.deinit();
+    _ = try tx.putObject(bundle);
+    try std.testing.expectError(error.InvalidFrameEncoding, tx.commit());
+}
+
 test "archive append accepts later same-batch object dependencies" {
     const dependency = archiveEnvelope(.capsule_manifest, "later-dependency", "later-dependency");
     const dependency_ref = dependency.objectRef();
