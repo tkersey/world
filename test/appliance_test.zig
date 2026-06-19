@@ -4440,6 +4440,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
         .wasm_manifest_fingerprint = manifest.manifest_fingerprint,
         .wasm_required_exports_present = true,
         .wasm_forbidden_import_count = 0,
+        .wasm_inspection_passed = true,
         .external_runtime_output_fingerprint = native_output_fingerprint,
         .replay_output_fingerprint = resident_output_fingerprint,
         .archive_append_batch_fingerprint = archive_plan.append_batch.append_batch_fingerprint,
@@ -4461,6 +4462,19 @@ test "appliance conformance report binds native resident reconstructed replay ar
     });
     try missing_wasm_exports.validate(manifest.manifest_fingerprint);
     try std.testing.expect(!missing_wasm_exports.passed);
+    const failed_wasm_inspection = world.Appliance.ConformanceReport.init(.{
+        .vector_fingerprint = vector.vector_fingerprint,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .native_core_output_fingerprint = native_output_fingerprint,
+        .resident_core_output_fingerprint = resident_output_fingerprint,
+        .reconstructed_core_output_fingerprint = reconstructed_output_fingerprint,
+        .wasm_manifest_fingerprint = manifest.manifest_fingerprint,
+        .wasm_required_exports_present = true,
+        .wasm_forbidden_import_count = 0,
+        .wasm_inspection_passed = false,
+    });
+    try failed_wasm_inspection.validate(manifest.manifest_fingerprint);
+    try std.testing.expect(!failed_wasm_inspection.passed);
     try std.testing.expectEqual(native_output_fingerprint, resident_output_fingerprint);
     try std.testing.expectEqual(native_output_fingerprint, reconstructed_output_fingerprint);
 }

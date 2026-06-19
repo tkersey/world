@@ -1935,6 +1935,7 @@ pub fn Appliance(comptime World: type) type {
             wasm_manifest_fingerprint: ?u64 = null,
             wasm_required_exports_present: bool = false,
             wasm_forbidden_import_count: usize = 0,
+            wasm_inspection_passed: bool = false,
             external_runtime_output_fingerprint: ?u64 = null,
             replay_output_fingerprint: ?u64 = null,
             archive_append_batch_fingerprint: ?u64 = null,
@@ -1953,6 +1954,7 @@ pub fn Appliance(comptime World: type) type {
                 wasm_manifest_fingerprint: ?u64 = null,
                 wasm_required_exports_present: bool = false,
                 wasm_forbidden_import_count: usize = 0,
+                wasm_inspection_passed: bool = false,
                 external_runtime_output_fingerprint: ?u64 = null,
                 replay_output_fingerprint: ?u64 = null,
                 archive_append_batch_fingerprint: ?u64 = null,
@@ -1969,6 +1971,7 @@ pub fn Appliance(comptime World: type) type {
                     .wasm_manifest_fingerprint = args.wasm_manifest_fingerprint,
                     .wasm_required_exports_present = args.wasm_required_exports_present,
                     .wasm_forbidden_import_count = args.wasm_forbidden_import_count,
+                    .wasm_inspection_passed = args.wasm_inspection_passed,
                     .external_runtime_output_fingerprint = args.external_runtime_output_fingerprint,
                     .replay_output_fingerprint = args.replay_output_fingerprint,
                     .archive_append_batch_fingerprint = args.archive_append_batch_fingerprint,
@@ -1980,7 +1983,7 @@ pub fn Appliance(comptime World: type) type {
                     (result.appliance_native_output_fingerprint == null or result.appliance_native_output_fingerprint.? == result.native_core_output_fingerprint) and
                     result.native_core_output_fingerprint == result.resident_core_output_fingerprint and
                     result.native_core_output_fingerprint == result.reconstructed_core_output_fingerprint and
-                    (result.wasm_manifest_fingerprint == null or (result.wasm_manifest_fingerprint.? == result.manifest_fingerprint and result.wasm_required_exports_present and result.wasm_forbidden_import_count == 0)) and
+                    (result.wasm_manifest_fingerprint == null or (result.wasm_manifest_fingerprint.? == result.manifest_fingerprint and result.wasm_required_exports_present and result.wasm_forbidden_import_count == 0 and result.wasm_inspection_passed)) and
                     (result.external_runtime_output_fingerprint == null or result.external_runtime_output_fingerprint.? == result.native_core_output_fingerprint) and
                     (result.replay_output_fingerprint == null or result.replay_output_fingerprint.? == result.native_core_output_fingerprint) and
                     (result.archive_append_batch_fingerprint == null or result.archive_append_batch_fingerprint.? != 0) and
@@ -1997,7 +2000,7 @@ pub fn Appliance(comptime World: type) type {
                 try validateOptionalFingerprint(self.direct_native_owner_output_fingerprint);
                 try validateOptionalFingerprint(self.appliance_native_output_fingerprint);
                 try validateOptionalFingerprint(self.wasm_manifest_fingerprint);
-                if (self.wasm_manifest_fingerprint == null and (self.wasm_required_exports_present or self.wasm_forbidden_import_count != 0)) return error.InvalidFrameEncoding;
+                if (self.wasm_manifest_fingerprint == null and (self.wasm_required_exports_present or self.wasm_forbidden_import_count != 0 or self.wasm_inspection_passed)) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.replay_output_fingerprint);
                 try validateOptionalFingerprint(self.external_runtime_output_fingerprint);
                 try validateOptionalFingerprint(self.archive_append_batch_fingerprint);
@@ -2015,6 +2018,7 @@ pub fn Appliance(comptime World: type) type {
                     .wasm_manifest_fingerprint = self.wasm_manifest_fingerprint,
                     .wasm_required_exports_present = self.wasm_required_exports_present,
                     .wasm_forbidden_import_count = self.wasm_forbidden_import_count,
+                    .wasm_inspection_passed = self.wasm_inspection_passed,
                     .external_runtime_output_fingerprint = self.external_runtime_output_fingerprint,
                     .replay_output_fingerprint = self.replay_output_fingerprint,
                     .archive_append_batch_fingerprint = self.archive_append_batch_fingerprint,
@@ -5171,6 +5175,7 @@ pub fn Appliance(comptime World: type) type {
             hashOptionalU64(&hasher, report.wasm_manifest_fingerprint);
             hashBool(&hasher, report.wasm_required_exports_present);
             hashU64(&hasher, report.wasm_forbidden_import_count);
+            hashBool(&hasher, report.wasm_inspection_passed);
             hashOptionalU64(&hasher, report.external_runtime_output_fingerprint);
             hashOptionalU64(&hasher, report.replay_output_fingerprint);
             hashOptionalU64(&hasher, report.archive_append_batch_fingerprint);
@@ -5192,6 +5197,7 @@ pub fn Appliance(comptime World: type) type {
             hashOptionalU64(&hasher, report.wasm_manifest_fingerprint);
             hashBool(&hasher, report.wasm_required_exports_present);
             hashU64(&hasher, report.wasm_forbidden_import_count);
+            hashBool(&hasher, report.wasm_inspection_passed);
             hashOptionalU64(&hasher, report.external_runtime_output_fingerprint);
             hashOptionalU64(&hasher, report.replay_output_fingerprint);
             hashOptionalU64(&hasher, report.archive_append_batch_fingerprint);
