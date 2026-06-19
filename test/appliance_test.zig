@@ -1010,7 +1010,8 @@ test "appliance Core validates continue host replies before completion" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer terminal_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 0), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(reply.outcome.outcome_fingerprint, terminal_output.finalized_actuation_receipt_fingerprints[0]);
 }
 
 test "appliance Core pending and deferred HostReplies keep request outstanding" {
@@ -2483,6 +2484,8 @@ test "appliance Core reset command clears continuation state and allows fresh bo
     );
     defer reset_output.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Appliance.TurnStatus.cancelled, reset_output.status);
+    try std.testing.expectEqual(@as(u64, 0), reset_output.checkpoint.turn_sequence_number);
+    try std.testing.expectEqual(world.Appliance.CoreState.uninitialized, reset_output.checkpoint.core_state);
     try std.testing.expectEqual(@as(?u64, null), reset_output.archive_append_batch_fingerprint);
     try std.testing.expectEqual(@as(?u64, null), reset_output.checkpoint.pending_archive_append_batch_fingerprint);
     try std.testing.expectEqual(@as(usize, 0), reset_output.warning_count);
@@ -3884,6 +3887,7 @@ test "appliance actuation finalizeHost constructs commit response and receipt" {
         .world_surface_fingerprint = fixture.world_surface_fingerprint,
     });
     const finalized = try world.Actuation.Membrane.finalizeHost(prepared, .{
+        .host_request_fingerprint = fixture.key.request_fingerprint,
         .intent_fingerprint = prepared.intent.intent_fingerprint,
         .envelope_fingerprint = prepared.envelope.envelope_fingerprint,
         .idempotency_key_fingerprint = prepared.envelope.idempotency_key.key_fingerprint,
@@ -3897,6 +3901,7 @@ test "appliance actuation finalizeHost constructs commit response and receipt" {
     try std.testing.expectEqual(finalized.commit_value.commit_fingerprint, finalized.receipt.commit_fingerprint);
     try std.testing.expectEqual(finalized.response.response_fingerprint, finalized.receipt.response_fingerprint);
     try std.testing.expectEqual(prepared.envelope.idempotency_key.key_fingerprint, finalized.receipt.idempotency_key_fingerprint);
+    try std.testing.expectEqual(@as(?u64, fixture.key.request_fingerprint), finalized.receipt.request_fingerprint);
 }
 
 test "appliance actuation finalizeHost rejects forged prepared decision" {

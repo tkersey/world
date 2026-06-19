@@ -1464,7 +1464,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.diagnostic_metadata.len > capacity.max_metadata_bytes) return error.CapacityExceeded;
                 try self.checkpoint.validate(expected_manifest_fingerprint, capacity);
                 try self.turn_receipt.validate(expected_manifest_fingerprint, capacity);
-                if (self.turn_sequence_number != self.checkpoint.turn_sequence_number) return error.InvalidFrameEncoding;
+                if (self.turn_sequence_number != self.checkpoint.turn_sequence_number and !(self.checkpoint.core_state == .uninitialized and self.checkpoint.turn_sequence_number == 0)) return error.InvalidFrameEncoding;
                 if (self.turn_sequence_number != self.turn_receipt.turn_sequence_number) return error.InvalidFrameEncoding;
                 if (self.checkpoint.capsule_fingerprint != self.turn_receipt.resulting_capsule_fingerprint) return error.InvalidFrameEncoding;
                 if (self.status != self.turn_receipt.status) return error.InvalidFrameEncoding;
@@ -2110,7 +2110,11 @@ pub fn Appliance(comptime World: type) type {
                     applied_host_reply_fingerprint_storage[0] = command.host_replies[0].reply_fingerprint;
                     break :blk applied_host_reply_fingerprint_storage[0..1];
                 } else &.{};
-                const finalized_actuation_receipt_fingerprints: []const u64 = &.{};
+                var finalized_actuation_receipt_fingerprint_storage: [1]u64 = undefined;
+                const finalized_actuation_receipt_fingerprints: []const u64 = if (command.host_replies.len != 0 and hostOutcomeStatusIsTerminal(command.host_replies[0].outcome.status)) blk: {
+                    finalized_actuation_receipt_fingerprint_storage[0] = command.host_replies[0].outcome.outcome_fingerprint;
+                    break :blk finalized_actuation_receipt_fingerprint_storage[0..1];
+                } else &.{};
                 var emitted_host_request_fingerprint_storage: [1]u64 = undefined;
                 const emitted_host_request_fingerprints = if (host_requests.len != 0) blk: {
                     emitted_host_request_fingerprint_storage[0] = host_requests[0].request_fingerprint;
@@ -2129,6 +2133,7 @@ pub fn Appliance(comptime World: type) type {
                 else
                     null;
                 const warning_count = self.warningCountForCommand(command);
+                const checkpoint_turn_sequence_number = if (resets_core) @as(u64, 0) else turn_sequence_number;
                 var output_archive_append_batch_fingerprint: ?u64 = if (warning_count != 0)
                     self.pending_archive_append_batch_fingerprint
                 else
@@ -2166,7 +2171,7 @@ pub fn Appliance(comptime World: type) type {
                 });
                 var checkpoint = Checkpoint.init(.{
                     .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
-                    .turn_sequence_number = turn_sequence_number,
+                    .turn_sequence_number = checkpoint_turn_sequence_number,
                     .capsule_fingerprint = capsule_fingerprint,
                     .latest_archive_moment_fingerprint = acknowledged_archive_moment,
                     .latest_archive_seal_fingerprint = acknowledged_archive_seal,
@@ -2240,7 +2245,7 @@ pub fn Appliance(comptime World: type) type {
                         stateFingerprintFor(resulting_core_state, turn_sequence_number, turn_receipt.receipt_fingerprint);
                     checkpoint = Checkpoint.init(.{
                         .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
-                        .turn_sequence_number = turn_sequence_number,
+                        .turn_sequence_number = checkpoint_turn_sequence_number,
                         .capsule_fingerprint = capsule_fingerprint,
                         .latest_archive_moment_fingerprint = acknowledged_archive_moment,
                         .latest_archive_seal_fingerprint = acknowledged_archive_seal,
