@@ -34499,6 +34499,10 @@ pub const Continuity = struct {
         return try bundleEnvelopeSemanticFingerprintMatches(allocator, envelope, ref.object_fingerprint);
     }
 
+    pub fn objectEnvelopeRefMatches(allocator: std.mem.Allocator, envelope: ObjectEnvelope, ref: ObjectRef) !bool {
+        return bundleRefMatches(allocator, envelope, ref);
+    }
+
     fn bundleEnvelopeSemanticFingerprintMatches(allocator: std.mem.Allocator, envelope: ObjectEnvelope, fingerprint: u64) !bool {
         return switch (envelope.kind) {
             .capsule_image => blk: {

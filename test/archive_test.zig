@@ -397,6 +397,61 @@ test "archive object lookup validates semantic refs before matching" {
     try std.testing.expectError(error.InvalidFrameEncoding, archive.getObject(malformed_ref));
 }
 
+test "archive object lookup resolves typed semantic refs" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const capsule = archiveEnvelope(.capsule_image, "typed-semantic-capsule", "typed-semantic-capsule");
+    const capsule_ref = capsule.objectRef();
+    _ = try commitArchiveObject(&archive, capsule);
+    var capsule_image = try world.Capsule.Image.decode(std.testing.allocator, capsule.payload_bytes);
+    defer capsule_image.deinit(std.testing.allocator);
+    const semantic_capsule_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .capsule_image,
+        .object_format_version = capsule_ref.object_format_version,
+        .object_fingerprint = capsule_image.image_fingerprint,
+        .byte_len = 0,
+    });
+    try std.testing.expect(capsule_ref.object_fingerprint != semantic_capsule_ref.object_fingerprint);
+
+    var capsule_object = try archive.getObject(semantic_capsule_ref);
+    defer capsule_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(capsule_ref.ref_fingerprint, capsule_object.objectRef().ref_fingerprint);
+    try std.testing.expect(archive.hasObject(semantic_capsule_ref));
+
+    const receipt = try archiveReceiptEnvelope(std.testing.allocator, "typed-semantic-receipt", 0xA810);
+    defer std.testing.allocator.free(receipt.payload_bytes);
+    defer std.testing.allocator.free(receipt.dependency_refs);
+    const receipt_ref = receipt.objectRef();
+    _ = try commitArchiveObject(&archive, receipt);
+    var receipt_value = try world.Actuation.Receipt.decode(std.testing.allocator, receipt.payload_bytes);
+    defer receipt_value.deinit(std.testing.allocator);
+    const semantic_receipt_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .actuation_receipt,
+        .object_format_version = receipt_ref.object_format_version,
+        .object_fingerprint = receipt_value.receipt_fingerprint,
+        .byte_len = 0,
+    });
+    try std.testing.expect(receipt_ref.object_fingerprint != semantic_receipt_ref.object_fingerprint);
+
+    var receipt_object = try archive.getObject(semantic_receipt_ref);
+    defer receipt_object.deinit(std.testing.allocator);
+    try std.testing.expectEqual(receipt_ref.ref_fingerprint, receipt_object.objectRef().ref_fingerprint);
+    try std.testing.expect(archive.hasObject(semantic_receipt_ref));
+
+    const deps = [_]world.Continuity.ObjectRef{semantic_capsule_ref};
+    const dependent = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "typed-semantic-dep-user",
+        .label = "typed-semantic-dep-user",
+        .dependency_refs = &deps,
+    });
+    var tx = try archive.begin(archive.image.latestMoment().?.chronicle_resulting_cursor, .{});
+    defer tx.deinit();
+    _ = try tx.putObject(dependent);
+    _ = try tx.commit();
+}
+
 test "archive transactions accept receipt-backed semantic idempotency keys" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();

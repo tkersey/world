@@ -937,8 +937,9 @@ pub fn Archive(comptime World: type) type {
             }
 
             pub fn getObject(self: @This(), ref: ObjectRef) !ObjectEnvelope {
+                try ref.validate();
                 for (self.image.objects) |envelope| {
-                    if (refMatchesObject(envelope, ref) and self.refCommittedAtOrBeforeMoment(ref)) return envelope.clone(self.image.allocator);
+                    if (try refMatchesObject(self.image.allocator, envelope, ref) and self.refCommittedAtOrBeforeMoment(envelope.objectRef())) return envelope.clone(self.image.allocator);
                 }
                 return error.ObjectMissing;
             }
@@ -1622,7 +1623,7 @@ pub fn Archive(comptime World: type) type {
 
                 fn validateDependencies(self: @This(), envelope: ObjectEnvelope) !void {
                     for (envelope.dependency_refs) |dep| {
-                        if (self.archive.hasObject(dep) or objectSliceContainsRef(self.staged_objects.items, dep)) continue;
+                        if (self.archive.hasObject(dep) or try objectSliceContainsSemanticRef(self.archive.allocator, self.staged_objects.items, dep)) continue;
                         if (dep.byte_len == 0 and envelopeKindAllowsUnresolvedSemanticDependency(envelope.kind)) continue;
                         return error.ObjectMissing;
                     }
@@ -1733,7 +1734,7 @@ pub fn Archive(comptime World: type) type {
             pub fn getObject(self: @This(), ref: ObjectRef) !ObjectEnvelope {
                 try ref.validate();
                 for (self.image.objects) |envelope| {
-                    if (refMatchesObject(envelope, ref)) return envelope.clone(self.allocator);
+                    if (try refMatchesObject(self.allocator, envelope, ref)) return envelope.clone(self.allocator);
                 }
                 return error.ObjectMissing;
             }
@@ -1741,7 +1742,7 @@ pub fn Archive(comptime World: type) type {
             pub fn hasObject(self: @This(), ref: ObjectRef) bool {
                 ref.validate() catch return false;
                 for (self.image.objects) |envelope| {
-                    if (refMatchesObject(envelope, ref)) return true;
+                    if (refMatchesObject(self.allocator, envelope, ref) catch return false) return true;
                 }
                 return false;
             }
@@ -2639,7 +2640,14 @@ pub fn Archive(comptime World: type) type {
 
         fn objectSliceContainsRef(objects: []const ObjectEnvelope, ref: ObjectRef) bool {
             for (objects) |object| {
-                if (refMatchesObject(object, ref)) return true;
+                if (refsEquivalent(object.objectRef(), ref)) return true;
+            }
+            return false;
+        }
+
+        fn objectSliceContainsSemanticRef(allocator: std.mem.Allocator, objects: []const ObjectEnvelope, ref: ObjectRef) !bool {
+            for (objects) |object| {
+                if (try refMatchesObject(allocator, object, ref)) return true;
             }
             return false;
         }
@@ -2659,8 +2667,8 @@ pub fn Archive(comptime World: type) type {
                     (lhs.byte_len == 0 or rhs.byte_len == 0));
         }
 
-        fn refMatchesObject(object: ObjectEnvelope, ref: ObjectRef) bool {
-            return refsEquivalent(object.objectRef(), ref);
+        fn refMatchesObject(allocator: std.mem.Allocator, object: ObjectEnvelope, ref: ObjectRef) !bool {
+            return Continuity.objectEnvelopeRefMatches(allocator, object, ref);
         }
 
         fn validateAppendBatchLimits(allocator: std.mem.Allocator, batch: AppendBatch, limits: Limits) !void {
@@ -3008,36 +3016,36 @@ pub fn Archive(comptime World: type) type {
 
         fn validateDomainEventRefsKnown(allocator: std.mem.Allocator, events: []const Chronicle.Event, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
             for (events) |event| {
-                try validateKnownEventRefSlice(prior_objects, current_objects, event.object_refs);
-                try validateKnownEventRefSlice(prior_objects, current_objects, event.root_refs);
-                if (event.capsule_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                try validateKnownEventRefSlice(prior_objects, current_objects, event.actuation_refs);
+                try validateKnownEventRefSlice(allocator, prior_objects, current_objects, event.object_refs);
+                try validateKnownEventRefSlice(allocator, prior_objects, current_objects, event.root_refs);
+                if (event.capsule_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                try validateKnownEventRefSlice(allocator, prior_objects, current_objects, event.actuation_refs);
                 if (event.actuation_idempotency_key_ref) |ref| try validateKnownActuationIdempotencyKeyRef(allocator, prior_objects, current_objects, event, ref);
-                if (event.bundle_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.recovery_plan_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.recovery_report_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.inbox_outbox_item_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.target_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.module_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.assembly_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.run_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.run_permit_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.admission_receipt_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
-                if (event.environment_certificate_ref) |ref| try validateKnownOrSemanticEventRef(prior_objects, current_objects, ref);
+                if (event.bundle_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.recovery_plan_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.recovery_report_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.inbox_outbox_item_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.target_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.module_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.assembly_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.run_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.run_permit_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.admission_receipt_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
+                if (event.environment_certificate_ref) |ref| try validateKnownOrSemanticEventRef(allocator, prior_objects, current_objects, ref);
             }
         }
 
-        fn validateKnownOrSemanticEventRef(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, ref: ObjectRef) !void {
+        fn validateKnownOrSemanticEventRef(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, ref: ObjectRef) !void {
             if (ref.byte_len == 0) return ref.validate();
-            return validateKnownEventRef(prior_objects, current_objects, ref);
+            return validateKnownEventRef(allocator, prior_objects, current_objects, ref);
         }
 
-        fn validateKnownEventRefSlice(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, refs: []const ObjectRef) !void {
-            for (refs) |ref| try validateKnownEventRef(prior_objects, current_objects, ref);
+        fn validateKnownEventRefSlice(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, refs: []const ObjectRef) !void {
+            for (refs) |ref| try validateKnownEventRef(allocator, prior_objects, current_objects, ref);
         }
 
-        fn validateKnownEventRef(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, ref: ObjectRef) !void {
-            if (objectSliceContainsRef(current_objects, ref) or objectSliceContainsRef(prior_objects, ref)) return;
+        fn validateKnownEventRef(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope, ref: ObjectRef) !void {
+            if (try objectSliceContainsSemanticRef(allocator, current_objects, ref) or try objectSliceContainsSemanticRef(allocator, prior_objects, ref)) return;
             return error.InvalidFrameEncoding;
         }
 
@@ -3048,7 +3056,7 @@ pub fn Archive(comptime World: type) type {
             event: Chronicle.Event,
             ref: ObjectRef,
         ) !void {
-            if (objectSliceContainsRef(current_objects, ref) or objectSliceContainsRef(prior_objects, ref)) return;
+            if (try objectSliceContainsSemanticRef(allocator, current_objects, ref) or try objectSliceContainsSemanticRef(allocator, prior_objects, ref)) return;
             if (event.kind == .actuation_idempotency_registered and ref.kind == .actuation_idempotency_key and event.actuation_refs.len != 0) {
                 if (ref.byte_len != 0) return error.InvalidFrameEncoding;
                 for (event.actuation_refs) |actuation_ref| {
@@ -3066,7 +3074,7 @@ pub fn Archive(comptime World: type) type {
             key_ref: ObjectRef,
         ) !bool {
             for (objects) |object| {
-                if (object.kind != .actuation_receipt or !refMatchesObject(object, actuation_ref)) continue;
+                if (object.kind != .actuation_receipt or !try refMatchesObject(allocator, object, actuation_ref)) continue;
                 var receipt = Actuation.Receipt.decode(allocator, object.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => return false,
@@ -3080,7 +3088,7 @@ pub fn Archive(comptime World: type) type {
         fn validateObjectDependenciesKnown(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
             for (current_objects, 0..) |object, object_index| {
                 for (object.dependency_refs) |dep| {
-                    if (objectSliceContainsRef(prior_objects, dep) or objectSliceContainsRef(current_objects[0..object_index], dep)) continue;
+                    if (try objectSliceContainsSemanticRef(allocator, prior_objects, dep) or try objectSliceContainsSemanticRef(allocator, current_objects[0..object_index], dep)) continue;
                     if (dep.byte_len == 0 and envelopeKindAllowsUnresolvedSemanticDependency(object.kind)) continue;
                     return error.ObjectMissing;
                 }
@@ -3104,11 +3112,11 @@ pub fn Archive(comptime World: type) type {
             defer allocator.free(states);
             @memset(states, .unvisited);
             for (objects, 0..) |_, index| {
-                try visitObjectDependency(objects, states, index);
+                try visitObjectDependency(allocator, objects, states, index);
             }
         }
 
-        fn visitObjectDependency(current_objects: []const ObjectEnvelope, states: []ObjectDependencyVisitState, index: usize) !void {
+        fn visitObjectDependency(allocator: std.mem.Allocator, current_objects: []const ObjectEnvelope, states: []ObjectDependencyVisitState, index: usize) !void {
             switch (states[index]) {
                 .visited => return,
                 .visiting => return error.InvalidFrameEncoding,
@@ -3116,15 +3124,15 @@ pub fn Archive(comptime World: type) type {
             }
             states[index] = .visiting;
             for (current_objects[index].dependency_refs) |dep| {
-                const dependency_index = objectSliceIndexOfRef(current_objects, dep) orelse continue;
-                try visitObjectDependency(current_objects, states, dependency_index);
+                const dependency_index = (try objectSliceIndexOfRef(allocator, current_objects, dep)) orelse continue;
+                try visitObjectDependency(allocator, current_objects, states, dependency_index);
             }
             states[index] = .visited;
         }
 
-        fn objectSliceIndexOfRef(objects: []const ObjectEnvelope, ref: ObjectRef) ?usize {
+        fn objectSliceIndexOfRef(allocator: std.mem.Allocator, objects: []const ObjectEnvelope, ref: ObjectRef) !?usize {
             for (objects, 0..) |object, index| {
-                if (refMatchesObject(object, ref)) return index;
+                if (try refMatchesObject(allocator, object, ref)) return index;
             }
             return null;
         }
