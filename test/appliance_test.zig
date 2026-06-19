@@ -532,7 +532,23 @@ test "appliance wasm inspector binds metadata values and memory limits" {
     const exported_second_inspection = try world.Appliance.Abi.inspectWasm(exported_second.items);
     try std.testing.expectEqual(@as(u32, 66), exported_second_inspection.memory_initial_pages);
     try std.testing.expectEqual(@as(?u32, 66), exported_second_inspection.memory_max_pages);
+    try std.testing.expectEqual(@as(u32, 2), exported_second_inspection.memory_count);
     try std.testing.expect(!exported_second_inspection.passed());
+
+    var hidden_second = try buildMinimalApplianceWasmWithMemoryExport(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        66,
+        66,
+        0,
+    );
+    defer hidden_second.deinit(std.testing.allocator);
+    const hidden_second_inspection = try world.Appliance.Abi.inspectWasm(hidden_second.items);
+    try std.testing.expectEqual(@as(u32, 65), hidden_second_inspection.memory_initial_pages);
+    try std.testing.expectEqual(@as(u32, 2), hidden_second_inspection.memory_count);
+    try std.testing.expect(!hidden_second_inspection.passed());
 }
 
 test "appliance profile presets are strict and identity-bearing" {
@@ -3392,6 +3408,30 @@ test "appliance continuity typed payload validation accepts advertised appliance
         world.world_appliance_reconstruction_report_fingerprint_version,
         reconstruction_payload,
     );
+    const reconstruction_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_reconstruction_report,
+        .object_format_version = world.world_appliance_reconstruction_report_fingerprint_version,
+        .payload_bytes = reconstruction_payload,
+    });
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, reconstruction_envelope),
+    );
+    const reconstruction_deps = [_]world.Continuity.ObjectRef{
+        world.Continuity.ObjectRef.init(.{
+            .kind = .appliance_turn_output,
+            .object_format_version = world.Continuity.ObjectKind.appliance_turn_output.defaultFormatVersion(),
+            .object_fingerprint = reconstruction.resident_turn_output_fingerprint,
+            .byte_len = 0,
+        }),
+    };
+    const reconstruction_with_deps = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_reconstruction_report,
+        .object_format_version = world.world_appliance_reconstruction_report_fingerprint_version,
+        .dependency_refs = &reconstruction_deps,
+        .payload_bytes = reconstruction_payload,
+    });
+    try world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, reconstruction_with_deps);
 
     const conformance = world.Appliance.ConformanceReport.init(.{
         .vector_fingerprint = 0xD308,

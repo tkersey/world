@@ -2914,6 +2914,7 @@ pub fn Appliance(comptime World: type) type {
                 memory_plan_fingerprint: u64 = 0,
                 required_memory_bytes: u64 = 0,
                 max_linear_memory_pages: u32 = 0,
+                memory_count: u32 = 0,
                 memory_export_present: bool = false,
                 memory_initial_pages: u32 = 0,
                 memory_max_pages: ?u32 = null,
@@ -2927,6 +2928,7 @@ pub fn Appliance(comptime World: type) type {
                         self.required_export_signatures_valid and
                         self.metadata_export_signatures_valid and
                         self.metadata_export_values_valid and
+                        self.memory_count == 1 and
                         self.memory_export_present and
                         self.max_linear_memory_pages > 0 and
                         self.memory_initial_pages == self.max_linear_memory_pages and
@@ -2970,6 +2972,7 @@ pub fn Appliance(comptime World: type) type {
                             const memory = try inspectWasmMemory(section);
                             memory_section = memory;
                             memory_count = memory.count;
+                            inspection.memory_count = memory.count;
                             inspection.memory_initial_pages = memory.initial_pages;
                             inspection.memory_max_pages = memory.max_pages;
                         },

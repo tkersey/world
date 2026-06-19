@@ -30914,6 +30914,7 @@ pub const Continuity = struct {
                 .guest_conformance_report,
                 .fabric_receipt,
                 .appliance_turn_output,
+                .appliance_reconstruction_report,
                 .appliance_conformance_report,
                 => true,
                 else => false,
@@ -36075,6 +36076,14 @@ pub const Continuity = struct {
                 defer output.deinit(allocator);
                 break :blk try bundleApplianceTurnOutputDependencyPayloadsValid(allocator, envelopes, output);
             },
+            .appliance_reconstruction_report => blk: {
+                const report = decodePortableEvidence(Appliance.ReconstructionReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break :blk false,
+                };
+                report.validate(report.manifest_fingerprint) catch break :blk false;
+                break :blk try bundleApplianceReconstructionReportDependencyPayloadsValid(allocator, envelopes, report);
+            },
             .appliance_conformance_report => blk: {
                 const report = decodePortableEvidence(Appliance.ConformanceReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
@@ -36114,6 +36123,25 @@ pub const Continuity = struct {
                 };
                 defer actuation_receipt.deinit(allocator);
                 if (actuation_receipt.receipt_fingerprint != fingerprint) return false;
+            }
+        }
+        return true;
+    }
+
+    fn bundleApplianceReconstructionReportDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, report: Appliance.ReconstructionReport) !bool {
+        const output_fingerprints = [_]u64{
+            report.resident_turn_output_fingerprint,
+            report.reconstructed_turn_output_fingerprint,
+        };
+        for (output_fingerprints) |fingerprint| {
+            const ref = semanticObjectRef(.appliance_turn_output, fingerprint);
+            if (try bundleEnvelopeForRef(allocator, envelopes, ref)) |output_envelope| {
+                var output = Appliance.TurnOutput.decodeArchivePayload(allocator, output_envelope.payload_bytes) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return false,
+                };
+                defer output.deinit(allocator);
+                if (output.output_fingerprint != fingerprint) return false;
             }
         }
         return true;
@@ -36936,6 +36964,10 @@ pub const Continuity = struct {
                 defer output.deinit(allocator);
                 break :blk try bundleApplianceTurnOutputRequiredDependencyRefs(allocator, output);
             },
+            .appliance_reconstruction_report => blk: {
+                const report = try decodePortableEvidence(Appliance.ReconstructionReport, allocator, envelope.payload_bytes);
+                break :blk try bundleApplianceReconstructionReportRequiredDependencyRefs(allocator, report);
+            },
             .appliance_conformance_report => blk: {
                 const report = try decodePortableEvidence(Appliance.ConformanceReport, allocator, envelope.payload_bytes);
                 break :blk try bundleApplianceConformanceReportRequiredDependencyRefs(allocator, report);
@@ -36982,6 +37014,14 @@ pub const Continuity = struct {
         try appendUniqueObjectRef(allocator, &refs, try applianceCheckpointObjectRef(allocator, output.checkpoint));
         try appendUniqueObjectRef(allocator, &refs, try applianceTurnReceiptObjectRef(allocator, output.turn_receipt));
         for (output.finalized_actuation_receipt_fingerprints) |fingerprint| try appendUniqueSemanticRef(allocator, &refs, .actuation_receipt, fingerprint);
+        return refs.toOwnedSlice(allocator);
+    }
+
+    fn bundleApplianceReconstructionReportRequiredDependencyRefs(allocator: std.mem.Allocator, report: Appliance.ReconstructionReport) ![]ObjectRef {
+        var refs: std.ArrayList(ObjectRef) = .empty;
+        errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, report.resident_turn_output_fingerprint);
+        try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, report.reconstructed_turn_output_fingerprint);
         return refs.toOwnedSlice(allocator);
     }
 
