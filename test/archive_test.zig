@@ -1193,6 +1193,42 @@ test "archive moment data rejects forged resulting cursor" {
     try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
 }
 
+test "archive append batch rejects missing committed objects" {
+    const present = archiveEnvelope(.bundle, "append-batch-present", "append-batch-present");
+    const missing = archiveEnvelope(.bundle, "append-batch-missing", "append-batch-missing");
+    const present_ref = present.objectRef();
+    const missing_ref = missing.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ present_ref, missing_ref };
+    const transaction_fingerprint = 0xA17B;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = present_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &refs,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{present};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    try std.testing.expectError(error.InvalidFrameEncoding, batch.validate());
+}
+
 test "archive moment data rejects forged summary refs" {
     const capsule = archiveEnvelope(.capsule_image, "summary-capsule", "summary-capsule");
     const bundle = archiveEnvelope(.bundle, "summary-bundle", "summary-bundle");

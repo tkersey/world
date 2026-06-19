@@ -626,6 +626,10 @@ pub fn Archive(comptime World: type) type {
                     const ref = envelope.objectRef();
                     if (!containsRef(self.commit.committed_object_refs, ref)) return error.InvalidFrameEncoding;
                 }
+                if (self.objects.len != self.commit.committed_object_refs.len) return error.InvalidFrameEncoding;
+                for (self.commit.committed_object_refs) |ref| {
+                    if (!objectSliceContainsRef(self.objects, ref)) return error.InvalidFrameEncoding;
+                }
                 try rejectConflictingObjectBytes(self.objects);
                 try validateByteField(self.diagnostic_metadata_bytes);
             }
