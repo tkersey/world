@@ -597,13 +597,6 @@ test "appliance manifest derives supported execution modes from profile" {
         .actuation_bindings = .{ApplianceActuationBinding},
         .metadata = "mode-actuated-full",
     });
-    const ActuatedReplayOnlyAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
-        .profile = world.Appliance.Profile.replay_only,
-        .capacity = world.Appliance.Capacity.tiny_one_port,
-        .actuation_bindings = .{ApplianceActuationBinding},
-        .metadata = "mode-actuated-replay-only",
-    });
-
     const small_modes = SmallAppliance.manifest().supported_execution_modes;
     try std.testing.expect(small_modes.supports(.fresh));
     try std.testing.expect(small_modes.supports(.replay));
@@ -634,12 +627,11 @@ test "appliance manifest derives supported execution modes from profile" {
     try std.testing.expect(!actuated_full.supported_execution_modes.supports(.audit));
     try std.testing.expect(!actuated_full.required_host_capabilities.replay_evidence);
 
-    const actuated_replay_only = ActuatedReplayOnlyAppliance.manifest();
-    try std.testing.expect(actuated_replay_only.supported_execution_modes.supports(.fresh));
-    try std.testing.expect(!actuated_replay_only.supported_execution_modes.supports(.replay));
-    try std.testing.expect(!actuated_replay_only.supported_execution_modes.supports(.verify));
-    try std.testing.expect(!actuated_replay_only.supported_execution_modes.supports(.audit));
-    try std.testing.expect(!actuated_replay_only.required_host_capabilities.replay_evidence);
+    const replay_only_with_binding_modes = world.Appliance.ExecutionModeSet.forManifest(world.Appliance.Profile.replay_only, 1);
+    try std.testing.expect(!replay_only_with_binding_modes.supports(.fresh));
+    try std.testing.expect(replay_only_with_binding_modes.supports(.replay));
+    try std.testing.expect(replay_only_with_binding_modes.supports(.verify));
+    try std.testing.expect(!replay_only_with_binding_modes.supports(.audit));
 }
 
 test "appliance definition accepts static assembly-covered internal provider port" {
@@ -1384,6 +1376,66 @@ test "appliance Core validates continue host replies before completion" {
         try expectedFinalizedActuationReceiptFingerprint(outstanding, reply),
         terminal_output.finalized_actuation_receipt_fingerprints[0],
     );
+}
+
+test "appliance Core rejects byte HostReply before finalizing actuation receipt" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer core.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .root_argument_image = "byte-response-start",
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try core.submit(boot_bytes);
+    try core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
+    const outstanding = core.outstanding_host_request orelse return error.StaleTurn;
+    const prior_receipt = core.previous_turn_receipt_fingerprint.?;
+
+    const byte_outcome = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = outstanding.request_fingerprint,
+        .intent_fingerprint = outstanding.intent_fingerprint,
+        .envelope_fingerprint = outstanding.envelope_fingerprint,
+        .idempotency_key_fingerprint = outstanding.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = 0xD4B7,
+        .response_kind = .bytes,
+        .response_bytes = "raw-bytes",
+        .host_evidence_fingerprint = 0xD4B8,
+        .host_evidence_bytes = "host-claim:bytes",
+        .attempt_number = 1,
+    });
+    const byte_reply = world.Appliance.HostReply.init(.{
+        .target_host_request_fingerprint = outstanding.request_fingerprint,
+        .outcome = byte_outcome,
+    });
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .host_replies = &.{byte_reply},
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+
+    try core.submit(continue_bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, core.executeTurn());
 }
 
 test "appliance finalized HostReply validation uses active capacity" {

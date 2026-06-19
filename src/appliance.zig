@@ -414,10 +414,12 @@ pub fn Appliance(comptime World: type) type {
             pub fn forManifest(profile: Profile, actuation_binding_count: usize) @This() {
                 var modes = fromProfile(profile);
                 if (actuation_binding_count != 0) {
-                    modes.fresh = true;
-                    modes.replay = false;
-                    modes.verify = false;
-                    modes.audit = false;
+                    if (profile.kind != .replay_only) {
+                        modes.fresh = true;
+                        modes.replay = false;
+                        modes.verify = false;
+                        modes.audit = false;
+                    }
                 }
                 return modes;
             }
@@ -3498,6 +3500,7 @@ pub fn Appliance(comptime World: type) type {
             comptime {
                 _ = World.TargetRef.fromTarget(RootTarget);
                 if (!profile.enable_actuation and actuation_bindings.len != 0) @compileError("World Appliance actuation bindings require a profile with actuation enabled");
+                if (profile.kind == .replay_only and actuation_bindings.len != 0) @compileError("World Appliance replay-only profile does not support external Actuation bindings");
                 if (actuation_bindings.len > capacity.max_host_requests_per_turn) @compileError("World Appliance external Actuation bindings exceed Capacity.max_host_requests_per_turn");
                 if (actuation_bindings.len > capacity.max_host_replies_per_turn) @compileError("World Appliance external Actuation bindings exceed Capacity.max_host_replies_per_turn");
                 if (actuation_bindings.len > capacity.max_actuation_records) @compileError("World Appliance external Actuation bindings exceed Capacity.max_actuation_records");
@@ -4292,6 +4295,7 @@ pub fn Appliance(comptime World: type) type {
             try request.validate(capacity);
             try reply.validate(&.{request}, capacity);
             if (!hostOutcomeStatusIsTerminal(reply.outcome.status)) return error.InvalidFrameEncoding;
+            if (reply.outcome.status == .responded and reply.outcome.response_kind != .frame_value_image) return error.InvalidFrameEncoding;
 
             const status = actuationStatusForHostOutcome(reply.outcome.status);
             const commit_status = actuationCommitStatusForHostOutcome(reply.outcome.status);
