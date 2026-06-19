@@ -536,7 +536,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_classes.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_allowed_response_statuses.len) return error.InvalidFrameEncoding;
                 if (self.actuation_binding_fingerprints.len > 1) return error.InvalidFrameEncoding;
-                if (self.actuation_binding_fingerprints.len != 0 and (self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
+                if (self.actuation_binding_fingerprints.len != 0 and (!self.required_host_capabilities.actuation or self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
                 for (self.actuation_descriptor_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
@@ -2036,6 +2036,7 @@ pub fn Appliance(comptime World: type) type {
             pending_command: ?Command = null,
             last_output_bytes: []const u8 = "",
             last_output_owned: bool = false,
+            last_output_status: ?TurnStatus = null,
             last_turn_status: ?TurnStatus = null,
             current_turn_sequence_number: u64 = 0,
             previous_turn_receipt_fingerprint: ?u64 = null,
@@ -2061,6 +2062,7 @@ pub fn Appliance(comptime World: type) type {
                 latest_archive_moment_fingerprint: ?u64,
                 latest_archive_seal_fingerprint: ?u64,
                 latest_chronicle_cursor_fingerprint: ?u64,
+                last_output_status: ?TurnStatus,
                 last_turn_status: ?TurnStatus,
 
                 fn capture(core: *Core) !@This() {
@@ -2085,6 +2087,7 @@ pub fn Appliance(comptime World: type) type {
                         .latest_archive_moment_fingerprint = core.latest_archive_moment_fingerprint,
                         .latest_archive_seal_fingerprint = core.latest_archive_seal_fingerprint,
                         .latest_chronicle_cursor_fingerprint = core.latest_chronicle_cursor_fingerprint,
+                        .last_output_status = core.last_output_status,
                         .last_turn_status = core.last_turn_status,
                     };
                 }
@@ -2102,6 +2105,7 @@ pub fn Appliance(comptime World: type) type {
                     core.latest_archive_moment_fingerprint = self.latest_archive_moment_fingerprint;
                     core.latest_archive_seal_fingerprint = self.latest_archive_seal_fingerprint;
                     core.latest_chronicle_cursor_fingerprint = self.latest_chronicle_cursor_fingerprint;
+                    core.last_output_status = self.last_output_status;
                     core.last_turn_status = self.last_turn_status;
                     self.outstanding_host_request = null;
                     self.snapshot_metadata_owned = false;
@@ -2405,6 +2409,7 @@ pub fn Appliance(comptime World: type) type {
                     self.latest_chronicle_cursor_fingerprint = acknowledged_chronicle_cursor;
                 }
                 self.state = resulting_core_state;
+                self.last_output_status = status;
                 if (status != .inspected) self.last_turn_status = status;
                 if (self.pending_command) |*pending| pending.deinit(self.allocator);
                 self.pending_command = null;
@@ -2425,6 +2430,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.last_output_owned) self.allocator.free(self.last_output_bytes);
                 self.last_output_bytes = "";
                 self.last_output_owned = false;
+                self.last_output_status = null;
                 self.last_turn_status = null;
                 self.state = .uninitialized;
                 self.clearContinuationState();
@@ -2720,7 +2726,7 @@ pub fn Appliance(comptime World: type) type {
             pub fn submitCommand(self: *@This(), command_bytes: []const u8) Abi.Status {
                 self.core.submit(command_bytes) catch |err| return self.setErrorStatus(Abi.statusForError(err));
                 self.core.executeTurn() catch |err| return self.setErrorStatus(Abi.statusForError(err));
-                const status = if (self.core.last_turn_status) |turn_status|
+                const status = if (self.core.last_output_status) |turn_status|
                     Abi.statusForTurnStatus(turn_status)
                 else
                     Abi.statusForCoreState(self.core.state);

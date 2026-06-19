@@ -4625,6 +4625,15 @@ test "appliance Native submit status preserves canonical TurnOutput status" {
     ));
     defer completed_native.core.reset();
     try std.testing.expectEqual(world.Appliance.Abi.Status.completed, completed_native.submitCommand(strict_boot_bytes));
+    const inspect_completed = world.Appliance.Command.init(.{
+        .kind = .inspect,
+        .manifest_fingerprint = strict_manifest.manifest_fingerprint,
+        .turn_sequence_number = completed_native.core.current_turn_sequence_number,
+        .previous_turn_receipt_fingerprint = completed_native.core.previous_turn_receipt_fingerprint,
+    });
+    const inspect_completed_bytes = try inspect_completed.encode(std.testing.allocator);
+    defer std.testing.allocator.free(inspect_completed_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.output_ready, completed_native.submitCommand(inspect_completed_bytes));
 
     const cancel = world.Appliance.Command.init(.{
         .kind = .cancel,
@@ -4722,6 +4731,13 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
         .required_host_capabilities = replay_evidence_capabilities,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, replay_evidence_manifest.validate());
+
+    var hidden_actuation_capabilities = manifest.required_host_capabilities;
+    hidden_actuation_capabilities.actuation = false;
+    const hidden_actuation_manifest = applianceManifestVariant(manifest, .{
+        .required_host_capabilities = hidden_actuation_capabilities,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, hidden_actuation_manifest.validate());
 
     var reserved_modes = manifest.supported_execution_modes;
     reserved_modes._reserved = 1;
