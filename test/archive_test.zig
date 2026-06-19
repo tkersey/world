@@ -335,6 +335,18 @@ test "archive snapshot indexes are rebuilt by Chronicle projection" {
     try std.testing.expect(refSliceContains(actuation_index.refs, receipt_ref));
 }
 
+test "archive transactions populate dedicated moment summary refs" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const assembly = archiveEnvelope(.assembly, "assembly-summary", "assembly-summary");
+    const assembly_ref = assembly.objectRef();
+    const moment = try commitArchiveObject(&archive, assembly);
+
+    try std.testing.expect(refSliceContains(moment.root_object_refs, assembly_ref));
+    try std.testing.expect(refSliceContains(moment.link_assembly_refs, assembly_ref));
+}
+
 test "archive transactions accept semantic dependency refs resolved by fingerprint" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
@@ -1310,6 +1322,48 @@ test "archive moment data rejects forged commit summary refs" {
 
         try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
     }
+}
+
+test "archive moment data rejects omitted dedicated summary refs" {
+    const assembly = archiveEnvelope(.assembly, "omitted-dedicated-summary", "omitted-dedicated-summary");
+    const assembly_ref = assembly.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{assembly_ref};
+    const transaction_fingerprint = 0xA55E;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = assembly_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+    });
+    const moment = world.Archive.Moment.init(.{
+        .sequence_number = 1,
+        .chronicle_parent_cursor = parent,
+        .chronicle_resulting_cursor = resulting,
+        .chronicle_commit_ref = world.Archive.CommitRef.fromCommit(commit),
+        .committed_event_refs = &fingerprints,
+        .committed_object_refs = &refs,
+        .root_object_refs = &refs,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{assembly};
+    const data = world.Archive.MomentData{
+        .moment = moment,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    };
+
+    try std.testing.expectError(error.InvalidFrameEncoding, data.validate());
 }
 
 test "archive moment data rejects forged dependency summaries" {

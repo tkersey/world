@@ -497,13 +497,13 @@ pub fn Archive(comptime World: type) type {
                 if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.commit.actuation_refs, .actuation)) return error.InvalidFrameEncoding;
                 try validateSummaryRefsSubset(self.commit.committed_object_refs, self.commit.idempotency_key_refs);
                 try validateSummaryRefsSubset(self.commit.committed_object_refs, self.commit.validation_report_refs);
-                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.root_object_refs);
-                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.admission_refs);
-                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.environment_certificate_refs);
-                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.permit_receipt_refs);
-                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.link_assembly_refs);
-                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.fabric_receipt_refs);
-                try validateSummaryRefsSubset(self.commit.committed_object_refs, self.moment.guest_conformance_refs);
+                if (!refSlicesEqual(self.commit.committed_object_refs, self.moment.root_object_refs)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.moment.admission_refs, .admission)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.moment.environment_certificate_refs, .environment_certificate)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.moment.permit_receipt_refs, .permit_receipt)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.moment.link_assembly_refs, .link_assembly)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.moment.fabric_receipt_refs, .fabric_receipt)) return error.InvalidFrameEncoding;
+                if (!summaryRefsMatchCommittedObjects(self.commit.committed_object_refs, self.moment.guest_conformance_refs, .guest_conformance)) return error.InvalidFrameEncoding;
             }
 
             pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
@@ -1320,6 +1320,18 @@ pub fn Archive(comptime World: type) type {
                 defer freeRefSlice(self.allocator, committed_refs);
                 const dependency_refs = try collectDependencyRefs(self.allocator, batch.objects);
                 defer freeRefSlice(self.allocator, dependency_refs);
+                const admission_refs = try collectSummaryRefs(self.allocator, committed_refs, .admission);
+                defer freeRefSlice(self.allocator, admission_refs);
+                const environment_certificate_refs = try collectSummaryRefs(self.allocator, committed_refs, .environment_certificate);
+                defer freeRefSlice(self.allocator, environment_certificate_refs);
+                const permit_receipt_refs = try collectSummaryRefs(self.allocator, committed_refs, .permit_receipt);
+                defer freeRefSlice(self.allocator, permit_receipt_refs);
+                const link_assembly_refs = try collectSummaryRefs(self.allocator, committed_refs, .link_assembly);
+                defer freeRefSlice(self.allocator, link_assembly_refs);
+                const fabric_receipt_refs = try collectSummaryRefs(self.allocator, committed_refs, .fabric_receipt);
+                defer freeRefSlice(self.allocator, fabric_receipt_refs);
+                const guest_conformance_refs = try collectSummaryRefs(self.allocator, committed_refs, .guest_conformance);
+                defer freeRefSlice(self.allocator, guest_conformance_refs);
                 const moment = Moment.init(.{
                     .sequence_number = if (parent_moment) |m| m.sequence_number + 1 else 1,
                     .parent_moment_fingerprint = if (parent_moment) |m| m.moment_fingerprint else null,
@@ -1333,6 +1345,12 @@ pub fn Archive(comptime World: type) type {
                     .capsule_refs = batch.commit.capsule_refs,
                     .actuation_refs = batch.commit.actuation_refs,
                     .bundle_refs = batch.commit.bundle_refs,
+                    .admission_refs = admission_refs,
+                    .environment_certificate_refs = environment_certificate_refs,
+                    .permit_receipt_refs = permit_receipt_refs,
+                    .link_assembly_refs = link_assembly_refs,
+                    .fabric_receipt_refs = fabric_receipt_refs,
+                    .guest_conformance_refs = guest_conformance_refs,
                     .dependency_refs = dependency_refs,
                     .diagnostic_metadata_bytes = batch.diagnostic_metadata_bytes,
                 });
@@ -2863,6 +2881,12 @@ pub fn Archive(comptime World: type) type {
             bundle,
             capsule,
             actuation,
+            admission,
+            environment_certificate,
+            permit_receipt,
+            link_assembly,
+            fabric_receipt,
+            guest_conformance,
         };
 
         fn cursorsEqual(a: Chronicle.Cursor, b: Chronicle.Cursor) bool {
@@ -2927,7 +2951,30 @@ pub fn Archive(comptime World: type) type {
                     => true,
                     else => false,
                 },
+                .admission => ref.kind == .admission_receipt,
+                .environment_certificate => ref.kind == .environment_certificate,
+                .permit_receipt => ref.kind == .run_permit or ref.kind == .run_receipt,
+                .link_assembly => ref.kind == .linker_certificate or ref.kind == .assembly,
+                .fabric_receipt => ref.kind == .fabric_receipt,
+                .guest_conformance => ref.kind == .guest_conformance_report,
             };
+        }
+
+        fn collectSummaryRefs(allocator: std.mem.Allocator, committed_refs: []const ObjectRef, summary_kind: SummaryRefKind) ![]ObjectRef {
+            var refs: std.ArrayList(ObjectRef) = .empty;
+            errdefer deinitRefList(&refs, allocator);
+            for (committed_refs) |ref| {
+                if (!refMatchesSummaryKind(ref, summary_kind)) continue;
+                const owned = try ref.clone(allocator);
+                var owned_pending = true;
+                errdefer if (owned_pending) {
+                    var cleanup = owned;
+                    cleanup.deinit(allocator);
+                };
+                try refs.append(allocator, owned);
+                owned_pending = false;
+            }
+            return refs.toOwnedSlice(allocator);
         }
 
         fn validateSummaryRefsSubset(committed_refs: []const ObjectRef, summary_refs: []const ObjectRef) !void {
