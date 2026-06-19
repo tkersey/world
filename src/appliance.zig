@@ -2394,7 +2394,7 @@ pub fn Appliance(comptime World: type) type {
                     self.latest_chronicle_cursor_fingerprint = acknowledged_chronicle_cursor;
                 }
                 self.state = resulting_core_state;
-                self.last_turn_status = status;
+                if (status != .inspected) self.last_turn_status = status;
                 if (self.pending_command) |*pending| pending.deinit(self.allocator);
                 self.pending_command = null;
                 rollback.deinit(self.allocator);

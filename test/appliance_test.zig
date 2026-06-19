@@ -1514,6 +1514,28 @@ test "appliance Core pending and deferred HostReplies keep request outstanding" 
 
         try std.testing.expectEqual(world.Appliance.CoreState.completed, core.state);
         try std.testing.expect(core.outstanding_host_request == null);
+
+        const inspect = world.Appliance.Command.init(.{
+            .kind = .inspect,
+            .manifest_fingerprint = manifest.manifest_fingerprint,
+            .turn_sequence_number = core.current_turn_sequence_number,
+            .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        });
+        const inspect_bytes = try inspect.encode(std.testing.allocator);
+        defer std.testing.allocator.free(inspect_bytes);
+        try core.submit(inspect_bytes);
+        try core.executeTurn();
+        try std.testing.expectEqual(world.Appliance.CoreState.completed, core.state);
+
+        const post_inspect_continue = world.Appliance.Command.init(.{
+            .kind = .@"continue",
+            .manifest_fingerprint = manifest.manifest_fingerprint,
+            .turn_sequence_number = core.current_turn_sequence_number + 1,
+            .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        });
+        const post_inspect_continue_bytes = try post_inspect_continue.encode(std.testing.allocator);
+        defer std.testing.allocator.free(post_inspect_continue_bytes);
+        try std.testing.expectError(error.StaleTurn, core.submit(post_inspect_continue_bytes));
     }
 }
 
