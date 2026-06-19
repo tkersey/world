@@ -119,4 +119,4 @@ Completed Fabric history is visible through Fabric invocation/receipt records an
 
 ## Non-goals
 
-Fabric does not implement Boundary provider linking, Boundary normalization, TreatyResolver hot paths, ProviderHarness hot paths, service discovery, storage, xitdb, network transport, scheduler threads, async runtime, real model/tool/file/human integrations, provider lifecycle, WASM host packages, Boundary loaded-module execution, signing, encryption, package management, artifact registry, or an agent framework.
+Fabric does not implement Boundary provider linking, Boundary normalization, TreatyResolver hot paths, ProviderHarness hot paths, service discovery, storage, network transport, scheduler threads, async runtime, real model/tool/file/human integrations, provider lifecycle, WASM host packages, Boundary loaded-module execution, signing, encryption, package management, artifact registry, or an agent framework.

@@ -99,4 +99,4 @@ A future `world-wasm` host package can call the ABI, manage linear memory, feed 
 
 ## Non-goals
 
-Guest Conformance does not implement storage, xitdb, network transport, distributed protocol, scheduler threads, async runtime, provider lifecycle, service discovery, real model/tool/file/human integrations, cryptographic signing or encryption, package management, artifact registry, WASI filesystem, browser JS packages, Component Model, WIT bindings, Boundary loaded module execution, Boundary closure/normalization, TreatyResolver hot paths, or ProviderHarness hot paths.
+Guest Conformance does not implement storage, network transport, distributed protocol, scheduler threads, async runtime, provider lifecycle, service discovery, real model/tool/file/human integrations, cryptographic signing or encryption, package management, artifact registry, WASI filesystem, browser JS packages, Component Model, WIT bindings, Boundary loaded module execution, Boundary closure/normalization, TreatyResolver hot paths, or ProviderHarness hot paths.

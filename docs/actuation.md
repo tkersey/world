@@ -203,4 +203,4 @@ Future model, tool, file, browser, and human adapters should implement the same 
 
 ## Non-goals
 
-World Actuation does not implement real model integration, tool registries, filesystem effects, browser effects, human workflow, network transport, storage backends, xitdb, scheduler threads, async runtime, provider lifecycle, service discovery, WASM host packages, Boundary loaded execution, TreatyResolver or ProviderHarness hot paths, package management, artifact registries, signing, encryption, cryptographic security, or exactly-once distributed transactions.
+World Actuation does not implement real model integration, tool registries, filesystem effects, browser effects, human workflow, network transport, storage backends, scheduler threads, async runtime, provider lifecycle, service discovery, WASM host packages, Boundary loaded execution, TreatyResolver or ProviderHarness hot paths, package management, artifact registries, signing, encryption, cryptographic security, or exactly-once distributed transactions.

@@ -76,4 +76,4 @@ Future storage backends can persist transcript images and timeline metadata. Thi
 
 ## Non-Goals
 
-No WASM ABI, linear-memory layout, storage backend, xitdb integration, network transport, scheduler, async runtime, provider lifecycle, service discovery, real model/tool/file/human integrations, security/signing/encryption, Boundary closure, Boundary normalization, TreatyResolver hot path, ProviderHarness hot path, provider catalog lookup, morphism catalog lookup, closure graph traversal, evidence graph traversal, or agent framework.
+No WASM ABI, linear-memory layout, storage backend, network transport, scheduler, async runtime, provider lifecycle, service discovery, real model/tool/file/human integrations, security/signing/encryption, Boundary closure, Boundary normalization, TreatyResolver hot path, ProviderHarness hot path, provider catalog lookup, morphism catalog lookup, closure graph traversal, evidence graph traversal, or agent framework.

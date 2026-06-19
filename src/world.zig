@@ -1193,6 +1193,7 @@ pub const RunReceipt = Supervision.RunReceipt;
 
 pub const ConduitPlan = Fabric.Plan;
 pub const ConduitRoute = Fabric.Route;
+pub const Archive = @import("archive.zig").Archive(@This());
 pub const Linker = @import("linker.zig").Linker(@This());
 pub const Assembly = Linker.Assembly;
 pub const ActuatorRef = Actuation.Ref;
@@ -33625,8 +33626,8 @@ pub const Continuity = struct {
         }
     };
 
-    const ObjectCodec = struct {
-        fn encodeEnvelope(envelope: ObjectEnvelope, allocator: std.mem.Allocator) ![]const u8 {
+    pub const ObjectCodec = struct {
+        pub fn encodeEnvelope(envelope: ObjectEnvelope, allocator: std.mem.Allocator) ![]const u8 {
             var out: std.ArrayList(u8) = .empty;
             errdefer out.deinit(allocator);
             try writeU32(&out, allocator, envelope.envelope_format_version);
@@ -33644,7 +33645,7 @@ pub const Continuity = struct {
             return out.toOwnedSlice(allocator);
         }
 
-        fn decodeEnvelope(allocator: std.mem.Allocator, bytes: []const u8, max_dependency_count: usize) !ObjectEnvelope {
+        pub fn decodeEnvelope(allocator: std.mem.Allocator, bytes: []const u8, max_dependency_count: usize) !ObjectEnvelope {
             var cursor: usize = 0;
             const envelope_format_version = try readU32(bytes, &cursor);
             const envelope_fingerprint_version = try readU32(bytes, &cursor);
@@ -34498,6 +34499,10 @@ pub const Continuity = struct {
         return try bundleEnvelopeSemanticFingerprintMatches(allocator, envelope, ref.object_fingerprint);
     }
 
+    pub fn objectEnvelopeRefMatches(allocator: std.mem.Allocator, envelope: ObjectEnvelope, ref: ObjectRef) !bool {
+        return bundleRefMatches(allocator, envelope, ref);
+    }
+
     fn bundleEnvelopeSemanticFingerprintMatches(allocator: std.mem.Allocator, envelope: ObjectEnvelope, fingerprint: u64) !bool {
         return switch (envelope.kind) {
             .capsule_image => blk: {
@@ -34809,7 +34814,7 @@ pub const Continuity = struct {
         }
     };
 
-    fn decodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, bytes: []const u8) anyerror!Value {
+    pub fn decodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, bytes: []const u8) anyerror!Value {
         if (comptime Value == Actuation.Response) {
             const payload = try decodePortableEvidence(ActuationResponsePortableEvidence, allocator, bytes);
             errdefer deinitOwnedValue(allocator, payload);
@@ -34825,7 +34830,7 @@ pub const Continuity = struct {
         return value;
     }
 
-    fn encodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, value: Value) ![]const u8 {
+    pub fn encodePortableEvidence(comptime Value: type, allocator: std.mem.Allocator, value: Value) ![]const u8 {
         if (comptime Value == Actuation.Response) {
             return encodePortableEvidence(ActuationResponsePortableEvidence, allocator, ActuationResponsePortableEvidence.fromResponse(value));
         }
@@ -34965,6 +34970,30 @@ pub const Continuity = struct {
         for (summary.pending_frame_fingerprints) |fingerprint| if (fingerprint == 0) return false;
         for (summary.actuation_receipt_fingerprints) |fingerprint| if (fingerprint == 0) return false;
         return true;
+    }
+
+    pub fn validateObjectEnvelopeTypedPayload(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !void {
+        try envelope.validate();
+        if (!(try bundleEnvelopeTypedPayloadValid(allocator, envelope))) return error.InvalidFrameEncoding;
+    }
+
+    pub fn validateObjectEnvelopeRequiredDependencies(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !void {
+        try envelope.validate();
+        if (!(try storableEnvelopeDeclaresRequiredDependencies(allocator, envelope))) return error.InvalidFrameEncoding;
+    }
+
+    pub fn validateObjectEnvelopeDependencyPayloads(
+        allocator: std.mem.Allocator,
+        envelopes: []const ObjectEnvelope,
+        envelope: ObjectEnvelope,
+    ) !void {
+        try envelope.validate();
+        if (!(try bundleEnvelopeDependencyPayloadsValid(allocator, envelopes, envelope))) return error.InvalidFrameEncoding;
+    }
+
+    pub fn objectEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: ObjectEnvelope) ![]ObjectRef {
+        try envelope.validate();
+        return try bundleEnvelopeRequiredDependencyRefs(allocator, envelope);
     }
 
     fn bundleEnvelopeTypedPayloadValid(allocator: std.mem.Allocator, envelope: ObjectEnvelope) !bool {

@@ -95,4 +95,4 @@ If Boundary later supports loaded module execution, World can add an execution p
 
 ## Non-Goals
 
-World Admission does not implement storage, xitdb, network transport, scheduler, async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, WASM ABI, linear memory layout, Boundary closure/normalization, TreatyResolver or ProviderHarness hot paths, signing, encryption, agent framework, package manager, or artifact registry.
+World Admission does not implement storage, network transport, scheduler, async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, WASM ABI, linear memory layout, Boundary closure/normalization, TreatyResolver or ProviderHarness hot paths, signing, encryption, agent framework, package manager, or artifact registry.

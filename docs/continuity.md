@@ -6,7 +6,7 @@ Capsules define the portable execution unit. Actuation receipts define host-effe
 
 World Continuity is World's local causal memory model for portable execution and host-effect evidence. It gives World deterministic refs, typed envelopes, an in-memory content-addressed vault, dependency graphs, portable bundles, lightweight indexes, and recovery preflight.
 
-Continuity is not a storage backend. It defines the object model that future file stores, xitdb adapters, UIs, transfer mechanisms, and distributed runners should share.
+Continuity is not a storage backend. It defines the object model that Archive bytes, host adapters, UIs, transfer mechanisms, and distributed runners should share.
 
 Continuity Core stores facts. Chronicle records why those facts exist and how to replay local causal history.
 
@@ -53,7 +53,7 @@ Envelope validation checks payload fingerprint, envelope fingerprint, dependency
 
 It supports generic `put`, `get`, `has`, `listByKind`, `validate`, and `dependencies`, plus typed helpers for capsule images, actuation receipts, actuation journals, and idempotency-key lookup.
 
-MemoryVault has no delete, file backend, xitdb integration, production database semantics, network fetch, signing, or encryption.
+MemoryVault has no delete, file backend, production database semantics, network fetch, signing, or encryption.
 
 ## Chronicle
 
@@ -205,12 +205,12 @@ Future work can add automatic persistence hooks across Runspace, Fabric, Linker,
 
 V1 intentionally uses explicit store/load APIs first.
 
-## Future xitdb adapter
+## Archive boundary
 
-An xitdb adapter can map `ObjectRef`, `ObjectEnvelope`, committed Chronicle events, cursor checkpoints, commits, projection reports, bundles, and compatibility ledger events onto durable storage later.
+`world.Archive` is the persistence boundary for `ObjectRef`, `ObjectEnvelope`, committed Chronicle events, cursor checkpoints, commits, projection reports, bundles, and compatibility ledger events.
 
-Chronicle gives future adapters one local append-only event stream and transaction model to persist instead of inventing adapter-specific semantics. Continuity still does not integrate xitdb and does not shape World around any production database.
+Chronicle gives Archive one local append-only event stream and transaction model to encode instead of inventing adapter-specific semantics. Continuity still does not shape World around any production database.
 
 ## Non-goals
 
-Continuity and Chronicle do not implement xitdb, a production database, file/directory storage, network transport, a scheduler, an async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, a WASM host package, Boundary closure or normalization, signing, encryption, exactly-once semantics, a package manager, an artifact registry, broad implicit persistence, or credential/host-handle serialization.
+Continuity and Chronicle do not implement a production database, file/directory storage, network transport, a scheduler, an async runtime, real model/tool/file/human integrations, provider lifecycle, service discovery, a WASM host package, Boundary closure or normalization, signing, encryption, exactly-once semantics, a package manager, an artifact registry, broad implicit persistence, or credential/host-handle serialization.

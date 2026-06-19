@@ -108,4 +108,4 @@ Linker may construct `Fabric.Route` and `Fabric.Plan`. Linker may not mutate Run
 
 ## Non-goals
 
-World Linker does not implement service discovery, package management, artifact registries, network transport, storage, xitdb, scheduler threads, async runtimes, real model/tool/file/human integrations, provider lifecycle management, Boundary provider linking, Boundary normalization, TreatyResolver or ProviderHarness hot paths, Boundary loaded-module execution, WASM host packages, signing, encryption, cryptographic security, or an agent framework.
+World Linker does not implement service discovery, package management, artifact registries, network transport, storage, scheduler threads, async runtimes, real model/tool/file/human integrations, provider lifecycle management, Boundary provider linking, Boundary normalization, TreatyResolver or ProviderHarness hot paths, Boundary loaded-module execution, WASM host packages, signing, encryption, cryptographic security, or an agent framework.

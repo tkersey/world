@@ -105,4 +105,4 @@ Replay-only permits require replay-compatible adapters and prevent native handle
 
 ## Non-goals
 
-World Supervision is not storage, xitdb, network transport, scheduler, async runtime, provider lifecycle, service discovery, WASM ABI, real integration, Boundary module image implementation, Boundary closure/normalization, TreatyResolver hot path, ProviderHarness hot path, agent framework, billing layer, signing layer, encryption layer, or cryptographic security boundary.
+World Supervision is not storage, network transport, scheduler, async runtime, provider lifecycle, service discovery, WASM ABI, real integration, Boundary module image implementation, Boundary closure/normalization, TreatyResolver hot path, ProviderHarness hot path, agent framework, billing layer, signing layer, encryption layer, or cryptographic security boundary.
