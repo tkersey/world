@@ -469,6 +469,7 @@ pub fn Archive(comptime World: type) type {
                 if (!cursorsEqual(recomputed_cursor, self.moment.chronicle_resulting_cursor)) return error.InvalidFrameEncoding;
                 var committed_ref_index: usize = 0;
                 for (self.events) |event| {
+                    if (!eventKindAllowedInCommittedMoment(event.kind)) return error.InvalidFrameEncoding;
                     const transaction_fingerprint = event.transaction_fingerprint orelse return error.InvalidFrameEncoding;
                     if (transaction_fingerprint != self.commit.transaction_fingerprint) return error.InvalidFrameEncoding;
                     if (event.kind != .object_committed) continue;
@@ -3123,8 +3124,19 @@ pub fn Archive(comptime World: type) type {
             role: EventRefRole,
             ref: ObjectRef,
         ) !void {
-            if (eventKindAllowsSemanticEventRef(event_kind, role) and ref.byte_len == 0) return ref.validate();
+            if (eventKindAllowsSemanticEventRef(event_kind, role) and ref.byte_len == 0) {
+                try ref.validate();
+                if (!semanticEventRefMatchesRole(role, ref)) return error.InvalidFrameEncoding;
+                return;
+            }
             return validateKnownEventRef(allocator, prior_objects, current_objects, ref);
+        }
+
+        fn eventKindAllowedInCommittedMoment(event_kind: Chronicle.EventKind) bool {
+            return switch (event_kind) {
+                .vault_initialized => false,
+                else => true,
+            };
         }
 
         fn eventKindAllowsSemanticEventRef(event_kind: Chronicle.EventKind, role: EventRefRole) bool {
@@ -3185,6 +3197,17 @@ pub fn Archive(comptime World: type) type {
                     => true,
                     else => false,
                 },
+                else => false,
+            };
+        }
+
+        fn semanticEventRefMatchesRole(role: EventRefRole, ref: ObjectRef) bool {
+            return switch (role) {
+                .bundle => ref.kind == .bundle,
+                .capsule => ref.kind == .capsule_image,
+                .recovery_plan => ref.kind == .capsule_thaw_plan,
+                .recovery_report => ref.kind == .capsule_restore_report,
+                .inbox_outbox_item => ref.kind == .handoff_envelope,
                 else => false,
             };
         }

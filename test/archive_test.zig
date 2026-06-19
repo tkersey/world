@@ -996,6 +996,40 @@ test "archive writer accepts semantic evidence refs in domain events" {
     try std.testing.expectEqual(@as(usize, 1), scan.committed_moment_count);
 }
 
+test "archive writer rejects semantic event refs with wrong role kind" {
+    const wrong_bundle_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .capsule_image,
+        .object_fingerprint = 0xAA21,
+        .byte_len = 0,
+    });
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .bundle_import_committed,
+        .transaction_fingerprint = 0xAA22,
+        .bundle_ref = wrong_bundle_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, 0, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xAA22,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &.{},
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+}
+
 test "archive writer rejects semantic refs on stored object events" {
     const capsule_ref = world.Continuity.ObjectRef.init(.{
         .kind = .capsule_image,
@@ -1013,6 +1047,34 @@ test "archive writer rejects semantic refs on stored object events" {
     const resulting = parent.advance(&event_fingerprints, 0, 1);
     const commit = world.Continuity.Chronicle.Commit.init(.{
         .transaction_fingerprint = 0xAA23,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_event_fingerprints = &event_fingerprints,
+    });
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &.{},
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+    try std.testing.expectEqual(@as(usize, 0), writer.bytes.items.len);
+}
+
+test "archive writer rejects non-transactional events in committed moments" {
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .vault_initialized,
+        .transaction_fingerprint = 0xAA24,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const event_fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&event_fingerprints, 0, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = 0xAA24,
         .parent_cursor_fingerprint = parent.cursor_fingerprint,
         .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
         .committed_event_fingerprints = &event_fingerprints,
