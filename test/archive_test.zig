@@ -1821,6 +1821,53 @@ test "archive append rejects missing object dependencies" {
     try std.testing.expectError(error.ObjectMissing, writer.append(batch, null, null));
 }
 
+test "archive append rejects missing semantic object dependencies" {
+    const missing_dep = world.Continuity.ObjectRef.init(.{
+        .kind = .capsule_manifest,
+        .object_fingerprint = 0x5EED,
+        .byte_len = 0,
+    });
+    const deps = [_]world.Continuity.ObjectRef{missing_dep};
+    const envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "direct-missing-semantic-dep-user",
+        .label = "direct-missing-semantic-dep-user",
+        .dependency_refs = &deps,
+    });
+    const ref = envelope.objectRef();
+    const refs = [_]world.Continuity.ObjectRef{ref};
+    const transaction_fingerprint = 0x5ED0;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &refs,
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{envelope};
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.ObjectMissing, writer.append(batch, null, null));
+}
+
 test "archive append rejects same-batch object dependency cycles" {
     const first_seed = archiveEnvelope(.bundle, "cycle-first", "cycle-first");
     const second_seed = archiveEnvelope(.capsule_image, "cycle-second", "cycle-second");
@@ -1842,6 +1889,71 @@ test "archive append rejects same-batch object dependency cycles" {
     });
     const refs = [_]world.Continuity.ObjectRef{ first_ref, second_ref };
     const transaction_fingerprint = 0xC1C1;
+    const event = world.Continuity.Chronicle.Event.init(.{
+        .kind = .object_committed,
+        .transaction_fingerprint = transaction_fingerprint,
+        .object_refs = &refs,
+        .target_ref = first_ref,
+    });
+    const events = [_]world.Continuity.Chronicle.Event{event};
+    const fingerprints = [_]u64{event.event_fingerprint};
+    const parent = world.Continuity.Chronicle.Cursor.initial();
+    const resulting = parent.advance(&fingerprints, refs.len, 1);
+    const commit = world.Continuity.Chronicle.Commit.init(.{
+        .transaction_fingerprint = transaction_fingerprint,
+        .parent_cursor_fingerprint = parent.cursor_fingerprint,
+        .resulting_cursor_fingerprint = resulting.cursor_fingerprint,
+        .committed_object_refs = &refs,
+        .committed_event_fingerprints = &fingerprints,
+        .bundle_refs = &.{first_ref},
+        .capsule_refs = &.{second_ref},
+    });
+    const objects = [_]world.Continuity.ObjectEnvelope{ first, second };
+    const batch = world.Archive.AppendBatch.init(.{
+        .parent_cursor = parent,
+        .commit = commit,
+        .events = &events,
+        .objects = &objects,
+    });
+
+    var writer = world.Archive.Writer.init(std.testing.allocator, .{});
+    defer writer.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, writer.append(batch, null, null));
+}
+
+test "archive append rejects semantic same-batch object dependency cycles" {
+    const first_seed = archiveEnvelope(.bundle, "semantic-cycle-first", "semantic-cycle-first");
+    const second_seed = archiveEnvelope(.capsule_image, "semantic-cycle-second", "semantic-cycle-second");
+    const first_ref = first_seed.objectRef();
+    const second_ref = second_seed.objectRef();
+    const first_dep = world.Continuity.ObjectRef.init(.{
+        .kind = second_ref.kind,
+        .object_format_version = second_ref.object_format_version,
+        .object_fingerprint = second_ref.object_fingerprint,
+        .byte_len = 0,
+    });
+    const second_dep = world.Continuity.ObjectRef.init(.{
+        .kind = first_ref.kind,
+        .object_format_version = first_ref.object_format_version,
+        .object_fingerprint = first_ref.object_fingerprint,
+        .byte_len = 0,
+    });
+    const first_deps = [_]world.Continuity.ObjectRef{first_dep};
+    const second_deps = [_]world.Continuity.ObjectRef{second_dep};
+    const first = world.Continuity.ObjectEnvelope.init(.{
+        .kind = first_seed.kind,
+        .payload_bytes = first_seed.payload_bytes,
+        .label = first_seed.label,
+        .dependency_refs = &first_deps,
+    });
+    const second = world.Continuity.ObjectEnvelope.init(.{
+        .kind = second_seed.kind,
+        .payload_bytes = second_seed.payload_bytes,
+        .label = second_seed.label,
+        .dependency_refs = &second_deps,
+    });
+    const refs = [_]world.Continuity.ObjectRef{ first_ref, second_ref };
+    const transaction_fingerprint = 0x5EC1;
     const event = world.Continuity.Chronicle.Event.init(.{
         .kind = .object_committed,
         .transaction_fingerprint = transaction_fingerprint,
@@ -2404,6 +2516,27 @@ test "archive transactions reject missing object dependencies" {
         .kind = .bundle,
         .payload_bytes = "missing-dep-user",
         .label = "missing-dep-user",
+        .dependency_refs = &deps,
+    });
+
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    try std.testing.expectError(error.ObjectMissing, tx.putObject(envelope));
+}
+
+test "archive transactions reject missing semantic object dependencies" {
+    const dep = world.Continuity.ObjectRef.init(.{
+        .kind = .capsule_manifest,
+        .object_fingerprint = 0x5EE1,
+        .byte_len = 0,
+    });
+    const deps = [_]world.Continuity.ObjectRef{dep};
+    const envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .bundle,
+        .payload_bytes = "missing-semantic-dependency",
+        .label = "missing-semantic-dependency",
         .dependency_refs = &deps,
     });
 

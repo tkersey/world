@@ -1593,7 +1593,7 @@ pub fn Archive(comptime World: type) type {
                 fn validateDependencies(self: @This(), envelope: ObjectEnvelope) !void {
                     for (envelope.dependency_refs) |dep| {
                         if (self.archive.hasObject(dep) or objectSliceContainsRef(self.staged_objects.items, dep)) continue;
-                        if (dep.byte_len == 0) continue;
+                        if (dep.byte_len == 0 and envelopeKindAllowsUnresolvedSemanticDependency(envelope.kind)) continue;
                         return error.ObjectMissing;
                     }
                 }
@@ -3018,8 +3018,8 @@ pub fn Archive(comptime World: type) type {
         fn validateObjectDependenciesKnown(allocator: std.mem.Allocator, prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
             for (current_objects) |object| {
                 for (object.dependency_refs) |dep| {
-                    if (dep.byte_len == 0) continue;
                     if (objectSliceContainsRef(prior_objects, dep) or objectSliceContainsRef(current_objects, dep)) continue;
+                    if (dep.byte_len == 0 and envelopeKindAllowsUnresolvedSemanticDependency(object.kind)) continue;
                     return error.ObjectMissing;
                 }
             }
@@ -3049,7 +3049,6 @@ pub fn Archive(comptime World: type) type {
             }
             states[index] = .visiting;
             for (current_objects[index].dependency_refs) |dep| {
-                if (dep.byte_len == 0) continue;
                 const dependency_index = objectSliceIndexOfRef(current_objects, dep) orelse continue;
                 try visitObjectDependency(current_objects, states, dependency_index);
             }
@@ -3058,9 +3057,35 @@ pub fn Archive(comptime World: type) type {
 
         fn objectSliceIndexOfRef(objects: []const ObjectEnvelope, ref: ObjectRef) ?usize {
             for (objects, 0..) |object, index| {
-                if (object.objectRef().eql(ref)) return index;
+                if (refMatchesObject(object, ref)) return index;
             }
             return null;
+        }
+
+        fn envelopeKindAllowsUnresolvedSemanticDependency(kind: Continuity.ObjectKind) bool {
+            return switch (kind) {
+                .actuation_descriptor,
+                .actuation_binding,
+                .actuation_idempotency_key,
+                .actuation_intent,
+                .actuation_envelope,
+                .actuation_decision,
+                .actuation_commit,
+                .actuation_response,
+                .actuation_receipt,
+                .actuation_journal,
+                .actuation_verify_report,
+                .run_permit,
+                .run_receipt,
+                .admission_receipt,
+                .fabric_receipt,
+                .frame_response,
+                .run_image,
+                .guest_conformance_report,
+                .capsule_image,
+                => true,
+                else => false,
+            };
         }
 
         fn rejectAlreadyCommittedObjectRefs(prior_objects: []const ObjectEnvelope, current_objects: []const ObjectEnvelope) !void {
