@@ -2977,6 +2977,7 @@ pub fn Archive(comptime World: type) type {
         ) !void {
             if (objectSliceContainsRef(current_objects, ref) or objectSliceContainsRef(prior_objects, ref)) return;
             if (event.kind == .actuation_idempotency_registered and ref.kind == .actuation_idempotency_key and event.actuation_refs.len != 0) {
+                if (ref.byte_len != 0) return error.InvalidFrameEncoding;
                 for (event.actuation_refs) |actuation_ref| {
                     if (try actuationReceiptBindsIdempotencyKey(allocator, current_objects, actuation_ref, ref)) return;
                     if (try actuationReceiptBindsIdempotencyKey(allocator, prior_objects, actuation_ref, ref)) return;

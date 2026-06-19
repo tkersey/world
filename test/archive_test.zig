@@ -390,6 +390,31 @@ test "archive transactions accept receipt-backed semantic idempotency keys" {
     _ = try tx.commit();
 }
 
+test "archive transactions reject receipt-backed concrete idempotency keys when missing" {
+    var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer archive.deinit();
+
+    const receipt = try archiveReceiptEnvelope(std.testing.allocator, "receipt-key-concrete", 0xA810);
+    defer std.testing.allocator.free(receipt.payload_bytes);
+    defer std.testing.allocator.free(receipt.dependency_refs);
+    var tx = try archive.begin(world.Continuity.Chronicle.Cursor.initial(), .{});
+    defer tx.deinit();
+    const receipt_ref = try tx.putObject(receipt);
+    const actuation_refs = [_]world.Continuity.ObjectRef{receipt_ref};
+    const key_ref = world.Continuity.ObjectRef.init(.{
+        .kind = .actuation_idempotency_key,
+        .object_fingerprint = 0xA810 + 8,
+        .byte_len = 1,
+    });
+    try tx.addEvent(world.Continuity.Chronicle.Event.init(.{
+        .kind = .actuation_idempotency_registered,
+        .actuation_refs = &actuation_refs,
+        .actuation_idempotency_key_ref = key_ref,
+        .target_ref = receipt_ref,
+    }));
+    try std.testing.expectError(error.InvalidFrameEncoding, tx.commit());
+}
+
 test "archive transactions reject unproven semantic idempotency keys" {
     var archive = try world.Archive.Memory.open(std.testing.allocator, .{});
     defer archive.deinit();
