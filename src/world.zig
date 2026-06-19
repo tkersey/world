@@ -30913,6 +30913,7 @@ pub const Continuity = struct {
                 .run_image,
                 .guest_conformance_report,
                 .fabric_receipt,
+                .appliance_turn_output,
                 => true,
                 else => false,
             };

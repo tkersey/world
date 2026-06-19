@@ -2480,7 +2480,7 @@ pub fn Appliance(comptime World: type) type {
                     self.pending_archive_resulting_cursor;
                 const retention_ack = try effectiveRetentionAck(command);
                 if (retention_ack) |ack| {
-                    if (command.kind == .inspect) return error.InvalidFrameEncoding;
+                    if (command.kind == .inspect or command.kind == .reset) return error.InvalidFrameEncoding;
                     try ack.validate(pending_archive_append_batch_fingerprint orelse return error.ArchiveParentMismatch, self.capacity_value);
                     const pending_cursor = pending_archive_resulting_cursor orelse return error.ArchiveParentMismatch;
                     if (ack.resulting_chronicle_cursor_fingerprint != pending_cursor.cursor_fingerprint) return error.ArchiveParentMismatch;

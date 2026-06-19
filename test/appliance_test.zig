@@ -2877,6 +2877,21 @@ test "appliance Core reset command clears continuation state and allows fresh bo
     try std.testing.expect(core.outstanding_host_request != null);
     try std.testing.expectEqual(prior_archive, core.pending_archive_append_batch_fingerprint);
     try std.testing.expectEqual(prior_output_len, core.readOutput().len);
+
+    const reset_ack = try applianceRetentionAckForPendingCore(core, "reset-ack-dropped");
+    const reset_with_ack = world.Appliance.Command.init(.{
+        .kind = .reset,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .retention_ack = reset_ack,
+    });
+    const reset_with_ack_bytes = try reset_with_ack.encode(std.testing.allocator);
+    defer std.testing.allocator.free(reset_with_ack_bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, core.submit(reset_with_ack_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
+    try std.testing.expectEqual(prior_archive, core.pending_archive_append_batch_fingerprint);
+
     try core.executeTurn();
     try std.testing.expectEqual(world.Appliance.CoreState.uninitialized, core.state);
     try std.testing.expectEqual(@as(u64, 0), core.current_turn_sequence_number);
@@ -3702,6 +3717,39 @@ test "appliance archive plan commits turn evidence through Archive owner" {
         .label = "appliance output without deps",
     });
     try std.testing.expectError(error.InvalidFrameEncoding, world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, missing_required_dependencies));
+
+    var vault = world.Continuity.MemoryVault.init(std.testing.allocator);
+    defer vault.deinit();
+    _ = try vault.put(plan.objects[0]);
+    _ = try vault.put(plan.objects[1]);
+    _ = try vault.put(plan.objects[2]);
+
+    const wrong_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = checkpoint.turn_sequence_number + 1,
+        .capsule_fingerprint = capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+    });
+    const wrong_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = output.manifest_fingerprint,
+        .turn_sequence_number = output.turn_sequence_number,
+        .source_state_fingerprint = output.source_state_fingerprint,
+        .resulting_state_fingerprint = output.resulting_state_fingerprint,
+        .quiescence = output.quiescence,
+        .status = output.status,
+        .root_result_fingerprint = output.root_result_fingerprint,
+        .checkpoint = wrong_checkpoint,
+        .turn_receipt = output.turn_receipt,
+    });
+    const wrong_output_payload = try wrong_output.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_output_payload);
+    const wrong_output_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_output,
+        .dependency_refs = plan.objects[2].dependency_refs,
+        .payload_bytes = wrong_output_payload,
+        .label = "appliance output with mismatched checkpoint payload",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, vault.put(wrong_output_envelope));
 
     const moment = try archive.appendBatch(plan.append_batch);
     for (plan.object_refs) |ref| try std.testing.expect(archive.hasObject(ref));
