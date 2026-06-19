@@ -356,6 +356,7 @@ pub fn Appliance(comptime World: type) type {
             pub fn forManifest(profile: Profile, actuation_binding_count: usize) @This() {
                 var flags = fromProfile(profile);
                 flags.actuation = actuation_binding_count != 0;
+                if (actuation_binding_count != 0) flags.replay_evidence = false;
                 return flags;
             }
         };
@@ -407,6 +408,17 @@ pub fn Appliance(comptime World: type) type {
                     .verify = profile.enable_verify,
                     .audit = profile.enable_verify and profile.retain_diagnostic_metadata,
                 };
+            }
+
+            pub fn forManifest(profile: Profile, actuation_binding_count: usize) @This() {
+                var modes = fromProfile(profile);
+                if (actuation_binding_count != 0) {
+                    modes.fresh = true;
+                    modes.replay = false;
+                    modes.verify = false;
+                    modes.audit = false;
+                }
+                return modes;
             }
 
             pub fn supports(self: @This(), mode: ExecutionMode) bool {
@@ -518,6 +530,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_classes.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_allowed_response_statuses.len) return error.InvalidFrameEncoding;
                 if (self.actuation_binding_fingerprints.len > 1) return error.InvalidFrameEncoding;
+                if (self.actuation_binding_fingerprints.len != 0 and (self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
                 for (self.actuation_descriptor_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
@@ -3395,7 +3408,7 @@ pub fn Appliance(comptime World: type) type {
                 .actuation_actuator_ref_fingerprints = &actuation_actuator_ref_fingerprints,
                 .actuation_classes = &actuation_classes,
                 .actuation_allowed_response_statuses = &actuation_allowed_response_statuses,
-                .supported_execution_modes = ExecutionModeSet.fromProfile(profile),
+                .supported_execution_modes = ExecutionModeSet.forManifest(profile, actuation_bindings.len),
                 .enabled_features = FeatureSet.fromProfile(profile),
                 .capacity_fingerprint = capacity.fingerprint(),
                 .memory_plan_fingerprint = plan.plan_fingerprint,

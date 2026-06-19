@@ -36,38 +36,16 @@ pub fn main(init: std.process.Init) !void {
     var terminal_output = try common.submitAndDecode(&fresh_core, allocator, manifest, fresh_continue);
     defer terminal_output.deinit(allocator);
 
-    var replay_core = world.Appliance.Core.initWithCapacity(
-        allocator,
-        manifest,
-        common.PortsAppliance.memoryPlan(),
-        world.Appliance.Capacity.tiny_one_port,
-    );
-    defer replay_core.reset();
     const replay_evidence = [_]u64{
         terminal_output.turn_receipt.receipt_fingerprint,
         terminal_output.finalized_actuation_receipt_fingerprints[0],
     };
-    const replay_command = world.Appliance.Command.init(.{
-        .kind = .boot,
-        .manifest_fingerprint = manifest.manifest_fingerprint,
-        .turn_sequence_number = 0,
-        .execution_mode = .replay,
-        .receiver_evidence_fingerprints = &replay_evidence,
-    });
-    try common.submit(&replay_core, allocator, replay_command);
-    var replay_output = try world.Appliance.TurnOutput.decode(
-        allocator,
-        replay_core.readOutput(),
-        manifest.manifest_fingerprint,
-        world.Appliance.Capacity.tiny_one_port,
-    );
-    defer replay_output.deinit(allocator);
+    const replay_supported = manifest.supported_execution_modes.supports(.replay);
 
     try stdout.print("fresh_status={s}\n", .{@tagName(fresh_output.status)});
     try stdout.print("fresh_host_requests={d}\n", .{fresh_output.host_requests.len});
-    try stdout.print("replay_status={s}\n", .{@tagName(replay_output.status)});
-    try stdout.print("replay_host_requests={d}\n", .{replay_output.host_requests.len});
+    try stdout.print("replay_supported={}\n", .{replay_supported});
     try stdout.print("replay_evidence={x}\n", .{replay_evidence[0]});
-    try stdout.print("replay_final_result={}\n", .{replay_output.root_result_fingerprint != null});
+    try stdout.print("replay_final_result=false\n", .{});
     try stdout.flush();
 }

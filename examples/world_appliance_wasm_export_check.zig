@@ -16,6 +16,7 @@ pub fn main(init: std.process.Init) !void {
 
     const inspection = try world.Appliance.Abi.inspectWasm(bytes);
     if (!inspection.passed()) return error.WasmInspectionFailed;
+    if (common.agent_wasm_manifest_fingerprint != common.AgentAppliance.manifest().manifest_fingerprint) return error.WasmManifestMismatch;
     if (inspection.manifest_fingerprint != common.agent_wasm_manifest_fingerprint) return error.WasmManifestMismatch;
     if (inspection.capacity_fingerprint != common.agent_wasm_capacity_fingerprint) return error.WasmCapacityMismatch;
     if (inspection.memory_plan_fingerprint != common.agent_wasm_memory_plan_fingerprint) return error.WasmMemoryPlanMismatch;

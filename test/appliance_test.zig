@@ -109,6 +109,35 @@ fn applianceHostReplyWithStatusFor(
     });
 }
 
+fn applianceManifestVariant(base: world.Appliance.Manifest, args: anytype) world.Appliance.Manifest {
+    return world.Appliance.Manifest.init(.{
+        .root_target_ref_fingerprint = base.root_target_ref_fingerprint,
+        .root_world_surface_fingerprint = base.root_world_surface_fingerprint,
+        .root_target_certificate_fingerprint = base.root_target_certificate_fingerprint,
+        .link_plan_fingerprint = base.link_plan_fingerprint,
+        .link_certificate_fingerprint = base.link_certificate_fingerprint,
+        .assembly_fingerprint = base.assembly_fingerprint,
+        .provider_target_ref_fingerprints = base.provider_target_ref_fingerprints,
+        .fabric_plan_fingerprints = base.fabric_plan_fingerprints,
+        .residual_import_set_fingerprint = base.residual_import_set_fingerprint,
+        .actuation_descriptor_fingerprints = if (@hasField(@TypeOf(args), "actuation_descriptor_fingerprints")) args.actuation_descriptor_fingerprints else base.actuation_descriptor_fingerprints,
+        .actuation_binding_fingerprints = if (@hasField(@TypeOf(args), "actuation_binding_fingerprints")) args.actuation_binding_fingerprints else base.actuation_binding_fingerprints,
+        .actuation_actuator_ref_fingerprints = if (@hasField(@TypeOf(args), "actuation_actuator_ref_fingerprints")) args.actuation_actuator_ref_fingerprints else base.actuation_actuator_ref_fingerprints,
+        .actuation_classes = if (@hasField(@TypeOf(args), "actuation_classes")) args.actuation_classes else base.actuation_classes,
+        .actuation_allowed_response_statuses = if (@hasField(@TypeOf(args), "actuation_allowed_response_statuses")) args.actuation_allowed_response_statuses else base.actuation_allowed_response_statuses,
+        .supervision_policy_fingerprint = base.supervision_policy_fingerprint,
+        .default_permit_requirement_fingerprints = base.default_permit_requirement_fingerprints,
+        .capsule_profile_fingerprint = base.capsule_profile_fingerprint,
+        .archive_profile_fingerprint = base.archive_profile_fingerprint,
+        .supported_execution_modes = if (@hasField(@TypeOf(args), "supported_execution_modes")) args.supported_execution_modes else base.supported_execution_modes,
+        .enabled_features = base.enabled_features,
+        .capacity_fingerprint = base.capacity_fingerprint,
+        .memory_plan_fingerprint = base.memory_plan_fingerprint,
+        .required_host_capabilities = if (@hasField(@TypeOf(args), "required_host_capabilities")) args.required_host_capabilities else base.required_host_capabilities,
+        .metadata = base.metadata,
+    });
+}
+
 fn expectedFinalizedActuationReceiptFingerprint(
     request: world.Appliance.HostRequest,
     reply: world.Appliance.HostReply,
@@ -500,6 +529,24 @@ test "appliance manifest derives supported execution modes from profile" {
         .capacity = world.Appliance.Capacity.tiny_one_port,
         .metadata = "mode-full",
     });
+    const ActuatedSmallAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+        .metadata = "mode-actuated-small",
+    });
+    const ActuatedFullAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.full_evidence,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+        .metadata = "mode-actuated-full",
+    });
+    const ActuatedReplayOnlyAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.replay_only,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+        .metadata = "mode-actuated-replay-only",
+    });
 
     const small_modes = SmallAppliance.manifest().supported_execution_modes;
     try std.testing.expect(small_modes.supports(.fresh));
@@ -518,6 +565,25 @@ test "appliance manifest derives supported execution modes from profile" {
     try std.testing.expect(full_modes.supports(.replay));
     try std.testing.expect(full_modes.supports(.verify));
     try std.testing.expect(full_modes.supports(.audit));
+
+    const actuated_small = ActuatedSmallAppliance.manifest();
+    try std.testing.expect(actuated_small.supported_execution_modes.supports(.fresh));
+    try std.testing.expect(!actuated_small.supported_execution_modes.supports(.replay));
+    try std.testing.expect(!actuated_small.required_host_capabilities.replay_evidence);
+
+    const actuated_full = ActuatedFullAppliance.manifest();
+    try std.testing.expect(actuated_full.supported_execution_modes.supports(.fresh));
+    try std.testing.expect(!actuated_full.supported_execution_modes.supports(.replay));
+    try std.testing.expect(!actuated_full.supported_execution_modes.supports(.verify));
+    try std.testing.expect(!actuated_full.supported_execution_modes.supports(.audit));
+    try std.testing.expect(!actuated_full.required_host_capabilities.replay_evidence);
+
+    const actuated_replay_only = ActuatedReplayOnlyAppliance.manifest();
+    try std.testing.expect(actuated_replay_only.supported_execution_modes.supports(.fresh));
+    try std.testing.expect(!actuated_replay_only.supported_execution_modes.supports(.replay));
+    try std.testing.expect(!actuated_replay_only.supported_execution_modes.supports(.verify));
+    try std.testing.expect(!actuated_replay_only.supported_execution_modes.supports(.audit));
+    try std.testing.expect(!actuated_replay_only.required_host_capabilities.replay_evidence);
 }
 
 test "appliance definition accepts static assembly-covered internal provider port" {
@@ -1208,7 +1274,7 @@ test "appliance Core validates continue host replies before completion" {
     });
     const replay_reply_continue_bytes = try replay_reply_continue.encode(std.testing.allocator);
     defer std.testing.allocator.free(replay_reply_continue_bytes);
-    try std.testing.expectError(error.InvalidMode, core.submit(replay_reply_continue_bytes));
+    try std.testing.expectError(error.InvalidCommand, core.submit(replay_reply_continue_bytes));
     try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
     try std.testing.expect(std.mem.eql(u8, first_output, core.readOutput()));
 
@@ -1768,7 +1834,7 @@ test "appliance Core emitted checkpoint carries current TurnReceipt for restore"
     });
     const replay_restore_reply_bytes = try replay_restore_reply.encode(std.testing.allocator);
     defer std.testing.allocator.free(replay_restore_reply_bytes);
-    try std.testing.expectError(error.InvalidMode, restored.submit(replay_restore_reply_bytes));
+    try std.testing.expectError(error.InvalidCommand, restored.submit(replay_restore_reply_bytes));
     try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, restored.state);
 
     try restored.submit(continue_bytes);
@@ -2242,13 +2308,15 @@ test "appliance Core applies HostReply RetentionAck before archive-gated advance
     try std.testing.expectError(error.StaleTurn, restore_core.submit(terminal_restore_bytes));
 }
 
-test "appliance Core replay evidence completes without fresh HostRequest" {
+test "appliance Core rejects replay evidence without verified transcript support" {
     const ReplayAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
         .capacity = world.Appliance.Capacity.tiny_one_port,
         .actuation_bindings = .{ApplianceActuationBinding},
     });
     const manifest = ReplayAppliance.manifest();
+    try std.testing.expect(!manifest.supported_execution_modes.supports(.replay));
+    try std.testing.expect(!manifest.required_host_capabilities.replay_evidence);
 
     var fresh_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -2320,9 +2388,7 @@ test "appliance Core replay evidence completes without fresh HostRequest" {
     });
     const incomplete_replay_boot_bytes = try incomplete_replay_boot.encode(std.testing.allocator);
     defer std.testing.allocator.free(incomplete_replay_boot_bytes);
-    try incomplete_replay_core.submit(incomplete_replay_boot_bytes);
-    try incomplete_replay_core.executeTurn();
-    try std.testing.expectEqual(world.Appliance.CoreState.failed, incomplete_replay_core.state);
+    try std.testing.expectError(error.InvalidCommand, incomplete_replay_core.submit(incomplete_replay_boot_bytes));
 
     var replay_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -2344,20 +2410,26 @@ test "appliance Core replay evidence completes without fresh HostRequest" {
     });
     const replay_boot_bytes = try replay_boot.encode(std.testing.allocator);
     defer std.testing.allocator.free(replay_boot_bytes);
-    try replay_core.submit(replay_boot_bytes);
-    try replay_core.executeTurn();
-    try std.testing.expectEqual(world.Appliance.CoreState.completed, replay_core.state);
-    var replay_output = try world.Appliance.TurnOutput.decode(
+    try std.testing.expectError(error.InvalidCommand, replay_core.submit(replay_boot_bytes));
+
+    var arbitrary_replay_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
-        replay_core.readOutput(),
-        manifest.manifest_fingerprint,
+        manifest,
+        ReplayAppliance.memoryPlan(),
         world.Appliance.Capacity.tiny_one_port,
     );
-    defer replay_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, replay_output.status);
-    try std.testing.expectEqual(@as(usize, 0), replay_output.host_requests.len);
-    try std.testing.expect(replay_output.root_result_fingerprint != null);
-    try std.testing.expectEqual(world.Appliance.ExecutionMode.replay, replay_output.checkpoint.execution_mode);
+    defer arbitrary_replay_core.reset();
+    const arbitrary_replay_evidence = [_]u64{ 0xD5F0, 0xD5F1 };
+    const arbitrary_replay_boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .execution_mode = .replay,
+        .receiver_evidence_fingerprints = &arbitrary_replay_evidence,
+    });
+    const arbitrary_replay_boot_bytes = try arbitrary_replay_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(arbitrary_replay_boot_bytes);
+    try std.testing.expectError(error.InvalidCommand, arbitrary_replay_core.submit(arbitrary_replay_boot_bytes));
 
     var missing_evidence_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -2374,30 +2446,35 @@ test "appliance Core replay evidence completes without fresh HostRequest" {
     });
     const missing_evidence_boot_bytes = try missing_evidence_boot.encode(std.testing.allocator);
     defer std.testing.allocator.free(missing_evidence_boot_bytes);
-    try missing_evidence_core.submit(missing_evidence_boot_bytes);
-    try missing_evidence_core.executeTurn();
-    try std.testing.expectEqual(world.Appliance.CoreState.failed, missing_evidence_core.state);
-    var blocked_output = try world.Appliance.TurnOutput.decode(
+    try std.testing.expectError(error.InvalidCommand, missing_evidence_core.submit(missing_evidence_boot_bytes));
+
+    const FullEvidenceAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.full_evidence,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+        .metadata = "actuated-full-evidence-replay-rejected",
+    });
+    const full_manifest = FullEvidenceAppliance.manifest();
+    try std.testing.expect(!full_manifest.supported_execution_modes.supports(.verify));
+    try std.testing.expect(!full_manifest.supported_execution_modes.supports(.audit));
+    var verify_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
-        missing_evidence_core.readOutput(),
-        manifest.manifest_fingerprint,
+        full_manifest,
+        FullEvidenceAppliance.memoryPlan(),
         world.Appliance.Capacity.tiny_one_port,
     );
-    defer blocked_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(world.Appliance.TurnStatus.blocked, blocked_output.status);
-    try std.testing.expectEqual(@as(usize, 0), blocked_output.host_requests.len);
-    try std.testing.expectEqual(@as(usize, 1), blocked_output.blocker_count);
-    try std.testing.expectEqual(@as(usize, 1), blocked_output.quiescence.blocker_count);
-
-    const blocked_continue = world.Appliance.Command.init(.{
-        .kind = .@"continue",
-        .manifest_fingerprint = manifest.manifest_fingerprint,
-        .turn_sequence_number = 1,
-        .previous_turn_receipt_fingerprint = missing_evidence_core.previous_turn_receipt_fingerprint,
+    defer verify_core.reset();
+    const verify_evidence = [_]u64{ 0xD5F0, 0xD5F1 };
+    const verify_boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = full_manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .execution_mode = .verify,
+        .receiver_evidence_fingerprints = &verify_evidence,
     });
-    const blocked_continue_bytes = try blocked_continue.encode(std.testing.allocator);
-    defer std.testing.allocator.free(blocked_continue_bytes);
-    try std.testing.expectError(error.StaleTurn, missing_evidence_core.submit(blocked_continue_bytes));
+    const verify_boot_bytes = try verify_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(verify_boot_bytes);
+    try std.testing.expectError(error.InvalidCommand, verify_core.submit(verify_boot_bytes));
 }
 
 test "appliance Core warns when non-strict archive append advances unacknowledged" {
@@ -4066,17 +4143,9 @@ test "appliance Native submit status preserves canonical TurnOutput status" {
         world.Appliance.Capacity.tiny_one_port,
     ));
     defer blocked_native.core.reset();
-    try std.testing.expectEqual(world.Appliance.Abi.Status.blocked, blocked_native.submitCommand(missing_replay_bytes));
-    var blocked_output = try world.Appliance.TurnOutput.decode(
-        std.testing.allocator,
-        blocked_native.core.readOutput(),
-        ports_manifest.manifest_fingerprint,
-        world.Appliance.Capacity.tiny_one_port,
-    );
-    defer blocked_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(world.Appliance.TurnStatus.blocked, blocked_output.status);
-    try std.testing.expectEqual(world.Appliance.CoreState.failed, blocked_native.core.state);
-    try std.testing.expectEqual(@as(usize, 0), blocked_native.lastErrorLen());
+    try std.testing.expectEqual(world.Appliance.Abi.Status.invalid_command, blocked_native.submitCommand(missing_replay_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.uninitialized, blocked_native.core.state);
+    try std.testing.expect(blocked_native.lastErrorLen() != 0);
 
     const StrictAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
@@ -4159,34 +4228,43 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     };
     const actuation_classes = [_]world.Actuation.Class{ .deterministic_fixture, .deterministic_fixture };
     const allowed_response_statuses = [_]world.Actuation.ResponseStatusSet{ .terminal_with_errors, .terminal_with_errors };
-    const multi_binding_manifest = world.Appliance.Manifest.init(.{
-        .root_target_ref_fingerprint = manifest.root_target_ref_fingerprint,
-        .root_world_surface_fingerprint = manifest.root_world_surface_fingerprint,
-        .root_target_certificate_fingerprint = manifest.root_target_certificate_fingerprint,
-        .link_plan_fingerprint = manifest.link_plan_fingerprint,
-        .link_certificate_fingerprint = manifest.link_certificate_fingerprint,
-        .assembly_fingerprint = manifest.assembly_fingerprint,
-        .provider_target_ref_fingerprints = manifest.provider_target_ref_fingerprints,
-        .fabric_plan_fingerprints = manifest.fabric_plan_fingerprints,
-        .residual_import_set_fingerprint = manifest.residual_import_set_fingerprint,
+    const multi_binding_manifest = applianceManifestVariant(manifest, .{
         .actuation_descriptor_fingerprints = &descriptor_fingerprints,
         .actuation_binding_fingerprints = &binding_fingerprints,
         .actuation_actuator_ref_fingerprints = &actuator_ref_fingerprints,
         .actuation_classes = &actuation_classes,
         .actuation_allowed_response_statuses = &allowed_response_statuses,
-        .supervision_policy_fingerprint = manifest.supervision_policy_fingerprint,
-        .default_permit_requirement_fingerprints = manifest.default_permit_requirement_fingerprints,
-        .capsule_profile_fingerprint = manifest.capsule_profile_fingerprint,
-        .archive_profile_fingerprint = manifest.archive_profile_fingerprint,
-        .supported_execution_modes = manifest.supported_execution_modes,
-        .enabled_features = manifest.enabled_features,
-        .capacity_fingerprint = manifest.capacity_fingerprint,
-        .memory_plan_fingerprint = manifest.memory_plan_fingerprint,
-        .required_host_capabilities = manifest.required_host_capabilities,
-        .metadata = manifest.metadata,
     });
 
     try std.testing.expectError(error.InvalidFrameEncoding, multi_binding_manifest.validate());
+
+    var replay_modes = manifest.supported_execution_modes;
+    replay_modes.replay = true;
+    const replay_advertised_manifest = applianceManifestVariant(manifest, .{
+        .supported_execution_modes = replay_modes,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, replay_advertised_manifest.validate());
+
+    var verify_modes = manifest.supported_execution_modes;
+    verify_modes.verify = true;
+    const verify_advertised_manifest = applianceManifestVariant(manifest, .{
+        .supported_execution_modes = verify_modes,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, verify_advertised_manifest.validate());
+
+    var audit_modes = manifest.supported_execution_modes;
+    audit_modes.audit = true;
+    const audit_advertised_manifest = applianceManifestVariant(manifest, .{
+        .supported_execution_modes = audit_modes,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, audit_advertised_manifest.validate());
+
+    var replay_evidence_capabilities = manifest.required_host_capabilities;
+    replay_evidence_capabilities.replay_evidence = true;
+    const replay_evidence_manifest = applianceManifestVariant(manifest, .{
+        .required_host_capabilities = replay_evidence_capabilities,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, replay_evidence_manifest.validate());
 }
 
 test "appliance Continuity object kinds are canonical evidence kinds" {

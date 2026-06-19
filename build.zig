@@ -1042,7 +1042,7 @@ pub fn build(b: *std.Build) void {
             \\actuation_bindings=1
             \\checkpoint_every_turn=true
             \\output_bytes=732
-            \\turn_receipt=48a4ddf202f66a06
+            \\turn_receipt=1fc9a440967c6c00
             \\
             ,
         },
@@ -1096,10 +1096,9 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fresh_status=needs_host
             \\fresh_host_requests=1
-            \\replay_status=completed
-            \\replay_host_requests=0
-            \\replay_evidence=1c925bc54a46a627
-            \\replay_final_result=true
+            \\replay_supported=false
+            \\replay_evidence=7d935cccd3c27b0e
+            \\replay_final_result=false
             \\
             ,
         },
@@ -1110,7 +1109,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance WASM probe example.",
             .expected_stdout =
             \\appliance_abi_version=1
-            \\manifest=2ee796f830abd938
+            \\manifest=e9c5e72a2d566095
             \\capacity=5fcf964fbaa4a66b
             \\memory_plan=ed1c9222ab3bed1d
             \\required_exports=9

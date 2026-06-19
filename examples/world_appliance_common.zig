@@ -52,7 +52,7 @@ pub const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
     .metadata = "example-agent",
 });
 
-pub const agent_wasm_manifest_fingerprint: u64 = 0xd14c37e5eccc0151;
+pub const agent_wasm_manifest_fingerprint: u64 = 0xe9c5e72a2d566095;
 pub const agent_wasm_capacity_fingerprint: u64 = 0x5fcf964fbaa4a66b;
 pub const agent_wasm_memory_plan_fingerprint: u64 = 0xed1c9222ab3bed1d;
 pub const agent_wasm_required_memory_bytes: u64 = 4_259_840;
