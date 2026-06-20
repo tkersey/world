@@ -2494,9 +2494,6 @@ pub fn Appliance(comptime World: type) type {
                     .restore => {
                         const checkpoint = command.restore_checkpoint orelse return error.RestoreRejected;
                         if (checkpoint.turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
-                        if (checkpointIsTerminal(checkpoint)) {
-                            if (checkpoint.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
-                        }
                         if (command.turn_sequence_number != checkpoint.turn_sequence_number + 1) return error.StaleTurn;
                         if (command.previous_turn_receipt_fingerprint != checkpoint.previous_turn_receipt_fingerprint) return error.StaleTurn;
                         if (self.state != .uninitialized) {
@@ -5781,10 +5778,6 @@ pub fn Appliance(comptime World: type) type {
                 .failed, .blocked => .failed,
                 .cancelled => .cancelled,
             };
-        }
-
-        fn checkpointIsTerminal(checkpoint: Checkpoint) bool {
-            return checkpoint.core_state == .completed or checkpoint.core_state == .failed or checkpoint.core_state == .cancelled;
         }
 
         fn optionalCursorMatches(a: ?World.Continuity.Chronicle.Cursor, b: ?World.Continuity.Chronicle.Cursor) bool {

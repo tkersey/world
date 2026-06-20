@@ -2343,7 +2343,60 @@ test "appliance Core restore preserves terminal checkpoint status" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer restore_core.reset();
-    try std.testing.expectError(error.StaleTurn, restore_core.submit(restore_bytes));
+    try restore_core.submit(restore_bytes);
+    try restore_core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, restore_core.state);
+
+    const MinimalAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
+        .profile = world.Appliance.Profile.minimal,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+    });
+    const minimal_manifest = MinimalAppliance.manifest();
+    var minimal_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        minimal_manifest,
+        MinimalAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer minimal_core.reset();
+    const minimal_boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = minimal_manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const minimal_boot_bytes = try minimal_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(minimal_boot_bytes);
+    try minimal_core.submit(minimal_boot_bytes);
+    try minimal_core.executeTurn();
+    var minimal_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        minimal_core.readOutput(),
+        minimal_manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer minimal_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u64, null), minimal_output.checkpoint.pending_archive_append_batch_fingerprint);
+
+    const minimal_restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = minimal_manifest.manifest_fingerprint,
+        .turn_sequence_number = minimal_output.checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = minimal_output.checkpoint.previous_turn_receipt_fingerprint,
+        .restore_checkpoint = minimal_output.checkpoint,
+    });
+    const minimal_restore_bytes = try minimal_restore.encode(std.testing.allocator);
+    defer std.testing.allocator.free(minimal_restore_bytes);
+    var minimal_restore_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        minimal_manifest,
+        MinimalAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer minimal_restore_core.reset();
+    try minimal_restore_core.submit(minimal_restore_bytes);
+    try minimal_restore_core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, minimal_restore_core.state);
+    try std.testing.expectEqual(@as(?u64, null), minimal_restore_core.pending_archive_append_batch_fingerprint);
 }
 
 test "appliance Core restore rehydrates outstanding HostRequest for continuation" {
