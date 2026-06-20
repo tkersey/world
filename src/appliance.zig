@@ -2590,7 +2590,7 @@ pub fn Appliance(comptime World: type) type {
             fn commandIsTerminalArchiveAckOnly(self: @This(), command: Command) bool {
                 return (command.kind == .@"continue" or command.kind == .restore) and
                     self.last_turn_status == .completed and
-                    self.manifest_value.actuation_binding_fingerprints.len != 0 and
+                    self.manifest_value.enabled_features.archive_ack_gate and
                     command.host_replies.len == 0 and
                     commandHasRetentionAck(command);
             }

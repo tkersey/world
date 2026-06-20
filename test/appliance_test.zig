@@ -2912,8 +2912,7 @@ test "appliance Core validates command RetentionAck before advancing" {
     try core.submit(valid_continue_bytes);
     try core.executeTurn();
     try std.testing.expectEqual(world.Appliance.CoreState.completed, core.state);
-    try std.testing.expect(core.pending_archive_append_batch_fingerprint != null);
-    try std.testing.expect(core.pending_archive_append_batch_fingerprint.? != pending_archive);
+    try std.testing.expectEqual(@as(?u64, null), core.pending_archive_append_batch_fingerprint);
     try std.testing.expectEqual(@as(?u64, ack.resulting_moment_fingerprint), core.latest_archive_moment_fingerprint);
     try std.testing.expectEqual(@as(?u64, ack.resulting_seal_fingerprint), core.latest_archive_seal_fingerprint);
     try std.testing.expectEqual(@as(?u64, ack.resulting_chronicle_cursor_fingerprint), core.latest_chronicle_cursor_fingerprint);
@@ -5054,6 +5053,13 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     );
     defer archived_large_metadata_output.deinit(std.testing.allocator);
     try std.testing.expectEqual(large_metadata.len, archived_large_metadata_output.diagnostic_metadata.len);
+    const large_metadata_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_output,
+        .object_format_version = world.world_appliance_turn_output_format_version,
+        .payload_bytes = large_metadata_payload,
+        .label = "archived appliance output with roomy metadata",
+    });
+    try world.Continuity.validateObjectEnvelopeTypedPayload(std.testing.allocator, large_metadata_envelope);
 
     const wrong_receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,

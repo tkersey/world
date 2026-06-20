@@ -35802,7 +35802,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer output.deinit(allocator);
-                output.validate(output.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk false;
+                output.validate(output.manifest_fingerprint, Appliance.Capacity.archive_decode) catch break :blk false;
                 break :blk output.output_format_version == envelope.object_format_version;
             },
             .appliance_reconstruction_report => blk: {
