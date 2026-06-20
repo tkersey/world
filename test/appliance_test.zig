@@ -293,6 +293,18 @@ fn applianceRequiredExportParamCount(index: usize) u32 {
     };
 }
 
+const ApplianceWasmBuildOptions = struct {
+    duplicate_memory_export: bool = false,
+    helper_exports: HelperExports = .none,
+    invalid_required_body_index: ?usize = null,
+
+    const HelperExports = enum {
+        none,
+        valid,
+        malformed_alloc,
+    };
+};
+
 fn minimalApplianceMetadataValues(memory_pages: u32) [world.Appliance.Abi.metadata_exports.len]u32 {
     var metadata_values = [_]u32{0} ** world.Appliance.Abi.metadata_exports.len;
     metadata_values[7] = memory_pages;
@@ -334,9 +346,35 @@ fn buildMinimalApplianceWasmWithMemoryExport(
     second_memory_max_pages: ?u32,
     memory_export_index: u32,
 ) !std.ArrayList(u8) {
+    return buildMinimalApplianceWasmWithOptions(
+        abi_version,
+        metadata_values,
+        memory_initial_pages,
+        memory_max_pages,
+        second_memory_initial_pages,
+        second_memory_max_pages,
+        memory_export_index,
+        .{},
+    );
+}
+
+fn buildMinimalApplianceWasmWithOptions(
+    abi_version: u32,
+    metadata_values: [world.Appliance.Abi.metadata_exports.len]u32,
+    memory_initial_pages: u32,
+    memory_max_pages: ?u32,
+    second_memory_initial_pages: ?u32,
+    second_memory_max_pages: ?u32,
+    memory_export_index: u32,
+    options: ApplianceWasmBuildOptions,
+) !std.ArrayList(u8) {
     const required_len = world.Appliance.Abi.required_exports.len;
     const metadata_len = world.Appliance.Abi.metadata_exports.len;
-    const function_count = required_len + metadata_len;
+    const helper_count: usize = switch (options.helper_exports) {
+        .none => 0,
+        .valid, .malformed_alloc => 2,
+    };
+    const function_count = required_len + metadata_len + helper_count;
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(std.testing.allocator);
     try module.appendSlice(std.testing.allocator, "\x00asm");
@@ -344,9 +382,11 @@ fn buildMinimalApplianceWasmWithMemoryExport(
 
     var types: std.ArrayList(u8) = .empty;
     defer types.deinit(std.testing.allocator);
-    try appendApplianceWasmU32(&types, 2);
+    try appendApplianceWasmU32(&types, 4);
     try appendApplianceWasmFuncType(&types, 0, 1);
     try appendApplianceWasmFuncType(&types, 2, 1);
+    try appendApplianceWasmFuncType(&types, 1, 1);
+    try appendApplianceWasmFuncType(&types, 2, 0);
     try appendApplianceWasmSection(&module, 1, types.items);
 
     var functions: std.ArrayList(u8) = .empty;
@@ -356,6 +396,17 @@ fn buildMinimalApplianceWasmWithMemoryExport(
         try appendApplianceWasmU32(&functions, if (applianceRequiredExportParamCount(index) == 2) 1 else 0);
     }
     for (world.Appliance.Abi.metadata_exports) |_| try appendApplianceWasmU32(&functions, 0);
+    switch (options.helper_exports) {
+        .none => {},
+        .valid => {
+            try appendApplianceWasmU32(&functions, 2);
+            try appendApplianceWasmU32(&functions, 3);
+        },
+        .malformed_alloc => {
+            try appendApplianceWasmU32(&functions, 0);
+            try appendApplianceWasmU32(&functions, 3);
+        },
+    }
     try appendApplianceWasmSection(&module, 3, functions.items);
 
     var memory: std.ArrayList(u8) = .empty;
@@ -373,7 +424,7 @@ fn buildMinimalApplianceWasmWithMemoryExport(
 
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(std.testing.allocator);
-    try appendApplianceWasmU32(&exports, @intCast(function_count + 1));
+    try appendApplianceWasmU32(&exports, @intCast(function_count + 1 + @as(usize, if (options.duplicate_memory_export) 1 else 0)));
     for (world.Appliance.Abi.required_exports, 0..) |name, index| {
         try appendApplianceWasmName(&exports, name);
         try exports.append(std.testing.allocator, 0);
@@ -387,6 +438,22 @@ fn buildMinimalApplianceWasmWithMemoryExport(
     try appendApplianceWasmName(&exports, "memory");
     try exports.append(std.testing.allocator, 2);
     try appendApplianceWasmU32(&exports, memory_export_index);
+    if (options.duplicate_memory_export) {
+        try appendApplianceWasmName(&exports, "memory");
+        try exports.append(std.testing.allocator, 2);
+        try appendApplianceWasmU32(&exports, memory_export_index);
+    }
+    switch (options.helper_exports) {
+        .none => {},
+        .valid, .malformed_alloc => {
+            try appendApplianceWasmName(&exports, "world_alloc");
+            try exports.append(std.testing.allocator, 0);
+            try appendApplianceWasmU32(&exports, @intCast(required_len + metadata_len));
+            try appendApplianceWasmName(&exports, "world_free");
+            try exports.append(std.testing.allocator, 0);
+            try appendApplianceWasmU32(&exports, @intCast(required_len + metadata_len + 1));
+        },
+    }
     try appendApplianceWasmSection(&module, 7, exports.items);
 
     var code: std.ArrayList(u8) = .empty;
@@ -396,11 +463,20 @@ fn buildMinimalApplianceWasmWithMemoryExport(
     while (index < function_count) : (index += 1) {
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(std.testing.allocator);
+        if (options.invalid_required_body_index != null and index == options.invalid_required_body_index.?) {
+            try appendApplianceWasmU32(&body, 1);
+            try appendApplianceWasmU32(&body, 1);
+            try body.append(std.testing.allocator, 0xff);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
         try appendApplianceWasmU32(&body, 0);
         try body.append(std.testing.allocator, 0x41);
         const value = if (index == 0)
             abi_version
-        else if (index >= required_len)
+        else if (index >= required_len and index < required_len + metadata_len)
             metadata_values[index - required_len]
         else
             0;
@@ -562,6 +638,70 @@ test "appliance wasm inspector binds metadata values and memory limits" {
     try std.testing.expectEqual(@as(u32, 65), hidden_second_inspection.memory_initial_pages);
     try std.testing.expectEqual(@as(u32, 2), hidden_second_inspection.memory_count);
     try std.testing.expect(!hidden_second_inspection.passed());
+}
+
+test "appliance wasm inspector rejects malformed exports and required bodies" {
+    const metadata_values = minimalApplianceMetadataValues(65);
+
+    var valid_helpers = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .helper_exports = .valid },
+    );
+    defer valid_helpers.deinit(std.testing.allocator);
+    const valid_helper_inspection = try world.Appliance.Abi.inspectWasm(valid_helpers.items);
+    try std.testing.expect(valid_helper_inspection.alloc_export_present);
+    try std.testing.expect(valid_helper_inspection.free_export_present);
+    try std.testing.expect(valid_helper_inspection.optional_helper_exports_valid);
+    try std.testing.expect(valid_helper_inspection.passed());
+
+    var malformed_alloc = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .helper_exports = .malformed_alloc },
+    );
+    defer malformed_alloc.deinit(std.testing.allocator);
+    const malformed_alloc_inspection = try world.Appliance.Abi.inspectWasm(malformed_alloc.items);
+    try std.testing.expect(!malformed_alloc_inspection.alloc_export_present);
+    try std.testing.expect(malformed_alloc_inspection.free_export_present);
+    try std.testing.expect(!malformed_alloc_inspection.optional_helper_exports_valid);
+    try std.testing.expect(!malformed_alloc_inspection.passed());
+
+    var duplicate_export = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .duplicate_memory_export = true },
+    );
+    defer duplicate_export.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(duplicate_export.items));
+
+    var invalid_required_body = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_required_body_index = 1 },
+    );
+    defer invalid_required_body.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_required_body.items));
 }
 
 test "appliance profile presets are strict and identity-bearing" {
@@ -3088,6 +3228,45 @@ test "appliance Core restore validates checkpoint before mutating state" {
     defer std.testing.allocator.free(max_turn_continue_bytes);
     try std.testing.expectError(error.StaleTurn, core.submit(max_turn_continue_bytes));
     try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), core.current_turn_sequence_number);
+}
+
+test "appliance Core restore clears stale public output" {
+    const StrictAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+    });
+    const manifest = StrictAppliance.manifest();
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        StrictAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer core.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try core.submit(boot_bytes);
+    try core.executeTurn();
+    try std.testing.expect(core.readOutput().len > 0);
+    try std.testing.expect(core.last_output_status != null);
+
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .capsule_fingerprint = 0xC101,
+        .previous_turn_receipt_fingerprint = 0xC102,
+    });
+    try core.restore(checkpoint);
+    try std.testing.expectEqual(@as(usize, 0), core.readOutput().len);
+    try std.testing.expectEqual(@as(?world.Appliance.TurnStatus, null), core.last_output_status);
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, core.state);
+    try std.testing.expectEqual(@as(u64, 7), core.current_turn_sequence_number);
 }
 
 test "appliance Core restore rolls back allocation failure" {

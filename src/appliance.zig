@@ -2451,6 +2451,10 @@ pub fn Appliance(comptime World: type) type {
                 var rollback = try ContinuationSnapshot.capture(self);
                 errdefer rollback.restore(self);
                 try self.applyCheckpointState(checkpoint);
+                if (self.last_output_owned) self.allocator.free(self.last_output_bytes);
+                self.last_output_bytes = "";
+                self.last_output_owned = false;
+                self.last_output_status = null;
                 if (self.pending_command) |*pending| pending.deinit(self.allocator);
                 self.pending_command = null;
                 rollback.deinit(self.allocator);
@@ -2943,6 +2947,7 @@ pub fn Appliance(comptime World: type) type {
                 required_exports_present: bool = false,
                 metadata_exports_present: bool = false,
                 required_export_signatures_valid: bool = false,
+                required_export_bodies_valid: bool = false,
                 metadata_export_signatures_valid: bool = false,
                 metadata_export_values: [Abi.metadata_exports.len]u32 = [_]u32{0} ** Abi.metadata_exports.len,
                 metadata_export_values_valid: bool = false,
@@ -2957,12 +2962,14 @@ pub fn Appliance(comptime World: type) type {
                 memory_max_pages: ?u32 = null,
                 alloc_export_present: bool = false,
                 free_export_present: bool = false,
+                optional_helper_exports_valid: bool = true,
 
                 pub fn passed(self: @This()) bool {
                     return self.abi_version == Abi.version and
                         self.required_exports_present and
                         self.metadata_exports_present and
                         self.required_export_signatures_valid and
+                        self.required_export_bodies_valid and
                         self.metadata_export_signatures_valid and
                         self.metadata_export_values_valid and
                         self.required_memory_bytes <= @as(u64, self.max_linear_memory_pages) * wasm_page_size and
@@ -2973,7 +2980,8 @@ pub fn Appliance(comptime World: type) type {
                         self.memory_max_pages != null and
                         self.memory_max_pages.? == self.max_linear_memory_pages and
                         self.import_count == 0 and
-                        self.forbidden_import_count == 0;
+                        self.forbidden_import_count == 0 and
+                        self.optional_helper_exports_valid;
                 }
             };
 
@@ -2995,6 +3003,7 @@ pub fn Appliance(comptime World: type) type {
                 var function_type_indices: [wasm_max_inspected_functions]u32 = undefined;
                 var function_count: usize = 0;
                 var abi_export_function_index: ?u32 = null;
+                var required_export_function_indices: [required_exports.len]?u32 = [_]?u32{null} ** required_exports.len;
                 var metadata_export_function_indices: [metadata_exports.len]?u32 = [_]?u32{null} ** metadata_exports.len;
                 var cursor: usize = 8;
                 while (cursor < bytes.len) {
@@ -3026,6 +3035,7 @@ pub fn Appliance(comptime World: type) type {
                             &metadata_mask,
                             &metadata_signature_mask,
                             &abi_export_function_index,
+                            &required_export_function_indices,
                             &metadata_export_function_indices,
                         ),
                         10 => try inspectWasmCode(
@@ -3033,6 +3043,7 @@ pub fn Appliance(comptime World: type) type {
                             function_count,
                             inspection.import_function_count,
                             abi_export_function_index,
+                            &required_export_function_indices,
                             &metadata_export_function_indices,
                             &metadata_value_mask,
                             &inspection,
@@ -3217,15 +3228,18 @@ pub fn Appliance(comptime World: type) type {
             metadata_mask: *u64,
             metadata_signature_mask: *u64,
             abi_export_function_index: *?u32,
+            required_export_function_indices: *[Abi.required_exports.len]?u32,
             metadata_export_function_indices: *[Abi.metadata_exports.len]?u32,
         ) !void {
             var cursor: usize = 0;
             const count = try wasmReadU32(section, &cursor);
             var index: u32 = 0;
             while (index < count) : (index += 1) {
+                const entry_start = cursor;
                 const name = try wasmReadName(section, &cursor);
                 const kind = try wasmReadU8(section, &cursor);
                 const export_index = try wasmReadU32(section, &cursor);
+                if (try applianceExportNameAppeared(section, entry_start, name)) return error.InvalidFrameEncoding;
                 inspection.export_count += 1;
                 if (kind == 2 and export_index < memory_count and std.mem.eql(u8, name, "memory")) {
                     const exported_memory = memory_section.limits[export_index];
@@ -3233,8 +3247,20 @@ pub fn Appliance(comptime World: type) type {
                     inspection.memory_initial_pages = exported_memory.min;
                     inspection.memory_max_pages = exported_memory.max;
                 }
-                if (kind == 0 and std.mem.eql(u8, name, "world_alloc")) inspection.alloc_export_present = true;
-                if (kind == 0 and std.mem.eql(u8, name, "world_free")) inspection.free_export_present = true;
+                if (std.mem.eql(u8, name, "world_alloc")) {
+                    if (kind == 0 and applianceExportSignatureMatches(export_index, inspection.import_function_count, type_sigs, function_type_indices, 1, 1)) {
+                        inspection.alloc_export_present = true;
+                    } else {
+                        inspection.optional_helper_exports_valid = false;
+                    }
+                }
+                if (std.mem.eql(u8, name, "world_free")) {
+                    if (kind == 0 and applianceExportSignatureMatches(export_index, inspection.import_function_count, type_sigs, function_type_indices, 2, 0)) {
+                        inspection.free_export_present = true;
+                    } else {
+                        inspection.optional_helper_exports_valid = false;
+                    }
+                }
                 if (kind == 0) {
                     for (Abi.required_exports, 0..) |required, required_index| {
                         if (std.mem.eql(u8, name, required)) {
@@ -3243,6 +3269,7 @@ pub fn Appliance(comptime World: type) type {
                                 required_signature_mask.* |= @as(u64, 1) << @intCast(required_index);
                             }
                             if (required_index == 0) abi_export_function_index.* = export_index;
+                            required_export_function_indices[required_index] = export_index;
                         }
                     }
                     for (Abi.metadata_exports, 0..) |metadata_export, metadata_index| {
@@ -3257,6 +3284,19 @@ pub fn Appliance(comptime World: type) type {
                 }
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn applianceExportNameAppeared(section: []const u8, end: usize, name: []const u8) !bool {
+            var cursor: usize = 0;
+            _ = try wasmReadU32(section, &cursor);
+            while (cursor < end) {
+                const previous = try wasmReadName(section, &cursor);
+                _ = try wasmReadU8(section, &cursor);
+                _ = try wasmReadU32(section, &cursor);
+                if (std.mem.eql(u8, previous, name)) return true;
+            }
+            if (cursor != end) return error.InvalidFrameEncoding;
+            return false;
         }
 
         fn applianceRequiredExportParamCount(required_index: usize) u32 {
@@ -3287,6 +3327,7 @@ pub fn Appliance(comptime World: type) type {
             function_count: usize,
             import_function_count: usize,
             abi_export_function_index: ?u32,
+            required_export_function_indices: *const [Abi.required_exports.len]?u32,
             metadata_export_function_indices: *const [Abi.metadata_exports.len]?u32,
             metadata_value_mask: *u64,
             inspection: *Abi.WasmInspection,
@@ -3295,15 +3336,27 @@ pub fn Appliance(comptime World: type) type {
             const count = try wasmReadU32(section, &cursor);
             if (count != function_count) return error.InvalidFrameEncoding;
             const abi_defined_index = wasmDefinedFunctionIndex(abi_export_function_index, import_function_count);
+            var required_defined_indices: [Abi.required_exports.len]?u32 = [_]?u32{null} ** Abi.required_exports.len;
+            for (required_export_function_indices.*, 0..) |function_index, required_index| {
+                required_defined_indices[required_index] = wasmDefinedFunctionIndex(function_index, import_function_count);
+            }
             var metadata_defined_indices: [Abi.metadata_exports.len]?u32 = [_]?u32{null} ** Abi.metadata_exports.len;
             for (metadata_export_function_indices.*, 0..) |function_index, metadata_index| {
                 metadata_defined_indices[metadata_index] = wasmDefinedFunctionIndex(function_index, import_function_count);
             }
+            var required_body_mask: u64 = 0;
             var index: u32 = 0;
             while (index < count) : (index += 1) {
                 const body_len = try wasmReadU32(section, &cursor);
                 if (body_len > section.len - cursor) return error.InvalidFrameEncoding;
                 const body = section[cursor .. cursor + body_len];
+                for (required_defined_indices, 0..) |defined_index, required_index| {
+                    if (defined_index != null and index == defined_index.?) {
+                        try validateApplianceWasmFunctionBody(body);
+                        required_body_mask |= @as(u64, 1) << @intCast(required_index);
+                        break;
+                    }
+                }
                 var metadata_body_index: ?usize = null;
                 for (metadata_defined_indices, 0..) |defined_index, metadata_index| {
                     if (defined_index != null and index == defined_index.?) {
@@ -3324,6 +3377,11 @@ pub fn Appliance(comptime World: type) type {
                 cursor += body_len;
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
+            const all_required = if (Abi.required_exports.len == 64)
+                std.math.maxInt(u64)
+            else
+                (@as(u64, 1) << @intCast(Abi.required_exports.len)) - 1;
+            inspection.required_export_bodies_valid = (required_body_mask & all_required) == all_required;
         }
 
         fn wasmDefinedFunctionIndex(function_index: ?u32, import_function_count: usize) ?u32 {
@@ -3334,12 +3392,7 @@ pub fn Appliance(comptime World: type) type {
 
         fn readWasmConstantU32FunctionBody(body: []const u8) !u32 {
             var cursor: usize = 0;
-            const local_group_count = try wasmReadU32(body, &cursor);
-            var local_group_index: u32 = 0;
-            while (local_group_index < local_group_count) : (local_group_index += 1) {
-                _ = try wasmReadU32(body, &cursor);
-                _ = try wasmReadU8(body, &cursor);
-            }
+            try skipApplianceWasmLocals(body, &cursor);
             const opcode = try wasmReadU8(body, &cursor);
             if (opcode != 0x41) return error.InvalidFrameEncoding;
             const value = try wasmReadI32Bits(body, &cursor);
@@ -3351,6 +3404,30 @@ pub fn Appliance(comptime World: type) type {
             }
             if (cursor != body.len) return error.InvalidFrameEncoding;
             return value;
+        }
+
+        fn validateApplianceWasmFunctionBody(body: []const u8) !void {
+            var cursor: usize = 0;
+            try skipApplianceWasmLocals(body, &cursor);
+            if (cursor >= body.len) return error.InvalidFrameEncoding;
+            if (body[body.len - 1] != 0x0b) return error.InvalidFrameEncoding;
+        }
+
+        fn skipApplianceWasmLocals(body: []const u8, cursor: *usize) !void {
+            const local_group_count = try wasmReadU32(body, cursor);
+            var local_group_index: u32 = 0;
+            while (local_group_index < local_group_count) : (local_group_index += 1) {
+                _ = try wasmReadU32(body, cursor);
+                const value_type = try wasmReadU8(body, cursor);
+                if (!validApplianceWasmLocalType(value_type)) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn validApplianceWasmLocalType(value_type: u8) bool {
+            return switch (value_type) {
+                0x7f, 0x7e, 0x7d, 0x7c, 0x7b, 0x70, 0x6f => true,
+                else => false,
+            };
         }
 
         fn wasmReadI32Bits(bytes: []const u8, cursor: *usize) !u32 {
