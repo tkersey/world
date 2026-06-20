@@ -537,6 +537,12 @@ pub fn Appliance(comptime World: type) type {
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_allowed_response_statuses.len) return error.InvalidFrameEncoding;
                 if (self.actuation_binding_fingerprints.len > 1) return error.InvalidFrameEncoding;
                 if (self.actuation_binding_fingerprints.len != 0 and (!self.required_host_capabilities.actuation or self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
+                for (self.provider_target_ref_fingerprints) |fingerprint| {
+                    if (fingerprint == 0) return error.InvalidFrameEncoding;
+                }
+                for (self.fabric_plan_fingerprints) |fingerprint| {
+                    if (fingerprint == 0) return error.InvalidFrameEncoding;
+                }
                 for (self.actuation_descriptor_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
@@ -551,6 +557,9 @@ pub fn Appliance(comptime World: type) type {
                 }
                 for (self.actuation_allowed_response_statuses) |statuses| {
                     if (!responseStatusSetAllowsAny(statuses)) return error.InvalidFrameEncoding;
+                }
+                for (self.default_permit_requirement_fingerprints) |fingerprint| {
+                    if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
                 if (self.metadata.len > World.world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
                 if (self.manifest_fingerprint != fingerprintManifest(self)) return error.InvalidFrameEncoding;

@@ -117,8 +117,8 @@ fn applianceManifestVariant(base: world.Appliance.Manifest, args: anytype) world
         .link_plan_fingerprint = base.link_plan_fingerprint,
         .link_certificate_fingerprint = base.link_certificate_fingerprint,
         .assembly_fingerprint = base.assembly_fingerprint,
-        .provider_target_ref_fingerprints = base.provider_target_ref_fingerprints,
-        .fabric_plan_fingerprints = base.fabric_plan_fingerprints,
+        .provider_target_ref_fingerprints = if (@hasField(@TypeOf(args), "provider_target_ref_fingerprints")) args.provider_target_ref_fingerprints else base.provider_target_ref_fingerprints,
+        .fabric_plan_fingerprints = if (@hasField(@TypeOf(args), "fabric_plan_fingerprints")) args.fabric_plan_fingerprints else base.fabric_plan_fingerprints,
         .residual_import_set_fingerprint = base.residual_import_set_fingerprint,
         .actuation_descriptor_fingerprints = if (@hasField(@TypeOf(args), "actuation_descriptor_fingerprints")) args.actuation_descriptor_fingerprints else base.actuation_descriptor_fingerprints,
         .actuation_binding_fingerprints = if (@hasField(@TypeOf(args), "actuation_binding_fingerprints")) args.actuation_binding_fingerprints else base.actuation_binding_fingerprints,
@@ -126,7 +126,7 @@ fn applianceManifestVariant(base: world.Appliance.Manifest, args: anytype) world
         .actuation_classes = if (@hasField(@TypeOf(args), "actuation_classes")) args.actuation_classes else base.actuation_classes,
         .actuation_allowed_response_statuses = if (@hasField(@TypeOf(args), "actuation_allowed_response_statuses")) args.actuation_allowed_response_statuses else base.actuation_allowed_response_statuses,
         .supervision_policy_fingerprint = base.supervision_policy_fingerprint,
-        .default_permit_requirement_fingerprints = base.default_permit_requirement_fingerprints,
+        .default_permit_requirement_fingerprints = if (@hasField(@TypeOf(args), "default_permit_requirement_fingerprints")) args.default_permit_requirement_fingerprints else base.default_permit_requirement_fingerprints,
         .capsule_profile_fingerprint = base.capsule_profile_fingerprint,
         .archive_profile_fingerprint = base.archive_profile_fingerprint,
         .supported_execution_modes = if (@hasField(@TypeOf(args), "supported_execution_modes")) args.supported_execution_modes else base.supported_execution_modes,
@@ -4207,6 +4207,32 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     }
     try world.Continuity.validateObjectEnvelopeDependencyPayloads(std.testing.allocator, plan.objects, plan.objects[2]);
 
+    const wrong_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .command_fingerprint = 0xA006,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
+        .root_result_fingerprint = root_result_fingerprint,
+        .status = .completed,
+    });
+    var wrong_receipt_payload: std.ArrayList(u8) = .empty;
+    defer wrong_receipt_payload.deinit(std.testing.allocator);
+    try wrong_receipt.encode(&wrong_receipt_payload, std.testing.allocator);
+    var forged_receipt_envelope = plan.objects[1];
+    forged_receipt_envelope.payload_bytes = wrong_receipt_payload.items;
+    const missing_checkpoint_with_bad_receipt = [_]world.Continuity.ObjectEnvelope{
+        forged_receipt_envelope,
+        plan.objects[2],
+    };
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        world.Continuity.validateObjectEnvelopeDependencyPayloads(
+            std.testing.allocator,
+            &missing_checkpoint_with_bad_receipt,
+            plan.objects[2],
+        ),
+    );
+
     const malformed_output = world.Continuity.ObjectEnvelope.init(.{
         .kind = .appliance_turn_output,
         .dependency_refs = plan.objects[2].dependency_refs,
@@ -4703,6 +4729,21 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     });
 
     try std.testing.expectError(error.InvalidFrameEncoding, multi_binding_manifest.validate());
+
+    const zero_provider_manifest = applianceManifestVariant(manifest, .{
+        .provider_target_ref_fingerprints = &.{0},
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_provider_manifest.validate());
+
+    const zero_fabric_manifest = applianceManifestVariant(manifest, .{
+        .fabric_plan_fingerprints = &.{0},
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_fabric_manifest.validate());
+
+    const zero_default_permit_manifest = applianceManifestVariant(manifest, .{
+        .default_permit_requirement_fingerprints = &.{0},
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, zero_default_permit_manifest.validate());
 
     var replay_modes = manifest.supported_execution_modes;
     replay_modes.replay = true;

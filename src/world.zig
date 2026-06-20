@@ -36098,13 +36098,14 @@ pub const Continuity = struct {
 
     fn bundleApplianceTurnOutputDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, output: Appliance.TurnOutput) !bool {
         const checkpoint_ref = try applianceCheckpointObjectRef(allocator, output.checkpoint);
-        const checkpoint_envelope = (try bundleEnvelopeForRef(allocator, envelopes, checkpoint_ref)) orelse return true;
-        var checkpoint = Appliance.Checkpoint.decodeArchivePayload(allocator, checkpoint_envelope.payload_bytes) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return false,
-        };
-        defer checkpoint.deinit(allocator);
-        if (checkpoint.checkpoint_fingerprint != output.checkpoint.checkpoint_fingerprint) return false;
+        if (try bundleEnvelopeForRef(allocator, envelopes, checkpoint_ref)) |checkpoint_envelope| {
+            var checkpoint = Appliance.Checkpoint.decodeArchivePayload(allocator, checkpoint_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer checkpoint.deinit(allocator);
+            if (checkpoint.checkpoint_fingerprint != output.checkpoint.checkpoint_fingerprint) return false;
+        }
 
         const receipt_ref = try applianceTurnReceiptObjectRef(allocator, output.turn_receipt);
         const receipt_envelope = (try bundleEnvelopeForRef(allocator, envelopes, receipt_ref)) orelse return true;
