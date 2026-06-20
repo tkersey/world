@@ -714,6 +714,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.kind != .@"continue" and self.kind != .restore and self.host_replies.len != 0) return error.InvalidFrameEncoding;
                 for (self.host_replies) |reply| {
                     try reply.validateShape(capacity);
+                    if (reply.outcome.host_request_fingerprint != reply.target_host_request_fingerprint) return error.InvalidFrameEncoding;
                 }
                 try validateDistinctHostReplyTargets(self.host_replies);
                 if (self.retention_ack) |ack| try ack.validate(null, capacity);
@@ -1403,6 +1404,7 @@ pub fn Appliance(comptime World: type) type {
                 for (self.emitted_host_request_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
+                if (self.status != .needs_host and self.emitted_host_request_fingerprints.len != 0) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.archive_append_batch_fingerprint);
                 try validateOptionalFingerprint(self.resulting_archive_moment_fingerprint);
                 try validateOptionalFingerprint(self.resulting_archive_seal_fingerprint);
@@ -3018,6 +3020,8 @@ pub fn Appliance(comptime World: type) type {
                 var metadata_value_mask: u64 = 0;
                 var memory_count: u32 = 0;
                 var memory_section: WasmMemorySection = .{};
+                var data_count_section: ?u32 = null;
+                var data_segment_count: ?u32 = null;
                 var type_sigs: [wasm_max_inspected_types]WasmFuncSignature = undefined;
                 var type_count: usize = 0;
                 var function_type_indices: [wasm_max_inspected_functions]u32 = undefined;
@@ -3037,7 +3041,7 @@ pub fn Appliance(comptime World: type) type {
                     switch (section_id) {
                         1 => type_count = try inspectWasmTypes(section, &type_sigs),
                         2 => try inspectWasmImports(section, &inspection),
-                        3 => function_count = try inspectWasmFunctions(section, &function_type_indices),
+                        3 => function_count = try inspectWasmFunctions(section, &function_type_indices, type_count),
                         5 => {
                             const memory = try inspectWasmMemory(section);
                             memory_section = memory;
@@ -3074,10 +3078,15 @@ pub fn Appliance(comptime World: type) type {
                             &inspection,
                         ),
                         0 => {},
-                        4, 6, 9, 11, 12 => try validateIgnoredWasmSection(section_id, section),
+                        4, 6, 9 => _ = try validateIgnoredWasmSection(section_id, section),
+                        11 => data_segment_count = try validateIgnoredWasmSection(section_id, section),
+                        12 => data_count_section = try validateIgnoredWasmSection(section_id, section),
                         else => return error.InvalidFrameEncoding,
                     }
                     cursor += section_len;
+                }
+                if (data_count_section) |expected_data_segments| {
+                    if (expected_data_segments != (data_segment_count orelse 0)) return error.InvalidFrameEncoding;
                 }
                 const all_required = if (required_exports.len == 64)
                     std.math.maxInt(u64)
@@ -3224,12 +3233,16 @@ pub fn Appliance(comptime World: type) type {
             };
         }
 
-        fn inspectWasmFunctions(section: []const u8, out: *[wasm_max_inspected_functions]u32) !usize {
+        fn inspectWasmFunctions(section: []const u8, out: *[wasm_max_inspected_functions]u32, type_count: usize) !usize {
             var cursor: usize = 0;
             const count = try wasmReadU32(section, &cursor);
             if (count > out.len) return error.CapacityExceeded;
             var index: usize = 0;
-            while (index < count) : (index += 1) out[index] = try wasmReadU32(section, &cursor);
+            while (index < count) : (index += 1) {
+                const type_index = try wasmReadU32(section, &cursor);
+                if (type_index >= type_count) return error.InvalidFrameEncoding;
+                out[index] = type_index;
+            }
             if (cursor != section.len) return error.InvalidFrameEncoding;
             return @intCast(count);
         }
@@ -3273,12 +3286,12 @@ pub fn Appliance(comptime World: type) type {
             };
         }
 
-        fn validateIgnoredWasmSection(section_id: u8, section: []const u8) !void {
+        fn validateIgnoredWasmSection(section_id: u8, section: []const u8) !u32 {
             var cursor: usize = 0;
             const count = try wasmReadU32(section, &cursor);
             if (section_id == 12) {
                 if (cursor != section.len) return error.InvalidFrameEncoding;
-                return;
+                return count;
             }
             var index: u32 = 0;
             while (index < count) : (index += 1) {
@@ -3291,6 +3304,7 @@ pub fn Appliance(comptime World: type) type {
                 }
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
+            return count;
         }
 
         fn wasmSkipTable(section: []const u8, cursor: *usize) !void {
@@ -3594,6 +3608,7 @@ pub fn Appliance(comptime World: type) type {
                             import_function_count,
                             type_sigs,
                             function_type_indices,
+                            (wasmFunctionSignature(index + @as(u32, @intCast(import_function_count)), import_function_count, type_sigs, function_type_indices) orelse return error.InvalidFrameEncoding).result_count,
                         );
                         required_body_mask |= @as(u64, 1) << @intCast(required_index);
                         break;
@@ -3653,46 +3668,64 @@ pub fn Appliance(comptime World: type) type {
             import_function_count: usize,
             type_sigs: []const WasmFuncSignature,
             function_type_indices: []const u32,
+            expected_result_count: u32,
         ) !void {
             var cursor: usize = 0;
             try skipApplianceWasmLocals(body, &cursor);
             var depth: u32 = 0;
             var i32_stack_depth: u32 = 0;
+            var control_flow_seen = false;
+            var returned = false;
             while (cursor < body.len) {
                 const opcode = try wasmReadU8(body, &cursor);
                 switch (opcode) {
-                    0x00, 0x01, 0x0f => {},
+                    0x00 => control_flow_seen = true,
+                    0x01 => {},
+                    0x0f => {
+                        control_flow_seen = true;
+                        try wasmConsumeI32(&i32_stack_depth, expected_result_count);
+                        returned = true;
+                    },
                     0x1a => wasmDiscardPossibleI32(&i32_stack_depth, 1),
                     0x1b => {
                         try wasmConsumeI32(&i32_stack_depth, 3);
                         i32_stack_depth += 1;
                     },
                     0x02, 0x03 => {
+                        control_flow_seen = true;
                         try wasmSkipBlockType(body, &cursor);
                         depth += 1;
                     },
                     0x04 => {
+                        control_flow_seen = true;
                         try wasmSkipBlockType(body, &cursor);
                         try wasmConsumeI32(&i32_stack_depth, 1);
                         depth += 1;
                     },
                     0x05 => {
+                        control_flow_seen = true;
                         if (depth == 0) return error.InvalidFrameEncoding;
                     },
                     0x0b => {
                         if (depth == 0) {
                             if (cursor != body.len) return error.InvalidFrameEncoding;
-                            if (i32_stack_depth == 0) return error.InvalidFrameEncoding;
+                            if (i32_stack_depth > expected_result_count and !control_flow_seen) return error.InvalidFrameEncoding;
+                            if (i32_stack_depth < expected_result_count and !(returned or control_flow_seen)) return error.InvalidFrameEncoding;
                             return;
                         }
                         depth -= 1;
                     },
-                    0x0c => _ = try wasmReadU32(body, &cursor),
+                    0x0c => {
+                        control_flow_seen = true;
+                        _ = try wasmReadU32(body, &cursor);
+                    },
                     0x0d => {
+                        control_flow_seen = true;
                         _ = try wasmReadU32(body, &cursor);
                         try wasmConsumeI32(&i32_stack_depth, 1);
                     },
                     0x0e => {
+                        control_flow_seen = true;
                         const target_count = try wasmReadU32(body, &cursor);
                         var target_index: u32 = 0;
                         while (target_index <= target_count) : (target_index += 1) _ = try wasmReadU32(body, &cursor);

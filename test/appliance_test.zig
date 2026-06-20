@@ -236,14 +236,17 @@ const ApplianceWasmBuildOptions = struct {
     invalid_required_body_index: ?usize = null,
     missing_required_result_index: ?usize = null,
     dropped_required_result_index: ?usize = null,
+    extra_result_stack_index: ?usize = null,
     invalid_extra_export_kind: bool = false,
     invalid_extra_export_function_index: bool = false,
+    invalid_unexported_function_type_index: bool = false,
     invalid_unused_type: bool = false,
     malformed_global_section: bool = false,
     overlong_global_i64_const: bool = false,
     explicit_table_element_section: bool = false,
     ref_func_element_section: bool = false,
     multi_segment_data_section: bool = false,
+    mismatched_data_count_section: bool = false,
     custom_section: bool = false,
 
     const HelperExports = enum {
@@ -322,7 +325,8 @@ fn buildMinimalApplianceWasmWithOptions(
         .none => 0,
         .valid, .malformed_alloc => 2,
     };
-    const function_count = required_len + metadata_len + helper_count;
+    const extra_unexported_count: usize = if (options.invalid_unexported_function_type_index) 1 else 0;
+    const function_count = required_len + metadata_len + helper_count + extra_unexported_count;
     const extra_export_count: usize =
         @as(usize, if (options.duplicate_memory_export) 1 else 0) +
         @as(usize, if (options.invalid_extra_export_kind) 1 else 0) +
@@ -372,6 +376,7 @@ fn buildMinimalApplianceWasmWithOptions(
             try appendApplianceWasmU32(&functions, 3);
         },
     }
+    if (options.invalid_unexported_function_type_index) try appendApplianceWasmU32(&functions, 99);
     try appendApplianceWasmSection(&module, 3, functions.items);
 
     if (options.explicit_table_element_section) {
@@ -501,6 +506,11 @@ fn buildMinimalApplianceWasmWithOptions(
         defer data_count.deinit(std.testing.allocator);
         try appendApplianceWasmU32(&data_count, 2);
         try appendApplianceWasmSection(&module, 12, data_count.items);
+    } else if (options.mismatched_data_count_section) {
+        var data_count: std.ArrayList(u8) = .empty;
+        defer data_count.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&data_count, 1);
+        try appendApplianceWasmSection(&module, 12, data_count.items);
     }
 
     var code: std.ArrayList(u8) = .empty;
@@ -536,6 +546,17 @@ fn buildMinimalApplianceWasmWithOptions(
             try code.appendSlice(std.testing.allocator, body.items);
             continue;
         }
+        if (options.extra_result_stack_index != null and index == options.extra_result_stack_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 1);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
         try appendApplianceWasmU32(&body, 0);
         try body.append(std.testing.allocator, 0x41);
         const value = if (index == 0)
@@ -558,6 +579,11 @@ fn buildMinimalApplianceWasmWithOptions(
         try appendApplianceWasmU32(&data, 1);
         try appendApplianceWasmU32(&data, 0);
         try appendApplianceWasmU32(&data, 1);
+        try appendApplianceWasmU32(&data, 0);
+        try appendApplianceWasmSection(&module, 11, data.items);
+    } else if (options.mismatched_data_count_section) {
+        var data: std.ArrayList(u8) = .empty;
+        defer data.deinit(std.testing.allocator);
         try appendApplianceWasmU32(&data, 0);
         try appendApplianceWasmSection(&module, 11, data.items);
     }
@@ -804,6 +830,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     defer dropped_required_result.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(dropped_required_result.items));
 
+    var extra_result_stack = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .extra_result_stack_index = 1 },
+    );
+    defer extra_result_stack.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(extra_result_stack.items));
+
     var invalid_extra_export_kind = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
         metadata_values,
@@ -829,6 +868,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer invalid_extra_export_function_index.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_extra_export_function_index.items));
+
+    var invalid_unexported_function_type_index = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_unexported_function_type_index = true },
+    );
+    defer invalid_unexported_function_type_index.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_unexported_function_type_index.items));
 
     var duplicate_memory_section = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
@@ -949,6 +1001,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     defer multi_segment_data_section.deinit(std.testing.allocator);
     const multi_segment_data_inspection = try world.Appliance.Abi.inspectWasm(multi_segment_data_section.items);
     try std.testing.expect(multi_segment_data_inspection.passed());
+
+    var mismatched_data_count_section = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .mismatched_data_count_section = true },
+    );
+    defer mismatched_data_count_section.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(mismatched_data_count_section.items));
 
     var custom_section = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
@@ -1292,6 +1357,19 @@ test "appliance command encodes decodes and validates host replies" {
     try std.testing.expectEqual(ack.ack_fingerprint, decoded.retention_ack.?.ack_fingerprint);
     try decoded.retention_ack.?.validate(null, world.Appliance.Capacity.tiny_one_port);
     try std.testing.expectEqualStrings(command.metadata, decoded.metadata);
+
+    const mismatched_reply = world.Appliance.HostReply.init(.{
+        .target_host_request_fingerprint = second_request.request_fingerprint,
+        .outcome = reply_without_ack.outcome,
+    });
+    const mismatched_reply_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = 0xD308,
+        .host_replies = &.{mismatched_reply},
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_reply_command.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
     const canonical_order = world.Appliance.Command.init(.{
         .kind = .@"continue",
@@ -1768,7 +1846,7 @@ test "appliance Core validates continue host replies before completion" {
     });
     const wrong_continue_bytes = try wrong_continue.encode(std.testing.allocator);
     defer std.testing.allocator.free(wrong_continue_bytes);
-    try std.testing.expectError(error.UnknownRequest, core.submit(wrong_continue_bytes));
+    try std.testing.expectError(error.InvalidFrameEncoding, core.submit(wrong_continue_bytes));
     try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
     try std.testing.expect(std.mem.eql(u8, first_output, core.readOutput()));
 
@@ -4511,6 +4589,17 @@ test "appliance turn receipt binds host reply and request evidence" {
     zero_request.emitted_host_request_fingerprints = &.{0};
     try std.testing.expectError(error.InvalidFrameEncoding, zero_request.validate(0xD248, world.Appliance.Capacity.tiny_one_port));
 
+    const terminal_with_request = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = 0xD248,
+        .turn_sequence_number = 4,
+        .command_fingerprint = 0xD249,
+        .emitted_host_request_fingerprints = &.{request.request_fingerprint},
+        .resulting_capsule_fingerprint = 0xD24A,
+        .root_result_fingerprint = 0xD24B,
+        .status = .completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, terminal_with_request.validate(0xD248, world.Appliance.Capacity.tiny_one_port));
+
     var tight = world.Appliance.Capacity.tiny_one_port;
     tight.max_host_replies_per_turn = 0;
     try std.testing.expectError(error.CapacityExceeded, receipt.validate(0xD248, tight));
@@ -6070,6 +6159,44 @@ test "appliance actuation Finalized validates commit response receipt tuple" {
     });
 
     try std.testing.expectError(error.InvalidFrameEncoding, forged.validate());
+
+    const wrong_status_commit = world.Actuation.Commit.init(.{
+        .intent_fingerprint = prepared.intent.intent_fingerprint,
+        .decision_fingerprint = prepared.decision.decision_fingerprint,
+        .envelope_fingerprint = prepared.envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = prepared.envelope.idempotency_key.key_fingerprint,
+        .attempt_number = prepared.attempt_number,
+        .status = .commit_failed,
+        .fresh_called = true,
+    });
+    const wrong_status_response = world.Actuation.Response.init(.{
+        .intent_fingerprint = finalized.response.intent_fingerprint,
+        .commit_fingerprint = wrong_status_commit.commit_fingerprint,
+        .actuator_ref_fingerprint = finalized.response.actuator_ref_fingerprint,
+        .world_port_id = finalized.response.world_port_id,
+        .request_fingerprint = finalized.response.request_fingerprint,
+        .status = .responded,
+        .response_kind = finalized.response.response_kind,
+        .frame_response_fingerprint = finalized.response.frame_response_fingerprint,
+        .value_image_fingerprint = finalized.response.value_image_fingerprint,
+    });
+    const wrong_status_receipt = world.Actuation.Receipt.fromResponse(.{
+        .intent = prepared.intent,
+        .envelope = prepared.envelope,
+        .decision = prepared.decision,
+        .commit = wrong_status_commit,
+        .response = wrong_status_response,
+        .target_ref_fingerprint = prepared.target_ref_fingerprint,
+        .world_surface_fingerprint = prepared.world_surface_fingerprint,
+        .class = prepared.intent.class,
+        .mode = prepared.intent.requested_mode,
+    });
+    const wrong_status_finalized = world.Actuation.Finalized.init(.{
+        .commit_value = wrong_status_commit,
+        .response = wrong_status_response,
+        .receipt = wrong_status_receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_status_finalized.validate());
 
     const unrelated_report = world.Actuation.VerifyReport.init(.{
         .intent_fingerprint = finalized.commit_value.intent_fingerprint,

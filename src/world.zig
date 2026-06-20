@@ -20032,6 +20032,17 @@ pub const Actuation = struct {
             if (self.receipt.fresh_called != self.commit_value.fresh_called) return error.InvalidFrameEncoding;
             if (self.receipt.replayed != self.commit_value.replayed) return error.InvalidFrameEncoding;
             if (self.receipt.verified != self.commit_value.verified) return error.InvalidFrameEncoding;
+            if (!self.commit_value.replayed and !self.commit_value.verified and self.commit_value.status != commitStatusForResponse(self.response.status)) return error.InvalidFrameEncoding;
+        }
+
+        fn commitStatusForResponse(status: Actuation.ResponseStatus) CommitStatus {
+            return switch (status) {
+                .responded => .committed,
+                .rejected => .rejected,
+                .failed => .commit_failed,
+                .pending, .deferred => .commit_pending,
+                .cancelled => .cancelled,
+            };
         }
 
         fn validateMailboxResponseBinding(self: @This()) !void {
