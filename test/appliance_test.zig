@@ -263,6 +263,7 @@ const ApplianceWasmBuildOptions = struct {
     invalid_unused_body: bool = false,
     invalid_unused_missing_result_body: bool = false,
     invalid_unused_extra_result_body: bool = false,
+    invalid_unused_non_i32_param_body: bool = false,
     invalid_extra_export_kind: bool = false,
     invalid_extra_export_function_index: bool = false,
     invalid_unexported_function_type_index: bool = false,
@@ -366,7 +367,8 @@ fn buildMinimalApplianceWasmWithOptions(
         @as(usize, if (options.invalid_unused_missing_result_body) 1 else 0) +
         @as(usize, if (options.invalid_unused_extra_result_body) 1 else 0) +
         @as(usize, if (options.invalid_required_non_i32_call_index != null) 1 else 0) +
-        @as(usize, if (options.invalid_required_mixed_call_order_index != null) 1 else 0);
+        @as(usize, if (options.invalid_required_mixed_call_order_index != null) 1 else 0) +
+        @as(usize, if (options.invalid_unused_non_i32_param_body) 1 else 0);
     const function_count = required_len + metadata_len + helper_count + extra_unexported_count;
     const extra_export_count: usize =
         @as(usize, if (options.duplicate_memory_export) 1 else 0) +
@@ -388,7 +390,8 @@ fn buildMinimalApplianceWasmWithOptions(
     defer types.deinit(std.testing.allocator);
     const extra_type_count: u32 =
         (if (options.invalid_required_non_i32_call_index != null) @as(u32, 1) else 0) +
-        (if (options.invalid_required_mixed_call_order_index != null) @as(u32, 1) else 0);
+        (if (options.invalid_required_mixed_call_order_index != null) @as(u32, 1) else 0) +
+        (if (options.invalid_unused_non_i32_param_body) @as(u32, 1) else 0);
     try appendApplianceWasmU32(&types, (if (options.invalid_unused_type) @as(u32, 5) else @as(u32, 4)) + extra_type_count);
     try appendApplianceWasmFuncType(&types, 0, 1);
     try appendApplianceWasmFuncType(&types, 2, 1);
@@ -405,6 +408,13 @@ fn buildMinimalApplianceWasmWithOptions(
         try types.append(std.testing.allocator, 0x60);
         try appendApplianceWasmU32(&types, 2);
         try types.appendSlice(std.testing.allocator, &.{ 0x7e, 0x7f });
+        try appendApplianceWasmU32(&types, 1);
+        try types.append(std.testing.allocator, 0x7f);
+    }
+    if (options.invalid_unused_non_i32_param_body) {
+        try types.append(std.testing.allocator, 0x60);
+        try appendApplianceWasmU32(&types, 1);
+        try types.append(std.testing.allocator, 0x7e);
         try appendApplianceWasmU32(&types, 1);
         try types.append(std.testing.allocator, 0x7f);
     }
@@ -440,6 +450,7 @@ fn buildMinimalApplianceWasmWithOptions(
     if (options.invalid_unused_extra_result_body) try appendApplianceWasmU32(&functions, 0);
     if (options.invalid_required_non_i32_call_index != null) try appendApplianceWasmU32(&functions, 4);
     if (options.invalid_required_mixed_call_order_index != null) try appendApplianceWasmU32(&functions, 4 + if (options.invalid_required_non_i32_call_index != null) @as(u32, 1) else @as(u32, 0));
+    if (options.invalid_unused_non_i32_param_body) try appendApplianceWasmU32(&functions, 4 + (if (options.invalid_required_non_i32_call_index != null) @as(u32, 1) else @as(u32, 0)) + (if (options.invalid_required_mixed_call_order_index != null) @as(u32, 1) else @as(u32, 0)));
     try appendApplianceWasmSection(&module, 3, functions.items);
 
     if (options.explicit_table_element_section or options.externref_table_section) {
@@ -895,6 +906,15 @@ fn buildMinimalApplianceWasmWithOptions(
             try appendApplianceWasmI32Bits(&body, 0);
             try body.append(std.testing.allocator, 0x41);
             try appendApplianceWasmI32Bits(&body, 1);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.invalid_unused_non_i32_param_body and index == function_count - 1) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x20);
+            try appendApplianceWasmU32(&body, 0);
             try body.append(std.testing.allocator, 0x0b);
             try appendApplianceWasmU32(&code, @intCast(body.items.len));
             try code.appendSlice(std.testing.allocator, body.items);
@@ -1539,6 +1559,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer invalid_unused_extra_result.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_unused_extra_result.items));
+
+    var invalid_unused_non_i32_param = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_unused_non_i32_param_body = true },
+    );
+    defer invalid_unused_non_i32_param.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_unused_non_i32_param.items));
 
     var invalid_table_limits = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
@@ -2259,6 +2292,29 @@ test "appliance command encodes decodes and validates host replies" {
     });
     try std.testing.expectError(error.InvalidMode, replay_reply_command.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
 
+    const byte_response_outcome = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = request.request_fingerprint,
+        .intent_fingerprint = request.intent_fingerprint,
+        .envelope_fingerprint = request.envelope_fingerprint,
+        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = 0xD330,
+        .response_kind = .bytes,
+        .response_bytes = "command-bytes",
+    });
+    const byte_response_reply = world.Appliance.HostReply.init(.{
+        .target_host_request_fingerprint = request.request_fingerprint,
+        .outcome = byte_response_outcome,
+    });
+    const byte_response_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = 0xD308,
+        .host_replies = &.{byte_response_reply},
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, byte_response_command.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
+
     const fingerprint_only_ack_reply = world.Appliance.HostReply.init(.{
         .target_host_request_fingerprint = reply_without_ack.target_host_request_fingerprint,
         .outcome = reply_without_ack.outcome,
@@ -2317,6 +2373,34 @@ test "appliance command encodes decodes and validates restore checkpoint" {
     try std.testing.expectEqual(checkpoint.checkpoint_fingerprint, decoded.restore_checkpoint.?.checkpoint_fingerprint);
     try std.testing.expect(decoded.restore_checkpoint.?.capsule_image_ref_fingerprint != null);
     try std.testing.expectEqualStrings(checkpoint.metadata, decoded.restore_checkpoint.?.metadata);
+
+    const restore_ack_without_pending = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 5,
+        .previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint,
+        .retention_ack = applianceRetentionAckFor(0xD330, "orphan-ack"),
+        .restore_checkpoint = checkpoint,
+    });
+    try std.testing.expectError(error.ArchiveParentMismatch, restore_ack_without_pending.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const pending_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 4,
+        .capsule_fingerprint = 0xD320,
+        .pending_archive_append_batch_fingerprint = 0xD331,
+        .pending_archive_resulting_cursor = world.Continuity.Chronicle.Cursor.initial(),
+        .previous_turn_receipt_fingerprint = 0xD321,
+    });
+    const restore_ack_for_other_append = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 5,
+        .previous_turn_receipt_fingerprint = pending_checkpoint.previous_turn_receipt_fingerprint,
+        .retention_ack = applianceRetentionAckFor(0xD332, "wrong-ack"),
+        .restore_checkpoint = pending_checkpoint,
+    });
+    try std.testing.expectError(error.ArchiveParentMismatch, restore_ack_for_other_append.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 }
 
 test "appliance command rejects wrong manifest oversized metadata and malformed bytes" {
@@ -2462,6 +2546,7 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 9,
         .capsule_fingerprint = 0xD031,
+        .previous_turn_receipt_fingerprint = 0xD02F,
     });
     try checkpoint.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
     try std.testing.expect(checkpoint.capsule_image_ref_fingerprint != null);
@@ -2471,6 +2556,7 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
         .turn_sequence_number = 9,
         .capsule_fingerprint = 0xD031,
         .capsule_image_bytes = "capsule-image:v1",
+        .previous_turn_receipt_fingerprint = 0xD02F,
     });
     try with_bytes.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
     try std.testing.expect(checkpoint.checkpoint_fingerprint != with_bytes.checkpoint_fingerprint);
@@ -2492,6 +2578,7 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
         .turn_sequence_number = 9,
         .capsule_fingerprint = 0xD035,
         .core_state = .runnable,
+        .previous_turn_receipt_fingerprint = 0xD034,
     });
     try runnable_checkpoint.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
     var runnable_payload: std.ArrayList(u8) = .empty;
@@ -2547,12 +2634,13 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
         .turn_sequence_number = 9,
         .capsule_fingerprint = 0xD03B,
         .core_state = .failed,
+        .previous_turn_receipt_fingerprint = 0xD03C,
     });
     const mismatched_inspected_output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 9,
-        .source_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 9, null),
-        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 9, null),
+        .source_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 9, 0xD03C),
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 9, 0xD03C),
         .quiescence = world.Appliance.QuiescenceReport.init(.{
             .quiescent = true,
         }),
@@ -2561,6 +2649,14 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
         .turn_receipt = inspected_receipt,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_inspected_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const missing_prior_receipt = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = 0xD03D,
+        .core_state = .completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_prior_receipt.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
     const uninitialized_with_prior_state = world.Appliance.Checkpoint.init(.{
         .manifest_fingerprint = manifest_fingerprint,
@@ -2584,6 +2680,7 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
         .latest_archive_seal_fingerprint = 0xD034,
         .latest_chronicle_cursor_fingerprint = archive_cursor.cursor_fingerprint,
         .latest_archive_cursor = archive_cursor,
+        .previous_turn_receipt_fingerprint = 0xD03E,
     });
     try archive_anchor.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
 
@@ -2618,6 +2715,7 @@ test "appliance borrowed checkpoint and receipt deinit are no-ops" {
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 1,
         .capsule_fingerprint = 0xD039,
+        .previous_turn_receipt_fingerprint = 0xD03E,
         .metadata = "borrowed-checkpoint",
     });
     checkpoint.deinit(std.testing.allocator);
@@ -4886,6 +4984,7 @@ test "appliance Core restore validates checkpoint before mutating state" {
         .turn_sequence_number = 8,
         .capsule_fingerprint = 0xC006,
         .core_state = .runnable,
+        .previous_turn_receipt_fingerprint = 0xC007,
     });
     try runnable_checkpoint.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
     try std.testing.expectError(error.InvalidFrameEncoding, core.restore(runnable_checkpoint));
@@ -7019,6 +7118,13 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
         .supported_execution_modes = audit_modes,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, audit_advertised_manifest.validate());
+
+    var no_fresh_modes = manifest.supported_execution_modes;
+    no_fresh_modes.fresh = false;
+    const no_fresh_manifest = applianceManifestVariant(manifest, .{
+        .supported_execution_modes = no_fresh_modes,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, no_fresh_manifest.validate());
 
     var replay_evidence_capabilities = manifest.required_host_capabilities;
     replay_evidence_capabilities.replay_evidence = true;

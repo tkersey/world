@@ -553,7 +553,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_classes.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_allowed_response_statuses.len) return error.InvalidFrameEncoding;
                 if (self.actuation_binding_fingerprints.len > 1) return error.InvalidFrameEncoding;
-                if (self.actuation_binding_fingerprints.len != 0 and (!self.enabled_features.actuation or !self.required_host_capabilities.actuation or self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
+                if (self.actuation_binding_fingerprints.len != 0 and (!self.enabled_features.actuation or !self.required_host_capabilities.actuation or !self.supported_execution_modes.fresh or self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
                 for (self.provider_target_ref_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
@@ -715,6 +715,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.host_replies.len != 0 and self.execution_mode != .fresh) return error.InvalidMode;
                 for (self.host_replies) |reply| {
                     try reply.validateShape(capacity);
+                    if (reply.outcome.status == .responded and reply.outcome.response_kind != .frame_value_image) return error.InvalidFrameEncoding;
                     if (reply.outcome.host_request_fingerprint != reply.target_host_request_fingerprint) return error.InvalidFrameEncoding;
                 }
                 try validateDistinctHostReplyTargets(self.host_replies);
@@ -735,6 +736,9 @@ pub fn Appliance(comptime World: type) type {
                     if (self.host_replies.len != 0) {
                         if (checkpoint.outstanding_host_requests.len != 1 or self.host_replies.len != 1) return error.InvalidFrameEncoding;
                         try self.host_replies[0].validate(checkpoint.outstanding_host_requests, capacity);
+                    }
+                    if (try effectiveRetentionAck(self)) |ack| {
+                        try ack.validate(checkpoint.pending_archive_append_batch_fingerprint orelse return error.ArchiveParentMismatch, capacity);
                     }
                 } else if (self.kind == .restore) {
                     return error.RestoreRejected;
@@ -1279,6 +1283,7 @@ pub fn Appliance(comptime World: type) type {
                 }
                 if (self.latest_chronicle_cursor_fingerprint != null and self.latest_archive_cursor == null) return error.InvalidFrameEncoding;
                 if (self.core_state == .uninitialized and (self.turn_sequence_number != 0 or self.previous_turn_receipt_fingerprint != null or self.outstanding_host_requests.len != 0)) return error.InvalidFrameEncoding;
+                if (self.core_state != .uninitialized and self.previous_turn_receipt_fingerprint == null) return error.InvalidFrameEncoding;
                 if (self.outstanding_host_requests.len != 0 and self.core_state != .waiting_host) return error.InvalidFrameEncoding;
                 if (self.core_state == .waiting_host and self.outstanding_host_requests.len == 0) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.previous_turn_receipt_fingerprint);
@@ -4399,7 +4404,7 @@ pub fn Appliance(comptime World: type) type {
         }
 
         fn wasmLocalType(signature: WasmFuncSignature, locals: WasmBodyLocals, local_index: u32) !WasmValueType {
-            if (local_index < signature.param_count) return .i32;
+            if (local_index < signature.param_count) return signature.param_types[@intCast(local_index)];
             const body_local_index = local_index - signature.param_count;
             if (body_local_index >= locals.count) return error.InvalidFrameEncoding;
             return locals.value_types[body_local_index];
