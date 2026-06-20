@@ -936,7 +936,7 @@ pub fn Appliance(comptime World: type) type {
                 var request = try readHostRequestOwned(allocator, bytes, &cursor);
                 errdefer request.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
-                try request.validate(Capacity.large_native_test);
+                try request.validate(Capacity.archive_decode);
                 return request;
             }
 
@@ -1115,7 +1115,7 @@ pub fn Appliance(comptime World: type) type {
                 var reply = try readHostReplyOwned(allocator, bytes, &cursor);
                 errdefer reply.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
-                try reply.validateShape(Capacity.large_native_test);
+                try reply.validateShape(Capacity.archive_decode);
                 if (reply.outcome.host_request_fingerprint != reply.target_host_request_fingerprint) return error.InvalidFrameEncoding;
                 return reply;
             }
@@ -1333,7 +1333,7 @@ pub fn Appliance(comptime World: type) type {
                 var checkpoint = try readCheckpointOwned(allocator, bytes, &cursor);
                 errdefer checkpoint.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
-                try checkpoint.validate(checkpoint.manifest_fingerprint, Capacity.large_native_test);
+                try checkpoint.validate(checkpoint.manifest_fingerprint, Capacity.archive_decode);
                 if (checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
                 return checkpoint;
             }
@@ -1479,7 +1479,7 @@ pub fn Appliance(comptime World: type) type {
                 var receipt = try readTurnReceiptOwned(allocator, bytes, &cursor);
                 errdefer receipt.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
-                try receipt.validate(receipt.manifest_fingerprint, Capacity.large_native_test);
+                try receipt.validate(receipt.manifest_fingerprint, Capacity.archive_decode);
                 return receipt;
             }
 

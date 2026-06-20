@@ -35399,7 +35399,7 @@ pub const Continuity = struct {
                     else => break :blk null,
                 };
                 defer command.deinit(allocator);
-                command.validate(command.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk null;
+                command.validate(command.manifest_fingerprint, Appliance.Capacity.archive_decode) catch break :blk null;
                 break :blk command.command_fingerprint;
             },
             .appliance_host_request => blk: {
@@ -35803,7 +35803,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer command.deinit(allocator);
-                command.validate(command.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk false;
+                command.validate(command.manifest_fingerprint, Appliance.Capacity.archive_decode) catch break :blk false;
                 break :blk command.command_format_version == envelope.object_format_version;
             },
             .appliance_host_request => blk: {
@@ -35812,7 +35812,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer request.deinit(allocator);
-                request.validate(Appliance.Capacity.large_native_test) catch break :blk false;
+                request.validate(Appliance.Capacity.archive_decode) catch break :blk false;
                 break :blk request.request_format_version == envelope.object_format_version;
             },
             .appliance_host_reply => blk: {
@@ -35821,7 +35821,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer reply.deinit(allocator);
-                reply.validateShape(Appliance.Capacity.large_native_test) catch break :blk false;
+                reply.validateShape(Appliance.Capacity.archive_decode) catch break :blk false;
                 break :blk reply.reply_format_version == envelope.object_format_version;
             },
             .appliance_checkpoint => blk: {
@@ -35830,7 +35830,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer checkpoint.deinit(allocator);
-                checkpoint.validate(checkpoint.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk false;
+                checkpoint.validate(checkpoint.manifest_fingerprint, Appliance.Capacity.archive_decode) catch break :blk false;
                 break :blk checkpoint.checkpoint_format_version == envelope.object_format_version;
             },
             .appliance_turn_receipt => blk: {
@@ -35839,7 +35839,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer receipt.deinit(allocator);
-                receipt.validate(receipt.manifest_fingerprint, Appliance.Capacity.large_native_test) catch break :blk false;
+                receipt.validate(receipt.manifest_fingerprint, Appliance.Capacity.archive_decode) catch break :blk false;
                 break :blk receipt.receipt_format_version == envelope.object_format_version;
             },
             .appliance_turn_output => blk: {

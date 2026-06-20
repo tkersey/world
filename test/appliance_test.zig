@@ -5584,6 +5584,23 @@ test "appliance continuity typed payload validation accepts advertised appliance
     defer std.testing.allocator.free(command_bytes);
     try expectApplianceTypedPayloadValid(.appliance_command, world.world_appliance_command_format_version, command_bytes);
 
+    const archive_command_bytes = try std.testing.allocator.alloc(u8, world.Appliance.Capacity.large_native_test.max_command_bytes + 1);
+    defer std.testing.allocator.free(archive_command_bytes);
+    @memset(archive_command_bytes, 'c');
+    const archive_sized_command = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .root_argument_image = archive_command_bytes,
+    });
+    const archive_sized_command_payload = try archive_sized_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(archive_sized_command_payload);
+    try expectApplianceTypedPayloadValid(.appliance_command, world.world_appliance_command_format_version, archive_sized_command_payload);
+
+    const archive_metadata = try std.testing.allocator.alloc(u8, world.Appliance.Capacity.large_native_test.max_metadata_bytes + 1);
+    defer std.testing.allocator.free(archive_metadata);
+    @memset(archive_metadata, 'm');
+
     const request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 1,
         .request_ordinal = 0,
@@ -5602,11 +5619,51 @@ test "appliance continuity typed payload validation accepts advertised appliance
     try request.encode(&request_payload, std.testing.allocator);
     try expectApplianceTypedPayloadValid(.appliance_host_request, world.world_appliance_host_request_format_version, request_payload.items);
 
+    const archive_sized_request = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD310,
+        .pending_port_fingerprint = 0xD311,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD312,
+        .envelope_fingerprint = 0xD313,
+        .decision_fingerprint = 0xD314,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+        .idempotency_key_fingerprint = 0xD315,
+        .metadata = archive_metadata,
+    });
+    var archive_sized_request_payload: std.ArrayList(u8) = .empty;
+    defer archive_sized_request_payload.deinit(std.testing.allocator);
+    try archive_sized_request.encode(&archive_sized_request_payload, std.testing.allocator);
+    try expectApplianceTypedPayloadValid(.appliance_host_request, world.world_appliance_host_request_format_version, archive_sized_request_payload.items);
+
     const reply = applianceHostReplyFor(request, 0xD306);
     var reply_payload: std.ArrayList(u8) = .empty;
     defer reply_payload.deinit(std.testing.allocator);
     try reply.encode(&reply_payload, std.testing.allocator);
     try expectApplianceTypedPayloadValid(.appliance_host_reply, world.world_appliance_host_reply_format_version, reply_payload.items);
+
+    const archive_sized_reply = world.Appliance.HostReply.init(.{
+        .target_host_request_fingerprint = reply.target_host_request_fingerprint,
+        .outcome = reply.outcome,
+        .metadata = archive_metadata,
+    });
+    var archive_sized_reply_payload: std.ArrayList(u8) = .empty;
+    defer archive_sized_reply_payload.deinit(std.testing.allocator);
+    try archive_sized_reply.encode(&archive_sized_reply_payload, std.testing.allocator);
+    try expectApplianceTypedPayloadValid(.appliance_host_reply, world.world_appliance_host_reply_format_version, archive_sized_reply_payload.items);
+
+    const archive_sized_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = 0xD320,
+        .previous_turn_receipt_fingerprint = 0xD321,
+        .metadata = archive_metadata,
+    });
+    var archive_sized_checkpoint_payload: std.ArrayList(u8) = .empty;
+    defer archive_sized_checkpoint_payload.deinit(std.testing.allocator);
+    try archive_sized_checkpoint.encode(&archive_sized_checkpoint_payload, std.testing.allocator);
+    try expectApplianceTypedPayloadValid(.appliance_checkpoint, world.world_appliance_checkpoint_format_version, archive_sized_checkpoint_payload.items);
 
     const reconstruction = world.Appliance.ReconstructionReport.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
