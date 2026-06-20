@@ -19921,6 +19921,9 @@ pub const Actuation = struct {
 
         pub fn validateForPrepared(self: @This(), prepared: Prepared) !void {
             try validateOptionalFingerprint(self.host_request_fingerprint);
+            if (self.host_request_fingerprint) |host_request_fingerprint| {
+                if (host_request_fingerprint != prepared.intent.frame_request_fingerprint) return error.InvalidFrameEncoding;
+            }
             if (self.intent_fingerprint != prepared.intent.intent_fingerprint) return error.InvalidFrameEncoding;
             if (self.envelope_fingerprint != prepared.envelope.envelope_fingerprint) return error.InvalidFrameEncoding;
             if (self.idempotency_key_fingerprint != prepared.envelope.idempotency_key.key_fingerprint) return error.InvalidFrameEncoding;
