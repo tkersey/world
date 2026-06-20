@@ -253,8 +253,10 @@ const ApplianceWasmBuildOptions = struct {
     overlong_global_i64_const: bool = false,
     explicit_table_element_section: bool = false,
     ref_func_element_section: bool = false,
+    invalid_element_function_index: bool = false,
     multi_segment_data_section: bool = false,
     mismatched_data_count_section: bool = false,
+    invalid_data_memory_index: bool = false,
     custom_section: bool = false,
 
     const HelperExports = enum {
@@ -479,7 +481,7 @@ fn buildMinimalApplianceWasmWithOptions(
         try appendApplianceWasmSection(&module, 8, start.items);
     }
 
-    if (options.explicit_table_element_section or options.ref_func_element_section) {
+    if (options.explicit_table_element_section or options.ref_func_element_section or options.invalid_element_function_index) {
         var elements: std.ArrayList(u8) = .empty;
         defer elements.deinit(std.testing.allocator);
         try appendApplianceWasmU32(&elements, 1);
@@ -490,6 +492,15 @@ fn buildMinimalApplianceWasmWithOptions(
             try elements.append(std.testing.allocator, 0xd2);
             try appendApplianceWasmU32(&elements, 0);
             try elements.append(std.testing.allocator, 0x0b);
+        } else if (options.invalid_element_function_index) {
+            try appendApplianceWasmU32(&elements, 2);
+            try appendApplianceWasmU32(&elements, 0);
+            try elements.append(std.testing.allocator, 0x41);
+            try elements.append(std.testing.allocator, 0);
+            try elements.append(std.testing.allocator, 0x0b);
+            try elements.append(std.testing.allocator, 0);
+            try appendApplianceWasmU32(&elements, 1);
+            try appendApplianceWasmU32(&elements, @intCast(function_count + 1));
         } else {
             try appendApplianceWasmU32(&elements, 2);
             try appendApplianceWasmU32(&elements, 0);
@@ -661,7 +672,18 @@ fn buildMinimalApplianceWasmWithOptions(
     }
     try appendApplianceWasmSection(&module, 10, code.items);
 
-    if (options.multi_segment_data_section) {
+    if (options.invalid_data_memory_index) {
+        var data: std.ArrayList(u8) = .empty;
+        defer data.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&data, 1);
+        try appendApplianceWasmU32(&data, 2);
+        try appendApplianceWasmU32(&data, 1);
+        try data.append(std.testing.allocator, 0x41);
+        try data.append(std.testing.allocator, 0);
+        try data.append(std.testing.allocator, 0x0b);
+        try appendApplianceWasmU32(&data, 0);
+        try appendApplianceWasmSection(&module, 11, data.items);
+    } else if (options.multi_segment_data_section) {
         var data: std.ArrayList(u8) = .empty;
         defer data.deinit(std.testing.allocator);
         try appendApplianceWasmU32(&data, 2);
@@ -1167,6 +1189,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     const explicit_table_element_inspection = try world.Appliance.Abi.inspectWasm(explicit_table_element_section.items);
     try std.testing.expect(explicit_table_element_inspection.passed());
 
+    var invalid_element_function_index = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_element_function_index = true },
+    );
+    defer invalid_element_function_index.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_element_function_index.items));
+
     var ref_func_element_section = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
         metadata_values,
@@ -1180,6 +1215,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     defer ref_func_element_section.deinit(std.testing.allocator);
     const ref_func_element_inspection = try world.Appliance.Abi.inspectWasm(ref_func_element_section.items);
     try std.testing.expect(ref_func_element_inspection.passed());
+
+    var invalid_data_memory_index = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_data_memory_index = true },
+    );
+    defer invalid_data_memory_index.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_data_memory_index.items));
 
     var multi_segment_data_section = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
@@ -1779,6 +1827,21 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, runnable_restore.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
+    const uninitialized_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .capsule_fingerprint = 0xD03A,
+        .core_state = .uninitialized,
+    });
+    try uninitialized_checkpoint.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
+    const uninitialized_restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 10,
+        .restore_checkpoint = uninitialized_checkpoint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, uninitialized_restore.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
     const inspected_receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 9,
@@ -1799,6 +1862,26 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
         .turn_receipt = inspected_receipt,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, runnable_inspected_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const failed_inspected_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 9,
+        .capsule_fingerprint = 0xD03B,
+        .core_state = .failed,
+    });
+    const mismatched_inspected_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 9,
+        .source_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 9, null),
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 9, null),
+        .quiescence = world.Appliance.QuiescenceReport.init(.{
+            .quiescent = true,
+        }),
+        .status = .inspected,
+        .checkpoint = failed_inspected_checkpoint,
+        .turn_receipt = inspected_receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_inspected_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
     const uninitialized_with_prior_state = world.Appliance.Checkpoint.init(.{
         .manifest_fingerprint = manifest_fingerprint,

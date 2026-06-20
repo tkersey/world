@@ -722,7 +722,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.restore_checkpoint) |checkpoint| {
                     if (self.kind != .restore) return error.InvalidFrameEncoding;
                     try checkpoint.validate(expected_manifest_fingerprint, capacity);
-                    if (checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
+                    if (checkpoint.core_state == .runnable or checkpoint.core_state == .uninitialized) return error.InvalidFrameEncoding;
                 } else if (self.kind == .restore) {
                     return error.RestoreRejected;
                 }
@@ -1580,7 +1580,10 @@ pub fn Appliance(comptime World: type) type {
                 if (self.checkpoint.capsule_fingerprint != self.turn_receipt.resulting_capsule_fingerprint) return error.InvalidFrameEncoding;
                 if (self.status != self.turn_receipt.status) return error.InvalidFrameEncoding;
                 if (self.status == .inspected and self.checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
-                if (self.status != .inspected and self.checkpoint.core_state != stateForStatus(self.status)) {
+                if (self.status == .inspected) {
+                    const checkpoint_state_fingerprint = stateFingerprintFor(self.checkpoint.core_state, self.checkpoint.turn_sequence_number, self.checkpoint.previous_turn_receipt_fingerprint);
+                    if (checkpoint_state_fingerprint != self.source_state_fingerprint) return error.InvalidFrameEncoding;
+                } else if (self.checkpoint.core_state != stateForStatus(self.status)) {
                     if (!(self.status == .cancelled and self.checkpoint.core_state == .uninitialized)) return error.InvalidFrameEncoding;
                 }
                 if (self.root_result_fingerprint != self.turn_receipt.root_result_fingerprint) return error.InvalidFrameEncoding;
@@ -3096,10 +3099,10 @@ pub fn Appliance(comptime World: type) type {
                             &inspection,
                         ),
                         0 => {},
-                        4 => table_count = try validateIgnoredWasmSection(section_id, section),
-                        9 => _ = try validateIgnoredWasmSection(section_id, section),
-                        11 => data_segment_count = try validateIgnoredWasmSection(section_id, section),
-                        12 => data_count_section = try validateIgnoredWasmSection(section_id, section),
+                        4 => table_count = try validateIgnoredWasmSection(section_id, section, memory_count, table_count, inspection.import_function_count + function_count),
+                        9 => _ = try validateIgnoredWasmSection(section_id, section, memory_count, table_count, inspection.import_function_count + function_count),
+                        11 => data_segment_count = try validateIgnoredWasmSection(section_id, section, memory_count, table_count, inspection.import_function_count + function_count),
+                        12 => data_count_section = try validateIgnoredWasmSection(section_id, section, memory_count, table_count, inspection.import_function_count + function_count),
                         else => return error.InvalidFrameEncoding,
                     }
                     cursor += section_len;
@@ -3333,7 +3336,7 @@ pub fn Appliance(comptime World: type) type {
             return globals;
         }
 
-        fn validateIgnoredWasmSection(section_id: u8, section: []const u8) !u32 {
+        fn validateIgnoredWasmSection(section_id: u8, section: []const u8, memory_count: u32, table_count: u32, total_function_count: usize) !u32 {
             var cursor: usize = 0;
             const count = try wasmReadU32(section, &cursor);
             if (section_id == 12) {
@@ -3345,8 +3348,8 @@ pub fn Appliance(comptime World: type) type {
                 switch (section_id) {
                     4 => try wasmSkipTable(section, &cursor),
                     6 => try wasmSkipGlobal(section, &cursor),
-                    9 => try wasmSkipElement(section, &cursor),
-                    11 => try wasmSkipData(section, &cursor),
+                    9 => try wasmSkipElement(section, &cursor, table_count, total_function_count),
+                    11 => try wasmSkipData(section, &cursor, memory_count),
                     else => return error.InvalidFrameEncoding,
                 }
             }
@@ -3367,31 +3370,33 @@ pub fn Appliance(comptime World: type) type {
             try wasmSkipConstExpr(section, cursor);
         }
 
-        fn wasmSkipElement(section: []const u8, cursor: *usize) !void {
+        fn wasmSkipElement(section: []const u8, cursor: *usize, table_count: u32, total_function_count: usize) !void {
             const flags = try wasmReadU32(section, cursor);
             switch (flags) {
                 0 => {
+                    if (table_count == 0) return error.InvalidFrameEncoding;
                     try wasmSkipConstExpr(section, cursor);
-                    try wasmSkipElementFuncIndices(section, cursor);
+                    try wasmSkipElementFuncIndices(section, cursor, total_function_count);
                 },
                 1 => {
                     const elem_kind = try wasmReadU8(section, cursor);
                     if (elem_kind != 0) return error.InvalidFrameEncoding;
-                    try wasmSkipElementFuncIndices(section, cursor);
+                    try wasmSkipElementFuncIndices(section, cursor, total_function_count);
                 },
                 2 => {
-                    _ = try wasmReadU32(section, cursor);
+                    if (try wasmReadU32(section, cursor) >= table_count) return error.InvalidFrameEncoding;
                     try wasmSkipConstExpr(section, cursor);
                     const elem_kind = try wasmReadU8(section, cursor);
                     if (elem_kind != 0) return error.InvalidFrameEncoding;
-                    try wasmSkipElementFuncIndices(section, cursor);
+                    try wasmSkipElementFuncIndices(section, cursor, total_function_count);
                 },
                 3 => {
                     const elem_kind = try wasmReadU8(section, cursor);
                     if (elem_kind != 0) return error.InvalidFrameEncoding;
-                    try wasmSkipElementFuncIndices(section, cursor);
+                    try wasmSkipElementFuncIndices(section, cursor, total_function_count);
                 },
                 4 => {
+                    if (table_count == 0) return error.InvalidFrameEncoding;
                     try wasmSkipConstExpr(section, cursor);
                     try wasmSkipElementConstExprs(section, cursor);
                 },
@@ -3400,7 +3405,7 @@ pub fn Appliance(comptime World: type) type {
                     try wasmSkipElementConstExprs(section, cursor);
                 },
                 6 => {
-                    _ = try wasmReadU32(section, cursor);
+                    if (try wasmReadU32(section, cursor) >= table_count) return error.InvalidFrameEncoding;
                     try wasmSkipConstExpr(section, cursor);
                     try wasmSkipRefType(section, cursor);
                     try wasmSkipElementConstExprs(section, cursor);
@@ -3413,10 +3418,12 @@ pub fn Appliance(comptime World: type) type {
             }
         }
 
-        fn wasmSkipElementFuncIndices(section: []const u8, cursor: *usize) !void {
+        fn wasmSkipElementFuncIndices(section: []const u8, cursor: *usize, total_function_count: usize) !void {
             const count = try wasmReadU32(section, cursor);
             var index: u32 = 0;
-            while (index < count) : (index += 1) _ = try wasmReadU32(section, cursor);
+            while (index < count) : (index += 1) {
+                if (try wasmReadU32(section, cursor) >= total_function_count) return error.InvalidFrameEncoding;
+            }
         }
 
         fn wasmSkipElementConstExprs(section: []const u8, cursor: *usize) !void {
@@ -3430,13 +3437,16 @@ pub fn Appliance(comptime World: type) type {
             if (ref_type != 0x70 and ref_type != 0x6f) return error.InvalidFrameEncoding;
         }
 
-        fn wasmSkipData(section: []const u8, cursor: *usize) !void {
+        fn wasmSkipData(section: []const u8, cursor: *usize, memory_count: u32) !void {
             const flags = try wasmReadU32(section, cursor);
             switch (flags) {
-                0 => try wasmSkipConstExpr(section, cursor),
+                0 => {
+                    if (memory_count == 0) return error.InvalidFrameEncoding;
+                    try wasmSkipConstExpr(section, cursor);
+                },
                 1 => {},
                 2 => {
-                    _ = try wasmReadU32(section, cursor);
+                    if (try wasmReadU32(section, cursor) >= memory_count) return error.InvalidFrameEncoding;
                     try wasmSkipConstExpr(section, cursor);
                 },
                 else => return error.InvalidFrameEncoding,
