@@ -5633,7 +5633,7 @@ test "appliance actuation finalizeHost constructs commit response and receipt" {
         .world_surface_fingerprint = fixture.world_surface_fingerprint,
     });
     const finalized = try world.Actuation.Membrane.finalizeHost(prepared, .{
-        .host_request_fingerprint = fixture.key.request_fingerprint,
+        .host_request_fingerprint = fixture.key.request_fingerprint + 1,
         .intent_fingerprint = prepared.intent.intent_fingerprint,
         .envelope_fingerprint = prepared.envelope.envelope_fingerprint,
         .idempotency_key_fingerprint = prepared.envelope.idempotency_key.key_fingerprint,
@@ -5830,7 +5830,7 @@ test "appliance actuation finalizeHost rejects mismatched host outcome" {
         .frame_response_fingerprint = 0xA907,
     }, .{}));
     try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.finalizeHost(prepared, .{
-        .host_request_fingerprint = prepared.intent.frame_request_fingerprint + 1,
+        .host_request_fingerprint = 0,
         .intent_fingerprint = prepared.intent.intent_fingerprint,
         .envelope_fingerprint = prepared.envelope.envelope_fingerprint,
         .idempotency_key_fingerprint = prepared.envelope.idempotency_key.key_fingerprint,
