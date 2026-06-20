@@ -553,7 +553,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_classes.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_allowed_response_statuses.len) return error.InvalidFrameEncoding;
                 if (self.actuation_binding_fingerprints.len > 1) return error.InvalidFrameEncoding;
-                if (self.actuation_binding_fingerprints.len != 0 and (!self.required_host_capabilities.actuation or self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
+                if (self.actuation_binding_fingerprints.len != 0 and (!self.enabled_features.actuation or !self.required_host_capabilities.actuation or self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
                 for (self.provider_target_ref_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
@@ -1561,8 +1561,11 @@ pub fn Appliance(comptime World: type) type {
                 for (self.finalized_actuation_receipt_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
-                if (self.finalized_actuation_receipt_fingerprints.len != 0 and self.finalized_actuation_receipt_fingerprints.len != self.turn_receipt.applied_host_reply_fingerprints.len) return error.InvalidFrameEncoding;
-                if (self.status == .needs_host and self.finalized_actuation_receipt_fingerprints.len != 0) return error.InvalidFrameEncoding;
+                if (self.status == .needs_host) {
+                    if (self.finalized_actuation_receipt_fingerprints.len != 0) return error.InvalidFrameEncoding;
+                } else if (self.finalized_actuation_receipt_fingerprints.len != self.turn_receipt.applied_host_reply_fingerprints.len) {
+                    return error.InvalidFrameEncoding;
+                }
                 try validateOptionalFingerprint(self.run_receipt_fingerprint);
                 try validateOptionalFingerprint(self.archive_append_batch_fingerprint);
                 try validateOptionalFingerprint(self.archive_append_batch_ref_fingerprint);
@@ -1576,6 +1579,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.turn_sequence_number != self.turn_receipt.turn_sequence_number) return error.InvalidFrameEncoding;
                 if (self.checkpoint.capsule_fingerprint != self.turn_receipt.resulting_capsule_fingerprint) return error.InvalidFrameEncoding;
                 if (self.status != self.turn_receipt.status) return error.InvalidFrameEncoding;
+                if (self.status == .inspected and self.checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
                 if (self.status != .inspected and self.checkpoint.core_state != stateForStatus(self.status)) {
                     if (!(self.status == .cancelled and self.checkpoint.core_state == .uninitialized)) return error.InvalidFrameEncoding;
                 }
@@ -2589,7 +2593,6 @@ pub fn Appliance(comptime World: type) type {
             fn commandIsTerminalArchiveAckOnly(self: @This(), command: Command) bool {
                 return (command.kind == .@"continue" or command.kind == .restore) and
                     self.last_turn_status == .completed and
-                    self.manifest_value.enabled_features.archive_ack_gate and
                     command.host_replies.len == 0 and
                     commandHasRetentionAck(command);
             }
@@ -2686,6 +2689,15 @@ pub fn Appliance(comptime World: type) type {
             }
 
             fn statusForAdvancingCommand(self: @This(), command: Command) TurnStatus {
+                if (command.kind == .restore) {
+                    const checkpoint = command.restore_checkpoint orelse return .blocked;
+                    switch (checkpoint.core_state) {
+                        .completed => return .completed,
+                        .failed => return .failed,
+                        .cancelled => return .cancelled,
+                        .uninitialized, .runnable, .waiting_host => {},
+                    }
+                }
                 if (commandHasNonTerminalHostReply(command)) return .needs_host;
                 if (command.host_replies.len != 0) return turnStatusForHostOutcome(command.host_replies[0].outcome.status);
                 if (self.commandIsTerminalArchiveAckOnly(command)) return .completed;
@@ -3733,11 +3745,10 @@ pub fn Appliance(comptime World: type) type {
                     },
                     0x10 => {
                         const function_index = try wasmReadU32(body, &cursor);
-                        if (wasmFunctionSignature(function_index, import_function_count, type_sigs, function_type_indices)) |signature| {
-                            if (signature.all_params_i32) try wasmConsumeI32(&i32_stack_depth, signature.param_count);
-                            if (signature.result_count == 1 and signature.all_results_i32) {
-                                i32_stack_depth += 1;
-                            }
+                        const signature = wasmFunctionSignature(function_index, import_function_count, type_sigs, function_type_indices) orelse return error.InvalidFrameEncoding;
+                        if (signature.all_params_i32) try wasmConsumeI32(&i32_stack_depth, signature.param_count);
+                        if (signature.result_count == 1 and signature.all_results_i32) {
+                            i32_stack_depth += 1;
                         }
                     },
                     0x11 => {

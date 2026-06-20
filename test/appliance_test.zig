@@ -237,6 +237,7 @@ const ApplianceWasmBuildOptions = struct {
     missing_required_result_index: ?usize = null,
     dropped_required_result_index: ?usize = null,
     extra_result_stack_index: ?usize = null,
+    invalid_required_call_target_index: ?usize = null,
     invalid_extra_export_kind: bool = false,
     invalid_extra_export_function_index: bool = false,
     invalid_unexported_function_type_index: bool = false,
@@ -557,6 +558,17 @@ fn buildMinimalApplianceWasmWithOptions(
             try code.appendSlice(std.testing.allocator, body.items);
             continue;
         }
+        if (options.invalid_required_call_target_index != null and index == options.invalid_required_call_target_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x10);
+            try appendApplianceWasmU32(&body, @intCast(function_count + 1));
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
         try appendApplianceWasmU32(&body, 0);
         try body.append(std.testing.allocator, 0x41);
         const value = if (index == 0)
@@ -842,6 +854,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer extra_result_stack.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(extra_result_stack.items));
+
+    var invalid_call_target = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_required_call_target_index = 1 },
+    );
+    defer invalid_call_target.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_call_target.items));
 
     var invalid_extra_export_kind = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
@@ -1585,6 +1610,27 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
         .restore_checkpoint = runnable_checkpoint,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, runnable_restore.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const inspected_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 9,
+        .command_fingerprint = 0xD038,
+        .resulting_capsule_fingerprint = runnable_checkpoint.capsule_fingerprint,
+        .status = .inspected,
+    });
+    const runnable_inspected_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 9,
+        .source_state_fingerprint = 0xD039,
+        .resulting_state_fingerprint = 0xD039,
+        .quiescence = world.Appliance.QuiescenceReport.init(.{
+            .quiescent = true,
+        }),
+        .status = .inspected,
+        .checkpoint = runnable_checkpoint,
+        .turn_receipt = inspected_receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, runnable_inspected_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
     const uninitialized_with_prior_state = world.Appliance.Checkpoint.init(.{
         .manifest_fingerprint = manifest_fingerprint,
@@ -2424,6 +2470,70 @@ test "appliance Core restore preserves terminal checkpoint status" {
     try restore_core.submit(restore_bytes);
     try restore_core.executeTurn();
     try std.testing.expectEqual(world.Appliance.CoreState.completed, restore_core.state);
+
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const ports_manifest = PortsAppliance.manifest();
+    var ports_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        ports_manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer ports_core.reset();
+    const ports_boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = ports_manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const ports_boot_bytes = try ports_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(ports_boot_bytes);
+    try ports_core.submit(ports_boot_bytes);
+    try ports_core.executeTurn();
+    const ports_request = ports_core.outstanding_host_request.?;
+    const ports_reply = applianceHostReplyFor(ports_request, 0xD533);
+    const ports_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = ports_manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = ports_core.previous_turn_receipt_fingerprint,
+        .host_replies = &.{ports_reply},
+    });
+    const ports_continue_bytes = try ports_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(ports_continue_bytes);
+    try ports_core.submit(ports_continue_bytes);
+    try ports_core.executeTurn();
+    var ports_terminal_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        ports_core.readOutput(),
+        ports_manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer ports_terminal_output.deinit(std.testing.allocator);
+
+    var ports_restore_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        ports_manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer ports_restore_core.reset();
+    const ports_restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = ports_manifest.manifest_fingerprint,
+        .turn_sequence_number = ports_terminal_output.checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = ports_terminal_output.checkpoint.previous_turn_receipt_fingerprint,
+        .restore_checkpoint = ports_terminal_output.checkpoint,
+    });
+    const ports_restore_bytes = try ports_restore.encode(std.testing.allocator);
+    defer std.testing.allocator.free(ports_restore_bytes);
+    try ports_restore_core.submit(ports_restore_bytes);
+    try ports_restore_core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, ports_restore_core.state);
+    try std.testing.expect(ports_restore_core.outstanding_host_request == null);
 
     const MinimalAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
         .profile = world.Appliance.Profile.minimal,
@@ -3439,8 +3549,7 @@ test "appliance Core warns when non-strict archive append advances unacknowledge
     defer std.testing.allocator.free(late_ack_continue_bytes);
     try unacknowledged.submit(late_ack_continue_bytes);
     try unacknowledged.executeTurn();
-    try std.testing.expect(unacknowledged.pending_archive_append_batch_fingerprint != null);
-    try std.testing.expect(unacknowledged.pending_archive_append_batch_fingerprint.? != first_pending_archive);
+    try std.testing.expectEqual(@as(?u64, null), unacknowledged.pending_archive_append_batch_fingerprint);
 
     var acknowledged = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -3533,6 +3642,44 @@ test "appliance Core warns when non-strict archive append advances unacknowledge
     try std.testing.expectEqual(world.Appliance.TurnStatus.needs_host, actuated_warning_output.status);
     try std.testing.expectEqual(@as(usize, 1), actuated_warning_output.warning_count);
     try std.testing.expectEqual(@as(usize, 1), actuated_warning_output.turn_receipt.warning_count);
+
+    var actuated_ack = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        actuated_manifest,
+        ActuatedArchiveAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer actuated_ack.reset();
+    try actuated_ack.submit(actuated_boot_bytes);
+    try actuated_ack.executeTurn();
+    const ack_outstanding = actuated_ack.outstanding_host_request orelse return error.StaleTurn;
+    const ack_reply = applianceHostReplyFor(ack_outstanding, 0xD6A1);
+    const ack_reply_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = actuated_manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = actuated_ack.previous_turn_receipt_fingerprint,
+        .host_replies = &.{ack_reply},
+    });
+    const ack_reply_continue_bytes = try ack_reply_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(ack_reply_continue_bytes);
+    try actuated_ack.submit(ack_reply_continue_bytes);
+    try actuated_ack.executeTurn();
+    const terminal_ack = try applianceRetentionAckForPendingCore(actuated_ack, "actuated-terminal-retained");
+    const terminal_ack_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = actuated_manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = actuated_ack.previous_turn_receipt_fingerprint,
+        .retention_ack = terminal_ack,
+    });
+    const terminal_ack_continue_bytes = try terminal_ack_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(terminal_ack_continue_bytes);
+    try actuated_ack.submit(terminal_ack_continue_bytes);
+    try actuated_ack.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, actuated_ack.state);
+    try std.testing.expectEqual(@as(?u64, null), actuated_ack.pending_archive_append_batch_fingerprint);
+    try std.testing.expect(actuated_ack.outstanding_host_request == null);
 }
 
 test "appliance Core executeTurn emits deterministic output and receipt" {
@@ -4956,7 +5103,7 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
         .blocker_count = 1,
         .warning_count = 1,
     });
-    try missing_finalized_ref.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_finalized_ref.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
     try std.testing.expect(output.output_fingerprint != missing_finalized_ref.output_fingerprint);
 
     const zero_blocker_receipt = world.Appliance.TurnReceipt.init(.{
@@ -5775,6 +5922,13 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
         .required_host_capabilities = hidden_actuation_capabilities,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, hidden_actuation_manifest.validate());
+
+    var disabled_actuation_features = manifest.enabled_features;
+    disabled_actuation_features.actuation = false;
+    const disabled_actuation_manifest = applianceManifestVariant(manifest, .{
+        .enabled_features = disabled_actuation_features,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, disabled_actuation_manifest.validate());
 
     var reserved_modes = manifest.supported_execution_modes;
     reserved_modes._reserved = 1;
