@@ -2527,8 +2527,10 @@ pub fn Appliance(comptime World: type) type {
                     .@"continue" => {
                         if (self.last_turn_status) |last_status| {
                             if (last_status == .failed or last_status == .blocked or last_status == .cancelled) return error.StaleTurn;
-                            if (last_status == .completed and self.manifest_value.actuation_binding_fingerprints.len != 0 and self.manifest_value.enabled_features.archive_ack_gate and !commandHasRetentionAck(command)) return error.StaleTurn;
-                            if (last_status == .completed and self.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
+                            if (last_status == .completed) {
+                                if (self.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
+                                if (!self.commandIsTerminalArchiveAckOnly(command)) return error.StaleTurn;
+                            }
                         }
                         if (self.current_turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
                         if (command.turn_sequence_number != self.current_turn_sequence_number + 1) return error.StaleTurn;
@@ -3218,12 +3220,25 @@ pub fn Appliance(comptime World: type) type {
 
         const wasm_max_inspected_types = 512;
         const wasm_max_inspected_functions = 8192;
+        const wasm_max_inspected_signature_values = 64;
+
+        const WasmValueType = enum {
+            i32,
+            i64,
+            f32,
+            f64,
+            v128,
+            funcref,
+            externref,
+        };
 
         const WasmFuncSignature = struct {
             param_count: u32 = 0,
             result_count: u32 = 0,
             i32_param_count: u32 = 0,
             i32_result_count: u32 = 0,
+            param_types: [wasm_max_inspected_signature_values]WasmValueType = [_]WasmValueType{.i32} ** wasm_max_inspected_signature_values,
+            result_types: [wasm_max_inspected_signature_values]WasmValueType = [_]WasmValueType{.i32} ** wasm_max_inspected_signature_values,
             all_params_i32: bool = true,
             all_results_i32: bool = true,
 
@@ -3244,22 +3259,30 @@ pub fn Appliance(comptime World: type) type {
                 const tag = try wasmReadU8(section, &cursor);
                 if (tag != 0x60) return error.InvalidFrameEncoding;
                 const param_count = try wasmReadU32(section, &cursor);
+                if (param_count > wasm_max_inspected_signature_values) return error.CapacityExceeded;
+                var param_types = [_]WasmValueType{.i32} ** wasm_max_inspected_signature_values;
                 var all_params_i32 = true;
                 var i32_param_count: u32 = 0;
                 var param_index: u32 = 0;
                 while (param_index < param_count) : (param_index += 1) {
-                    if (try inspectWasmValueTypeIsI32(section, &cursor)) {
+                    const param_type = try wasmReadValueType(section, &cursor);
+                    param_types[@intCast(param_index)] = param_type;
+                    if (param_type == .i32) {
                         i32_param_count += 1;
                     } else {
                         all_params_i32 = false;
                     }
                 }
                 const result_count = try wasmReadU32(section, &cursor);
+                if (result_count > wasm_max_inspected_signature_values) return error.CapacityExceeded;
+                var result_types = [_]WasmValueType{.i32} ** wasm_max_inspected_signature_values;
                 var all_results_i32 = true;
                 var i32_result_count: u32 = 0;
                 var result_index: u32 = 0;
                 while (result_index < result_count) : (result_index += 1) {
-                    if (try inspectWasmValueTypeIsI32(section, &cursor)) {
+                    const result_type = try wasmReadValueType(section, &cursor);
+                    result_types[@intCast(result_index)] = result_type;
+                    if (result_type == .i32) {
                         i32_result_count += 1;
                     } else {
                         all_results_i32 = false;
@@ -3270,6 +3293,8 @@ pub fn Appliance(comptime World: type) type {
                     .result_count = result_count,
                     .i32_param_count = i32_param_count,
                     .i32_result_count = i32_result_count,
+                    .param_types = param_types,
+                    .result_types = result_types,
                     .all_params_i32 = all_params_i32,
                     .all_results_i32 = all_results_i32,
                 };
@@ -3281,16 +3306,6 @@ pub fn Appliance(comptime World: type) type {
         fn inspectWasmValueTypeIsI32(section: []const u8, cursor: *usize) !bool {
             return (try wasmReadValueType(section, cursor)) == .i32;
         }
-
-        const WasmValueType = enum {
-            i32,
-            i64,
-            f32,
-            f64,
-            v128,
-            funcref,
-            externref,
-        };
 
         fn wasmReadValueType(section: []const u8, cursor: *usize) !WasmValueType {
             return switch (try wasmReadU8(section, cursor)) {
@@ -3859,7 +3874,7 @@ pub fn Appliance(comptime World: type) type {
             while (cursor < body.len) {
                 const opcode = try wasmReadU8(body, &cursor);
                 exact_stack_reliable = exact_stack_reliable and switch (opcode) {
-                    0x0b, 0x1a, 0x20, 0x41, 0x42, 0x43, 0x44, 0x45...0x4f, 0x67...0x78 => true,
+                    0x0b, 0x10, 0x11, 0x1a, 0x20, 0x41, 0x42, 0x43, 0x44, 0x45...0x4f, 0x67...0x78 => true,
                     else => false,
                 };
                 switch (opcode) {
@@ -3983,6 +3998,10 @@ pub fn Appliance(comptime World: type) type {
                     0x10 => {
                         const function_index = try wasmReadU32(body, &cursor);
                         const signature = wasmFunctionSignature(function_index, import_function_count, type_sigs, function_type_indices) orelse return error.InvalidFrameEncoding;
+                        if (strict_stack and exact_stack_reliable) {
+                            try wasmExactConsumeSignatureParams(&exact_stack, signature);
+                            try wasmExactPushSignatureResults(&exact_stack, signature);
+                        }
                         try wasmConsumeSignatureParams(&i32_stack_depth, &non_i32_stack_depth, signature, strict_stack);
                         i32_stack_depth += signature.i32_result_count;
                         non_i32_stack_depth += signature.result_count - signature.i32_result_count;
@@ -3994,6 +4013,11 @@ pub fn Appliance(comptime World: type) type {
                         if (type_index >= type_sigs.len) return error.InvalidFrameEncoding;
                         try wasmValidateTableRefType(table_section, table_index, .funcref);
                         const signature = type_sigs[@intCast(type_index)];
+                        if (strict_stack and exact_stack_reliable) {
+                            try exact_stack.pop(.i32);
+                            try wasmExactConsumeSignatureParams(&exact_stack, signature);
+                            try wasmExactPushSignatureResults(&exact_stack, signature);
+                        }
                         try wasmConsumeSignatureParams(&i32_stack_depth, &non_i32_stack_depth, signature, strict_stack);
                         try wasmConsumeI32ForMode(&i32_stack_depth, 1, strict_stack);
                         i32_stack_depth += signature.i32_result_count;
@@ -4271,6 +4295,21 @@ pub fn Appliance(comptime World: type) type {
                 self.len -= 1;
             }
         };
+
+        fn wasmExactConsumeSignatureParams(stack: *WasmOperandStack, signature: WasmFuncSignature) !void {
+            var remaining = signature.param_count;
+            while (remaining > 0) {
+                remaining -= 1;
+                try stack.pop(signature.param_types[@intCast(remaining)]);
+            }
+        }
+
+        fn wasmExactPushSignatureResults(stack: *WasmOperandStack, signature: WasmFuncSignature) !void {
+            var index: u32 = 0;
+            while (index < signature.result_count) : (index += 1) {
+                try stack.push(signature.result_types[@intCast(index)]);
+            }
+        }
 
         const WasmControlKind = enum {
             block_or_if,

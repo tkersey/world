@@ -258,6 +258,7 @@ const ApplianceWasmBuildOptions = struct {
     invalid_required_non_i32_comparison_index: ?usize = null,
     invalid_required_prefixed_conversion_index: ?usize = null,
     invalid_required_non_i32_call_index: ?usize = null,
+    invalid_required_mixed_call_order_index: ?usize = null,
     trap_only_required_body_index: ?usize = null,
     invalid_unused_body: bool = false,
     invalid_unused_missing_result_body: bool = false,
@@ -364,7 +365,8 @@ fn buildMinimalApplianceWasmWithOptions(
         @as(usize, if (options.invalid_unused_body) 1 else 0) +
         @as(usize, if (options.invalid_unused_missing_result_body) 1 else 0) +
         @as(usize, if (options.invalid_unused_extra_result_body) 1 else 0) +
-        @as(usize, if (options.invalid_required_non_i32_call_index != null) 1 else 0);
+        @as(usize, if (options.invalid_required_non_i32_call_index != null) 1 else 0) +
+        @as(usize, if (options.invalid_required_mixed_call_order_index != null) 1 else 0);
     const function_count = required_len + metadata_len + helper_count + extra_unexported_count;
     const extra_export_count: usize =
         @as(usize, if (options.duplicate_memory_export) 1 else 0) +
@@ -384,8 +386,10 @@ fn buildMinimalApplianceWasmWithOptions(
 
     var types: std.ArrayList(u8) = .empty;
     defer types.deinit(std.testing.allocator);
-    const non_i32_type_count: u32 = if (options.invalid_required_non_i32_call_index != null) 1 else 0;
-    try appendApplianceWasmU32(&types, (if (options.invalid_unused_type) @as(u32, 5) else @as(u32, 4)) + non_i32_type_count);
+    const extra_type_count: u32 =
+        (if (options.invalid_required_non_i32_call_index != null) @as(u32, 1) else 0) +
+        (if (options.invalid_required_mixed_call_order_index != null) @as(u32, 1) else 0);
+    try appendApplianceWasmU32(&types, (if (options.invalid_unused_type) @as(u32, 5) else @as(u32, 4)) + extra_type_count);
     try appendApplianceWasmFuncType(&types, 0, 1);
     try appendApplianceWasmFuncType(&types, 2, 1);
     try appendApplianceWasmFuncType(&types, 1, 1);
@@ -394,6 +398,13 @@ fn buildMinimalApplianceWasmWithOptions(
         try types.append(std.testing.allocator, 0x60);
         try appendApplianceWasmU32(&types, 1);
         try types.append(std.testing.allocator, 0x7d);
+        try appendApplianceWasmU32(&types, 1);
+        try types.append(std.testing.allocator, 0x7f);
+    }
+    if (options.invalid_required_mixed_call_order_index != null) {
+        try types.append(std.testing.allocator, 0x60);
+        try appendApplianceWasmU32(&types, 2);
+        try types.appendSlice(std.testing.allocator, &.{ 0x7e, 0x7f });
         try appendApplianceWasmU32(&types, 1);
         try types.append(std.testing.allocator, 0x7f);
     }
@@ -428,6 +439,7 @@ fn buildMinimalApplianceWasmWithOptions(
     if (options.invalid_unused_missing_result_body) try appendApplianceWasmU32(&functions, 0);
     if (options.invalid_unused_extra_result_body) try appendApplianceWasmU32(&functions, 0);
     if (options.invalid_required_non_i32_call_index != null) try appendApplianceWasmU32(&functions, 4);
+    if (options.invalid_required_mixed_call_order_index != null) try appendApplianceWasmU32(&functions, 4 + if (options.invalid_required_non_i32_call_index != null) @as(u32, 1) else @as(u32, 0));
     try appendApplianceWasmSection(&module, 3, functions.items);
 
     if (options.explicit_table_element_section or options.externref_table_section) {
@@ -829,6 +841,19 @@ fn buildMinimalApplianceWasmWithOptions(
             try appendApplianceWasmU32(&body, 0);
             try body.append(std.testing.allocator, 0x41);
             try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x10);
+            try appendApplianceWasmU32(&body, @intCast(function_count - 1));
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.invalid_required_mixed_call_order_index != null and index == options.invalid_required_mixed_call_order_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x42);
+            try body.append(std.testing.allocator, 0);
             try body.append(std.testing.allocator, 0x10);
             try appendApplianceWasmU32(&body, @intCast(function_count - 1));
             try body.append(std.testing.allocator, 0x0b);
@@ -1267,6 +1292,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer non_i32_call.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(non_i32_call.items));
+
+    var mixed_call_order = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_required_mixed_call_order_index = 1 },
+    );
+    defer mixed_call_order.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(mixed_call_order.items));
 
     var invalid_call_indirect_type = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
@@ -3061,17 +3099,8 @@ test "appliance Core pending and deferred HostReplies keep request outstanding" 
         });
         const post_inspect_continue_bytes = try post_inspect_continue.encode(std.testing.allocator);
         defer std.testing.allocator.free(post_inspect_continue_bytes);
-        try core.submit(post_inspect_continue_bytes);
-        try core.executeTurn();
-        var warning_output = try world.Appliance.TurnOutput.decode(
-            std.testing.allocator,
-            core.readOutput(),
-            manifest.manifest_fingerprint,
-            world.Appliance.Capacity.tiny_one_port,
-        );
-        defer warning_output.deinit(std.testing.allocator);
-        try std.testing.expectEqual(world.Appliance.TurnStatus.needs_host, warning_output.status);
-        try std.testing.expectEqual(@as(usize, 1), warning_output.warning_count);
+        try std.testing.expectError(error.StaleTurn, core.submit(post_inspect_continue_bytes));
+        try std.testing.expectEqual(world.Appliance.CoreState.completed, core.state);
     }
 }
 
@@ -4030,7 +4059,7 @@ test "appliance Core validates command RetentionAck before advancing" {
     });
     const missing_ack_bytes = try missing_ack.encode(std.testing.allocator);
     defer std.testing.allocator.free(missing_ack_bytes);
-    try std.testing.expectError(error.ArchiveParentMismatch, core.submit(missing_ack_bytes));
+    try std.testing.expectError(error.StaleTurn, core.submit(missing_ack_bytes));
     try std.testing.expectEqual(@as(?u64, pending_archive), core.pending_archive_append_batch_fingerprint);
 
     const stale_ack = applianceRetentionAckFor(pending_archive, "stale");
@@ -4483,7 +4512,7 @@ test "appliance Core rejects replay evidence without verified transcript support
     try std.testing.expectError(error.InvalidCommand, verify_core.submit(verify_boot_bytes));
 }
 
-test "appliance Core warns when non-strict archive append advances unacknowledged" {
+test "appliance Core rejects non-strict archive append advance without ack" {
     const ArchiveAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
         .capacity = world.Appliance.Capacity.tiny_one_port,
@@ -4519,30 +4548,15 @@ test "appliance Core warns when non-strict archive append advances unacknowledge
     });
     const no_ack_continue_bytes = try no_ack_continue.encode(std.testing.allocator);
     defer std.testing.allocator.free(no_ack_continue_bytes);
-    try unacknowledged.submit(no_ack_continue_bytes);
-    try unacknowledged.executeTurn();
-
-    var warning_output = try world.Appliance.TurnOutput.decode(
-        std.testing.allocator,
-        unacknowledged.readOutput(),
-        manifest.manifest_fingerprint,
-        world.Appliance.Capacity.tiny_one_port,
-    );
-    defer warning_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, warning_output.status);
-    try std.testing.expectEqual(@as(usize, 1), warning_output.warning_count);
-    try std.testing.expectEqual(@as(usize, 1), warning_output.quiescence.warning_count);
-    try std.testing.expectEqual(@as(usize, 1), warning_output.turn_receipt.warning_count);
-    try std.testing.expect(unacknowledged.pending_archive_append_batch_fingerprint != null);
-    try std.testing.expect(unacknowledged.pending_archive_append_batch_fingerprint.? != first_pending_archive);
-    try std.testing.expectEqual(unacknowledged.pending_archive_append_batch_fingerprint, warning_output.archive_append_batch_fingerprint);
-    try std.testing.expectEqual(unacknowledged.pending_archive_append_batch_fingerprint, warning_output.checkpoint.pending_archive_append_batch_fingerprint);
+    try std.testing.expectError(error.StaleTurn, unacknowledged.submit(no_ack_continue_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, unacknowledged.state);
+    try std.testing.expectEqual(@as(?u64, first_pending_archive), unacknowledged.pending_archive_append_batch_fingerprint);
 
     const late_ack = try applianceRetentionAckForPendingCore(unacknowledged, "late-retained");
     const late_ack_continue = world.Appliance.Command.init(.{
         .kind = .@"continue",
         .manifest_fingerprint = manifest.manifest_fingerprint,
-        .turn_sequence_number = 2,
+        .turn_sequence_number = 1,
         .previous_turn_receipt_fingerprint = unacknowledged.previous_turn_receipt_fingerprint,
         .retention_ack = late_ack,
     });
@@ -4631,18 +4645,8 @@ test "appliance Core warns when non-strict archive append advances unacknowledge
     });
     const actuated_no_ack_bytes = try actuated_no_ack.encode(std.testing.allocator);
     defer std.testing.allocator.free(actuated_no_ack_bytes);
-    try actuated.submit(actuated_no_ack_bytes);
-    try actuated.executeTurn();
-    var actuated_warning_output = try world.Appliance.TurnOutput.decode(
-        std.testing.allocator,
-        actuated.readOutput(),
-        actuated_manifest.manifest_fingerprint,
-        world.Appliance.Capacity.tiny_one_port,
-    );
-    defer actuated_warning_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(world.Appliance.TurnStatus.needs_host, actuated_warning_output.status);
-    try std.testing.expectEqual(@as(usize, 1), actuated_warning_output.warning_count);
-    try std.testing.expectEqual(@as(usize, 1), actuated_warning_output.turn_receipt.warning_count);
+    try std.testing.expectError(error.StaleTurn, actuated.submit(actuated_no_ack_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, actuated.state);
 
     var actuated_ack = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
