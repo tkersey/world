@@ -2097,6 +2097,13 @@ test "appliance command canonical encode decode and fingerprint stable" {
     try std.testing.expectEqualSlices(u64, command.receiver_evidence_fingerprints, decoded.receiver_evidence_fingerprints);
     try std.testing.expectEqualStrings(command.root_argument_image, decoded.root_argument_image);
     try std.testing.expectEqualStrings(command.metadata, decoded.metadata);
+
+    const nonzero_boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, nonzero_boot.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 }
 
 test "appliance command encodes decodes and validates host replies" {
@@ -2193,25 +2200,7 @@ test "appliance command encodes decodes and validates host replies" {
         .previous_turn_receipt_fingerprint = 0xD308,
         .host_replies = &.{ reply, second_reply },
     });
-    const reversed_order = world.Appliance.Command.init(.{
-        .kind = .@"continue",
-        .manifest_fingerprint = manifest.manifest_fingerprint,
-        .turn_sequence_number = 1,
-        .previous_turn_receipt_fingerprint = 0xD308,
-        .host_replies = &.{ second_reply, reply },
-    });
-    try canonical_order.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small);
-    try reversed_order.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small);
-    try std.testing.expectEqual(canonical_order.command_fingerprint, reversed_order.command_fingerprint);
-    const canonical_bytes = try canonical_order.encode(std.testing.allocator);
-    defer std.testing.allocator.free(canonical_bytes);
-    const reversed_bytes = try reversed_order.encode(std.testing.allocator);
-    defer std.testing.allocator.free(reversed_bytes);
-    try std.testing.expectEqualSlices(u8, canonical_bytes, reversed_bytes);
-    var decoded_reversed = try world.Appliance.Command.decode(std.testing.allocator, reversed_bytes);
-    defer decoded_reversed.deinit(std.testing.allocator);
-    try decoded_reversed.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small);
-    try std.testing.expectEqual(@min(reply.target_host_request_fingerprint, second_reply.target_host_request_fingerprint), decoded_reversed.host_replies[0].target_host_request_fingerprint);
+    try std.testing.expectError(error.InvalidFrameEncoding, canonical_order.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
 
     const duplicate_reply_command = world.Appliance.Command.init(.{
         .kind = .@"continue",
@@ -2645,7 +2634,7 @@ test "appliance Core submit validates command before mutating state" {
     });
     const stale_bytes = try stale.encode(std.testing.allocator);
     defer std.testing.allocator.free(stale_bytes);
-    try std.testing.expectError(error.StaleTurn, core.submit(stale_bytes));
+    try std.testing.expectError(error.InvalidFrameEncoding, core.submit(stale_bytes));
     try std.testing.expectEqual(before_state, core.state);
 
     const wrong_manifest = world.Appliance.Command.init(.{
@@ -3821,6 +3810,55 @@ test "appliance Core restore command applies checkpoint and replies without side
     try std.testing.expectEqual(world.Appliance.CoreState.completed, restored.state);
     try std.testing.expect(restored.outstanding_host_request == null);
     try std.testing.expect(restored.readOutput().len > 0);
+}
+
+test "appliance command rejects restore checkpoint cardinalities Core cannot execute" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.wasm_small,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    const requests = [_]world.Appliance.HostRequest{
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 0,
+            .request_ordinal = 0,
+            .run_handle_fingerprint = 0xE210,
+            .pending_port_fingerprint = 0xE211,
+            .intent_fingerprint = 0xE212,
+            .envelope_fingerprint = 0xE213,
+            .decision_fingerprint = 0xE214,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xE215,
+        }),
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 0,
+            .request_ordinal = 1,
+            .run_handle_fingerprint = 0xE216,
+            .pending_port_fingerprint = 0xE217,
+            .intent_fingerprint = 0xE218,
+            .envelope_fingerprint = 0xE219,
+            .decision_fingerprint = 0xE21A,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xE21B,
+        }),
+    };
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .capsule_fingerprint = 0xE21C,
+        .core_state = .waiting_host,
+        .previous_turn_receipt_fingerprint = 0xE21D,
+        .outstanding_host_requests = requests[0..],
+    });
+    const restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint,
+        .restore_checkpoint = checkpoint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, restore.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
 }
 
 test "appliance Core rejects waiting-host restore without actuation bindings" {
@@ -5177,6 +5215,50 @@ test "appliance host request validates and is carried by needs-host TurnOutput" 
     const output_bytes = try output.encode(std.testing.allocator);
     defer std.testing.allocator.free(output_bytes);
     try std.testing.expect(output_bytes.len > 0);
+
+    const second_request = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 1,
+        .run_handle_fingerprint = 0xD10B,
+        .pending_port_fingerprint = 0xD10C,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD10D,
+        .envelope_fingerprint = 0xD10E,
+        .decision_fingerprint = 0xD10F,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+        .idempotency_key_fingerprint = 0xD110,
+    });
+    const multi_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .command_fingerprint = 0xD111,
+        .emitted_host_request_fingerprints = &.{ request.request_fingerprint, second_request.request_fingerprint },
+        .resulting_capsule_fingerprint = capsule_fingerprint,
+        .status = .needs_host,
+    });
+    const multi_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = multi_receipt.receipt_fingerprint,
+        .outstanding_host_requests = &.{ request, second_request },
+    });
+    const multi_request_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .source_state_fingerprint = 0xD112,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.waiting_host, 1, multi_receipt.receipt_fingerprint),
+        .quiescence = world.Appliance.QuiescenceReport.init(.{
+            .quiescent = true,
+            .pending_host_request_count = 2,
+            .prepared_actuation_count = 2,
+        }),
+        .status = .needs_host,
+        .host_requests = &.{ request, second_request },
+        .checkpoint = multi_checkpoint,
+        .turn_receipt = multi_receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, multi_request_output.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
 
     const non_quiescent_output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,

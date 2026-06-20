@@ -718,6 +718,7 @@ pub fn Appliance(comptime World: type) type {
                     if (reply.outcome.host_request_fingerprint != reply.target_host_request_fingerprint) return error.InvalidFrameEncoding;
                 }
                 try validateDistinctHostReplyTargets(self.host_replies);
+                if (self.host_replies.len > 1) return error.InvalidFrameEncoding;
                 if (self.retention_ack) |ack| {
                     if (self.kind != .@"continue" and self.kind != .restore) return error.InvalidFrameEncoding;
                     try ack.validate(null, capacity);
@@ -728,6 +729,7 @@ pub fn Appliance(comptime World: type) type {
                     try checkpoint.validate(expected_manifest_fingerprint, capacity);
                     if (checkpoint.core_state == .runnable or checkpoint.core_state == .uninitialized) return error.InvalidFrameEncoding;
                     if (checkpoint.turn_sequence_number == std.math.maxInt(u64)) return error.InvalidFrameEncoding;
+                    if (checkpoint.outstanding_host_requests.len > 1) return error.InvalidFrameEncoding;
                     if (self.turn_sequence_number != checkpoint.turn_sequence_number + 1) return error.InvalidFrameEncoding;
                     if (self.previous_turn_receipt_fingerprint != checkpoint.previous_turn_receipt_fingerprint) return error.InvalidFrameEncoding;
                     if (self.host_replies.len != 0) {
@@ -737,7 +739,7 @@ pub fn Appliance(comptime World: type) type {
                 } else if (self.kind == .restore) {
                     return error.RestoreRejected;
                 }
-                if (self.kind == .boot and self.previous_turn_receipt_fingerprint != null) return error.InvalidFrameEncoding;
+                if (self.kind == .boot and (self.previous_turn_receipt_fingerprint != null or self.turn_sequence_number != 0)) return error.InvalidFrameEncoding;
                 if (self.kind == .@"continue" and self.previous_turn_receipt_fingerprint == null) return error.InvalidFrameEncoding;
                 if (self.previous_turn_receipt_fingerprint != null and self.previous_turn_receipt_fingerprint.? == 0) return error.InvalidFrameEncoding;
                 if (self.command_fingerprint != fingerprintCommand(self)) return error.InvalidFrameEncoding;
@@ -1560,6 +1562,7 @@ pub fn Appliance(comptime World: type) type {
                 try self.quiescence.validate();
                 if (!self.quiescence.quiescent or self.quiescence.runnable_run_count != 0 or self.quiescence.parked_run_count != 0 or self.quiescence.active_fabric_count != 0) return error.InvalidFrameEncoding;
                 if (self.host_requests.len > capacity.max_host_requests_per_turn) return error.CapacityExceeded;
+                if (self.host_requests.len > 1) return error.InvalidFrameEncoding;
                 if (self.status == .needs_host and self.host_requests.len == 0) return error.InvalidFrameEncoding;
                 if (self.status != .needs_host and self.host_requests.len != 0) return error.InvalidFrameEncoding;
                 if (self.quiescence.pending_host_request_count != self.checkpoint.outstanding_host_requests.len) return error.InvalidFrameEncoding;
@@ -1588,6 +1591,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.archive_append_batch_ref_fingerprint != defaultArchiveAppendBatchRef(self.archive_append_batch_fingerprint)) return error.InvalidFrameEncoding;
                 if (self.diagnostic_metadata.len > capacity.max_metadata_bytes) return error.CapacityExceeded;
                 try self.checkpoint.validate(expected_manifest_fingerprint, capacity);
+                if (self.checkpoint.outstanding_host_requests.len > 1) return error.InvalidFrameEncoding;
                 try self.turn_receipt.validate(expected_manifest_fingerprint, capacity);
                 if (self.turn_sequence_number != self.checkpoint.turn_sequence_number and !(self.checkpoint.core_state == .uninitialized and self.checkpoint.turn_sequence_number == 0)) return error.InvalidFrameEncoding;
                 if (self.turn_sequence_number != self.turn_receipt.turn_sequence_number) return error.InvalidFrameEncoding;
