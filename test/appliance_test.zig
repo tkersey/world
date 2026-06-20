@@ -7001,14 +7001,23 @@ test "appliance actuation prepareHost denies before HostRequest emission" {
     }));
 
     const permitted_class_fixture = applianceActuationFixture(.deterministic_fixture);
-    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.prepareHost(.{
+    const prepared = try world.Actuation.Membrane.prepareHost(.{
         .policy = world.Actuation.Policy.strict_fresh,
         .intent = permitted_class_fixture.intent,
         .envelope = permitted_class_fixture.envelope,
         .descriptor = permitted_class_fixture.descriptor,
         .target_ref_fingerprint = permitted_class_fixture.target_ref_fingerprint,
         .world_surface_fingerprint = permitted_class_fixture.world_surface_fingerprint,
-    }));
+    });
+    try prepared.validate();
+
+    const pending_outcome = world.Actuation.HostOutcomeInput{
+        .intent_fingerprint = prepared.intent.intent_fingerprint,
+        .envelope_fingerprint = prepared.envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = prepared.envelope.idempotency_key.key_fingerprint,
+        .status = .pending,
+    };
+    try std.testing.expectError(error.PortRuleDenied, world.Actuation.Membrane.finalizeHost(prepared, pending_outcome, .{}));
 }
 
 test "appliance actuation prepareHost enforces precommit permit budgets" {

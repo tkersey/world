@@ -21587,7 +21587,7 @@ pub const Actuation = struct {
 
         fn validatePrecommitHostPermit(args: PrepareHostArgs, actual_response_status: ?Actuation.ResponseStatus) !void {
             if (args.intent.run_permit_fingerprint == null) {
-                try validateUnsupervisedStatefulHostPolicy(args);
+                try validateUnsupervisedStatefulHostPolicy(args, actual_response_status);
                 return;
             }
             const permit = args.run_permit orelse return error.SupervisionDenied;
@@ -21642,9 +21642,10 @@ pub const Actuation = struct {
             }
         }
 
-        fn validateUnsupervisedStatefulHostPolicy(args: PrepareHostArgs) !void {
+        fn validateUnsupervisedStatefulHostPolicy(args: PrepareHostArgs, actual_response_status: ?Actuation.ResponseStatus) !void {
             if (args.policy.max_actuation_calls != null) return error.SupervisionDenied;
-            if (args.policy.max_pending_actuations != null) return error.SupervisionDenied;
+            const response_status = actual_response_status orelse return;
+            if (responseStatusCreatesPendingActuation(response_status) and args.policy.max_pending_actuations != null) return error.SupervisionDenied;
         }
 
         fn validateMailboxResponseForHostOutcome(mailbox_response: ?Frame.Response, response: Response, prepared: Prepared) !void {
