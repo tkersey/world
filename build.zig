@@ -1069,8 +1069,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=bd8558932dec9f87
-            \\restored_output=bd8558932dec9f87
+            \\resident_output=9ef57068c4a0a95c
+            \\restored_output=9ef57068c4a0a95c
             \\
             ,
         },

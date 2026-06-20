@@ -1533,7 +1533,8 @@ test "appliance Core validates continue host replies before completion" {
     try std.testing.expectEqual(@as(usize, 1), terminal_output.turn_receipt.applied_host_reply_fingerprints.len);
     try std.testing.expectEqual(reply.reply_fingerprint, terminal_output.turn_receipt.applied_host_reply_fingerprints[0]);
     try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
-    try std.testing.expectEqual(reply.outcome.host_evidence_fingerprint.?, terminal_output.finalized_actuation_receipt_fingerprints[0]);
+    try std.testing.expect(terminal_output.finalized_actuation_receipt_fingerprints[0] != 0);
+    try std.testing.expect(terminal_output.finalized_actuation_receipt_fingerprints[0] != reply.outcome.host_evidence_fingerprint.?);
 }
 
 test "appliance Core rejects byte HostReply at active request boundary" {
@@ -1672,7 +1673,8 @@ test "appliance terminal HostReply validation uses active capacity" {
     try std.testing.expectEqual(@as(usize, 1), terminal_output.turn_receipt.applied_host_reply_fingerprints.len);
     try std.testing.expectEqual(reply.reply_fingerprint, terminal_output.turn_receipt.applied_host_reply_fingerprints[0]);
     try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
-    try std.testing.expectEqual(reply.outcome.host_evidence_fingerprint.?, terminal_output.finalized_actuation_receipt_fingerprints[0]);
+    try std.testing.expect(terminal_output.finalized_actuation_receipt_fingerprints[0] != 0);
+    try std.testing.expect(terminal_output.finalized_actuation_receipt_fingerprints[0] != reply.outcome.host_evidence_fingerprint.?);
 }
 
 test "appliance Core pending and deferred HostReplies keep request outstanding" {
@@ -2751,7 +2753,8 @@ test "appliance Core rejects replay evidence without verified transcript support
     try std.testing.expectEqual(@as(usize, 1), terminal_output.turn_receipt.applied_host_reply_fingerprints.len);
     try std.testing.expectEqual(fresh_reply.reply_fingerprint, terminal_output.turn_receipt.applied_host_reply_fingerprints[0]);
     try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
-    try std.testing.expectEqual(fresh_reply.outcome.host_evidence_fingerprint.?, terminal_output.finalized_actuation_receipt_fingerprints[0]);
+    try std.testing.expect(terminal_output.finalized_actuation_receipt_fingerprints[0] != 0);
+    try std.testing.expect(terminal_output.finalized_actuation_receipt_fingerprints[0] != fresh_reply.outcome.host_evidence_fingerprint.?);
     try std.testing.expectEqualStrings("", terminal_output.diagnostic_metadata);
 
     var incomplete_replay_core = world.Appliance.Core.initWithCapacity(

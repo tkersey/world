@@ -2217,6 +2217,7 @@ pub fn Appliance(comptime World: type) type {
                 } else &.{};
                 var finalized_actuation_receipt_fingerprint_storage: [1]u64 = undefined;
                 const finalized_actuation_receipt_fingerprints = try finalizedActuationReceiptFingerprintsFor(
+                    self.outstanding_host_request,
                     command,
                     &finalized_actuation_receipt_fingerprint_storage,
                 );
@@ -4430,11 +4431,69 @@ pub fn Appliance(comptime World: type) type {
             return false;
         }
 
-        fn finalizedActuationReceiptFingerprintsFor(command: Command, storage: *[1]u64) ![]const u64 {
+        fn finalizedActuationReceiptFingerprintsFor(request: ?HostRequest, command: Command, storage: *[1]u64) ![]const u64 {
             if (command.host_replies.len == 0) return &.{};
-            if (!hostOutcomeStatusIsTerminal(command.host_replies[0].outcome.status)) return &.{};
-            storage[0] = command.host_replies[0].outcome.host_evidence_fingerprint orelse return error.InvalidFrameEncoding;
+            const reply = command.host_replies[0];
+            if (!hostOutcomeStatusIsTerminal(reply.outcome.status)) return &.{};
+            const finalized_request = request orelse return error.UnknownRequest;
+            if (reply.target_host_request_fingerprint != finalized_request.request_fingerprint) return error.UnknownRequest;
+            storage[0] = try finalizedActuationReceiptFingerprintFor(finalized_request, reply);
             return storage[0..1];
+        }
+
+        fn finalizedActuationReceiptFingerprintFor(request: HostRequest, reply: HostReply) !u64 {
+            const status = actuationStatusForHostOutcome(reply.outcome.status);
+            const commit_value = World.Actuation.Commit.init(.{
+                .intent_fingerprint = request.intent_fingerprint,
+                .decision_fingerprint = request.decision_fingerprint,
+                .envelope_fingerprint = request.envelope_fingerprint,
+                .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+                .attempt_number = reply.outcome.attempt_number,
+                .status = actuationCommitStatusForHostOutcome(reply.outcome.status),
+                .fresh_called = status == .responded or status == .failed,
+            });
+            try commit_value.validate();
+            const response = World.Actuation.Response.init(.{
+                .intent_fingerprint = request.intent_fingerprint,
+                .commit_fingerprint = commit_value.commit_fingerprint,
+                .actuator_ref_fingerprint = request.actuator_ref_fingerprint,
+                .world_port_id = request.world_port_id,
+                .request_fingerprint = request.request_fingerprint,
+                .status = status,
+                .response_kind = .@"resume",
+                .frame_response_fingerprint = if (status == .responded) reply.outcome.response_fingerprint orelse return error.InvalidFrameEncoding else null,
+            });
+            const receipt = World.Actuation.Receipt.init(.{
+                .intent_fingerprint = request.intent_fingerprint,
+                .envelope_fingerprint = request.envelope_fingerprint,
+                .decision_fingerprint = request.decision_fingerprint,
+                .commit_fingerprint = commit_value.commit_fingerprint,
+                .response_fingerprint = response.response_fingerprint,
+                .response_kind = response.response_kind,
+                .frame_response_fingerprint = response.frame_response_fingerprint,
+                .response_value_image_fingerprint = response.value_image_fingerprint,
+                .recorded_response_fingerprint = response.recorded_response_fingerprint,
+                .actuator_ref_fingerprint = request.actuator_ref_fingerprint,
+                .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+                .request_fingerprint = request.request_fingerprint,
+                .target_ref_fingerprint = request.target_ref_fingerprint,
+                .world_surface_fingerprint = request.world_surface_fingerprint,
+                .world_port_id = request.world_port_id,
+                .class = request.actuation_class,
+                .mode = .fresh,
+                .fresh_called = commit_value.fresh_called,
+                .rejected = status == .rejected,
+                .failed = status == .failed,
+                .cancelled = status == .cancelled,
+                .attempt_number = commit_value.attempt_number,
+            });
+            const finalized = World.Actuation.Finalized.init(.{
+                .commit_value = commit_value,
+                .response = response,
+                .receipt = receipt,
+            });
+            try finalized.validate();
+            return finalized.receipt.receipt_fingerprint;
         }
 
         fn hostOutcomeStatusIsTerminal(status: HostOutcomeStatus) bool {
@@ -4451,6 +4510,16 @@ pub fn Appliance(comptime World: type) type {
                 .failed => .failed,
                 .pending => .pending,
                 .deferred => .deferred,
+                .cancelled => .cancelled,
+            };
+        }
+
+        fn actuationCommitStatusForHostOutcome(status: HostOutcomeStatus) World.Actuation.CommitStatus {
+            return switch (status) {
+                .responded => .committed,
+                .rejected => .rejected,
+                .failed => .commit_failed,
+                .pending, .deferred => .commit_pending,
                 .cancelled => .cancelled,
             };
         }
