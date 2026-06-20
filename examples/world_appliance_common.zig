@@ -53,10 +53,10 @@ pub const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
 });
 
 pub const agent_wasm_manifest_fingerprint: u64 = 0xe9c5e72a2d566095;
-pub const agent_wasm_capacity_fingerprint: u64 = 0x5fcf964fbaa4a66b;
-pub const agent_wasm_memory_plan_fingerprint: u64 = 0xed1c9222ab3bed1d;
-pub const agent_wasm_required_memory_bytes: u64 = 4_259_840;
-pub const agent_wasm_max_linear_memory_pages: u32 = 65;
+pub const agent_wasm_capacity_fingerprint: u64 = AgentAppliance.capacity_value.fingerprint();
+pub const agent_wasm_memory_plan_fingerprint: u64 = AgentAppliance.memoryPlan().plan_fingerprint;
+pub const agent_wasm_required_memory_bytes: usize = AgentAppliance.requiredMemoryBytes();
+pub const agent_wasm_max_linear_memory_pages: usize = 65;
 
 pub fn bootCommand(manifest: world.Appliance.Manifest) world.Appliance.Command {
     return world.Appliance.Command.init(.{

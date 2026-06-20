@@ -239,19 +239,29 @@ const ApplianceWasmBuildOptions = struct {
     extra_result_stack_index: ?usize = null,
     invalid_required_call_target_index: ?usize = null,
     invalid_required_call_indirect_type_index: ?usize = null,
+    invalid_required_externref_call_indirect_table_index: ?usize = null,
     missing_call_indirect_table_operand_index: ?usize = null,
     invalid_required_local_index: ?usize = null,
+    invalid_required_non_i32_local_set_index: ?usize = null,
     drop_underflow_required_body_index: ?usize = null,
     invalid_required_block_type_index: ?usize = null,
     invalid_required_else_frame_index: ?usize = null,
+    missing_required_if_else_result_index: ?usize = null,
+    invalid_required_operand_order_index: ?usize = null,
+    missing_required_block_result_index: ?usize = null,
+    extra_required_control_stack_index: ?usize = null,
+    missing_required_block_param_index: ?usize = null,
     invalid_required_branch_label_index: ?usize = null,
     missing_required_branch_result_index: ?usize = null,
     invalid_required_memory_alignment_index: ?usize = null,
+    invalid_required_memory_copy_index: ?usize = null,
     invalid_required_non_i32_comparison_index: ?usize = null,
     invalid_required_prefixed_conversion_index: ?usize = null,
     invalid_required_non_i32_call_index: ?usize = null,
     trap_only_required_body_index: ?usize = null,
     invalid_unused_body: bool = false,
+    invalid_unused_missing_result_body: bool = false,
+    invalid_unused_extra_result_body: bool = false,
     invalid_extra_export_kind: bool = false,
     invalid_extra_export_function_index: bool = false,
     invalid_unexported_function_type_index: bool = false,
@@ -262,9 +272,12 @@ const ApplianceWasmBuildOptions = struct {
     invalid_required_global_set_index: ?usize = null,
     overlong_global_i64_const: bool = false,
     invalid_const_expr_global_get: bool = false,
+    invalid_data_i64_offset: bool = false,
     explicit_table_element_section: bool = false,
+    externref_table_section: bool = false,
     ref_func_element_section: bool = false,
     invalid_element_function_index: bool = false,
+    invalid_ref_null_element_type: bool = false,
     multi_segment_data_section: bool = false,
     mismatched_data_count_section: bool = false,
     invalid_data_memory_index: bool = false,
@@ -349,6 +362,8 @@ fn buildMinimalApplianceWasmWithOptions(
     const extra_unexported_count: usize =
         @as(usize, if (options.invalid_unexported_function_type_index) 1 else 0) +
         @as(usize, if (options.invalid_unused_body) 1 else 0) +
+        @as(usize, if (options.invalid_unused_missing_result_body) 1 else 0) +
+        @as(usize, if (options.invalid_unused_extra_result_body) 1 else 0) +
         @as(usize, if (options.invalid_required_non_i32_call_index != null) 1 else 0);
     const function_count = required_len + metadata_len + helper_count + extra_unexported_count;
     const extra_export_count: usize =
@@ -410,14 +425,16 @@ fn buildMinimalApplianceWasmWithOptions(
     }
     if (options.invalid_unexported_function_type_index) try appendApplianceWasmU32(&functions, 99);
     if (options.invalid_unused_body) try appendApplianceWasmU32(&functions, 0);
+    if (options.invalid_unused_missing_result_body) try appendApplianceWasmU32(&functions, 0);
+    if (options.invalid_unused_extra_result_body) try appendApplianceWasmU32(&functions, 0);
     if (options.invalid_required_non_i32_call_index != null) try appendApplianceWasmU32(&functions, 4);
     try appendApplianceWasmSection(&module, 3, functions.items);
 
-    if (options.explicit_table_element_section) {
+    if (options.explicit_table_element_section or options.externref_table_section) {
         var tables: std.ArrayList(u8) = .empty;
         defer tables.deinit(std.testing.allocator);
         try appendApplianceWasmU32(&tables, 1);
-        try tables.append(std.testing.allocator, 0x70);
+        try tables.append(std.testing.allocator, if (options.externref_table_section) 0x6f else 0x70);
         try tables.append(std.testing.allocator, if (options.invalid_table_max_below_min) 1 else 0);
         try appendApplianceWasmU32(&tables, if (options.invalid_table_max_below_min) 2 else 1);
         if (options.invalid_table_max_below_min) try appendApplianceWasmU32(&tables, 1);
@@ -510,7 +527,7 @@ fn buildMinimalApplianceWasmWithOptions(
         try appendApplianceWasmSection(&module, 8, start.items);
     }
 
-    if (options.explicit_table_element_section or options.ref_func_element_section or options.invalid_element_function_index) {
+    if (options.explicit_table_element_section or options.ref_func_element_section or options.invalid_element_function_index or options.invalid_ref_null_element_type) {
         var elements: std.ArrayList(u8) = .empty;
         defer elements.deinit(std.testing.allocator);
         try appendApplianceWasmU32(&elements, 1);
@@ -520,6 +537,13 @@ fn buildMinimalApplianceWasmWithOptions(
             try appendApplianceWasmU32(&elements, 1);
             try elements.append(std.testing.allocator, 0xd2);
             try appendApplianceWasmU32(&elements, 0);
+            try elements.append(std.testing.allocator, 0x0b);
+        } else if (options.invalid_ref_null_element_type) {
+            try appendApplianceWasmU32(&elements, 5);
+            try elements.append(std.testing.allocator, 0x70);
+            try appendApplianceWasmU32(&elements, 1);
+            try elements.append(std.testing.allocator, 0xd0);
+            try elements.append(std.testing.allocator, 0x6f);
             try elements.append(std.testing.allocator, 0x0b);
         } else if (options.invalid_element_function_index) {
             try appendApplianceWasmU32(&elements, 2);
@@ -628,6 +652,18 @@ fn buildMinimalApplianceWasmWithOptions(
             try code.appendSlice(std.testing.allocator, body.items);
             continue;
         }
+        if (options.invalid_required_externref_call_indirect_table_index != null and index == options.invalid_required_externref_call_indirect_table_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x11);
+            try appendApplianceWasmU32(&body, 0);
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
         if (options.missing_call_indirect_table_operand_index != null and index == options.missing_call_indirect_table_operand_index.?) {
             try appendApplianceWasmU32(&body, 0);
             try body.append(std.testing.allocator, 0x11);
@@ -645,6 +681,21 @@ fn buildMinimalApplianceWasmWithOptions(
             try appendApplianceWasmU32(&body, 0);
             try body.append(std.testing.allocator, 0x20);
             try appendApplianceWasmU32(&body, 99);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.invalid_required_non_i32_local_set_index != null and index == options.invalid_required_non_i32_local_set_index.?) {
+            try appendApplianceWasmU32(&body, 1);
+            try appendApplianceWasmU32(&body, 1);
+            try body.append(std.testing.allocator, 0x7d);
+            try body.append(std.testing.allocator, 0x42);
+            try body.append(std.testing.allocator, 0);
+            try body.append(std.testing.allocator, 0x21);
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
             try body.append(std.testing.allocator, 0x0b);
             try appendApplianceWasmU32(&code, @intCast(body.items.len));
             try code.appendSlice(std.testing.allocator, body.items);
@@ -680,6 +731,73 @@ fn buildMinimalApplianceWasmWithOptions(
             try body.append(std.testing.allocator, 0x41);
             try appendApplianceWasmI32Bits(&body, 0);
             try body.append(std.testing.allocator, 0x0b);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.missing_required_if_else_result_index != null and index == options.missing_required_if_else_result_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 1);
+            try body.append(std.testing.allocator, 0x04);
+            try body.append(std.testing.allocator, 0x7f);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 2);
+            try body.append(std.testing.allocator, 0x0b);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.invalid_required_operand_order_index != null and index == options.invalid_required_operand_order_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 1);
+            try body.append(std.testing.allocator, 0x43);
+            try body.appendSlice(std.testing.allocator, &.{ 0, 0, 0, 0 });
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 2);
+            try body.append(std.testing.allocator, 0x6a);
+            try body.append(std.testing.allocator, 0x1a);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.missing_required_block_result_index != null and index == options.missing_required_block_result_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x02);
+            try body.append(std.testing.allocator, 0x7f);
+            try body.append(std.testing.allocator, 0x0b);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.extra_required_control_stack_index != null and index == options.extra_required_control_stack_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x02);
+            try body.append(std.testing.allocator, 0x40);
+            try body.append(std.testing.allocator, 0x0b);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 1);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.missing_required_block_param_index != null and index == options.missing_required_block_param_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x02);
+            try appendApplianceWasmU32(&body, 2);
+            try body.append(std.testing.allocator, 0x0b);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
             try body.append(std.testing.allocator, 0x0b);
             try appendApplianceWasmU32(&code, @intCast(body.items.len));
             try code.appendSlice(std.testing.allocator, body.items);
@@ -739,6 +857,24 @@ fn buildMinimalApplianceWasmWithOptions(
             try code.appendSlice(std.testing.allocator, body.items);
             continue;
         }
+        if (options.invalid_unused_missing_result_body and index == function_count - 1) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.invalid_unused_extra_result_body and index == function_count - 1) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 1);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
         if (options.invalid_required_prefixed_conversion_index != null and index == options.invalid_required_prefixed_conversion_index.?) {
             try appendApplianceWasmU32(&body, 0);
             try body.append(std.testing.allocator, 0xfc);
@@ -755,6 +891,25 @@ fn buildMinimalApplianceWasmWithOptions(
             try body.append(std.testing.allocator, 0x28);
             try appendApplianceWasmU32(&body, 3);
             try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.invalid_required_memory_copy_index != null and index == options.invalid_required_memory_copy_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0xfc);
+            try appendApplianceWasmU32(&body, 10);
+            try appendApplianceWasmU32(&body, 1);
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
             try body.append(std.testing.allocator, 0x0b);
             try appendApplianceWasmU32(&code, @intCast(body.items.len));
             try code.appendSlice(std.testing.allocator, body.items);
@@ -795,7 +950,17 @@ fn buildMinimalApplianceWasmWithOptions(
     }
     try appendApplianceWasmSection(&module, 10, code.items);
 
-    if (options.invalid_data_memory_index) {
+    if (options.invalid_data_i64_offset) {
+        var data: std.ArrayList(u8) = .empty;
+        defer data.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&data, 1);
+        try appendApplianceWasmU32(&data, 0);
+        try data.append(std.testing.allocator, 0x42);
+        try data.append(std.testing.allocator, 0);
+        try data.append(std.testing.allocator, 0x0b);
+        try appendApplianceWasmU32(&data, 0);
+        try appendApplianceWasmSection(&module, 11, data.items);
+    } else if (options.invalid_data_memory_index) {
         var data: std.ArrayList(u8) = .empty;
         defer data.deinit(std.testing.allocator);
         try appendApplianceWasmU32(&data, 1);
@@ -1129,6 +1294,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     defer missing_call_indirect_table_operand.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(missing_call_indirect_table_operand.items));
 
+    var externref_call_indirect_table = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .externref_table_section = true, .invalid_required_externref_call_indirect_table_index = 1 },
+    );
+    defer externref_call_indirect_table.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(externref_call_indirect_table.items));
+
     var invalid_local_index = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
         metadata_values,
@@ -1141,6 +1319,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer invalid_local_index.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_local_index.items));
+
+    var non_i32_local_type_mismatch = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_required_non_i32_local_set_index = 1 },
+    );
+    defer non_i32_local_type_mismatch.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(non_i32_local_type_mismatch.items));
 
     var drop_underflow = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
@@ -1181,6 +1372,71 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     defer invalid_else_frame.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_else_frame.items));
 
+    var missing_if_else_result = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .missing_required_if_else_result_index = 1 },
+    );
+    defer missing_if_else_result.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(missing_if_else_result.items));
+
+    var invalid_operand_order = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_required_operand_order_index = 1 },
+    );
+    defer invalid_operand_order.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_operand_order.items));
+
+    var missing_block_result = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .missing_required_block_result_index = 1 },
+    );
+    defer missing_block_result.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(missing_block_result.items));
+
+    var extra_control_stack = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .extra_required_control_stack_index = 1 },
+    );
+    defer extra_control_stack.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(extra_control_stack.items));
+
+    var missing_block_param = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .missing_required_block_param_index = 1 },
+    );
+    defer missing_block_param.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(missing_block_param.items));
+
     var invalid_branch_label = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
         metadata_values,
@@ -1220,6 +1476,32 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     defer invalid_unused_body.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_unused_body.items));
 
+    var invalid_unused_missing_result = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_unused_missing_result_body = true },
+    );
+    defer invalid_unused_missing_result.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_unused_missing_result.items));
+
+    var invalid_unused_extra_result = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_unused_extra_result_body = true },
+    );
+    defer invalid_unused_extra_result.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_unused_extra_result.items));
+
     var invalid_table_limits = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
         metadata_values,
@@ -1258,6 +1540,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer invalid_memory_alignment.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_memory_alignment.items));
+
+    var invalid_memory_copy = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_required_memory_copy_index = 1 },
+    );
+    defer invalid_memory_copy.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_memory_copy.items));
 
     var invalid_non_i32_comparison = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
@@ -1428,6 +1723,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     defer global_get_const_expr.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(global_get_const_expr.items));
 
+    var i64_data_offset = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_data_i64_offset = true },
+    );
+    defer i64_data_offset.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(i64_data_offset.items));
+
     var explicit_table_element_section = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
         metadata_values,
@@ -1468,6 +1776,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     defer ref_func_element_section.deinit(std.testing.allocator);
     const ref_func_element_inspection = try world.Appliance.Abi.inspectWasm(ref_func_element_section.items);
     try std.testing.expect(ref_func_element_inspection.passed());
+
+    var invalid_ref_null_element_type = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_ref_null_element_type = true },
+    );
+    defer invalid_ref_null_element_type.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_ref_null_element_type.items));
 
     var invalid_data_memory_index = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
@@ -1998,6 +2319,66 @@ test "appliance command rejects wrong manifest oversized metadata and malformed 
         .turn_sequence_number = 1,
     });
     try std.testing.expectError(error.RestoreRejected, restore_without_checkpoint.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const boot_with_previous_receipt = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .previous_turn_receipt_fingerprint = 0xD020,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, boot_with_previous_receipt.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const restore_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 4,
+        .capsule_fingerprint = 0xD024,
+        .previous_turn_receipt_fingerprint = 0xD025,
+    });
+    const restore_wrong_sequence = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = restore_checkpoint.turn_sequence_number,
+        .previous_turn_receipt_fingerprint = restore_checkpoint.previous_turn_receipt_fingerprint,
+        .restore_checkpoint = restore_checkpoint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, restore_wrong_sequence.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const restore_wrong_previous = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = restore_checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = 0xD026,
+        .restore_checkpoint = restore_checkpoint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, restore_wrong_previous.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const reply_request = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 5,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD027,
+        .pending_port_fingerprint = 0xD028,
+        .intent_fingerprint = 0xD029,
+        .envelope_fingerprint = 0xD02A,
+        .decision_fingerprint = 0xD02B,
+        .expected_response_descriptor_fingerprint = 0xD02C,
+        .idempotency_key_fingerprint = 0xD02D,
+    });
+    const restore_reply_without_pending = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = restore_checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = restore_checkpoint.previous_turn_receipt_fingerprint,
+        .host_replies = &.{applianceHostReplyFor(reply_request, 0xD02E)},
+        .restore_checkpoint = restore_checkpoint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, restore_reply_without_pending.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const continue_without_previous_receipt = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, continue_without_previous_receipt.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
     const zero_receiver_permit = world.Appliance.Command.init(.{
         .kind = .boot,
@@ -5830,8 +6211,17 @@ test "appliance archive plan commits turn evidence through Archive owner" {
         capacity,
     );
     defer finalized_plan.deinit();
-    try std.testing.expectEqual(@as(usize, 2), finalized_plan.objects[2].dependency_refs.len);
-    _ = try finalized_archive.appendBatch(finalized_plan.append_batch);
+    try std.testing.expectEqual(@as(usize, 3), finalized_plan.objects[2].dependency_refs.len);
+    var archived_finalized_output = try world.Appliance.TurnOutput.decodeArchivePayload(
+        std.testing.allocator,
+        finalized_plan.objects[2].payload_bytes,
+    );
+    defer archived_finalized_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), archived_finalized_output.turn_receipt.applied_host_reply_fingerprints.len);
+    try std.testing.expectEqual(@as(u64, 0xA007), archived_finalized_output.turn_receipt.applied_host_reply_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 1), archived_finalized_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(u64, 0xA00A), archived_finalized_output.finalized_actuation_receipt_fingerprints[0]);
+    try std.testing.expectError(error.ObjectMissing, finalized_archive.appendBatch(finalized_plan.append_batch));
 
     for (plan.objects) |object| {
         try world.Continuity.validateObjectEnvelopeTypedPayload(std.testing.allocator, object);

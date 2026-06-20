@@ -15,12 +15,14 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(bytes);
 
     const inspection = try world.Appliance.Abi.inspectWasm(bytes);
+    const expected_manifest = common.AgentAppliance.manifest();
+    const expected_capacity = common.AgentAppliance.capacity_value;
+    const expected_memory_plan = common.AgentAppliance.memoryPlan();
     if (!inspection.passed()) return error.WasmInspectionFailed;
-    if (common.agent_wasm_manifest_fingerprint != common.AgentAppliance.manifest().manifest_fingerprint) return error.WasmManifestMismatch;
-    if (inspection.manifest_fingerprint != common.agent_wasm_manifest_fingerprint) return error.WasmManifestMismatch;
-    if (inspection.capacity_fingerprint != common.agent_wasm_capacity_fingerprint) return error.WasmCapacityMismatch;
-    if (inspection.memory_plan_fingerprint != common.agent_wasm_memory_plan_fingerprint) return error.WasmMemoryPlanMismatch;
-    if (inspection.required_memory_bytes != common.agent_wasm_required_memory_bytes) return error.WasmRequiredMemoryMismatch;
+    if (inspection.manifest_fingerprint != expected_manifest.manifest_fingerprint) return error.WasmManifestMismatch;
+    if (inspection.capacity_fingerprint != expected_capacity.fingerprint()) return error.WasmCapacityMismatch;
+    if (inspection.memory_plan_fingerprint != expected_memory_plan.plan_fingerprint) return error.WasmMemoryPlanMismatch;
+    if (inspection.required_memory_bytes != expected_memory_plan.maximum_linear_memory_bytes) return error.WasmRequiredMemoryMismatch;
     if (inspection.max_linear_memory_pages != common.agent_wasm_max_linear_memory_pages) return error.WasmMemoryPlanMismatch;
     if (inspection.memory_initial_pages != common.agent_wasm_max_linear_memory_pages) return error.WasmMemoryPlanMismatch;
     if (inspection.memory_max_pages == null or inspection.memory_max_pages.? != common.agent_wasm_max_linear_memory_pages) {
