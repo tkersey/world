@@ -5707,6 +5707,28 @@ test "appliance actuation finalizeHost preserves rejected commit evidence" {
     try std.testing.expect(finalized.receipt.rejected);
 }
 
+test "appliance actuation finalizeHost rejects recorded fresh outcomes" {
+    const fixture = applianceActuationFixture(.deterministic_fixture);
+    const prepared = try world.Actuation.Membrane.prepareHost(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = fixture.intent,
+        .envelope = fixture.envelope,
+        .descriptor = fixture.descriptor,
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+    });
+
+    for ([_]world.Actuation.ResponseStatus{ .rejected, .failed, .cancelled }) |status| {
+        try std.testing.expectError(error.InvalidFrameEncoding, world.Actuation.Membrane.finalizeHost(prepared, .{
+            .intent_fingerprint = prepared.intent.intent_fingerprint,
+            .envelope_fingerprint = prepared.envelope.envelope_fingerprint,
+            .idempotency_key_fingerprint = prepared.envelope.idempotency_key.key_fingerprint,
+            .status = status,
+            .recorded_response_fingerprint = 0xA90A,
+        }, .{}));
+    }
+}
+
 test "appliance actuation Finalized validates commit response receipt tuple" {
     const fixture = applianceActuationFixture(.deterministic_fixture);
     const prepared = try world.Actuation.Membrane.prepareHost(.{

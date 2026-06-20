@@ -19929,10 +19929,10 @@ pub const Actuation = struct {
             if (self.idempotency_key_fingerprint != prepared.envelope.idempotency_key.key_fingerprint) return error.InvalidFrameEncoding;
             if (self.attempt_number != prepared.attempt_number) return error.InvalidFrameEncoding;
             if (!prepared.policy.allowsResponseStatus(self.status)) return error.PortRuleDenied;
+            if (self.recorded_response_fingerprint != null) return error.InvalidFrameEncoding;
             if (self.status != .responded and (self.response_image != null or self.value_image_fingerprint != null)) return error.InvalidFrameEncoding;
-            if (self.status == .responded and self.recorded_response_fingerprint != null) return error.InvalidFrameEncoding;
             if (self.status == .pending or self.status == .deferred) {
-                if (self.frame_response_fingerprint != null or self.recorded_response_fingerprint != null) return error.InvalidFrameEncoding;
+                if (self.frame_response_fingerprint != null) return error.InvalidFrameEncoding;
             }
             try validateOptionalFingerprint(self.frame_response_fingerprint);
             try validateOptionalFingerprint(self.value_image_fingerprint);
