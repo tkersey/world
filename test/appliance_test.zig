@@ -7089,7 +7089,7 @@ test "appliance actuation prepareHost enforces precommit permit budgets" {
         .idempotency_key = fixture.key,
         .supervision_ref_fingerprints = &.{pending_policy_denied_permit.permit_fingerprint},
     });
-    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.prepareHost(.{
+    const pending_policy_denied_prepared = try world.Actuation.Membrane.prepareHost(.{
         .policy = world.Actuation.Policy.fixture_test,
         .intent = pending_policy_denied_intent,
         .envelope = pending_policy_denied_envelope,
@@ -7097,6 +7097,15 @@ test "appliance actuation prepareHost enforces precommit permit budgets" {
         .run_permit = pending_policy_denied_permit,
         .target_ref_fingerprint = fixture.target_ref_fingerprint,
         .world_surface_fingerprint = fixture.world_surface_fingerprint,
+    });
+    const pending_policy_denied_outcome = world.Actuation.HostOutcomeInput{
+        .intent_fingerprint = pending_policy_denied_prepared.intent.intent_fingerprint,
+        .envelope_fingerprint = pending_policy_denied_prepared.envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = pending_policy_denied_prepared.envelope.idempotency_key.key_fingerprint,
+        .status = .pending,
+    };
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.finalizeHost(pending_policy_denied_prepared, pending_policy_denied_outcome, .{
+        .run_permit = pending_policy_denied_permit,
     }));
 
     const pending_rule_denied_rules = [_]world.PortRule{world.PortRule.init(.{
@@ -7137,7 +7146,7 @@ test "appliance actuation prepareHost enforces precommit permit budgets" {
         .idempotency_key = fixture.key,
         .supervision_ref_fingerprints = &.{pending_rule_denied_permit.permit_fingerprint},
     });
-    try std.testing.expectError(error.PortRuleDenied, world.Actuation.Membrane.prepareHost(.{
+    const pending_rule_denied_prepared = try world.Actuation.Membrane.prepareHost(.{
         .policy = world.Actuation.Policy.fixture_test,
         .intent = pending_rule_denied_intent,
         .envelope = pending_rule_denied_envelope,
@@ -7145,6 +7154,15 @@ test "appliance actuation prepareHost enforces precommit permit budgets" {
         .run_permit = pending_rule_denied_permit,
         .target_ref_fingerprint = fixture.target_ref_fingerprint,
         .world_surface_fingerprint = fixture.world_surface_fingerprint,
+    });
+    const pending_rule_denied_outcome = world.Actuation.HostOutcomeInput{
+        .intent_fingerprint = pending_rule_denied_prepared.intent.intent_fingerprint,
+        .envelope_fingerprint = pending_rule_denied_prepared.envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = pending_rule_denied_prepared.envelope.idempotency_key.key_fingerprint,
+        .status = .pending,
+    };
+    try std.testing.expectError(error.PortRuleDenied, world.Actuation.Membrane.finalizeHost(pending_rule_denied_prepared, pending_rule_denied_outcome, .{
+        .run_permit = pending_rule_denied_permit,
     }));
 
     const forged_prepared = world.Actuation.Prepared.init(.{

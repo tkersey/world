@@ -21454,6 +21454,31 @@ pub const Actuation = struct {
             }
         }
 
+        fn validatePermitPrecommitActuationPreparationBudget(permit: RunPermit, intent: Intent, ledger_ptr: ?*const Supervision.UsageLedger, pending_actuation_receipt_fingerprint: ?u64) !void {
+            const budget_call_max = permit.budget.max_actuation_calls;
+            const policy_call_max = permit.policy.max_actuation_calls;
+            const cross_mode_pending_resolution = permit.mode == .fresh and
+                (intent.requested_mode == .replay or intent.requested_mode == .verify) and
+                pending_actuation_receipt_fingerprint != null;
+            if (budget_call_max == null and policy_call_max == null and !cross_mode_pending_resolution) return;
+            if (budget_call_max != null and budget_call_max.? == 0) return error.BudgetExceeded;
+            if (policy_call_max != null and policy_call_max.? == 0) return error.BudgetExceeded;
+            const ledger = (ledger_ptr orelse return error.SupervisionDenied).*;
+            try validatePrecommitUsageLedgerBinding(permit, ledger);
+            const mode_can_resolve_pending_receipt = intent.requested_mode == .replay or intent.requested_mode == .verify;
+            const resolves_pending = if (mode_can_resolve_pending_receipt and pending_actuation_receipt_fingerprint != null)
+                ledger.hasPendingActuationReceipt(pending_actuation_receipt_fingerprint.?, intent.world_port_id)
+            else
+                false;
+            if (cross_mode_pending_resolution and !resolves_pending) return error.SupervisionDenied;
+            if (budget_call_max) |max| {
+                if (precommitActuationCallLimitExceeded(max, ledger, resolves_pending)) return error.BudgetExceeded;
+            }
+            if (policy_call_max) |max| {
+                if (precommitActuationCallLimitExceeded(max, ledger, resolves_pending)) return error.BudgetExceeded;
+            }
+        }
+
         fn validatePrecommitUsageLedgerBinding(permit: RunPermit, ledger: Supervision.UsageLedger) !void {
             if (ledger.run_permit_fingerprint != permit.permit_fingerprint) return error.SupervisionDenied;
             if (ledger.target_ref_fingerprint != permit.target_ref_fingerprint) return error.SupervisionDenied;
@@ -21583,22 +21608,32 @@ pub const Actuation = struct {
             }
             if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
             if (args.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
-            const response_status = actual_response_status orelse .pending;
-            if (!permitPolicyAllowsActuationResponseStatus(policy, response_status)) return error.SupervisionDenied;
-            try validatePermitPrecommitActuationBudget(
-                permit,
-                args.intent,
-                args.precommit_ledger,
-                args.pending_actuation_receipt_fingerprint,
-                responseStatusCreatesPendingActuation(response_status),
-                response_status,
-            );
+            if (actual_response_status) |response_status| {
+                if (!permitPolicyAllowsActuationResponseStatus(policy, response_status)) return error.SupervisionDenied;
+                try validatePermitPrecommitActuationBudget(
+                    permit,
+                    args.intent,
+                    args.precommit_ledger,
+                    args.pending_actuation_receipt_fingerprint,
+                    responseStatusCreatesPendingActuation(response_status),
+                    response_status,
+                );
+            } else {
+                try validatePermitPrecommitActuationPreparationBudget(
+                    permit,
+                    args.intent,
+                    args.precommit_ledger,
+                    args.pending_actuation_receipt_fingerprint,
+                );
+            }
             if (!permitAllowsDescriptorValuePolicy(permit, args.intent.world_port_id, args.descriptor)) return error.SupervisionDenied;
             if (permit.ruleFor(args.intent.world_port_id)) |rule| {
                 if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
                 if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
                 if (!rule.permitsMode(args.intent.requested_mode)) return error.SupervisionDenied;
-                if (!portRuleAllowsActuationReceiptStatus(rule, response_status)) return error.PortRuleDenied;
+                if (actual_response_status) |response_status| {
+                    if (!portRuleAllowsActuationReceiptStatus(rule, response_status)) return error.PortRuleDenied;
+                }
                 if (authorityKindForHostPreparation(args.descriptor)) |kind| {
                     if (!rule.allowed_authority_kinds.allows(kind)) return error.AuthorityDenied;
                 } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
