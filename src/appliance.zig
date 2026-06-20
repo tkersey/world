@@ -1262,6 +1262,7 @@ pub fn Appliance(comptime World: type) type {
                     }
                 }
                 if (self.latest_chronicle_cursor_fingerprint != null and self.latest_archive_cursor == null) return error.InvalidFrameEncoding;
+                if (self.core_state == .uninitialized and (self.turn_sequence_number != 0 or self.previous_turn_receipt_fingerprint != null or self.outstanding_host_requests.len != 0)) return error.InvalidFrameEncoding;
                 if (self.outstanding_host_requests.len != 0 and self.core_state != .waiting_host) return error.InvalidFrameEncoding;
                 if (self.core_state == .waiting_host and self.outstanding_host_requests.len == 0) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.previous_turn_receipt_fingerprint);
@@ -1541,6 +1542,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.source_state_fingerprint == 0 or self.resulting_state_fingerprint == 0) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.root_result_fingerprint);
                 try self.quiescence.validate();
+                if (!self.quiescence.quiescent or self.quiescence.runnable_run_count != 0 or self.quiescence.parked_run_count != 0 or self.quiescence.active_fabric_count != 0) return error.InvalidFrameEncoding;
                 if (self.host_requests.len > capacity.max_host_requests_per_turn) return error.CapacityExceeded;
                 if (self.status == .needs_host and self.host_requests.len == 0) return error.InvalidFrameEncoding;
                 if (self.status != .needs_host and self.host_requests.len != 0) return error.InvalidFrameEncoding;
@@ -1572,6 +1574,9 @@ pub fn Appliance(comptime World: type) type {
                 if (self.turn_sequence_number != self.turn_receipt.turn_sequence_number) return error.InvalidFrameEncoding;
                 if (self.checkpoint.capsule_fingerprint != self.turn_receipt.resulting_capsule_fingerprint) return error.InvalidFrameEncoding;
                 if (self.status != self.turn_receipt.status) return error.InvalidFrameEncoding;
+                if (self.status != .inspected and self.checkpoint.core_state != stateForStatus(self.status)) {
+                    if (!(self.status == .cancelled and self.checkpoint.core_state == .uninitialized)) return error.InvalidFrameEncoding;
+                }
                 if (self.root_result_fingerprint != self.turn_receipt.root_result_fingerprint) return error.InvalidFrameEncoding;
                 if (self.status == .completed) {
                     if (self.root_result_fingerprint == null) return error.InvalidFrameEncoding;

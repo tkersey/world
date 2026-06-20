@@ -37020,6 +37020,7 @@ pub const Continuity = struct {
     fn bundleApplianceReconstructionReportRequiredDependencyRefs(allocator: std.mem.Allocator, report: Appliance.ReconstructionReport) ![]ObjectRef {
         var refs: std.ArrayList(ObjectRef) = .empty;
         errdefer deinitRefList(allocator, &refs);
+        try appendUniqueSemanticRef(allocator, &refs, .appliance_manifest, report.manifest_fingerprint);
         try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, report.resident_turn_output_fingerprint);
         try appendUniqueSemanticRef(allocator, &refs, .appliance_turn_output, report.reconstructed_turn_output_fingerprint);
         return refs.toOwnedSlice(allocator);

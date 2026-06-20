@@ -1508,6 +1508,15 @@ test "appliance checkpoint carries capsule image ref or bounded bytes" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, runnable_restore.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
+    const uninitialized_with_prior_state = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = 0xD036,
+        .core_state = .uninitialized,
+        .previous_turn_receipt_fingerprint = 0xD037,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, uninitialized_with_prior_state.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
     var tight = world.Appliance.Capacity.tiny_one_port;
     tight.max_capsule_bytes = 4;
     try std.testing.expectError(error.CapacityExceeded, with_bytes.validate(manifest_fingerprint, tight));
@@ -3929,6 +3938,70 @@ test "appliance host request validates and is carried by needs-host TurnOutput" 
     defer std.testing.allocator.free(output_bytes);
     try std.testing.expect(output_bytes.len > 0);
 
+    const non_quiescent_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .source_state_fingerprint = 0xD108,
+        .resulting_state_fingerprint = output.resulting_state_fingerprint,
+        .quiescence = world.Appliance.QuiescenceReport.init(.{
+            .quiescent = false,
+            .pending_host_request_count = 1,
+            .prepared_actuation_count = 1,
+        }),
+        .status = .needs_host,
+        .host_requests = &.{request},
+        .checkpoint = checkpoint,
+        .turn_receipt = receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, non_quiescent_output.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const active_fabric_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .source_state_fingerprint = 0xD108,
+        .resulting_state_fingerprint = output.resulting_state_fingerprint,
+        .quiescence = world.Appliance.QuiescenceReport.init(.{
+            .quiescent = true,
+            .pending_host_request_count = 1,
+            .active_fabric_count = 1,
+            .prepared_actuation_count = 1,
+        }),
+        .status = .needs_host,
+        .host_requests = &.{request},
+        .checkpoint = checkpoint,
+        .turn_receipt = receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, active_fabric_output.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const failed_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .command_fingerprint = 0xD10A,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
+        .status = .failed,
+    });
+    const completed_checkpoint_for_failed_output = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = capsule_fingerprint,
+        .core_state = .completed,
+        .previous_turn_receipt_fingerprint = failed_receipt.receipt_fingerprint,
+    });
+    const failed_output_with_completed_checkpoint = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .source_state_fingerprint = 0xD108,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 1, failed_receipt.receipt_fingerprint),
+        .quiescence = world.Appliance.QuiescenceReport.init(.{
+            .quiescent = true,
+            .failed_run_count = 1,
+        }),
+        .status = .failed,
+        .checkpoint = completed_checkpoint_for_failed_output,
+        .turn_receipt = failed_receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, failed_output_with_completed_checkpoint.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
     const mismatched_receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 1,
@@ -4135,13 +4208,32 @@ test "appliance continuity typed payload validation accepts advertised appliance
         error.InvalidFrameEncoding,
         world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, reconstruction_envelope),
     );
-    const reconstruction_deps = [_]world.Continuity.ObjectRef{
+    const reconstruction_output_only_deps = [_]world.Continuity.ObjectRef{
         world.Continuity.ObjectRef.init(.{
             .kind = .appliance_turn_output,
             .object_format_version = world.Continuity.ObjectKind.appliance_turn_output.defaultFormatVersion(),
             .object_fingerprint = reconstruction.resident_turn_output_fingerprint,
             .byte_len = 0,
         }),
+    };
+    const reconstruction_without_manifest_dep = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_reconstruction_report,
+        .object_format_version = world.world_appliance_reconstruction_report_fingerprint_version,
+        .dependency_refs = &reconstruction_output_only_deps,
+        .payload_bytes = reconstruction_payload,
+    });
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, reconstruction_without_manifest_dep),
+    );
+    const reconstruction_deps = [_]world.Continuity.ObjectRef{
+        world.Continuity.ObjectRef.init(.{
+            .kind = .appliance_manifest,
+            .object_format_version = world.Continuity.ObjectKind.appliance_manifest.defaultFormatVersion(),
+            .object_fingerprint = reconstruction.manifest_fingerprint,
+            .byte_len = 0,
+        }),
+        reconstruction_output_only_deps[0],
     };
     const reconstruction_with_deps = world.Continuity.ObjectEnvelope.init(.{
         .kind = .appliance_reconstruction_report,
