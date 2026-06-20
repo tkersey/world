@@ -250,6 +250,23 @@ pub fn Appliance(comptime World: type) type {
                 .max_error_bytes = 64 * 1024,
                 .max_metadata_bytes = 64 * 1024,
             });
+            pub const archive_decode = init(.{
+                .max_runs = large_native_test.max_runs,
+                .max_provider_runs = large_native_test.max_provider_runs,
+                .max_pending_ports = World.world_max_decoded_byte_field_len,
+                .max_host_requests_per_turn = World.world_max_decoded_byte_field_len,
+                .max_host_replies_per_turn = World.world_max_decoded_byte_field_len,
+                .max_internal_ticks_per_turn = large_native_test.max_internal_ticks_per_turn,
+                .max_runspace_events = large_native_test.max_runspace_events,
+                .max_fabric_invocations = large_native_test.max_fabric_invocations,
+                .max_actuation_records = World.world_max_decoded_byte_field_len / @sizeOf(u64),
+                .max_capsule_bytes = World.world_max_decoded_byte_field_len,
+                .max_archive_append_bytes = World.world_max_decoded_byte_field_len,
+                .max_command_bytes = World.world_max_decoded_byte_field_len,
+                .max_output_bytes = World.world_max_decoded_byte_field_len,
+                .max_error_bytes = World.world_max_decoded_byte_field_len,
+                .max_metadata_bytes = World.world_max_decoded_byte_field_len,
+            });
 
             pub fn init(args: @This()) @This() {
                 return args;
@@ -1630,7 +1647,7 @@ pub fn Appliance(comptime World: type) type {
                 var output = try readTurnOutputOwned(allocator, bytes, &cursor);
                 errdefer output.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
-                try output.validate(output.manifest_fingerprint, Capacity.large_native_test);
+                try output.validate(output.manifest_fingerprint, Capacity.archive_decode);
                 return output;
             }
 

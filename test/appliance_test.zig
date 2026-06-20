@@ -4144,6 +4144,46 @@ test "appliance continuity typed payload validation accepts advertised appliance
         ),
     );
 
+    const mismatched_conformance = world.Appliance.ConformanceReport.init(.{
+        .vector_fingerprint = 0xD408,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .native_core_output_fingerprint = other_output.output_fingerprint,
+        .resident_core_output_fingerprint = other_output.output_fingerprint,
+        .reconstructed_core_output_fingerprint = other_output.output_fingerprint,
+    });
+    const mismatched_conformance_payload = try world.Continuity.encodePortableEvidence(
+        world.Appliance.ConformanceReport,
+        std.testing.allocator,
+        mismatched_conformance,
+    );
+    defer std.testing.allocator.free(mismatched_conformance_payload);
+    const mismatched_conformance_deps = [_]world.Continuity.ObjectRef{
+        world.Continuity.ObjectRef.init(.{
+            .kind = .appliance_turn_output,
+            .object_format_version = world.Continuity.ObjectKind.appliance_turn_output.defaultFormatVersion(),
+            .object_fingerprint = other_output.output_fingerprint,
+            .byte_len = 0,
+        }),
+    };
+    const mismatched_conformance_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_conformance_report,
+        .object_format_version = world.world_appliance_conformance_report_fingerprint_version,
+        .dependency_refs = &mismatched_conformance_deps,
+        .payload_bytes = mismatched_conformance_payload,
+    });
+    const mismatched_conformance_bundle = [_]world.Continuity.ObjectEnvelope{
+        other_output_envelope,
+        mismatched_conformance_envelope,
+    };
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        world.Continuity.validateObjectEnvelopeDependencyPayloads(
+            std.testing.allocator,
+            &mismatched_conformance_bundle,
+            mismatched_conformance_envelope,
+        ),
+    );
+
     const conformance = world.Appliance.ConformanceReport.init(.{
         .vector_fingerprint = 0xD308,
         .manifest_fingerprint = manifest.manifest_fingerprint,
@@ -4808,6 +4848,33 @@ test "appliance archive plan commits turn evidence through Archive owner" {
         pending_cursor.cursor_fingerprint,
         archived_pending_output.checkpoint.pending_archive_resulting_cursor.?.cursor_fingerprint,
     );
+
+    const large_metadata = try std.testing.allocator.alloc(u8, 70 * 1024);
+    defer std.testing.allocator.free(large_metadata);
+    @memset(large_metadata, 'm');
+    var roomy_capacity = capacity;
+    roomy_capacity.max_metadata_bytes = 128 * 1024;
+    const large_metadata_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = pending_output.turn_sequence_number,
+        .source_state_fingerprint = pending_output.source_state_fingerprint,
+        .resulting_state_fingerprint = pending_output.resulting_state_fingerprint,
+        .quiescence = pending_output.quiescence,
+        .status = pending_output.status,
+        .root_result_fingerprint = pending_output.root_result_fingerprint,
+        .checkpoint = pending_output.checkpoint,
+        .turn_receipt = pending_output.turn_receipt,
+        .diagnostic_metadata = large_metadata,
+    });
+    try large_metadata_output.validate(manifest.manifest_fingerprint, roomy_capacity);
+    const large_metadata_payload = try large_metadata_output.encode(std.testing.allocator);
+    defer std.testing.allocator.free(large_metadata_payload);
+    var archived_large_metadata_output = try world.Appliance.TurnOutput.decodeArchivePayload(
+        std.testing.allocator,
+        large_metadata_payload,
+    );
+    defer archived_large_metadata_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(large_metadata.len, archived_large_metadata_output.diagnostic_metadata.len);
 
     const wrong_receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
