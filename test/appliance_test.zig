@@ -3823,6 +3823,65 @@ test "appliance Core restore command applies checkpoint and replies without side
     try std.testing.expect(restored.readOutput().len > 0);
 }
 
+test "appliance Core rejects waiting-host restore without actuation bindings" {
+    const MinimalAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
+        .profile = world.Appliance.Profile.minimal,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+    });
+    const manifest = MinimalAppliance.manifest();
+    const forged_request = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 0,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xE120,
+        .pending_port_fingerprint = 0xE121,
+        .intent_fingerprint = 0xE122,
+        .envelope_fingerprint = 0xE123,
+        .decision_fingerprint = 0xE124,
+        .expected_response_descriptor_fingerprint = 0xE125,
+        .idempotency_key_fingerprint = 0xE126,
+    });
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .capsule_fingerprint = 0xE127,
+        .core_state = .waiting_host,
+        .previous_turn_receipt_fingerprint = 0xE128,
+        .outstanding_host_requests = &.{forged_request},
+    });
+
+    var direct_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        MinimalAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer direct_core.reset();
+    try std.testing.expectError(error.InvalidFrameEncoding, direct_core.restore(checkpoint));
+    try std.testing.expectEqual(world.Appliance.CoreState.uninitialized, direct_core.state);
+    try std.testing.expect(direct_core.outstanding_host_request == null);
+
+    const restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint,
+        .restore_checkpoint = checkpoint,
+    });
+    const restore_bytes = try restore.encode(std.testing.allocator);
+    defer std.testing.allocator.free(restore_bytes);
+
+    var command_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        MinimalAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer command_core.reset();
+    try std.testing.expectError(error.InvalidFrameEncoding, command_core.submit(restore_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.uninitialized, command_core.state);
+    try std.testing.expect(command_core.outstanding_host_request == null);
+}
+
 test "appliance Core validates command RetentionAck before advancing" {
     const ArchiveAckAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
         .profile = world.Appliance.Profile.full_evidence,
@@ -6431,11 +6490,12 @@ test "appliance reconstruction report binds resident and restored output fingerp
 }
 
 test "appliance conformance report binds native resident reconstructed replay archive and wasm evidence" {
-    const StrictAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
         .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
     });
-    const manifest = StrictAppliance.manifest();
+    const manifest = PortsAppliance.manifest();
     const capacity = world.Appliance.Capacity.tiny_one_port;
     const checkpoint_request = applianceSyntheticHostRequest(.{
         .turn_sequence_number = 1,
@@ -6470,7 +6530,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
     var native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
         manifest,
-        StrictAppliance.memoryPlan(),
+        PortsAppliance.memoryPlan(),
         capacity,
     ));
     defer native.core.reset();
@@ -6482,7 +6542,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
     var resident = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
         manifest,
-        StrictAppliance.memoryPlan(),
+        PortsAppliance.memoryPlan(),
         capacity,
     );
     defer resident.reset();
@@ -6494,7 +6554,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
     var reconstructed = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
         manifest,
-        StrictAppliance.memoryPlan(),
+        PortsAppliance.memoryPlan(),
         capacity,
     );
     defer reconstructed.reset();

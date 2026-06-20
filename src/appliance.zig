@@ -2488,6 +2488,7 @@ pub fn Appliance(comptime World: type) type {
             pub fn restore(self: *@This(), checkpoint: Checkpoint) !void {
                 try checkpoint.validate(self.manifest_value.manifest_fingerprint, self.capacity_value);
                 if (checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
+                try self.validateRestoreCheckpointManifestBindings(checkpoint);
                 var rollback = try ContinuationSnapshot.capture(self);
                 errdefer rollback.restore(self);
                 try self.applyCheckpointState(checkpoint);
@@ -2512,6 +2513,7 @@ pub fn Appliance(comptime World: type) type {
                         if (checkpoint.turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
                         if (command.turn_sequence_number != checkpoint.turn_sequence_number + 1) return error.StaleTurn;
                         if (command.previous_turn_receipt_fingerprint != checkpoint.previous_turn_receipt_fingerprint) return error.StaleTurn;
+                        try self.validateRestoreCheckpointManifestBindings(checkpoint);
                         if (self.state != .uninitialized) {
                             if (checkpoint.turn_sequence_number != self.current_turn_sequence_number) return error.StaleTurn;
                             if (checkpoint.previous_turn_receipt_fingerprint != self.previous_turn_receipt_fingerprint) return error.StaleTurn;
@@ -2633,6 +2635,10 @@ pub fn Appliance(comptime World: type) type {
                 } else {
                     return error.StaleTurn;
                 }
+            }
+
+            fn validateRestoreCheckpointManifestBindings(self: @This(), checkpoint: Checkpoint) !void {
+                if (checkpoint.core_state == .waiting_host and self.manifest_value.actuation_binding_fingerprints.len == 0) return error.InvalidFrameEncoding;
             }
 
             fn applyCheckpointState(self: *@This(), checkpoint: Checkpoint) !void {
