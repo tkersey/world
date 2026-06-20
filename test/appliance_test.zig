@@ -6059,6 +6059,7 @@ test "appliance actuation prepareHost enforces precommit permit budgets" {
             .allow_fresh_calls = true,
             .allow_actuation = true,
             .allow_fresh_actuation = true,
+            .allow_pending_actuation = true,
         }),
         .budget = world.Budget.init(.{ .max_actuation_calls = 0 }),
     });
@@ -6087,6 +6088,96 @@ test "appliance actuation prepareHost enforces precommit permit budgets" {
         .envelope = envelope,
         .descriptor = fixture.descriptor,
         .run_permit = permit,
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+    }));
+
+    const pending_policy_denied_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0xAA12,
+        .environment_certificate_fingerprint = 0xEE12,
+        .binding_plan_fingerprint = 0,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_pending_actuation = false,
+        }),
+    });
+    const pending_policy_denied_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = fixture.ref.ref_fingerprint,
+        .descriptor_fingerprint = fixture.descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = fixture.intent.frame_request_fingerprint,
+        .idempotency_key_fingerprint = fixture.key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+        .run_permit_fingerprint = pending_policy_denied_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = pending_policy_denied_permit.environment_certificate_fingerprint,
+    });
+    const pending_policy_denied_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = pending_policy_denied_intent.intent_fingerprint,
+        .idempotency_key = fixture.key,
+        .supervision_ref_fingerprints = &.{pending_policy_denied_permit.permit_fingerprint},
+    });
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.prepareHost(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = pending_policy_denied_intent,
+        .envelope = pending_policy_denied_envelope,
+        .descriptor = fixture.descriptor,
+        .run_permit = pending_policy_denied_permit,
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+    }));
+
+    const pending_rule_denied_rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+        .world_port_id = 0,
+        .allow_pending = false,
+    })};
+    const pending_rule_denied_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+        .target_certificate_fingerprint = 0xAA13,
+        .environment_certificate_fingerprint = 0xEE13,
+        .binding_plan_fingerprint = 0,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .allow_pending_actuation = true,
+        }),
+        .port_rules = &pending_rule_denied_rules,
+    });
+    const pending_rule_denied_intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = fixture.ref.ref_fingerprint,
+        .descriptor_fingerprint = fixture.descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = fixture.target_ref_fingerprint,
+        .world_surface_fingerprint = fixture.world_surface_fingerprint,
+        .world_port_id = 0,
+        .frame_request_fingerprint = fixture.intent.frame_request_fingerprint,
+        .idempotency_key_fingerprint = fixture.key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+        .run_permit_fingerprint = pending_rule_denied_permit.permit_fingerprint,
+        .environment_certificate_fingerprint = pending_rule_denied_permit.environment_certificate_fingerprint,
+    });
+    const pending_rule_denied_envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = pending_rule_denied_intent.intent_fingerprint,
+        .idempotency_key = fixture.key,
+        .supervision_ref_fingerprints = &.{pending_rule_denied_permit.permit_fingerprint},
+    });
+    try std.testing.expectError(error.PortRuleDenied, world.Actuation.Membrane.prepareHost(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = pending_rule_denied_intent,
+        .envelope = pending_rule_denied_envelope,
+        .descriptor = fixture.descriptor,
+        .run_permit = pending_rule_denied_permit,
         .target_ref_fingerprint = fixture.target_ref_fingerprint,
         .world_surface_fingerprint = fixture.world_surface_fingerprint,
     }));
@@ -6128,6 +6219,7 @@ test "appliance actuation finalizeHost enforces run permit response status" {
             .allow_fresh_calls = true,
             .allow_actuation = true,
             .allow_fresh_actuation = true,
+            .allow_pending_actuation = true,
             .allow_rejected_responses = false,
         }),
     });

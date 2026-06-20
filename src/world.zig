@@ -21584,9 +21584,7 @@ pub const Actuation = struct {
             if (policy.require_idempotency_keys and args.intent.requested_mode == .fresh and args.intent.class.isMutation() and !args.key_present) return error.SupervisionDenied;
             if (args.intent.class == .irreversible_mutation and !policy.allow_irreversible_actuation) return error.SupervisionDenied;
             const response_status = actual_response_status orelse .pending;
-            if (actual_response_status) |status| {
-                if (!permitPolicyAllowsActuationResponseStatus(policy, status)) return error.SupervisionDenied;
-            }
+            if (!permitPolicyAllowsActuationResponseStatus(policy, response_status)) return error.SupervisionDenied;
             try validatePermitPrecommitActuationBudget(
                 permit,
                 args.intent,
@@ -21600,9 +21598,7 @@ pub const Actuation = struct {
                 if (rule.rule_fingerprint != fingerprintPortRule(rule)) return error.SupervisionDenied;
                 if (rule.world_surface_fingerprint != args.intent.world_surface_fingerprint) return error.SupervisionDenied;
                 if (!rule.permitsMode(args.intent.requested_mode)) return error.SupervisionDenied;
-                if (actual_response_status) |status| {
-                    if (!portRuleAllowsActuationReceiptStatus(rule, status)) return error.PortRuleDenied;
-                }
+                if (!portRuleAllowsActuationReceiptStatus(rule, response_status)) return error.PortRuleDenied;
                 if (authorityKindForHostPreparation(args.descriptor)) |kind| {
                     if (!rule.allowed_authority_kinds.allows(kind)) return error.AuthorityDenied;
                 } else if (!std.meta.eql(rule.allowed_authority_kinds, Supervision.AllowedAuthorityKinds.all)) {
