@@ -3655,17 +3655,23 @@ pub fn Appliance(comptime World: type) type {
             var cursor: usize = 0;
             try skipApplianceWasmLocals(body, &cursor);
             var depth: u32 = 0;
-            var has_i32_result_source = false;
+            var i32_stack_depth: u32 = 0;
             while (cursor < body.len) {
                 const opcode = try wasmReadU8(body, &cursor);
                 switch (opcode) {
-                    0x00, 0x01, 0x0f, 0x1a, 0x1b => {},
+                    0x00, 0x01, 0x0f => {},
+                    0x1a => wasmDiscardPossibleI32(&i32_stack_depth, 1),
+                    0x1b => {
+                        try wasmConsumeI32(&i32_stack_depth, 3);
+                        i32_stack_depth += 1;
+                    },
                     0x02, 0x03 => {
                         try wasmSkipBlockType(body, &cursor);
                         depth += 1;
                     },
                     0x04 => {
                         try wasmSkipBlockType(body, &cursor);
+                        try wasmConsumeI32(&i32_stack_depth, 1);
                         depth += 1;
                     },
                     0x05 => {
@@ -3674,48 +3680,79 @@ pub fn Appliance(comptime World: type) type {
                     0x0b => {
                         if (depth == 0) {
                             if (cursor != body.len) return error.InvalidFrameEncoding;
-                            if (!has_i32_result_source) return error.InvalidFrameEncoding;
+                            if (i32_stack_depth == 0) return error.InvalidFrameEncoding;
                             return;
                         }
                         depth -= 1;
                     },
-                    0x0c, 0x0d => _ = try wasmReadU32(body, &cursor),
+                    0x0c => _ = try wasmReadU32(body, &cursor),
+                    0x0d => {
+                        _ = try wasmReadU32(body, &cursor);
+                        try wasmConsumeI32(&i32_stack_depth, 1);
+                    },
                     0x0e => {
                         const target_count = try wasmReadU32(body, &cursor);
                         var target_index: u32 = 0;
                         while (target_index <= target_count) : (target_index += 1) _ = try wasmReadU32(body, &cursor);
+                        try wasmConsumeI32(&i32_stack_depth, 1);
                     },
                     0x10 => {
                         const function_index = try wasmReadU32(body, &cursor);
-                        if (wasmFunctionReturnsI32(function_index, import_function_count, type_sigs, function_type_indices)) {
-                            has_i32_result_source = true;
+                        if (wasmFunctionSignature(function_index, import_function_count, type_sigs, function_type_indices)) |signature| {
+                            if (signature.all_params_i32) try wasmConsumeI32(&i32_stack_depth, signature.param_count);
+                            if (signature.result_count == 1 and signature.all_results_i32) {
+                                i32_stack_depth += 1;
+                            }
                         }
                     },
                     0x11 => {
                         const type_index = try wasmReadU32(body, &cursor);
                         _ = try wasmReadU32(body, &cursor);
-                        if (type_index < type_sigs.len and type_sigs[@intCast(type_index)].result_count == 1 and type_sigs[@intCast(type_index)].all_results_i32) {
-                            has_i32_result_source = true;
+                        if (type_index < type_sigs.len) {
+                            const signature = type_sigs[@intCast(type_index)];
+                            if (signature.all_params_i32) try wasmConsumeI32(&i32_stack_depth, signature.param_count);
+                            if (signature.result_count == 1 and signature.all_results_i32) {
+                                i32_stack_depth += 1;
+                            }
                         }
                     },
                     0x20, 0x22, 0x23 => {
                         _ = try wasmReadU32(body, &cursor);
-                        has_i32_result_source = true;
+                        if (opcode != 0x22 or i32_stack_depth == 0) i32_stack_depth += 1;
                     },
-                    0x21, 0x24 => _ = try wasmReadU32(body, &cursor),
+                    0x21, 0x24 => {
+                        _ = try wasmReadU32(body, &cursor);
+                        wasmDiscardPossibleI32(&i32_stack_depth, 1);
+                    },
                     0x28, 0x2c, 0x2d, 0x2e, 0x2f => {
                         try wasmSkipMemoryImmediate(body, &cursor);
-                        has_i32_result_source = true;
+                        try wasmConsumeI32(&i32_stack_depth, 1);
+                        i32_stack_depth += 1;
                     },
-                    0x29, 0x2a, 0x2b, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35 => try wasmSkipMemoryImmediate(body, &cursor),
-                    0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e => try wasmSkipMemoryImmediate(body, &cursor),
+                    0x29, 0x2a, 0x2b, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35 => {
+                        try wasmSkipMemoryImmediate(body, &cursor);
+                        try wasmConsumeI32(&i32_stack_depth, 1);
+                    },
+                    0x36, 0x3a, 0x3b => {
+                        try wasmSkipMemoryImmediate(body, &cursor);
+                        try wasmConsumeI32(&i32_stack_depth, 2);
+                    },
+                    0x37, 0x38, 0x39, 0x3c, 0x3d, 0x3e => {
+                        try wasmSkipMemoryImmediate(body, &cursor);
+                        try wasmConsumeI32(&i32_stack_depth, 1);
+                    },
                     0x3f, 0x40 => {
                         _ = try wasmReadU32(body, &cursor);
-                        if (opcode == 0x3f) has_i32_result_source = true;
+                        if (opcode == 0x3f) {
+                            i32_stack_depth += 1;
+                        } else {
+                            try wasmConsumeI32(&i32_stack_depth, 1);
+                            i32_stack_depth += 1;
+                        }
                     },
                     0x41 => {
                         _ = try wasmReadI32Bits(body, &cursor);
-                        has_i32_result_source = true;
+                        i32_stack_depth += 1;
                     },
                     0x42 => _ = try wasmReadI64(body, &cursor),
                     0x43 => {
@@ -3726,31 +3763,47 @@ pub fn Appliance(comptime World: type) type {
                         if (8 > body.len - cursor) return error.InvalidFrameEncoding;
                         cursor += 8;
                     },
-                    0x45...0x78, 0xa7...0xab, 0xbc => has_i32_result_source = true,
+                    0x45 => {
+                        try wasmConsumeI32(&i32_stack_depth, 1);
+                        i32_stack_depth += 1;
+                    },
+                    0x46...0x4f => {
+                        try wasmConsumeI32(&i32_stack_depth, 2);
+                        i32_stack_depth += 1;
+                    },
+                    0x50...0x66 => i32_stack_depth += 1,
+                    0x67...0x69 => {
+                        try wasmConsumeI32(&i32_stack_depth, 1);
+                        i32_stack_depth += 1;
+                    },
+                    0x6a...0x78 => {
+                        try wasmConsumeI32(&i32_stack_depth, 2);
+                        i32_stack_depth += 1;
+                    },
+                    0xa7...0xab, 0xbc => i32_stack_depth += 1,
                     0x79...0xa6, 0xac...0xbb, 0xbd...0xbf => {},
                     0xd0 => try wasmSkipRefType(body, &cursor),
                     0xd1 => {},
                     0xd2 => _ = try wasmReadU32(body, &cursor),
-                    0xfc => try wasmSkipPrefixedInstruction(body, &cursor, &has_i32_result_source),
+                    0xfc => try wasmSkipPrefixedInstruction(body, &cursor, &i32_stack_depth),
                     else => return error.InvalidFrameEncoding,
                 }
             }
             return error.InvalidFrameEncoding;
         }
 
-        fn wasmFunctionReturnsI32(
+        fn wasmFunctionSignature(
             function_index: u32,
             import_function_count: usize,
             type_sigs: []const WasmFuncSignature,
             function_type_indices: []const u32,
-        ) bool {
-            if (function_index < import_function_count) return false;
+        ) ?WasmFuncSignature {
+            if (function_index < import_function_count) return null;
             const defined_index = function_index - @as(u32, @intCast(import_function_count));
-            if (defined_index >= function_type_indices.len) return false;
+            if (defined_index >= function_type_indices.len) return null;
             const type_index = function_type_indices[@intCast(defined_index)];
-            if (type_index >= type_sigs.len) return false;
-            const signature = type_sigs[@intCast(type_index)];
-            return signature.result_count == 1 and signature.all_results_i32;
+            if (type_index >= type_sigs.len) return null;
+            return type_sigs[@intCast(type_index)];
         }
 
         fn wasmSkipBlockType(body: []const u8, cursor: *usize) !void {
@@ -3772,18 +3825,31 @@ pub fn Appliance(comptime World: type) type {
             _ = try wasmReadU32(body, cursor);
         }
 
-        fn wasmSkipPrefixedInstruction(body: []const u8, cursor: *usize, has_i32_result_source: *bool) !void {
+        fn wasmSkipPrefixedInstruction(body: []const u8, cursor: *usize, i32_stack_depth: *u32) !void {
             const opcode = try wasmReadU32(body, cursor);
             switch (opcode) {
-                0, 1, 2, 3, 4, 5, 6, 7 => has_i32_result_source.* = true,
+                0, 1, 2, 3, 4, 5, 6, 7 => i32_stack_depth.* += 1,
                 8, 9 => {},
                 10 => {
                     _ = try wasmReadU32(body, cursor);
                     _ = try wasmReadU32(body, cursor);
+                    try wasmConsumeI32(i32_stack_depth, 3);
                 },
-                11 => _ = try wasmReadU32(body, cursor),
+                11 => {
+                    _ = try wasmReadU32(body, cursor);
+                    try wasmConsumeI32(i32_stack_depth, 3);
+                },
                 else => return error.InvalidFrameEncoding,
             }
+        }
+
+        fn wasmConsumeI32(stack_depth: *u32, count: u32) !void {
+            if (stack_depth.* < count) return error.InvalidFrameEncoding;
+            stack_depth.* -= count;
+        }
+
+        fn wasmDiscardPossibleI32(stack_depth: *u32, count: u32) void {
+            stack_depth.* = if (stack_depth.* > count) stack_depth.* - count else 0;
         }
 
         fn skipApplianceWasmLocals(body: []const u8, cursor: *usize) !void {

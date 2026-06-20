@@ -235,6 +235,7 @@ const ApplianceWasmBuildOptions = struct {
     helper_exports: HelperExports = .none,
     invalid_required_body_index: ?usize = null,
     missing_required_result_index: ?usize = null,
+    dropped_required_result_index: ?usize = null,
     invalid_extra_export_kind: bool = false,
     invalid_extra_export_function_index: bool = false,
     invalid_unused_type: bool = false,
@@ -525,6 +526,16 @@ fn buildMinimalApplianceWasmWithOptions(
             try code.appendSlice(std.testing.allocator, body.items);
             continue;
         }
+        if (options.dropped_required_result_index != null and index == options.dropped_required_result_index.?) {
+            try appendApplianceWasmU32(&body, 0);
+            try body.append(std.testing.allocator, 0x41);
+            try appendApplianceWasmI32Bits(&body, 0);
+            try body.append(std.testing.allocator, 0x1a);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
         try appendApplianceWasmU32(&body, 0);
         try body.append(std.testing.allocator, 0x41);
         const value = if (index == 0)
@@ -779,6 +790,19 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer missing_required_result.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(missing_required_result.items));
+
+    var dropped_required_result = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .dropped_required_result_index = 1 },
+    );
+    defer dropped_required_result.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(dropped_required_result.items));
 
     var invalid_extra_export_kind = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
