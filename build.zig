@@ -1056,7 +1056,7 @@ pub fn build(b: *std.Build) void {
             \\external_model_requests=2
             \\internal_tool_provider_targets=1
             \\fabric_plans=1
-            \\finalized_actuation_receipts=0
+            \\finalized_actuation_receipts=1
             \\archive_objects=3
             \\final_result=true
             \\
@@ -1069,8 +1069,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=70c8930556dfbd77
-            \\restored_output=70c8930556dfbd77
+            \\resident_output=bd8558932dec9f87
+            \\restored_output=bd8558932dec9f87
             \\
             ,
         },

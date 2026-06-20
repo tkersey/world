@@ -700,6 +700,7 @@ pub fn Appliance(comptime World: type) type {
                 }
                 try validateDistinctHostReplyTargets(self.host_replies);
                 if (self.retention_ack) |ack| try ack.validate(null, capacity);
+                _ = try effectiveRetentionAck(self);
                 if (self.restore_checkpoint) |checkpoint| {
                     if (self.kind != .restore) return error.InvalidFrameEncoding;
                     try checkpoint.validate(expected_manifest_fingerprint, capacity);
@@ -2214,7 +2215,11 @@ pub fn Appliance(comptime World: type) type {
                     applied_host_reply_fingerprint_storage[0] = command.host_replies[0].reply_fingerprint;
                     break :blk applied_host_reply_fingerprint_storage[0..1];
                 } else &.{};
-                const finalized_actuation_receipt_fingerprints: []const u64 = &.{};
+                var finalized_actuation_receipt_fingerprint_storage: [1]u64 = undefined;
+                const finalized_actuation_receipt_fingerprints = try finalizedActuationReceiptFingerprintsFor(
+                    command,
+                    &finalized_actuation_receipt_fingerprint_storage,
+                );
                 var emitted_host_request_fingerprint_storage: [1]u64 = undefined;
                 const emitted_host_request_fingerprints = if (host_requests.len != 0) blk: {
                     emitted_host_request_fingerprint_storage[0] = host_requests[0].request_fingerprint;
@@ -2467,7 +2472,6 @@ pub fn Appliance(comptime World: type) type {
                         if (checkpoint.turn_sequence_number == std.math.maxInt(u64)) return error.StaleTurn;
                         if (checkpointIsTerminal(checkpoint)) {
                             if (checkpoint.pending_archive_append_batch_fingerprint == null) return error.StaleTurn;
-                            if (self.manifest_value.actuation_binding_fingerprints.len != 0) return error.StaleTurn;
                         }
                         if (command.turn_sequence_number != checkpoint.turn_sequence_number + 1) return error.StaleTurn;
                         if (command.previous_turn_receipt_fingerprint != checkpoint.previous_turn_receipt_fingerprint) return error.StaleTurn;
@@ -2560,7 +2564,7 @@ pub fn Appliance(comptime World: type) type {
             }
 
             fn commandIsTerminalArchiveAckOnly(self: @This(), command: Command) bool {
-                return command.kind == .@"continue" and
+                return (command.kind == .@"continue" or command.kind == .restore) and
                     self.last_turn_status == .completed and
                     self.manifest_value.actuation_binding_fingerprints.len != 0 and
                     command.host_replies.len == 0 and
@@ -3001,11 +3005,14 @@ pub fn Appliance(comptime World: type) type {
                 var required_export_function_indices: [required_exports.len]?u32 = [_]?u32{null} ** required_exports.len;
                 var metadata_export_function_indices: [metadata_exports.len]?u32 = [_]?u32{null} ** metadata_exports.len;
                 var cursor: usize = 8;
+                var seen_standard_sections: u16 = 0;
+                var last_section_order: u8 = 0;
                 while (cursor < bytes.len) {
                     const section_id = try wasmReadU8(bytes, &cursor);
                     const section_len = try wasmReadU32(bytes, &cursor);
                     if (section_len > bytes.len - cursor) return error.InvalidFrameEncoding;
                     const section = bytes[cursor .. cursor + section_len];
+                    try inspectWasmSectionOrder(section_id, &seen_standard_sections, &last_section_order);
                     switch (section_id) {
                         1 => type_count = try inspectWasmTypes(section, &type_sigs),
                         2 => try inspectWasmImports(section, &inspection),
@@ -3081,6 +3088,28 @@ pub fn Appliance(comptime World: type) type {
 
             fn combineWasmU64(lo: u32, hi: u32) u64 {
                 return @as(u64, lo) | (@as(u64, hi) << 32);
+            }
+
+            fn inspectWasmSectionOrder(section_id: u8, seen: *u16, last_order: *u8) !void {
+                if (section_id == 0) return;
+                if (section_id == 8 or section_id > 12) return error.InvalidFrameEncoding;
+
+                const mask = @as(u16, 1) << @intCast(section_id);
+                if ((seen.* & mask) != 0) return error.InvalidFrameEncoding;
+                seen.* |= mask;
+
+                const order = wasmSectionOrder(section_id);
+                if (order < last_order.*) return error.InvalidFrameEncoding;
+                last_order.* = order;
+            }
+
+            fn wasmSectionOrder(section_id: u8) u8 {
+                return switch (section_id) {
+                    12 => 10,
+                    10 => 11,
+                    11 => 12,
+                    else => section_id,
+                };
             }
         };
 
@@ -4298,6 +4327,7 @@ pub fn Appliance(comptime World: type) type {
                     ack = reply_ack;
                 }
             }
+            if (ack_fingerprint != null and ack == null) return error.InvalidFrameEncoding;
             return ack;
         }
 
@@ -4398,6 +4428,13 @@ pub fn Appliance(comptime World: type) type {
                 if (reply.retention_ack != null) return true;
             }
             return false;
+        }
+
+        fn finalizedActuationReceiptFingerprintsFor(command: Command, storage: *[1]u64) ![]const u64 {
+            if (command.host_replies.len == 0) return &.{};
+            if (!hostOutcomeStatusIsTerminal(command.host_replies[0].outcome.status)) return &.{};
+            storage[0] = command.host_replies[0].outcome.host_evidence_fingerprint orelse return error.InvalidFrameEncoding;
+            return storage[0..1];
         }
 
         fn hostOutcomeStatusIsTerminal(status: HostOutcomeStatus) bool {

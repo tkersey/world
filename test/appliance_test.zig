@@ -229,6 +229,9 @@ fn applianceRequiredExportParamCount(index: usize) u32 {
 
 const ApplianceWasmBuildOptions = struct {
     duplicate_memory_export: bool = false,
+    duplicate_memory_section: bool = false,
+    start_section_function_index: ?u32 = null,
+    data_section_before_code: bool = false,
     helper_exports: HelperExports = .none,
     invalid_required_body_index: ?usize = null,
 
@@ -355,6 +358,7 @@ fn buildMinimalApplianceWasmWithOptions(
         if (second_memory_max_pages) |second_max| try appendApplianceWasmU32(&memory, second_max);
     }
     try appendApplianceWasmSection(&module, 5, memory.items);
+    if (options.duplicate_memory_section) try appendApplianceWasmSection(&module, 5, memory.items);
 
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(std.testing.allocator);
@@ -389,6 +393,20 @@ fn buildMinimalApplianceWasmWithOptions(
         },
     }
     try appendApplianceWasmSection(&module, 7, exports.items);
+
+    if (options.start_section_function_index) |function_index| {
+        var start: std.ArrayList(u8) = .empty;
+        defer start.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&start, function_index);
+        try appendApplianceWasmSection(&module, 8, start.items);
+    }
+
+    if (options.data_section_before_code) {
+        var data: std.ArrayList(u8) = .empty;
+        defer data.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&data, 0);
+        try appendApplianceWasmSection(&module, 11, data.items);
+    }
 
     var code: std.ArrayList(u8) = .empty;
     defer code.deinit(std.testing.allocator);
@@ -636,6 +654,45 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer invalid_required_body.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_required_body.items));
+
+    var duplicate_memory_section = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .duplicate_memory_section = true },
+    );
+    defer duplicate_memory_section.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(duplicate_memory_section.items));
+
+    var start_section = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .start_section_function_index = 0 },
+    );
+    defer start_section.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(start_section.items));
+
+    var data_before_code = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .data_section_before_code = true },
+    );
+    defer data_before_code.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(data_before_code.items));
 }
 
 test "appliance profile presets are strict and identity-bearing" {
@@ -932,7 +989,7 @@ test "appliance command encodes decodes and validates host replies" {
         .metadata = "reply-ack",
     });
     const second_reply = applianceHostReplyFor(second_request, 0xD316);
-    const ack = applianceRetentionAckFor(0xD307, "retained");
+    const ack = reply_ack;
     const command = world.Appliance.Command.init(.{
         .kind = .@"continue",
         .manifest_fingerprint = manifest.manifest_fingerprint,
@@ -1001,6 +1058,21 @@ test "appliance command encodes decodes and validates host replies" {
         .host_replies = &.{ reply, reply },
     });
     try std.testing.expectError(error.DuplicateReply, duplicate_reply_command.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
+
+    const fingerprint_only_ack_reply = world.Appliance.HostReply.init(.{
+        .target_host_request_fingerprint = reply_without_ack.target_host_request_fingerprint,
+        .outcome = reply_without_ack.outcome,
+        .retention_ack_fingerprint = reply_ack.ack_fingerprint,
+        .metadata = "ack-ref-without-evidence",
+    });
+    const fingerprint_only_ack_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = 0xD308,
+        .host_replies = &.{fingerprint_only_ack_reply},
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, fingerprint_only_ack_command.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
 }
 
 test "appliance command encodes decodes and validates restore checkpoint" {
@@ -1460,7 +1532,8 @@ test "appliance Core validates continue host replies before completion" {
     defer terminal_output.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), terminal_output.turn_receipt.applied_host_reply_fingerprints.len);
     try std.testing.expectEqual(reply.reply_fingerprint, terminal_output.turn_receipt.applied_host_reply_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 0), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(reply.outcome.host_evidence_fingerprint.?, terminal_output.finalized_actuation_receipt_fingerprints[0]);
 }
 
 test "appliance Core rejects byte HostReply at active request boundary" {
@@ -1598,7 +1671,8 @@ test "appliance terminal HostReply validation uses active capacity" {
     defer terminal_output.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), terminal_output.turn_receipt.applied_host_reply_fingerprints.len);
     try std.testing.expectEqual(reply.reply_fingerprint, terminal_output.turn_receipt.applied_host_reply_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 0), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(reply.outcome.host_evidence_fingerprint.?, terminal_output.finalized_actuation_receipt_fingerprints[0]);
 }
 
 test "appliance Core pending and deferred HostReplies keep request outstanding" {
@@ -2605,7 +2679,13 @@ test "appliance Core applies HostReply RetentionAck before archive-gated advance
     });
     const terminal_restore_bytes = try terminal_restore.encode(std.testing.allocator);
     defer std.testing.allocator.free(terminal_restore_bytes);
-    try std.testing.expectError(error.StaleTurn, restore_core.submit(terminal_restore_bytes));
+    try restore_core.submit(terminal_restore_bytes);
+    try restore_core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, restore_core.state);
+    try std.testing.expectEqual(@as(?u64, null), restore_core.pending_archive_append_batch_fingerprint);
+    try std.testing.expectEqual(@as(?u64, terminal_archive_ack.resulting_moment_fingerprint), restore_core.latest_archive_moment_fingerprint);
+    try std.testing.expectEqual(@as(?u64, terminal_archive_ack.resulting_seal_fingerprint), restore_core.latest_archive_seal_fingerprint);
+    try std.testing.expectEqual(@as(?u64, terminal_archive_ack.resulting_chronicle_cursor_fingerprint), restore_core.latest_chronicle_cursor_fingerprint);
 }
 
 test "appliance Core rejects replay evidence without verified transcript support" {
@@ -2670,7 +2750,8 @@ test "appliance Core rejects replay evidence without verified transcript support
     try std.testing.expectEqual(world.Appliance.TurnStatus.completed, terminal_output.status);
     try std.testing.expectEqual(@as(usize, 1), terminal_output.turn_receipt.applied_host_reply_fingerprints.len);
     try std.testing.expectEqual(fresh_reply.reply_fingerprint, terminal_output.turn_receipt.applied_host_reply_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 0), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(fresh_reply.outcome.host_evidence_fingerprint.?, terminal_output.finalized_actuation_receipt_fingerprints[0]);
     try std.testing.expectEqualStrings("", terminal_output.diagnostic_metadata);
 
     var incomplete_replay_core = world.Appliance.Core.initWithCapacity(
