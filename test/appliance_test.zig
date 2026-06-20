@@ -138,72 +138,6 @@ fn applianceManifestVariant(base: world.Appliance.Manifest, args: anytype) world
     });
 }
 
-fn expectedFinalizedActuationReceiptFingerprint(
-    request: world.Appliance.HostRequest,
-    reply: world.Appliance.HostReply,
-) !u64 {
-    const commit_status: world.Actuation.CommitStatus = switch (reply.outcome.status) {
-        .responded => .committed,
-        .rejected => .rejected,
-        .failed => .commit_failed,
-        .cancelled => .cancelled,
-        .pending, .deferred => return error.InvalidFrameEncoding,
-    };
-    const fresh_called = commit_status != .not_started and commit_status != .replayed and commit_status != .verified and commit_status != .cancelled;
-    const commit_value = world.Actuation.Commit.init(.{
-        .intent_fingerprint = request.intent_fingerprint,
-        .decision_fingerprint = request.decision_fingerprint,
-        .envelope_fingerprint = request.envelope_fingerprint,
-        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
-        .attempt_number = reply.outcome.attempt_number,
-        .status = commit_status,
-        .fresh_called = fresh_called,
-    });
-    const response = world.Actuation.Response.init(.{
-        .intent_fingerprint = request.intent_fingerprint,
-        .commit_fingerprint = commit_value.commit_fingerprint,
-        .actuator_ref_fingerprint = request.actuator_ref_fingerprint,
-        .world_port_id = request.world_port_id,
-        .request_fingerprint = request.request_fingerprint,
-        .status = switch (reply.outcome.status) {
-            .responded => .responded,
-            .rejected => .rejected,
-            .failed => .failed,
-            .cancelled => .cancelled,
-            .pending, .deferred => unreachable,
-        },
-        .response_kind = .@"resume",
-        .frame_response_fingerprint = reply.outcome.response_fingerprint,
-        .metadata = reply.outcome.metadata,
-    });
-    const receipt = world.Actuation.Receipt.init(.{
-        .intent_fingerprint = request.intent_fingerprint,
-        .envelope_fingerprint = request.envelope_fingerprint,
-        .decision_fingerprint = request.decision_fingerprint,
-        .commit_fingerprint = commit_value.commit_fingerprint,
-        .response_fingerprint = response.response_fingerprint,
-        .response_kind = response.response_kind,
-        .frame_response_fingerprint = response.frame_response_fingerprint,
-        .actuator_ref_fingerprint = request.actuator_ref_fingerprint,
-        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
-        .request_fingerprint = request.request_fingerprint,
-        .target_ref_fingerprint = request.target_ref_fingerprint,
-        .world_surface_fingerprint = request.world_surface_fingerprint,
-        .world_port_id = request.world_port_id,
-        .class = request.actuation_class,
-        .mode = .fresh,
-        .fresh_called = commit_value.fresh_called,
-        .rejected = response.status == .rejected,
-        .failed = response.status == .failed,
-        .cancelled = response.status == .cancelled,
-        .attempt_number = commit_value.attempt_number,
-        .capsule_fingerprint = request.pending_port_fingerprint,
-        .metadata = "appliance.finalized_actuation_receipt",
-    });
-    try receipt.validate();
-    return receipt.receipt_fingerprint;
-}
-
 fn applianceRetentionAckFor(append_batch_fingerprint: u64, metadata: []const u8) world.Appliance.RetentionAck {
     return world.Appliance.RetentionAck.init(.{
         .append_batch_fingerprint = append_batch_fingerprint,
@@ -1524,14 +1458,12 @@ test "appliance Core validates continue host replies before completion" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer terminal_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
-    try std.testing.expectEqual(
-        try expectedFinalizedActuationReceiptFingerprint(outstanding, reply),
-        terminal_output.finalized_actuation_receipt_fingerprints[0],
-    );
+    try std.testing.expectEqual(@as(usize, 1), terminal_output.turn_receipt.applied_host_reply_fingerprints.len);
+    try std.testing.expectEqual(reply.reply_fingerprint, terminal_output.turn_receipt.applied_host_reply_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 0), terminal_output.finalized_actuation_receipt_fingerprints.len);
 }
 
-test "appliance Core rejects byte HostReply before finalizing actuation receipt" {
+test "appliance Core rejects byte HostReply at active request boundary" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
         .capacity = world.Appliance.Capacity.tiny_one_port,
@@ -1587,11 +1519,10 @@ test "appliance Core rejects byte HostReply before finalizing actuation receipt"
     const continue_bytes = try continue_command.encode(std.testing.allocator);
     defer std.testing.allocator.free(continue_bytes);
 
-    try core.submit(continue_bytes);
-    try std.testing.expectError(error.InvalidFrameEncoding, core.executeTurn());
+    try std.testing.expectError(error.InvalidFrameEncoding, core.submit(continue_bytes));
 }
 
-test "appliance finalized HostReply validation uses active capacity" {
+test "appliance terminal HostReply validation uses active capacity" {
     const roomy_capacity = comptime blk: {
         var capacity = world.Appliance.Capacity.large_native_test;
         capacity.max_metadata_bytes = 128 * 1024;
@@ -1665,7 +1596,9 @@ test "appliance finalized HostReply validation uses active capacity" {
         roomy_capacity,
     );
     defer terminal_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), terminal_output.turn_receipt.applied_host_reply_fingerprints.len);
+    try std.testing.expectEqual(reply.reply_fingerprint, terminal_output.turn_receipt.applied_host_reply_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 0), terminal_output.finalized_actuation_receipt_fingerprints.len);
 }
 
 test "appliance Core pending and deferred HostReplies keep request outstanding" {
@@ -2735,7 +2668,9 @@ test "appliance Core rejects replay evidence without verified transcript support
     );
     defer terminal_output.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Appliance.TurnStatus.completed, terminal_output.status);
-    try std.testing.expectEqual(@as(usize, 1), terminal_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), terminal_output.turn_receipt.applied_host_reply_fingerprints.len);
+    try std.testing.expectEqual(fresh_reply.reply_fingerprint, terminal_output.turn_receipt.applied_host_reply_fingerprints[0]);
+    try std.testing.expectEqual(@as(usize, 0), terminal_output.finalized_actuation_receipt_fingerprints.len);
     try std.testing.expectEqualStrings("", terminal_output.diagnostic_metadata);
 
     var incomplete_replay_core = world.Appliance.Core.initWithCapacity(
@@ -2766,7 +2701,7 @@ test "appliance Core rejects replay evidence without verified transcript support
     defer replay_core.reset();
     const replay_evidence = [_]u64{
         terminal_output.turn_receipt.receipt_fingerprint,
-        terminal_output.finalized_actuation_receipt_fingerprints[0],
+        terminal_output.turn_receipt.applied_host_reply_fingerprints[0],
     };
     const replay_boot = world.Appliance.Command.init(.{
         .kind = .boot,
@@ -3581,8 +3516,7 @@ test "appliance host reply validates against outstanding request identity" {
         .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
         .status = .responded,
         .response_fingerprint = 0xD207,
-        .response_kind = .bytes,
-        .response_bytes = "approved-bytes",
+        .response_kind = .frame_value_image,
         .host_evidence_fingerprint = 0xD208,
         .host_evidence_bytes = "local-claim",
         .attempt_number = 1,
@@ -3670,8 +3604,7 @@ test "appliance host reply validates against outstanding request identity" {
         .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
         .status = .responded,
         .response_fingerprint = 0xD20A,
-        .response_kind = .bytes,
-        .response_bytes = "ok",
+        .response_kind = .frame_value_image,
         .host_evidence_bytes = "too-large",
     });
     try std.testing.expectError(error.CapacityExceeded, oversized_evidence.validate(request, tight));
@@ -4215,7 +4148,8 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
         .blocker_count = 1,
         .warning_count = 1,
     });
-    try std.testing.expectError(error.InvalidFrameEncoding, missing_finalized_ref.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+    try missing_finalized_ref.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
+    try std.testing.expect(output.output_fingerprint != missing_finalized_ref.output_fingerprint);
 
     const zero_blocker_receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest_fingerprint,
