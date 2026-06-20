@@ -1069,8 +1069,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=9ef57068c4a0a95c
-            \\restored_output=9ef57068c4a0a95c
+            \\resident_output=b59dfb74847de333
+            \\restored_output=b59dfb74847de333
             \\
             ,
         },
@@ -1097,7 +1097,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=7d935cccd3c27b0e
+            \\replay_evidence=2cfca5efe430e442
             \\replay_final_result=false
             \\
             ,

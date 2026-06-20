@@ -36143,6 +36143,7 @@ pub const Continuity = struct {
                 };
                 defer output.deinit(allocator);
                 if (output.output_fingerprint != fingerprint) return false;
+                if (output.manifest_fingerprint != report.manifest_fingerprint) return false;
             }
         }
         return true;

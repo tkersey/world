@@ -1563,7 +1563,7 @@ pub fn Appliance(comptime World: type) type {
                 }
                 if (self.run_receipt_fingerprint != self.turn_receipt.run_receipt_fingerprint) return error.InvalidFrameEncoding;
                 if (self.archive_append_batch_fingerprint != self.turn_receipt.archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
-                if (self.archive_append_batch_fingerprint != self.checkpoint.pending_archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
+                if (self.archive_append_batch_fingerprint != null and self.archive_append_batch_fingerprint != self.checkpoint.pending_archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
                 if (self.blocker_count != self.turn_receipt.blocker_count or self.blocker_count != self.quiescence.blocker_count) return error.InvalidFrameEncoding;
                 if (self.warning_count != self.turn_receipt.warning_count or self.warning_count != self.quiescence.warning_count) return error.InvalidFrameEncoding;
                 if (self.status == .blocked and self.blocker_count == 0) return error.InvalidFrameEncoding;
@@ -2240,10 +2240,7 @@ pub fn Appliance(comptime World: type) type {
                     null;
                 const warning_count = self.warningCountForCommand(command);
                 const checkpoint_turn_sequence_number = if (resets_core) @as(u64, 0) else turn_sequence_number;
-                var output_archive_append_batch_fingerprint: ?u64 = if (warning_count != 0)
-                    self.pending_archive_append_batch_fingerprint
-                else
-                    null;
+                var output_archive_append_batch_fingerprint: ?u64 = null;
                 const output_pending_archive_resulting_cursor = if (output_archive_append_batch_fingerprint != null)
                     self.pending_archive_resulting_cursor
                 else
@@ -2321,7 +2318,11 @@ pub fn Appliance(comptime World: type) type {
                     .diagnostic_metadata = diagnostic_metadata,
                 });
                 if (self.shouldPlanArchiveAppend(command) and output_archive_append_batch_fingerprint == null) {
-                    var archive_plan = try ArchivePlan.initForTurnOutput(self.allocator, acknowledged_archive_cursor_value, output, self.capacity_value);
+                    const archive_planning_cursor = if (retention_ack == null)
+                        self.pending_archive_resulting_cursor orelse acknowledged_archive_cursor_value
+                    else
+                        acknowledged_archive_cursor_value;
+                    var archive_plan = try ArchivePlan.initForTurnOutput(self.allocator, archive_planning_cursor, output, self.capacity_value);
                     defer archive_plan.deinit();
                     archive_append_batch_fingerprint = archive_plan.append_batch.append_batch_fingerprint;
                     output_archive_append_batch_fingerprint = archive_append_batch_fingerprint;
@@ -2410,7 +2411,7 @@ pub fn Appliance(comptime World: type) type {
                         self.clearOutstandingHostRequest();
                     }
                     if (retention_ack != null) self.latest_archive_cursor = acknowledged_archive_cursor_value;
-                    if (output_archive_append_batch_fingerprint == null or retention_ack != null or self.pending_archive_append_batch_fingerprint == null) {
+                    if (output_archive_append_batch_fingerprint == null or retention_ack != null or self.pending_archive_append_batch_fingerprint != output_archive_append_batch_fingerprint) {
                         self.pending_archive_append_batch_fingerprint = output_archive_append_batch_fingerprint;
                         self.pending_archive_resulting_cursor = planned_archive_resulting_cursor;
                     }
@@ -3051,7 +3052,9 @@ pub fn Appliance(comptime World: type) type {
                             &metadata_value_mask,
                             &inspection,
                         ),
-                        else => {},
+                        0 => {},
+                        4, 6, 9, 11, 12 => try validateIgnoredWasmSection(section_id, section),
+                        else => return error.InvalidFrameEncoding,
                     }
                     cursor += section_len;
                 }
@@ -3173,13 +3176,13 @@ pub fn Appliance(comptime World: type) type {
                 var all_params_i32 = true;
                 var param_index: u32 = 0;
                 while (param_index < param_count) : (param_index += 1) {
-                    if ((try wasmReadU8(section, &cursor)) != 0x7f) all_params_i32 = false;
+                    if (!try inspectWasmValueTypeIsI32(section, &cursor)) all_params_i32 = false;
                 }
                 const result_count = try wasmReadU32(section, &cursor);
                 var all_results_i32 = true;
                 var result_index: u32 = 0;
                 while (result_index < result_count) : (result_index += 1) {
-                    if ((try wasmReadU8(section, &cursor)) != 0x7f) all_results_i32 = false;
+                    if (!try inspectWasmValueTypeIsI32(section, &cursor)) all_results_i32 = false;
                 }
                 out[index] = .{
                     .param_count = param_count,
@@ -3190,6 +3193,14 @@ pub fn Appliance(comptime World: type) type {
             }
             if (cursor != section.len) return error.InvalidFrameEncoding;
             return @intCast(count);
+        }
+
+        fn inspectWasmValueTypeIsI32(section: []const u8, cursor: *usize) !bool {
+            return switch (try wasmReadU8(section, cursor)) {
+                0x7f => true,
+                0x7e, 0x7d, 0x7c, 0x70, 0x6f, 0x7b => false,
+                else => error.InvalidFrameEncoding,
+            };
         }
 
         fn inspectWasmFunctions(section: []const u8, out: *[wasm_max_inspected_functions]u32) !usize {
@@ -3239,6 +3250,164 @@ pub fn Appliance(comptime World: type) type {
                 .max_pages = max_pages,
                 .limits = limits_by_index,
             };
+        }
+
+        fn validateIgnoredWasmSection(section_id: u8, section: []const u8) !void {
+            var cursor: usize = 0;
+            const count = try wasmReadU32(section, &cursor);
+            if (section_id == 12) {
+                if (cursor != section.len) return error.InvalidFrameEncoding;
+                return;
+            }
+            var index: u32 = 0;
+            while (index < count) : (index += 1) {
+                switch (section_id) {
+                    4 => try wasmSkipTable(section, &cursor),
+                    6 => try wasmSkipGlobal(section, &cursor),
+                    9 => try wasmSkipElement(section, &cursor),
+                    11 => try wasmSkipData(section, &cursor),
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+            if (cursor != section.len) return error.InvalidFrameEncoding;
+        }
+
+        fn wasmSkipTable(section: []const u8, cursor: *usize) !void {
+            const ref_type = try wasmReadU8(section, cursor);
+            if (ref_type != 0x70 and ref_type != 0x6f) return error.InvalidFrameEncoding;
+            _ = try wasmReadLimits(section, cursor);
+        }
+
+        fn wasmSkipGlobal(section: []const u8, cursor: *usize) !void {
+            _ = try inspectWasmValueTypeIsI32(section, cursor);
+            const mutability = try wasmReadU8(section, cursor);
+            if (mutability > 1) return error.InvalidFrameEncoding;
+            try wasmSkipConstExpr(section, cursor);
+        }
+
+        fn wasmSkipElement(section: []const u8, cursor: *usize) !void {
+            const flags = try wasmReadU32(section, cursor);
+            switch (flags) {
+                0 => {
+                    try wasmSkipConstExpr(section, cursor);
+                    try wasmSkipElementFuncIndices(section, cursor);
+                },
+                1 => {
+                    const elem_kind = try wasmReadU8(section, cursor);
+                    if (elem_kind != 0) return error.InvalidFrameEncoding;
+                    try wasmSkipElementFuncIndices(section, cursor);
+                },
+                2 => {
+                    _ = try wasmReadU32(section, cursor);
+                    try wasmSkipConstExpr(section, cursor);
+                    const elem_kind = try wasmReadU8(section, cursor);
+                    if (elem_kind != 0) return error.InvalidFrameEncoding;
+                    try wasmSkipElementFuncIndices(section, cursor);
+                },
+                3 => {
+                    const elem_kind = try wasmReadU8(section, cursor);
+                    if (elem_kind != 0) return error.InvalidFrameEncoding;
+                    try wasmSkipElementFuncIndices(section, cursor);
+                },
+                4 => {
+                    try wasmSkipConstExpr(section, cursor);
+                    try wasmSkipElementConstExprs(section, cursor);
+                },
+                5 => {
+                    try wasmSkipRefType(section, cursor);
+                    try wasmSkipElementConstExprs(section, cursor);
+                },
+                6 => {
+                    _ = try wasmReadU32(section, cursor);
+                    try wasmSkipConstExpr(section, cursor);
+                    try wasmSkipRefType(section, cursor);
+                    try wasmSkipElementConstExprs(section, cursor);
+                },
+                7 => {
+                    try wasmSkipRefType(section, cursor);
+                    try wasmSkipElementConstExprs(section, cursor);
+                },
+                else => return error.InvalidFrameEncoding,
+            }
+        }
+
+        fn wasmSkipElementFuncIndices(section: []const u8, cursor: *usize) !void {
+            const count = try wasmReadU32(section, cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) _ = try wasmReadU32(section, cursor);
+        }
+
+        fn wasmSkipElementConstExprs(section: []const u8, cursor: *usize) !void {
+            const count = try wasmReadU32(section, cursor);
+            var index: u32 = 0;
+            while (index < count) : (index += 1) try wasmSkipConstExpr(section, cursor);
+        }
+
+        fn wasmSkipRefType(section: []const u8, cursor: *usize) !void {
+            const ref_type = try wasmReadU8(section, cursor);
+            if (ref_type != 0x70 and ref_type != 0x6f) return error.InvalidFrameEncoding;
+        }
+
+        fn wasmSkipData(section: []const u8, cursor: *usize) !void {
+            const flags = try wasmReadU32(section, cursor);
+            switch (flags) {
+                0 => try wasmSkipConstExpr(section, cursor),
+                1 => {},
+                2 => {
+                    _ = try wasmReadU32(section, cursor);
+                    try wasmSkipConstExpr(section, cursor);
+                },
+                else => return error.InvalidFrameEncoding,
+            }
+            const len = try wasmReadU32(section, cursor);
+            if (len > section.len - cursor.*) return error.InvalidFrameEncoding;
+            cursor.* += len;
+        }
+
+        fn wasmSkipConstExpr(section: []const u8, cursor: *usize) !void {
+            while (true) {
+                const opcode = try wasmReadU8(section, cursor);
+                switch (opcode) {
+                    0x0b => return,
+                    0x41 => _ = try wasmReadI32Bits(section, cursor),
+                    0x42 => _ = try wasmReadI64(section, cursor),
+                    0x43 => {
+                        if (4 > section.len - cursor.*) return error.InvalidFrameEncoding;
+                        cursor.* += 4;
+                    },
+                    0x44 => {
+                        if (8 > section.len - cursor.*) return error.InvalidFrameEncoding;
+                        cursor.* += 8;
+                    },
+                    0x23 => _ = try wasmReadU32(section, cursor),
+                    0xd0 => {
+                        const ref_type = try wasmReadU8(section, cursor);
+                        if (ref_type != 0x70 and ref_type != 0x6f) return error.InvalidFrameEncoding;
+                    },
+                    0xd2 => _ = try wasmReadU32(section, cursor),
+                    else => return error.InvalidFrameEncoding,
+                }
+            }
+        }
+
+        fn wasmReadI64(bytes: []const u8, cursor: *usize) !i64 {
+            var shift: u7 = 0;
+            var result: i128 = 0;
+            var count: u8 = 0;
+            var byte: u8 = 0;
+            while (true) {
+                if (cursor.* >= bytes.len or count == 10) return error.InvalidFrameEncoding;
+                byte = bytes[cursor.*];
+                cursor.* += 1;
+                result |= @as(i128, @intCast(byte & 0x7f)) << shift;
+                count += 1;
+                if ((byte & 0x80) == 0) break;
+                shift += 7;
+            }
+            const sign_shift = shift + 7;
+            if ((byte & 0x40) != 0) result |= -(@as(i128, 1) << sign_shift);
+            if (result < std.math.minInt(i64) or result > std.math.maxInt(i64)) return error.InvalidFrameEncoding;
+            return @intCast(result);
         }
 
         fn inspectWasmExports(
@@ -4450,7 +4619,7 @@ pub fn Appliance(comptime World: type) type {
                 .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
                 .attempt_number = reply.outcome.attempt_number,
                 .status = actuationCommitStatusForHostOutcome(reply.outcome.status),
-                .fresh_called = status == .responded or status == .failed,
+                .fresh_called = status != .cancelled,
             });
             try commit_value.validate();
             const response = World.Actuation.Response.init(.{
@@ -5180,6 +5349,14 @@ pub fn Appliance(comptime World: type) type {
                 .blocker_count = output.turn_receipt.blocker_count,
                 .warning_count = output.turn_receipt.warning_count,
             });
+            const neutral_pending_append = if (output.checkpoint.pending_archive_append_batch_fingerprint != output.archive_append_batch_fingerprint)
+                output.checkpoint.pending_archive_append_batch_fingerprint
+            else
+                null;
+            const neutral_pending_cursor = if (neutral_pending_append != null)
+                output.checkpoint.pending_archive_resulting_cursor
+            else
+                null;
             const neutral_checkpoint = Checkpoint.init(.{
                 .manifest_fingerprint = output.checkpoint.manifest_fingerprint,
                 .turn_sequence_number = output.checkpoint.turn_sequence_number,
@@ -5189,8 +5366,8 @@ pub fn Appliance(comptime World: type) type {
                 .latest_archive_moment_fingerprint = output.checkpoint.latest_archive_moment_fingerprint,
                 .latest_archive_seal_fingerprint = output.checkpoint.latest_archive_seal_fingerprint,
                 .latest_chronicle_cursor_fingerprint = output.checkpoint.latest_chronicle_cursor_fingerprint,
-                .pending_archive_append_batch_fingerprint = null,
-                .pending_archive_resulting_cursor = null,
+                .pending_archive_append_batch_fingerprint = neutral_pending_append,
+                .pending_archive_resulting_cursor = neutral_pending_cursor,
                 .latest_archive_cursor = output.checkpoint.latest_archive_cursor,
                 .core_state = output.checkpoint.core_state,
                 .previous_turn_receipt_fingerprint = if (output.checkpoint.previous_turn_receipt_fingerprint == output.turn_receipt.receipt_fingerprint)

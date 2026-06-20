@@ -123,8 +123,6 @@ export fn world_alloc(len: usize) usize {
     return ptr;
 }
 
-export fn world_free(_: usize, _: usize) void {}
-
 fn guestMemoryRange(ptr: usize, len: usize) ?[]u8 {
     const base = @intFromPtr(&memory_buf[0]);
     if (ptr < base) return null;

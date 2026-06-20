@@ -234,6 +234,13 @@ const ApplianceWasmBuildOptions = struct {
     data_section_before_code: bool = false,
     helper_exports: HelperExports = .none,
     invalid_required_body_index: ?usize = null,
+    invalid_unused_type: bool = false,
+    malformed_global_section: bool = false,
+    overlong_global_i64_const: bool = false,
+    explicit_table_element_section: bool = false,
+    ref_func_element_section: bool = false,
+    multi_segment_data_section: bool = false,
+    custom_section: bool = false,
 
     const HelperExports = enum {
         none,
@@ -316,14 +323,27 @@ fn buildMinimalApplianceWasmWithOptions(
     errdefer module.deinit(std.testing.allocator);
     try module.appendSlice(std.testing.allocator, "\x00asm");
     try module.appendSlice(std.testing.allocator, &.{ 1, 0, 0, 0 });
+    if (options.custom_section) {
+        var custom: std.ArrayList(u8) = .empty;
+        defer custom.deinit(std.testing.allocator);
+        try appendApplianceWasmName(&custom, "name");
+        try custom.appendSlice(std.testing.allocator, "appliance");
+        try appendApplianceWasmSection(&module, 0, custom.items);
+    }
 
     var types: std.ArrayList(u8) = .empty;
     defer types.deinit(std.testing.allocator);
-    try appendApplianceWasmU32(&types, 4);
+    try appendApplianceWasmU32(&types, if (options.invalid_unused_type) 5 else 4);
     try appendApplianceWasmFuncType(&types, 0, 1);
     try appendApplianceWasmFuncType(&types, 2, 1);
     try appendApplianceWasmFuncType(&types, 1, 1);
     try appendApplianceWasmFuncType(&types, 2, 0);
+    if (options.invalid_unused_type) {
+        try types.append(std.testing.allocator, 0x60);
+        try appendApplianceWasmU32(&types, 1);
+        try types.append(std.testing.allocator, 0xff);
+        try appendApplianceWasmU32(&types, 0);
+    }
     try appendApplianceWasmSection(&module, 1, types.items);
 
     var functions: std.ArrayList(u8) = .empty;
@@ -346,6 +366,16 @@ fn buildMinimalApplianceWasmWithOptions(
     }
     try appendApplianceWasmSection(&module, 3, functions.items);
 
+    if (options.explicit_table_element_section) {
+        var tables: std.ArrayList(u8) = .empty;
+        defer tables.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&tables, 1);
+        try tables.append(std.testing.allocator, 0x70);
+        try tables.append(std.testing.allocator, 0);
+        try appendApplianceWasmU32(&tables, 1);
+        try appendApplianceWasmSection(&module, 4, tables.items);
+    }
+
     var memory: std.ArrayList(u8) = .empty;
     defer memory.deinit(std.testing.allocator);
     try appendApplianceWasmU32(&memory, if (second_memory_initial_pages == null) 1 else 2);
@@ -359,6 +389,23 @@ fn buildMinimalApplianceWasmWithOptions(
     }
     try appendApplianceWasmSection(&module, 5, memory.items);
     if (options.duplicate_memory_section) try appendApplianceWasmSection(&module, 5, memory.items);
+
+    if (options.malformed_global_section or options.overlong_global_i64_const) {
+        var globals: std.ArrayList(u8) = .empty;
+        defer globals.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&globals, 1);
+        try globals.append(std.testing.allocator, if (options.overlong_global_i64_const) 0x7e else 0x7f);
+        try globals.append(std.testing.allocator, 0);
+        if (options.overlong_global_i64_const) {
+            try globals.append(std.testing.allocator, 0x42);
+            try globals.appendNTimes(std.testing.allocator, 0x80, 11);
+            try globals.append(std.testing.allocator, 0x00);
+        } else {
+            try globals.append(std.testing.allocator, 0x41);
+            try globals.append(std.testing.allocator, 0);
+        }
+        try appendApplianceWasmSection(&module, 6, globals.items);
+    }
 
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(std.testing.allocator);
@@ -401,11 +448,41 @@ fn buildMinimalApplianceWasmWithOptions(
         try appendApplianceWasmSection(&module, 8, start.items);
     }
 
+    if (options.explicit_table_element_section or options.ref_func_element_section) {
+        var elements: std.ArrayList(u8) = .empty;
+        defer elements.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&elements, 1);
+        if (options.ref_func_element_section) {
+            try appendApplianceWasmU32(&elements, 5);
+            try elements.append(std.testing.allocator, 0x70);
+            try appendApplianceWasmU32(&elements, 1);
+            try elements.append(std.testing.allocator, 0xd2);
+            try appendApplianceWasmU32(&elements, 0);
+            try elements.append(std.testing.allocator, 0x0b);
+        } else {
+            try appendApplianceWasmU32(&elements, 2);
+            try appendApplianceWasmU32(&elements, 0);
+            try elements.append(std.testing.allocator, 0x41);
+            try elements.append(std.testing.allocator, 0);
+            try elements.append(std.testing.allocator, 0x0b);
+            try elements.append(std.testing.allocator, 0);
+            try appendApplianceWasmU32(&elements, 0);
+        }
+        try appendApplianceWasmSection(&module, 9, elements.items);
+    }
+
     if (options.data_section_before_code) {
         var data: std.ArrayList(u8) = .empty;
         defer data.deinit(std.testing.allocator);
         try appendApplianceWasmU32(&data, 0);
         try appendApplianceWasmSection(&module, 11, data.items);
+    }
+
+    if (options.multi_segment_data_section) {
+        var data_count: std.ArrayList(u8) = .empty;
+        defer data_count.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&data_count, 2);
+        try appendApplianceWasmSection(&module, 12, data_count.items);
     }
 
     var code: std.ArrayList(u8) = .empty;
@@ -438,6 +515,17 @@ fn buildMinimalApplianceWasmWithOptions(
         try code.appendSlice(std.testing.allocator, body.items);
     }
     try appendApplianceWasmSection(&module, 10, code.items);
+
+    if (options.multi_segment_data_section) {
+        var data: std.ArrayList(u8) = .empty;
+        defer data.deinit(std.testing.allocator);
+        try appendApplianceWasmU32(&data, 2);
+        try appendApplianceWasmU32(&data, 1);
+        try appendApplianceWasmU32(&data, 0);
+        try appendApplianceWasmU32(&data, 1);
+        try appendApplianceWasmU32(&data, 0);
+        try appendApplianceWasmSection(&module, 11, data.items);
+    }
     return module;
 }
 
@@ -693,6 +781,101 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer data_before_code.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(data_before_code.items));
+
+    var invalid_unused_type = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_unused_type = true },
+    );
+    defer invalid_unused_type.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_unused_type.items));
+
+    var malformed_global_section = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .malformed_global_section = true },
+    );
+    defer malformed_global_section.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(malformed_global_section.items));
+
+    var overlong_global_i64_const = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .overlong_global_i64_const = true },
+    );
+    defer overlong_global_i64_const.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(overlong_global_i64_const.items));
+
+    var explicit_table_element_section = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .explicit_table_element_section = true },
+    );
+    defer explicit_table_element_section.deinit(std.testing.allocator);
+    const explicit_table_element_inspection = try world.Appliance.Abi.inspectWasm(explicit_table_element_section.items);
+    try std.testing.expect(explicit_table_element_inspection.passed());
+
+    var ref_func_element_section = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .ref_func_element_section = true },
+    );
+    defer ref_func_element_section.deinit(std.testing.allocator);
+    const ref_func_element_inspection = try world.Appliance.Abi.inspectWasm(ref_func_element_section.items);
+    try std.testing.expect(ref_func_element_inspection.passed());
+
+    var multi_segment_data_section = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .multi_segment_data_section = true },
+    );
+    defer multi_segment_data_section.deinit(std.testing.allocator);
+    const multi_segment_data_inspection = try world.Appliance.Abi.inspectWasm(multi_segment_data_section.items);
+    try std.testing.expect(multi_segment_data_inspection.passed());
+
+    var custom_section = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .custom_section = true },
+    );
+    defer custom_section.deinit(std.testing.allocator);
+    const custom_section_inspection = try world.Appliance.Abi.inspectWasm(custom_section.items);
+    try std.testing.expect(custom_section_inspection.passed());
 }
 
 test "appliance profile presets are strict and identity-bearing" {
@@ -1841,6 +2024,106 @@ test "appliance Core failed HostReply produces failed turn" {
     try std.testing.expectError(error.StaleTurn, core.submit(terminal_again_bytes));
 }
 
+test "appliance Core rejected HostReply preserves fresh call receipt evidence" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer core.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try core.submit(boot_bytes);
+    try core.executeTurn();
+    const outstanding = core.outstanding_host_request orelse return error.UnknownRequest;
+    const prior_receipt = core.previous_turn_receipt_fingerprint.?;
+
+    const rejected_reply = applianceHostReplyWithStatusFor(outstanding, .rejected);
+    const rejected_continue = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .host_replies = &.{rejected_reply},
+    });
+    const rejected_continue_bytes = try rejected_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(rejected_continue_bytes);
+    try core.submit(rejected_continue_bytes);
+    try core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.failed, core.state);
+    var output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.blocked, output.status);
+    try std.testing.expectEqual(@as(usize, 1), output.finalized_actuation_receipt_fingerprints.len);
+
+    const commit_value = world.Actuation.Commit.init(.{
+        .intent_fingerprint = outstanding.intent_fingerprint,
+        .decision_fingerprint = outstanding.decision_fingerprint,
+        .envelope_fingerprint = outstanding.envelope_fingerprint,
+        .idempotency_key_fingerprint = outstanding.idempotency_key_fingerprint,
+        .attempt_number = rejected_reply.outcome.attempt_number,
+        .status = .rejected,
+        .fresh_called = true,
+    });
+    try commit_value.validate();
+    const response = world.Actuation.Response.init(.{
+        .intent_fingerprint = outstanding.intent_fingerprint,
+        .commit_fingerprint = commit_value.commit_fingerprint,
+        .actuator_ref_fingerprint = outstanding.actuator_ref_fingerprint,
+        .world_port_id = outstanding.world_port_id,
+        .request_fingerprint = outstanding.request_fingerprint,
+        .status = .rejected,
+        .response_kind = .@"resume",
+    });
+    const receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = outstanding.intent_fingerprint,
+        .envelope_fingerprint = outstanding.envelope_fingerprint,
+        .decision_fingerprint = outstanding.decision_fingerprint,
+        .commit_fingerprint = commit_value.commit_fingerprint,
+        .response_fingerprint = response.response_fingerprint,
+        .response_kind = response.response_kind,
+        .frame_response_fingerprint = response.frame_response_fingerprint,
+        .response_value_image_fingerprint = response.value_image_fingerprint,
+        .recorded_response_fingerprint = response.recorded_response_fingerprint,
+        .actuator_ref_fingerprint = outstanding.actuator_ref_fingerprint,
+        .idempotency_key_fingerprint = outstanding.idempotency_key_fingerprint,
+        .request_fingerprint = outstanding.request_fingerprint,
+        .target_ref_fingerprint = outstanding.target_ref_fingerprint,
+        .world_surface_fingerprint = outstanding.world_surface_fingerprint,
+        .world_port_id = outstanding.world_port_id,
+        .class = outstanding.actuation_class,
+        .mode = .fresh,
+        .fresh_called = true,
+        .rejected = true,
+        .attempt_number = commit_value.attempt_number,
+    });
+    const finalized = world.Actuation.Finalized.init(.{
+        .commit_value = commit_value,
+        .response = response,
+        .receipt = receipt,
+    });
+    try finalized.validate();
+    try std.testing.expectEqual(finalized.receipt.receipt_fingerprint, output.finalized_actuation_receipt_fingerprints[0]);
+}
+
 test "appliance Core restore clears stale failed status for checkpoint continuation" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
@@ -2913,9 +3196,10 @@ test "appliance Core warns when non-strict archive append advances unacknowledge
     try std.testing.expectEqual(@as(usize, 1), warning_output.warning_count);
     try std.testing.expectEqual(@as(usize, 1), warning_output.quiescence.warning_count);
     try std.testing.expectEqual(@as(usize, 1), warning_output.turn_receipt.warning_count);
-    try std.testing.expectEqual(@as(?u64, first_pending_archive), unacknowledged.pending_archive_append_batch_fingerprint);
-    try std.testing.expectEqual(@as(?u64, first_pending_archive), warning_output.archive_append_batch_fingerprint);
-    try std.testing.expectEqual(@as(?u64, first_pending_archive), warning_output.checkpoint.pending_archive_append_batch_fingerprint);
+    try std.testing.expect(unacknowledged.pending_archive_append_batch_fingerprint != null);
+    try std.testing.expect(unacknowledged.pending_archive_append_batch_fingerprint.? != first_pending_archive);
+    try std.testing.expectEqual(unacknowledged.pending_archive_append_batch_fingerprint, warning_output.archive_append_batch_fingerprint);
+    try std.testing.expectEqual(unacknowledged.pending_archive_append_batch_fingerprint, warning_output.checkpoint.pending_archive_append_batch_fingerprint);
 
     const late_ack = try applianceRetentionAckForPendingCore(unacknowledged, "late-retained");
     const late_ack_continue = world.Appliance.Command.init(.{
@@ -3780,6 +4064,86 @@ test "appliance continuity typed payload validation accepts advertised appliance
     });
     try world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, reconstruction_with_deps);
 
+    const OtherAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .metadata = "other-reconstruction-manifest",
+    });
+    const other_manifest = OtherAppliance.manifest();
+    const other_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = other_manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .command_fingerprint = 0xD340,
+        .resulting_capsule_fingerprint = 0xD341,
+        .root_result_fingerprint = 0xD342,
+        .status = .completed,
+    });
+    const other_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = other_manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = 0xD341,
+        .core_state = .completed,
+        .previous_turn_receipt_fingerprint = other_receipt.receipt_fingerprint,
+    });
+    const other_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = other_manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .source_state_fingerprint = 0xD343,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 1, other_receipt.receipt_fingerprint),
+        .quiescence = world.Appliance.QuiescenceReport.init(.{
+            .quiescent = true,
+            .completed_run_count = 1,
+        }),
+        .status = .completed,
+        .root_result_fingerprint = 0xD342,
+        .checkpoint = other_checkpoint,
+        .turn_receipt = other_receipt,
+    });
+    const other_output_payload = try other_output.encode(std.testing.allocator);
+    defer std.testing.allocator.free(other_output_payload);
+    const mismatched_reconstruction = world.Appliance.ReconstructionReport.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .resident_turn_output_fingerprint = other_output.output_fingerprint,
+        .reconstructed_turn_output_fingerprint = other_output.output_fingerprint,
+    });
+    const mismatched_reconstruction_payload = try world.Continuity.encodePortableEvidence(
+        world.Appliance.ReconstructionReport,
+        std.testing.allocator,
+        mismatched_reconstruction,
+    );
+    defer std.testing.allocator.free(mismatched_reconstruction_payload);
+    const mismatched_reconstruction_deps = [_]world.Continuity.ObjectRef{
+        world.Continuity.ObjectRef.init(.{
+            .kind = .appliance_turn_output,
+            .object_format_version = world.Continuity.ObjectKind.appliance_turn_output.defaultFormatVersion(),
+            .object_fingerprint = other_output.output_fingerprint,
+            .byte_len = 0,
+        }),
+    };
+    const mismatched_reconstruction_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_reconstruction_report,
+        .object_format_version = world.world_appliance_reconstruction_report_fingerprint_version,
+        .dependency_refs = &mismatched_reconstruction_deps,
+        .payload_bytes = mismatched_reconstruction_payload,
+    });
+    const other_output_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_output,
+        .object_format_version = world.world_appliance_turn_output_format_version,
+        .payload_bytes = other_output_payload,
+    });
+    const mismatched_bundle = [_]world.Continuity.ObjectEnvelope{
+        other_output_envelope,
+        mismatched_reconstruction_envelope,
+    };
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        world.Continuity.validateObjectEnvelopeDependencyPayloads(
+            std.testing.allocator,
+            &mismatched_bundle,
+            mismatched_reconstruction_envelope,
+        ),
+    );
+
     const conformance = world.Appliance.ConformanceReport.init(.{
         .vector_fingerprint = 0xD308,
         .manifest_fingerprint = manifest.manifest_fingerprint,
@@ -4403,6 +4767,47 @@ test "appliance archive plan commits turn evidence through Archive owner" {
         try world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, object);
     }
     try world.Continuity.validateObjectEnvelopeDependencyPayloads(std.testing.allocator, plan.objects, plan.objects[2]);
+
+    const pending_cursor = world.Continuity.Chronicle.Cursor.initial();
+    const pending_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = capsule_fingerprint,
+        .pending_archive_append_batch_fingerprint = 0xA044,
+        .pending_archive_resulting_cursor = pending_cursor,
+        .core_state = .completed,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+    });
+    const pending_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .source_state_fingerprint = 0xA003,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 1, receipt.receipt_fingerprint),
+        .quiescence = quiescence,
+        .status = .completed,
+        .root_result_fingerprint = root_result_fingerprint,
+        .checkpoint = pending_checkpoint,
+        .turn_receipt = receipt,
+    });
+    try pending_output.validate(manifest.manifest_fingerprint, capacity);
+    var pending_plan = try world.Appliance.ArchivePlan.initForTurnOutput(
+        std.testing.allocator,
+        plan.resulting_cursor,
+        pending_output,
+        capacity,
+    );
+    defer pending_plan.deinit();
+    var archived_pending_output = try world.Appliance.TurnOutput.decodeArchivePayload(
+        std.testing.allocator,
+        pending_plan.objects[2].payload_bytes,
+    );
+    defer archived_pending_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u64, 0xA044), archived_pending_output.checkpoint.pending_archive_append_batch_fingerprint);
+    try std.testing.expect(archived_pending_output.checkpoint.pending_archive_resulting_cursor != null);
+    try std.testing.expectEqual(
+        pending_cursor.cursor_fingerprint,
+        archived_pending_output.checkpoint.pending_archive_resulting_cursor.?.cursor_fingerprint,
+    );
 
     const wrong_receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
