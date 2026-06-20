@@ -234,6 +234,9 @@ const ApplianceWasmBuildOptions = struct {
     data_section_before_code: bool = false,
     helper_exports: HelperExports = .none,
     invalid_required_body_index: ?usize = null,
+    missing_required_result_index: ?usize = null,
+    invalid_extra_export_kind: bool = false,
+    invalid_extra_export_function_index: bool = false,
     invalid_unused_type: bool = false,
     malformed_global_section: bool = false,
     overlong_global_i64_const: bool = false,
@@ -319,6 +322,10 @@ fn buildMinimalApplianceWasmWithOptions(
         .valid, .malformed_alloc => 2,
     };
     const function_count = required_len + metadata_len + helper_count;
+    const extra_export_count: usize =
+        @as(usize, if (options.duplicate_memory_export) 1 else 0) +
+        @as(usize, if (options.invalid_extra_export_kind) 1 else 0) +
+        @as(usize, if (options.invalid_extra_export_function_index) 1 else 0);
     var module: std.ArrayList(u8) = .empty;
     errdefer module.deinit(std.testing.allocator);
     try module.appendSlice(std.testing.allocator, "\x00asm");
@@ -409,7 +416,7 @@ fn buildMinimalApplianceWasmWithOptions(
 
     var exports: std.ArrayList(u8) = .empty;
     defer exports.deinit(std.testing.allocator);
-    try appendApplianceWasmU32(&exports, @intCast(function_count + 1 + @as(usize, if (options.duplicate_memory_export) 1 else 0)));
+    try appendApplianceWasmU32(&exports, @intCast(function_count + 1 + extra_export_count));
     for (world.Appliance.Abi.required_exports, 0..) |name, index| {
         try appendApplianceWasmName(&exports, name);
         try exports.append(std.testing.allocator, 0);
@@ -427,6 +434,16 @@ fn buildMinimalApplianceWasmWithOptions(
         try appendApplianceWasmName(&exports, "memory");
         try exports.append(std.testing.allocator, 2);
         try appendApplianceWasmU32(&exports, memory_export_index);
+    }
+    if (options.invalid_extra_export_kind) {
+        try appendApplianceWasmName(&exports, "bad_kind");
+        try exports.append(std.testing.allocator, 99);
+        try appendApplianceWasmU32(&exports, 0);
+    }
+    if (options.invalid_extra_export_function_index) {
+        try appendApplianceWasmName(&exports, "bad_function_index");
+        try exports.append(std.testing.allocator, 0);
+        try appendApplianceWasmU32(&exports, @intCast(function_count + 16));
     }
     switch (options.helper_exports) {
         .none => {},
@@ -496,6 +513,13 @@ fn buildMinimalApplianceWasmWithOptions(
             try appendApplianceWasmU32(&body, 1);
             try appendApplianceWasmU32(&body, 1);
             try body.append(std.testing.allocator, 0xff);
+            try body.append(std.testing.allocator, 0x0b);
+            try appendApplianceWasmU32(&code, @intCast(body.items.len));
+            try code.appendSlice(std.testing.allocator, body.items);
+            continue;
+        }
+        if (options.missing_required_result_index != null and index == options.missing_required_result_index.?) {
+            try appendApplianceWasmU32(&body, 0);
             try body.append(std.testing.allocator, 0x0b);
             try appendApplianceWasmU32(&code, @intCast(body.items.len));
             try code.appendSlice(std.testing.allocator, body.items);
@@ -742,6 +766,45 @@ test "appliance wasm inspector rejects malformed exports and required bodies" {
     );
     defer invalid_required_body.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_required_body.items));
+
+    var missing_required_result = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .missing_required_result_index = 1 },
+    );
+    defer missing_required_result.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(missing_required_result.items));
+
+    var invalid_extra_export_kind = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_extra_export_kind = true },
+    );
+    defer invalid_extra_export_kind.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_extra_export_kind.items));
+
+    var invalid_extra_export_function_index = try buildMinimalApplianceWasmWithOptions(
+        world.Appliance.Abi.version,
+        metadata_values,
+        65,
+        65,
+        null,
+        null,
+        0,
+        .{ .invalid_extra_export_function_index = true },
+    );
+    defer invalid_extra_export_function_index.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Abi.inspectWasm(invalid_extra_export_function_index.items));
 
     var duplicate_memory_section = try buildMinimalApplianceWasmWithOptions(
         world.Appliance.Abi.version,
