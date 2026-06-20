@@ -2235,6 +2235,7 @@ test "appliance Core submit validates command before mutating state" {
         .profile = world.Appliance.Profile.wasm_small,
         .capacity = world.Appliance.Capacity.tiny_one_port,
     });
+    try std.testing.expect(!@hasDecl(world.Appliance.Core, "init"));
     const manifest = StrictAppliance.manifest();
     var core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -5791,6 +5792,47 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     try std.testing.expectEqual(@as(usize, 2), plan.objects[2].dependency_refs.len);
     try std.testing.expect(plan.objects[2].dependency_refs[0].eql(plan.object_refs[0]));
     try std.testing.expect(plan.objects[2].dependency_refs[1].eql(plan.object_refs[1]));
+
+    const finalized_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .command_fingerprint = 0xA006,
+        .applied_host_reply_fingerprints = &.{0xA007},
+        .resulting_capsule_fingerprint = 0xA008,
+        .root_result_fingerprint = root_result_fingerprint,
+        .status = .completed,
+    });
+    const finalized_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .capsule_fingerprint = finalized_receipt.resulting_capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = finalized_receipt.receipt_fingerprint,
+    });
+    const finalized_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .source_state_fingerprint = 0xA009,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 2, finalized_receipt.receipt_fingerprint),
+        .quiescence = quiescence,
+        .status = .completed,
+        .finalized_actuation_receipt_fingerprints = &.{0xA00A},
+        .root_result_fingerprint = root_result_fingerprint,
+        .checkpoint = finalized_checkpoint,
+        .turn_receipt = finalized_receipt,
+    });
+    try finalized_output.validate(manifest.manifest_fingerprint, capacity);
+    var finalized_archive = try world.Archive.Memory.open(std.testing.allocator, .{});
+    defer finalized_archive.deinit();
+    var finalized_plan = try world.Appliance.ArchivePlan.initForTurnOutput(
+        std.testing.allocator,
+        finalized_archive.image.latestCursor(),
+        finalized_output,
+        capacity,
+    );
+    defer finalized_plan.deinit();
+    try std.testing.expectEqual(@as(usize, 2), finalized_plan.objects[2].dependency_refs.len);
+    _ = try finalized_archive.appendBatch(finalized_plan.append_batch);
+
     for (plan.objects) |object| {
         try world.Continuity.validateObjectEnvelopeTypedPayload(std.testing.allocator, object);
         try world.Continuity.validateObjectEnvelopeRequiredDependencies(std.testing.allocator, object);

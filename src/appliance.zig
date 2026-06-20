@@ -1781,18 +1781,10 @@ pub fn Appliance(comptime World: type) type {
                 refs[0] = objects[0].objectRef();
                 refs[1] = objects[1].objectRef();
 
-                const output_deps = try allocator.alloc(World.Continuity.ObjectRef, 2 + archive_output.finalized_actuation_receipt_fingerprints.len);
+                const output_deps = try allocator.alloc(World.Continuity.ObjectRef, 2);
                 defer allocator.free(output_deps);
                 output_deps[0] = refs[0];
                 output_deps[1] = refs[1];
-                for (archive_output.finalized_actuation_receipt_fingerprints, 0..) |fingerprint, index| {
-                    output_deps[2 + index] = World.Continuity.ObjectRef.init(.{
-                        .kind = .actuation_receipt,
-                        .object_format_version = World.Continuity.ObjectKind.actuation_receipt.defaultFormatVersion(),
-                        .object_fingerprint = fingerprint,
-                        .byte_len = 0,
-                    });
-                }
                 objects[2] = try cloneEnvelope(allocator, World.Continuity.ObjectEnvelope.init(.{
                     .kind = .appliance_turn_output,
                     .dependency_refs = output_deps,
@@ -2165,10 +2157,6 @@ pub fn Appliance(comptime World: type) type {
                     self.snapshot_metadata_owned = false;
                 }
             };
-
-            pub fn init(manifest: Manifest, memory_plan: MemoryPlan) @This() {
-                return .{ .manifest_value = manifest, .memory_plan_value = memory_plan };
-            }
 
             pub fn initWithCapacity(allocator: std.mem.Allocator, manifest: Manifest, memory_plan: MemoryPlan, capacity: Capacity) @This() {
                 return .{
@@ -5939,12 +5927,20 @@ pub fn Appliance(comptime World: type) type {
         }
 
         fn archiveNeutralTurnOutput(output: TurnOutput) TurnOutput {
+            const neutral_applied_host_reply_fingerprints: []const u64 = if (output.finalized_actuation_receipt_fingerprints.len == 0)
+                output.turn_receipt.applied_host_reply_fingerprints
+            else
+                &.{};
+            const neutral_finalized_actuation_receipt_fingerprints: []const u64 = if (output.finalized_actuation_receipt_fingerprints.len == 0)
+                output.finalized_actuation_receipt_fingerprints
+            else
+                &.{};
             const neutral_receipt = TurnReceipt.init(.{
                 .manifest_fingerprint = output.turn_receipt.manifest_fingerprint,
                 .turn_sequence_number = output.turn_receipt.turn_sequence_number,
                 .command_fingerprint = output.turn_receipt.command_fingerprint,
                 .prior_checkpoint_fingerprint = output.turn_receipt.prior_checkpoint_fingerprint,
-                .applied_host_reply_fingerprints = output.turn_receipt.applied_host_reply_fingerprints,
+                .applied_host_reply_fingerprints = neutral_applied_host_reply_fingerprints,
                 .emitted_host_request_fingerprints = output.turn_receipt.emitted_host_request_fingerprints,
                 .source_capsule_fingerprint = output.turn_receipt.source_capsule_fingerprint,
                 .resulting_capsule_fingerprint = output.turn_receipt.resulting_capsule_fingerprint,
@@ -6001,7 +5997,7 @@ pub fn Appliance(comptime World: type) type {
                 .quiescence = output.quiescence,
                 .status = output.status,
                 .host_requests = output.host_requests,
-                .finalized_actuation_receipt_fingerprints = output.finalized_actuation_receipt_fingerprints,
+                .finalized_actuation_receipt_fingerprints = neutral_finalized_actuation_receipt_fingerprints,
                 .root_result_fingerprint = output.root_result_fingerprint,
                 .run_receipt_fingerprint = output.run_receipt_fingerprint,
                 .archive_append_batch_fingerprint = null,
