@@ -1697,6 +1697,17 @@ test "actuation membrane rejects mismatched envelope and descriptor bindings" {
     try std.testing.expect(!audit_execution.receipt.fresh_called);
     try std.testing.expect(!audit_execution.receipt.replayed);
     try std.testing.expect(!audit_execution.receipt.verified);
+    try std.testing.expectError(error.InvalidMode, world.Actuation.Membrane.prepareHost(.{
+        .policy = world.Actuation.Policy.audit_only,
+        .intent = audit_execution_intent,
+        .envelope = world.Actuation.Envelope.init(.{
+            .intent_fingerprint = audit_execution_intent.intent_fingerprint,
+            .idempotency_key = audit_key,
+        }),
+        .descriptor = audit_descriptor,
+        .target_ref_fingerprint = 0x4201,
+        .world_surface_fingerprint = 0x4202,
+    }));
 
     const wrong_request_envelope = world.Actuation.Envelope.init(.{
         .intent_fingerprint = intent.intent_fingerprint,
@@ -3361,6 +3372,13 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!verify_exec.fresh_called);
     try std.testing.expect(verify_exec.verify_report != null);
     try std.testing.expect(!verify_exec.verify_report.?.matched);
+    const verify_finalized = world.Actuation.Finalized.init(.{
+        .commit_value = verify_exec.commit_value,
+        .response = verify_exec.response,
+        .receipt = verify_exec.receipt,
+        .verify_report = verify_exec.verify_report,
+    });
+    try verify_finalized.validate();
     var missing_verify_report = verify_exec;
     missing_verify_report.verify_report = null;
     try std.testing.expectError(error.InvalidFrameEncoding, missing_verify_report.validate());
@@ -3483,6 +3501,163 @@ test "actuation membrane executes interfaces with receipt and replay guards" {
     try std.testing.expect(!denied_verify.decision.approved);
     try std.testing.expect(!denied_verify.receipt.replayed);
     try std.testing.expect(!denied_verify.receipt.verified);
+}
+
+test "actuation host preparation defers response-status supervision until outcome" {
+    const ref = world.Actuation.Ref.init(.{
+        .kind = .tool_like,
+        .class = .idempotent_mutation,
+        .supported_response_statuses = .all,
+        .label = "host.prepare.status.defer",
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = 0x7101,
+        .target_ref_fingerprint = 0x7102,
+        .world_port_id = 0,
+        .allowed_response_kinds = .all,
+    });
+    const key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x7102,
+        .world_surface_fingerprint = 0x7101,
+        .world_port_id = 0,
+        .request_fingerprint = 0x7103,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    const rules = [_]world.PortRule{world.PortRule.init(.{
+        .world_surface_fingerprint = 0x7101,
+        .world_port_id = 0,
+        .allow_pending = false,
+    })};
+    const permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = 0x7102,
+        .world_surface_fingerprint = 0x7101,
+        .target_certificate_fingerprint = 0x7108,
+        .environment_certificate_fingerprint = 0x7109,
+        .binding_plan_fingerprint = 0x710a,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_actuation = true,
+            .allow_fresh_actuation = true,
+            .require_idempotency_keys = true,
+            .max_actuation_calls = null,
+            .max_pending_actuations = 0,
+        }),
+        .port_rules = &rules,
+    });
+    const intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x7102,
+        .world_surface_fingerprint = 0x7101,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x7103,
+        .encoded_frame_request_fingerprint = 0x7103,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .idempotent_mutation,
+        .requested_mode = .fresh,
+        .run_permit_fingerprint = permit.permit_fingerprint,
+        .environment_certificate_fingerprint = permit.environment_certificate_fingerprint,
+    });
+    const envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = intent.encoded_frame_request_fingerprint,
+        .idempotency_key = key,
+    });
+
+    const prepared = try world.Actuation.Membrane.prepareHost(.{
+        .policy = world.Actuation.Policy.fixture_test,
+        .intent = intent,
+        .envelope = envelope,
+        .descriptor = descriptor,
+        .run_permit = permit,
+        .explicit_mutation_approval = true,
+        .target_ref_fingerprint = 0x7102,
+        .world_surface_fingerprint = 0x7101,
+    });
+    try prepared.validate();
+
+    const pending_outcome = world.Actuation.HostOutcomeInput{
+        .host_request_fingerprint = intent.frame_request_fingerprint,
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .status = .pending,
+    };
+    try std.testing.expectError(error.SupervisionDenied, world.Actuation.Membrane.finalizeHost(prepared, pending_outcome, .{
+        .run_permit = permit,
+    }));
+}
+
+test "actuation host preparation allows strict fresh before terminal outcome" {
+    const ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .supported_response_statuses = .terminal,
+        .label = "host.prepare.strict.fresh",
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ref,
+        .world_surface_fingerprint = 0x7201,
+        .target_ref_fingerprint = 0x7202,
+        .world_port_id = 0,
+        .allowed_response_kinds = .all,
+    });
+    const key = world.Actuation.IdempotencyKey.init(.{
+        .target_ref_fingerprint = 0x7202,
+        .world_surface_fingerprint = 0x7201,
+        .world_port_id = 0,
+        .request_fingerprint = 0x7203,
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+    });
+    const intent = world.Actuation.Intent.init(.{
+        .actuator_ref_fingerprint = ref.ref_fingerprint,
+        .descriptor_fingerprint = descriptor.descriptor_fingerprint,
+        .target_ref_fingerprint = 0x7202,
+        .world_surface_fingerprint = 0x7201,
+        .world_port_id = 0,
+        .frame_request_fingerprint = 0x7203,
+        .encoded_frame_request_fingerprint = 0x7203,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .class = .deterministic_fixture,
+        .requested_mode = .fresh,
+    });
+    const envelope = world.Actuation.Envelope.init(.{
+        .intent_fingerprint = intent.intent_fingerprint,
+        .encoded_frame_request_fingerprint = intent.encoded_frame_request_fingerprint,
+        .idempotency_key = key,
+    });
+
+    const prepared = try world.Actuation.Membrane.prepareHost(.{
+        .policy = world.Actuation.Policy.strict_fresh,
+        .intent = intent,
+        .envelope = envelope,
+        .descriptor = descriptor,
+        .target_ref_fingerprint = 0x7202,
+        .world_surface_fingerprint = 0x7201,
+    });
+    try prepared.validate();
+
+    const terminal_outcome = world.Actuation.HostOutcomeInput{
+        .host_request_fingerprint = intent.frame_request_fingerprint,
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .status = .responded,
+        .frame_response_fingerprint = 0x7204,
+    };
+    const finalized = try world.Actuation.Membrane.finalizeHost(prepared, terminal_outcome, .{});
+    try finalized.validate();
+
+    const pending_outcome = world.Actuation.HostOutcomeInput{
+        .host_request_fingerprint = intent.frame_request_fingerprint,
+        .intent_fingerprint = intent.intent_fingerprint,
+        .envelope_fingerprint = envelope.envelope_fingerprint,
+        .idempotency_key_fingerprint = key.key_fingerprint,
+        .status = .pending,
+    };
+    try std.testing.expectError(error.PortRuleDenied, world.Actuation.Membrane.finalizeHost(prepared, pending_outcome, .{}));
 }
 
 test "actuation environment preflight and supervision ledger account host effects" {
