@@ -12383,10 +12383,20 @@ pub const Runspace = struct {
         try route.validate();
         if (route.kind != .loaded_module_export) return error.UnsupportedMapping;
         const provider_module = executableProviderModuleForRoute(image, route) orelse return error.HandoffTargetMismatch;
+        const next_run_id_before = self.next_run_id;
+        const slot_count_before = self.slots.items.len;
+        const event_count_before = self.events.items.len;
+        const mailbox_count_before = self.mailbox.pending.items.len;
+        const next_mailbox_id_before = self.next_mailbox_id;
+        const next_event_index_before = self.next_event_index;
+        var routed = false;
+        errdefer if (!routed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
         const provider_handle = try self.installExecutableProvider(image, provider_module.module_id, .{
             .parent_run_handle_fingerprint = pending.handle.handle_fingerprint,
         });
-        return self.routePendingToProviderRun(mailbox_id, plan, provider_handle);
+        const invocation = try self.routePendingToProviderRun(mailbox_id, plan, provider_handle);
+        routed = true;
+        return invocation;
     }
 
     pub fn installReplay(self: *@This(), comptime Target: type, transcript_image: TranscriptImage, permit: ?RunPermit) !RunHandle {

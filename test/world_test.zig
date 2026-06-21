@@ -39902,6 +39902,8 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     try std.testing.expectEqual(@as(usize, 1), prepared.plan.link_plan.fabric_plans.len);
     var image = try prepared.seal();
     defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), image.dispatch_image.fabric_plan_fingerprints.len);
+    try std.testing.expectEqual(prepared.plan.linker_certificate.fabric_plan_fingerprints[0], image.dispatch_image.fabric_plan_fingerprints[0]);
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_module = image.module_set.modules[1];
@@ -39954,6 +39956,22 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     _ = try runspace.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(root_handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    const slot_count_before_retry = runspace.slots.items.len;
+    const event_count_before_retry = runspace.events.items.len;
+    const mailbox_count_before_retry = runspace.mailbox.pending.items.len;
+    const next_run_id_before_retry = runspace.next_run_id;
+    const next_mailbox_id_before_retry = runspace.next_mailbox_id;
+    const next_event_index_before_retry = runspace.next_event_index;
+    runspace.config.max_events = event_count_before_retry + 1;
+    try std.testing.expectError(error.BudgetExceeded, runspace.routePendingToLoadedProvider(0, image, plan));
+    runspace.config.max_events = null;
+    try std.testing.expectEqual(slot_count_before_retry, runspace.slots.items.len);
+    try std.testing.expectEqual(event_count_before_retry, runspace.events.items.len);
+    try std.testing.expectEqual(mailbox_count_before_retry, runspace.mailbox.pending.items.len);
+    try std.testing.expectEqual(next_run_id_before_retry, runspace.next_run_id);
+    try std.testing.expectEqual(next_mailbox_id_before_retry, runspace.next_mailbox_id);
+    try std.testing.expectEqual(next_event_index_before_retry, runspace.next_event_index);
 
     const invocation = try runspace.routePendingToLoadedProvider(0, image, plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_running, invocation.status);

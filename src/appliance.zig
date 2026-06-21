@@ -6705,7 +6705,7 @@ pub fn Appliance(comptime World: type) type {
                 provider_index += 1;
             }
 
-            const fabric_plan_fingerprints = try allocator.dupe(u64, image.dispatch_image.route_ids);
+            const fabric_plan_fingerprints = try allocator.dupe(u64, image.dispatch_image.fabric_plan_fingerprints);
             errdefer allocator.free(fabric_plan_fingerprints);
             const binding_count = image.external_bindings.len;
             const descriptor_fingerprints = try allocator.alloc(u64, binding_count);

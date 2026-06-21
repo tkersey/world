@@ -274,6 +274,7 @@ pub fn Executable(comptime W: type) type {
             module_fingerprints: []const u64 = &.{},
             external_binding_fingerprints: []const u64 = &.{},
             residual_request_order: []const u32 = &.{},
+            fabric_plan_fingerprints: []const u64 = &.{},
             route_ids: []const u64 = &.{},
             route_kinds: []const W.Fabric.RouteKind = &.{},
             route_parent_world_port_ids: []const u32 = &.{},
@@ -287,6 +288,7 @@ pub fn Executable(comptime W: type) type {
                 module_fingerprints: []const u64 = &.{},
                 external_binding_fingerprints: []const u64 = &.{},
                 residual_request_order: []const u32 = &.{},
+                fabric_plan_fingerprints: []const u64 = &.{},
                 route_ids: []const u64 = &.{},
                 route_kinds: []const W.Fabric.RouteKind = &.{},
                 route_parent_world_port_ids: []const u32 = &.{},
@@ -301,6 +303,7 @@ pub fn Executable(comptime W: type) type {
                     .module_fingerprints = args.module_fingerprints,
                     .external_binding_fingerprints = args.external_binding_fingerprints,
                     .residual_request_order = args.residual_request_order,
+                    .fabric_plan_fingerprints = args.fabric_plan_fingerprints,
                     .route_ids = args.route_ids,
                     .route_kinds = args.route_kinds,
                     .route_parent_world_port_ids = args.route_parent_world_port_ids,
@@ -800,6 +803,7 @@ pub fn Executable(comptime W: type) type {
                     .module_fingerprints = module_fingerprints,
                     .external_binding_fingerprints = binding_fingerprints,
                     .residual_request_order = residual_order,
+                    .fabric_plan_fingerprints = link_result.certificate.fabric_plan_fingerprints,
                     .route_ids = dispatch_routes.route_ids,
                     .route_kinds = dispatch_routes.route_kinds,
                     .route_parent_world_port_ids = dispatch_routes.route_parent_world_port_ids,
@@ -1148,6 +1152,8 @@ pub fn Executable(comptime W: type) type {
             errdefer allocator.free(result.external_binding_fingerprints);
             result.residual_request_order = try allocator.dupe(u32, image.residual_request_order);
             errdefer allocator.free(result.residual_request_order);
+            result.fabric_plan_fingerprints = try allocator.dupe(u64, image.fabric_plan_fingerprints);
+            errdefer allocator.free(result.fabric_plan_fingerprints);
             result.route_ids = try allocator.dupe(u64, image.route_ids);
             errdefer allocator.free(result.route_ids);
             result.route_kinds = try allocator.dupe(W.Fabric.RouteKind, image.route_kinds);
@@ -1163,6 +1169,7 @@ pub fn Executable(comptime W: type) type {
             allocator.free(image.module_fingerprints);
             allocator.free(image.external_binding_fingerprints);
             allocator.free(image.residual_request_order);
+            allocator.free(image.fabric_plan_fingerprints);
             allocator.free(image.route_ids);
             allocator.free(image.route_kinds);
             allocator.free(image.route_parent_world_port_ids);
@@ -1281,6 +1288,7 @@ pub fn Executable(comptime W: type) type {
             hashU64Slice(&hasher, image.external_binding_fingerprints);
             hashU64(&hasher, image.residual_request_order.len);
             for (image.residual_request_order) |value| hashU64(&hasher, value);
+            hashU64Slice(&hasher, image.fabric_plan_fingerprints);
             hashU64Slice(&hasher, image.route_ids);
             hashU64(&hasher, image.route_kinds.len);
             for (image.route_kinds) |kind| hashU64(&hasher, @intFromEnum(kind));
