@@ -134,7 +134,6 @@ pub fn hostReplyFor(request: world.Appliance.HostRequest, response_fingerprint: 
         .status = .responded,
         .response_fingerprint = response_fingerprint,
         .response_kind = .frame_value_image,
-        .response_bytes = "frame-value:approved",
         .host_evidence_fingerprint = response_fingerprint ^ 0xE11D,
         .host_evidence_bytes = "host-claim:example",
         .attempt_number = 1,

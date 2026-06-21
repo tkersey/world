@@ -92,7 +92,6 @@ fn applianceHostReplyFor(request: world.Appliance.HostRequest, response_fingerpr
         .status = .responded,
         .response_fingerprint = response_fingerprint,
         .response_kind = .frame_value_image,
-        .response_bytes = "frame-value:approved",
         .host_evidence_fingerprint = response_fingerprint ^ 0xE11D,
         .host_evidence_bytes = "host-claim:fixture",
         .attempt_number = 1,
@@ -2259,7 +2258,7 @@ test "appliance command encodes decodes and validates host replies" {
     try std.testing.expectEqual(@as(usize, 1), decoded.host_replies.len);
     try std.testing.expectEqual(reply.reply_fingerprint, decoded.host_replies[0].reply_fingerprint);
     try std.testing.expectEqual(world.Appliance.HostResponseKind.frame_value_image, decoded.host_replies[0].outcome.response_kind);
-    try std.testing.expectEqualStrings("frame-value:approved", decoded.host_replies[0].outcome.response_bytes);
+    try std.testing.expectEqualStrings("", decoded.host_replies[0].outcome.response_bytes);
     try std.testing.expectEqualStrings("host-claim:fixture", decoded.host_replies[0].outcome.host_evidence_bytes);
     try std.testing.expect(decoded.host_replies[0].retention_ack != null);
     try std.testing.expectEqual(reply_ack.ack_fingerprint, decoded.host_replies[0].retention_ack_fingerprint.?);
@@ -3099,7 +3098,6 @@ test "appliance terminal HostReply validation uses active capacity" {
         .status = .responded,
         .response_fingerprint = 0xD4F1,
         .response_kind = .frame_value_image,
-        .response_bytes = "frame-value:approved",
         .host_evidence_fingerprint = 0xD4F2,
         .host_evidence_bytes = "host-claim:fixture",
         .attempt_number = 1,
@@ -5775,6 +5773,39 @@ test "appliance host reply validates against outstanding request identity" {
     });
     try reply.validate(&.{request}, world.Appliance.Capacity.tiny_one_port);
     try std.testing.expectEqual(@as(?u64, ack.ack_fingerprint), reply.retention_ack_fingerprint);
+
+    var response_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, @as(i32, 42), .portable);
+    defer response_image.deinit(std.testing.allocator);
+    const response_image_bytes = try response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_image_bytes);
+    const embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = request.request_fingerprint,
+        .intent_fingerprint = request.intent_fingerprint,
+        .envelope_fingerprint = request.envelope_fingerprint,
+        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = response_image.value_image_fingerprint,
+        .response_kind = .frame_value_image,
+        .response_bytes = response_image_bytes,
+        .host_evidence_fingerprint = 0xD20D,
+        .host_evidence_bytes = "embedded-response",
+        .attempt_number = 1,
+    });
+    try embedded_response.validate(request, world.Appliance.Capacity.tiny_one_port);
+    const forged_embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = request.request_fingerprint,
+        .intent_fingerprint = request.intent_fingerprint,
+        .envelope_fingerprint = request.envelope_fingerprint,
+        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = response_image.value_image_fingerprint + 1,
+        .response_kind = .frame_value_image,
+        .response_bytes = response_image_bytes,
+        .host_evidence_fingerprint = 0xD20E,
+        .host_evidence_bytes = "forged-embedded-response",
+        .attempt_number = 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_embedded_response.validate(request, world.Appliance.Capacity.tiny_one_port));
 
     const wrong_reply = world.Appliance.HostReply.init(.{
         .target_host_request_fingerprint = request.request_fingerprint + 1,
