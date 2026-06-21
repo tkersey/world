@@ -94,6 +94,11 @@ pub fn Executable(comptime W: type) type {
                     if (requirement.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.InvalidFrameEncoding;
                 }
             }
+
+            pub fn validateForRuntimeProfile(self: @This(), profile: RuntimeProfile) !void {
+                try self.validate();
+                try validateModuleCanonicalBytes(self, profile);
+            }
         };
 
         pub const ModuleSet = struct {
@@ -704,7 +709,7 @@ pub fn Executable(comptime W: type) type {
                 try self.required_runtime_profile.validate();
                 if (!self.required_runtime_profile.supports_loaded_execution) return error.InvalidFrameEncoding;
                 try self.module_set.validate();
-                for (self.module_set.modules) |module| try validateModuleCanonicalBytes(module, self.required_runtime_profile);
+                for (self.module_set.modules) |module| try module.validateForRuntimeProfile(self.required_runtime_profile);
                 if (self.dispatch_image.format_version != W.world_executable_dispatch_image_format_version) return error.InvalidFrameEncoding;
                 if (self.dispatch_image.fingerprint_version != W.world_executable_dispatch_image_fingerprint_version) return error.InvalidFrameEncoding;
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;

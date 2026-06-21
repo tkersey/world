@@ -10072,9 +10072,14 @@ pub const Runspace = struct {
         fabric_receipt_recorded,
     };
 
+    const PortRequestStep = struct {
+        request: Frame.Request,
+        expected_response_kind: ResponseKind = .@"resume",
+    };
+
     const DriverStep = union(enum) {
         done: ?Frame.ValueImage,
-        port_request: Frame.Request,
+        port_request: PortRequestStep,
         failed,
     };
 
@@ -10268,13 +10273,17 @@ pub const Runspace = struct {
             self.last_request_frame = try frame.clone(self.allocator);
             self.pending_request = request;
             self.turn_index += 1;
-            return .{ .port_request = frame };
+            return .{ .port_request = .{
+                .request = frame,
+                .expected_response_kind = contract.expected_response_kind,
+            } };
         }
 
         const RequestContract = struct {
             world_port_ref_fingerprint: ?u64,
             payload_value_table_id: ?u32,
             response_value_table_id: ?u32,
+            expected_response_kind: ResponseKind,
         };
 
         fn contractForLoadedRequest(self: @This(), request: Executable.Boundary.LoadedModule.Session.Request) ?RequestContract {
@@ -10286,9 +10295,17 @@ pub const Runspace = struct {
                     .world_port_ref_fingerprint = requirement.world_port_ref_fingerprint,
                     .payload_value_table_id = requirement.payload_value_table_id,
                     .response_value_table_id = requirement.response_value_table_id,
+                    .expected_response_kind = responseKindForLoadedRequirement(requirement.allowed_response_kinds),
                 };
             }
             return null;
+        }
+
+        fn responseKindForLoadedRequirement(mask: ImportRequirement.ResponseKindMask) ResponseKind {
+            return switch (mask) {
+                .resume_only, .all => .@"resume",
+                .return_now_only => .return_now,
+            };
         }
 
         fn valueImageFromLoadedBytes(self: *@This(), value_table_id: ?u32, boundary_value_fingerprint: ?u64, bytes: []const u8) !?Frame.ValueImage {
@@ -10756,7 +10773,7 @@ pub const Runspace = struct {
                                 discardRunspaceDoneValue(RunType, active, value);
                                 return .{ .done = result_image };
                             },
-                            .port_request => |request| .{ .port_request = request },
+                            .port_request => |request| .{ .port_request = .{ .request = request } },
                             .failed => .failed,
                         };
                     }
@@ -10768,7 +10785,7 @@ pub const Runspace = struct {
                             discardRunspaceDoneValue(RunType, active, value);
                             return .{ .done = result_image };
                         },
-                        .port_request => |request| .{ .port_request = request },
+                        .port_request => |request| .{ .port_request = .{ .request = request } },
                         .failed => .failed,
                     };
                 }
@@ -12425,7 +12442,7 @@ pub const Runspace = struct {
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and options.permit == null) return error.SupervisionDenied;
-        try module.validate();
+        try module.validateForRuntimeProfile(Executable.RuntimeProfile.universal_v1);
         const executable_image_fingerprint = options.executable_image_fingerprint orelse module.module_ref.boundary_module_fingerprint;
         const maybe_permit = options.permit;
         var supervisor: ?Supervision.Supervisor = null;
@@ -12510,6 +12527,7 @@ pub const Runspace = struct {
         const route = try self.installedFabricRouteForPending(plan.plan_fingerprint, pending);
         try route.validate();
         if (route.kind != .loaded_module_export) return error.UnsupportedMapping;
+        if (self.config.require_supervision) return error.SupervisionDenied;
         if (!executableDispatchCoversFabricRoute(image.dispatch_image, plan.plan_fingerprint, route)) return error.HandoffTargetMismatch;
         const provider_module = executableProviderModuleForRoute(image, route) orelse return error.HandoffTargetMismatch;
         const next_run_id_before = self.next_run_id;
@@ -16195,8 +16213,8 @@ pub const Runspace = struct {
                 failed_summary_owned = false;
                 return event;
             },
-            .port_request => |request| {
-                var owned_request = request;
+            .port_request => |port_request| {
+                var owned_request = port_request.request;
                 defer owned_request.deinit(self.allocator);
                 const environment_actuation_binding = driver.actuationBindingForWorldPort(owned_request.world_port_id);
                 const fabric_actuation_binding = self.fabricActuationBindingForSlotPort(slot.*, owned_request.world_port_id, environment_actuation_binding);
@@ -16232,6 +16250,7 @@ pub const Runspace = struct {
                     .mailbox_id = mailbox_id,
                     .request = owned_request,
                     .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+                    .expected_response_kind = port_request.expected_response_kind,
                     .environment_certificate_fingerprint = slot.environment_certificate_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .actuation_binding = actuation_binding,
@@ -26395,7 +26414,7 @@ pub const Capsule = struct {
         const restored_handles = try allocator.alloc(RunHandle, image.runspace_image.run_slots.len);
         defer allocator.free(restored_handles);
         for (image.runspace_image.run_slots, 0..) |slot_image, index| {
-            try slot_image.validate(.{});
+            try slot_image.validateForRunspaceFormat(.{}, image.runspace_image.format_version);
             const new_handle = restoredSlotHandle(runspace, slot_image, permit_fingerprint);
             restored_handles[index] = new_handle;
             try handle_mappings.append(allocator, slot_image.original_run_handle_fingerprint);

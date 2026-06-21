@@ -40781,6 +40781,12 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, duplicate_module_id_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
+    var forged_direct_module = image.module_set.root().?;
+    forged_direct_module.canonical_bytes = image.module_set.modules[1].canonical_bytes;
+    var direct_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer direct_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, direct_runspace.installLoadedModuleRun(forged_direct_module, .{}));
+
     const plan = prepared.plan.link_plan.fabric_plans[0];
     try std.testing.expectEqual(world.Fabric.RouteKind.loaded_module_export, plan.routes[0].kind);
     const sealed_route = plan.routes[0];
@@ -40908,6 +40914,29 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     try std.testing.expectEqual(next_run_id_before_retry, runspace.next_run_id);
     try std.testing.expectEqual(next_mailbox_id_before_retry, runspace.next_mailbox_id);
     try std.testing.expectEqual(next_event_index_before_retry, runspace.next_event_index);
+
+    const supervised_root = image.module_set.root().?;
+    const supervised_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = supervised_root.target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = supervised_root.target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = supervised_root.target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = 0x5150_7001,
+        .binding_plan_fingerprint = 0x5150_7002,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+    });
+    var supervised_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer supervised_runspace.deinit();
+    _ = try supervised_runspace.installExecutableRoot(image, .{ .permit = supervised_permit });
+    _ = try supervised_runspace.tick();
+    try supervised_runspace.installFabricPlan(parent_ref, plan);
+    const supervised_slot_count_before = supervised_runspace.slots.items.len;
+    const supervised_event_count_before = supervised_runspace.events.items.len;
+    const supervised_mailbox_count_before = supervised_runspace.mailbox.pending.items.len;
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.routePendingToLoadedProvider(0, image, plan));
+    try std.testing.expectEqual(supervised_slot_count_before, supervised_runspace.slots.items.len);
+    try std.testing.expectEqual(supervised_event_count_before, supervised_runspace.events.items.len);
+    try std.testing.expectEqual(supervised_mailbox_count_before, supervised_runspace.mailbox.pending.items.len);
 
     const invocation = try runspace.routePendingToLoadedProvider(0, image, plan);
     try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_running, invocation.status);
