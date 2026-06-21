@@ -1,0 +1,119 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('node:fs');
+
+const statusOk = 0;
+const statusCompleted = 3;
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+async function main() {
+  const wasmPath = process.argv[2];
+  if (!wasmPath) throw new Error('usage: world_universal_appliance_node_conformance.js <world_universal_appliance.wasm>');
+
+  const wasmBytes = fs.readFileSync(wasmPath);
+  const module = await WebAssembly.compile(wasmBytes);
+
+  const imageA = 'world.Executable.Image:A';
+  const imageB = 'world.Executable.Image:B';
+  const command = 'boot';
+
+  const instanceA = await WebAssembly.instantiate(module, {});
+  const outputA = runImage(instanceA, imageA, command);
+  if (instanceA.exports.world_appliance_unload_executable() !== statusOk) {
+    throw new Error('unload image A failed');
+  }
+
+  const instanceB = await WebAssembly.instantiate(module, {});
+  const outputB = runImage(instanceB, imageB, command);
+
+  const nativeA = nativeOutput(imageA, command);
+  const nativeB = nativeOutput(imageB, command);
+
+  const outputsMatchNative = outputA === nativeA && outputB === nativeB;
+  const outputsDistinct = outputA !== outputB;
+  if (!outputsMatchNative) throw new Error('wasm output does not match native projection');
+  if (!outputsDistinct) throw new Error('image outputs are not distinct');
+
+  console.log('actual_external_runtime_executed=true');
+  console.log('compiled_once=true');
+  console.log('empty_imports=true');
+  console.log('image_a_completed=true');
+  console.log('image_b_completed=true');
+  console.log('outputs_match_native=true');
+  console.log('outputs_distinct=true');
+}
+
+function runImage(instance, image, command) {
+  const exports = instance.exports;
+  if (exports.world_appliance_abi_version() !== 2) throw new Error('unexpected ABI version');
+
+  const manifest = readRuntimeManifest(instance);
+  if (!manifest.includes('imports=0\n')) throw new Error('runtime manifest does not declare zero imports');
+
+  const imageBytes = textEncoder.encode(image);
+  const commandBytes = textEncoder.encode(command);
+  const imagePtr = writeGuest(instance, imageBytes);
+  const commandPtr = writeGuest(instance, commandBytes);
+
+  if (exports.world_appliance_load_executable(imagePtr, imageBytes.length) !== statusOk) {
+    throw new Error('load executable failed');
+  }
+  if (exports.world_appliance_submit_command(commandPtr, commandBytes.length) !== statusCompleted) {
+    throw new Error('submit command failed');
+  }
+
+  const outputLen = exports.world_appliance_output_len();
+  if (outputLen === 0) throw new Error('missing output bytes');
+  const outputPtr = exports.world_appliance_alloc(outputLen);
+  if (outputPtr === 0) throw new Error('output allocation failed');
+  const copied = exports.world_appliance_read_output(outputPtr, outputLen);
+  if (copied !== outputLen) throw new Error('output read failed');
+  return readGuest(instance, outputPtr, outputLen);
+}
+
+function readRuntimeManifest(instance) {
+  const exports = instance.exports;
+  const len = exports.world_appliance_runtime_manifest_len();
+  if (len === 0) throw new Error('missing runtime manifest');
+  const ptr = exports.world_appliance_alloc(len);
+  if (ptr === 0) throw new Error('manifest allocation failed');
+  const copied = exports.world_appliance_read_runtime_manifest(ptr, len);
+  if (copied !== len) throw new Error('runtime manifest read failed');
+  return readGuest(instance, ptr, len);
+}
+
+function writeGuest(instance, bytes) {
+  const ptr = instance.exports.world_appliance_alloc(bytes.length);
+  if (ptr === 0) throw new Error('guest allocation failed');
+  new Uint8Array(instance.exports.memory.buffer, ptr, bytes.length).set(bytes);
+  return ptr;
+}
+
+function readGuest(instance, ptr, len) {
+  return textDecoder.decode(new Uint8Array(instance.exports.memory.buffer, ptr, len));
+}
+
+function nativeOutput(image, command) {
+  return [
+    'world.universal_appliance.output.v2',
+    `image=${fnv64Hex(textEncoder.encode(image))}`,
+    `command=${fnv64Hex(textEncoder.encode(command))}`,
+    '',
+  ].join('\n');
+}
+
+function fnv64Hex(bytes) {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of bytes) {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
+}
+
+main().catch((error) => {
+  console.error(error && error.stack ? error.stack : String(error));
+  process.exit(1);
+});

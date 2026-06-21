@@ -147,6 +147,48 @@ pub fn build(b: *std.Build) void {
     world_appliance_wasm_step.dependOn(&install_appliance_wasm.step);
     const check_world_appliance_wasm_step = b.step("check-world-appliance-wasm", "Build and inspect World Appliance wasm artifact.");
     check_world_appliance_wasm_step.dependOn(&appliance_wasm.step);
+    const universal_appliance_wasm_module = b.createModule(.{
+        .root_source_file = b.path("examples/world_universal_appliance_wasm.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    const universal_appliance_wasm = b.addExecutable(.{
+        .name = "world_universal_appliance",
+        .root_module = universal_appliance_wasm_module,
+    });
+    universal_appliance_wasm.entry = .disabled;
+    universal_appliance_wasm.rdynamic = true;
+    universal_appliance_wasm.export_memory = true;
+    universal_appliance_wasm.initial_memory = 4_194_304;
+    universal_appliance_wasm.max_memory = 4_194_304;
+    const install_universal_appliance_wasm = b.addInstallArtifact(universal_appliance_wasm, .{});
+    const world_universal_appliance_wasm_step = b.step("world-universal-appliance-wasm", "Build generic World universal Appliance wasm artifact.");
+    world_universal_appliance_wasm_step.dependOn(&install_universal_appliance_wasm.step);
+    const check_world_universal_appliance_wasm_step = b.step("check-world-universal-appliance-wasm", "Build and inspect generic World universal Appliance wasm artifact.");
+    check_world_universal_appliance_wasm_step.dependOn(&universal_appliance_wasm.step);
+    const run_universal_appliance_node = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_universal_appliance_node_conformance.js",
+    });
+    run_universal_appliance_node.addFileArg(universal_appliance_wasm.getEmittedBin());
+    const check_world_universal_appliance_node_step = b.step("check-world-universal-appliance-node", "Run generic World universal Appliance wasm in Node WebAssembly.");
+    check_world_universal_appliance_node_step.dependOn(&run_universal_appliance_node.step);
+    const universal_appliance_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/universal_appliance_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "universal_appliance_impl", .module = b.createModule(.{
+                    .root_source_file = b.path("examples/world_universal_appliance_wasm.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                }) },
+            },
+        }),
+        .filters = test_args.filters,
+    });
+    check_world_universal_appliance_wasm_step.dependOn(&addRunArtifactWithArgs(b, universal_appliance_tests, test_args.passthrough).step);
 
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -223,6 +265,152 @@ pub fn build(b: *std.Build) void {
         b.default_step.dependOn(&world_module_tests.step);
     }
 
+    const check_world_executable_image_step = b.step("check-world-executable-image", "Run World Executable image tests.");
+    const executable_image_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/world_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+        .filters = &.{"Executable Builder"},
+    });
+    check_world_executable_image_step.dependOn(&addRunArtifactWithArgs(b, executable_image_tests, test_args.passthrough).step);
+
+    const check_world_loaded_runspace_step = b.step("check-world-loaded-runspace", "Run World loaded Runspace tests.");
+    const loaded_runspace_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/world_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+        .filters = &.{"Loaded Runspace"},
+    });
+    check_world_loaded_runspace_step.dependOn(&addRunArtifactWithArgs(b, loaded_runspace_tests, test_args.passthrough).step);
+
+    const check_world_loaded_linker_step = b.step("check-world-loaded-linker", "Run World loaded Linker tests.");
+    const loaded_linker_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/world_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+        .filters = &.{"Loaded Linker"},
+    });
+    check_world_loaded_linker_step.dependOn(&addRunArtifactWithArgs(b, loaded_linker_tests, test_args.passthrough).step);
+
+    const check_world_loaded_admission_step = b.step("check-world-loaded-admission", "Run World loaded Admission tests.");
+    const loaded_admission_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/world_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+        .filters = &.{"Loaded Admission"},
+    });
+    check_world_loaded_admission_step.dependOn(&addRunArtifactWithArgs(b, loaded_admission_tests, test_args.passthrough).step);
+
+    const check_world_loaded_fabric_step = b.step("check-world-loaded-fabric", "Run World loaded Fabric tests.");
+    const loaded_fabric_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/world_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+        .filters = &.{"Loaded Fabric"},
+    });
+    check_world_loaded_fabric_step.dependOn(&addRunArtifactWithArgs(b, loaded_fabric_tests, test_args.passthrough).step);
+
+    const check_world_loaded_capsule_step = b.step("check-world-loaded-capsule", "Run World loaded Capsule tests.");
+    const loaded_capsule_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/world_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+        .filters = &.{"Loaded Capsule"},
+    });
+    check_world_loaded_capsule_step.dependOn(&addRunArtifactWithArgs(b, loaded_capsule_tests, test_args.passthrough).step);
+
+    const check_world_seed_migration_step = b.step("check-world-seed-migration", "Run World Seed migration tests.");
+    const world_seed_migration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/world_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+        .filters = &.{"World Seed Migration"},
+    });
+    check_world_seed_migration_step.dependOn(&addRunArtifactWithArgs(b, world_seed_migration_tests, test_args.passthrough).step);
+
+    const check_world_universal_runtime_step = b.step("check-world-universal-runtime", "Run World universal executable Appliance runtime tests.");
+    const world_universal_runtime_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/appliance_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+        .filters = &.{"Universal Runtime"},
+    });
+    check_world_universal_runtime_step.dependOn(&addRunArtifactWithArgs(b, world_universal_runtime_tests, test_args.passthrough).step);
+
+    const check_world_seed_replay_step = b.step("check-world-seed-replay", "Run World Seed replay and batched host closure tests.");
+    const world_seed_replay_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/appliance_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "world_fixtures", .module = fixtures },
+            },
+        }),
+        .filters = &.{"World Seed Replay"},
+    });
+    check_world_seed_replay_step.dependOn(&addRunArtifactWithArgs(b, world_seed_replay_tests, test_args.passthrough).step);
+    const check_world_universal_step = b.step("check-world-universal", "Run generic World universal Appliance runtime and WASM checks.");
+    check_world_universal_step.dependOn(check_world_universal_runtime_step);
+    check_world_universal_step.dependOn(check_world_seed_replay_step);
+    check_world_universal_step.dependOn(check_world_universal_appliance_wasm_step);
+
     const forged_descriptor_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/forged_descriptor_metadata.zig"),
@@ -293,34 +481,6 @@ pub fn build(b: *std.Build) void {
     appliance_actuation_disabled_binding_test.expect_errors = .{
         .contains = "World Appliance actuation bindings require a profile with actuation enabled",
     };
-    const appliance_multiple_external_bindings_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test/compile_fail/appliance_multiple_external_bindings.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "world", .module = world },
-                .{ .name = "world_fixtures", .module = fixtures },
-            },
-        }),
-    });
-    appliance_multiple_external_bindings_test.expect_errors = .{
-        .contains = "World Appliance Core currently supports one external Actuation binding",
-    };
-    const appliance_nonstrict_multiple_external_bindings_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test/compile_fail/appliance_nonstrict_multiple_external_bindings.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "world", .module = world },
-                .{ .name = "world_fixtures", .module = fixtures },
-            },
-        }),
-    });
-    appliance_nonstrict_multiple_external_bindings_test.expect_errors = .{
-        .contains = "World Appliance Core currently supports one external Actuation binding",
-    };
     const appliance_zero_host_request_capacity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_zero_host_request_capacity.zig"),
@@ -369,8 +529,6 @@ pub fn build(b: *std.Build) void {
     compile_fail_step.dependOn(&appliance_covered_port_bound_test.step);
     compile_fail_step.dependOn(&appliance_invalid_capacity_test.step);
     compile_fail_step.dependOn(&appliance_actuation_disabled_binding_test.step);
-    compile_fail_step.dependOn(&appliance_multiple_external_bindings_test.step);
-    compile_fail_step.dependOn(&appliance_nonstrict_multiple_external_bindings_test.step);
     compile_fail_step.dependOn(&appliance_zero_host_request_capacity_test.step);
     compile_fail_step.dependOn(&appliance_zero_host_reply_capacity_test.step);
     compile_fail_step.dependOn(&appliance_zero_actuation_record_capacity_test.step);
@@ -378,6 +536,20 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
     check_step.dependOn(test_step);
     check_step.dependOn(compile_fail_step);
+    check_step.dependOn(check_world_executable_image_step);
+    check_step.dependOn(check_world_loaded_runspace_step);
+    check_step.dependOn(check_world_loaded_linker_step);
+    check_step.dependOn(check_world_loaded_admission_step);
+    check_step.dependOn(check_world_loaded_fabric_step);
+    check_step.dependOn(check_world_loaded_capsule_step);
+    check_step.dependOn(check_world_seed_migration_step);
+    check_step.dependOn(check_world_universal_runtime_step);
+    check_step.dependOn(check_world_seed_replay_step);
+    check_step.dependOn(check_world_universal_step);
+    const check_world_seed_step = b.step("check-world-seed", "Run World Seed killer examples and conformance checks.");
+    const check_world_seed_malformed_step = b.step("check-world-seed-malformed", "Run World Seed malformed/rejection checks.");
+    check_step.dependOn(check_world_seed_step);
+    check_step.dependOn(check_world_seed_malformed_step);
 
     const examples = [_]struct {
         name: []const u8,
@@ -387,6 +559,100 @@ pub fn build(b: *std.Build) void {
         serial_after_tests: bool = false,
         expected_stdout: []const u8,
     }{
+        .{
+            .name = "world-seed-one-port",
+            .path = "examples/world_seed_one_port.zig",
+            .step = "run-world-seed-one-port",
+            .desc = "Run the one-port World Seed example.",
+            .expected_stdout =
+            \\world_seed=one_port
+            \\host_requests=1
+            \\payload_bytes_present=true
+            \\result_bytes_present=true
+            \\completed=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-seed-agent",
+            .path = "examples/world_seed_agent.zig",
+            .step = "run-world-seed-agent",
+            .desc = "Run the agent World Seed example.",
+            .expected_stdout =
+            \\world_seed=agent
+            \\provider_modules=1
+            \\fabric_plans=1
+            \\external_requests=2
+            \\completed=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-seed-two-images-one-wasm",
+            .path = "examples/world_seed_two_images_one_wasm.zig",
+            .step = "run-world-seed-two-images-one-wasm",
+            .desc = "Run two unrelated World Seed images through one generic wasm Appliance implementation.",
+            .expected_stdout =
+            \\world_seed=two_images_one_wasm
+            \\abi_version=2
+            \\images=2
+            \\outputs_distinct=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-seed-migrate",
+            .path = "examples/world_seed_migrate.zig",
+            .step = "run-world-seed-migrate",
+            .desc = "Run the World Seed migration example.",
+            .expected_stdout =
+            \\reconstruction_equivalent=true
+            \\resident_output=34fe8159e836ad98
+            \\restored_output=34fe8159e836ad98
+            \\
+            ,
+        },
+        .{
+            .name = "world-seed-active-fabric-restore",
+            .path = "examples/world_seed_active_fabric_restore.zig",
+            .step = "run-world-seed-active-fabric-restore",
+            .desc = "Run the World Seed active Fabric restore example.",
+            .expected_stdout =
+            \\active_fabric_invocation_fingerprint=51b5319bf0be3ea6
+            \\pending_provider_port_fingerprint=a8766f0625c8f4a5
+            \\restore_report_fingerprint=8cc5c95ed103f18a
+            \\restore_accepted=false
+            \\final_result=active-fabric-restore-denied
+            \\
+            ,
+        },
+        .{
+            .name = "world-seed-replay",
+            .path = "examples/world_seed_replay.zig",
+            .step = "run-world-seed-replay",
+            .desc = "Run the World Seed replay example.",
+            .expected_stdout =
+            \\fresh_status=needs_host
+            \\fresh_host_requests=1
+            \\replay_supported=false
+            \\replay_evidence=3d52b0f6764e29ac
+            \\replay_final_result=false
+            \\
+            ,
+        },
+        .{
+            .name = "world-seed-reject",
+            .path = "examples/world_seed_reject.zig",
+            .step = "run-world-seed-reject",
+            .desc = "Run the World Seed malformed/rejection example.",
+            .expected_stdout =
+            \\world_seed=reject
+            \\oversized_rejected=true
+            \\manifest_after_reject=0
+            \\submit_without_image_rejected=true
+            \\
+            ,
+        },
         .{
             .name = "world-run-strict",
             .path = "examples/world_run_strict.zig",
@@ -576,7 +842,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\package_fingerprint=5a5e606018190afc
             \\target_match_fingerprint=c4108ddb5ef704d9
-            \\admission_receipt_fingerprint=103ce0627ed3c455
+            \\admission_receipt_fingerprint=7a7abbf0a9a25c68
             \\final_result=7
             \\
             ,
@@ -587,7 +853,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-admission-full-module-inspect",
             .desc = "Run the World admission full-module inspect example.",
             .expected_stdout =
-            \\module_ref_fingerprint=88a2146555397dad
+            \\module_ref_fingerprint=3a769c854978807e
             \\import_count=1
             \\loaded_execution_supported=false
             \\admission_accepted=true
@@ -601,7 +867,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World admission parked handoff example.",
             .expected_stdout =
             \\package_fingerprint=91d0e487f35697a
-            \\admission_receipt_fingerprint=477192b506d3d1a
+            \\admission_receipt_fingerprint=fb21a9f962d1b76
             \\receiver_permit_fingerprint=ecb3fc4d74abae17
             \\final_result=7
             \\
@@ -613,8 +879,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-admission-replay-verify",
             .desc = "Run the World admission replay/verify example.",
             .expected_stdout =
-            \\replay_admission_receipt=c80e3e96b8b01a1d
-            \\verify_admission_receipt=21cce5dcb57aade9
+            \\replay_admission_receipt=cb717cf457411b58
+            \\verify_admission_receipt=59fd3bf2875ada7d
             \\divergence_detected=true
             \\
             ,
@@ -628,7 +894,7 @@ pub fn build(b: *std.Build) void {
             \\module_ref_fingerprint=8980705f83427fa6
             \\model_port_id=0
             \\tool_port_id=1
-            \\admission_receipt=d5a75ad527272120
+            \\admission_receipt=907354d317619aaa
             \\final_result=final=actuate skeleton complete
             \\
             ,
@@ -664,8 +930,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-runspace-handoff",
             .desc = "Run the handoff World runspace example.",
             .expected_stdout =
-            \\admission_receipt=3d4fe32de7d172b4
-            \\run_handle=890170c877a53de4
+            \\admission_receipt=333d360ce96fc3f2
+            \\run_handle=77ef6d866cdf5bbe
             \\final_result=7
             \\
             ,
@@ -876,9 +1142,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-linked-restore",
             .desc = "Run the World Assembly Capsule linked restore example.",
             .expected_stdout =
-            \\capsule_fingerprint=6449041ef0225991
+            \\capsule_fingerprint=68bd383d3fab245a
             \\link_certificate_fingerprint=2045220a5ff7a9fd
-            \\restore_report_fingerprint=6d09ac90404384a3
+            \\restore_report_fingerprint=30a640f09e5f33e7
             \\final_result=7
             \\
             ,
@@ -891,7 +1157,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\active_fabric_invocation_fingerprint=51b5319bf0be3ea6
             \\pending_provider_port_fingerprint=a8766f0625c8f4a5
-            \\restore_report_fingerprint=dbfd2227fdfe5827
+            \\restore_report_fingerprint=8cc5c95ed103f18a
             \\restore_accepted=false
             \\final_result=active-fabric-restore-denied
             \\
@@ -903,7 +1169,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-capsule-agent-transfer",
             .desc = "Run the World Assembly Capsule agent transfer example.",
             .expected_stdout =
-            \\capsule_fingerprint=3b837dd00aa47a7f
+            \\capsule_fingerprint=1fde2969fe157e81
             \\residual_external_import_count=1
             \\receiver_permit_fingerprint=345c1f6beb778a77
             \\restore_accepted=false
@@ -1041,8 +1307,8 @@ pub fn build(b: *std.Build) void {
             \\turn_state=waiting_host
             \\actuation_bindings=1
             \\checkpoint_every_turn=true
-            \\output_bytes=732
-            \\turn_receipt=1fc9a440967c6c00
+            \\output_bytes=1679
+            \\turn_receipt=63b925345d2bbdfc
             \\
             ,
         },
@@ -1069,8 +1335,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=b59dfb74847de333
-            \\restored_output=b59dfb74847de333
+            \\resident_output=34fe8159e836ad98
+            \\restored_output=34fe8159e836ad98
             \\
             ,
         },
@@ -1081,10 +1347,10 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance archive example.",
             .expected_stdout =
             \\archive_batches=1
-            \\output_archive_request=cbb1164f33a802f0
+            \\output_archive_request=626b8f4a4d9e3120
             \\archive_objects=3
-            \\retention_ack=ba852ca593622b18
-            \\moment=4820eccaf5601aae
+            \\retention_ack=6e383dbb5f58cdde
+            \\moment=9c6d70978f4fc26a
             \\
             ,
         },
@@ -1097,7 +1363,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=2cfca5efe430e442
+            \\replay_evidence=3d52b0f6764e29ac
             \\replay_final_result=false
             \\
             ,
@@ -1109,7 +1375,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance WASM probe example.",
             .expected_stdout =
             \\appliance_abi_version=1
-            \\manifest=e9c5e72a2d566095
+            \\manifest=167cb73200424a93
             \\capacity=5fcf964fbaa4a66b
             \\memory_plan=ed1c9222ab3bed1d
             \\required_exports=9
@@ -1237,8 +1503,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-chronicle-recovery",
             .desc = "Run the World Chronicle recovery example.",
             .expected_stdout =
-            \\recovery_plan_fingerprint=85fbb1357f6fc888
-            \\recovery_report_fingerprint=325cc2b1f78b59f0
+            \\recovery_plan_fingerprint=74ad15b2dd3df9e
+            \\recovery_report_fingerprint=9ed4c51da07a17aa
             \\restored=true
             \\final_result=chronicle-recovery-ok
             \\
@@ -1343,6 +1609,12 @@ pub fn build(b: *std.Build) void {
             b.default_step.dependOn(&exe.step);
         }
         check_step.dependOn(run_step);
+        if (std.mem.startsWith(u8, example.step, "run-world-seed-")) {
+            check_world_seed_step.dependOn(run_step);
+        }
+        if (std.mem.eql(u8, example.step, "run-world-seed-reject")) {
+            check_world_seed_malformed_step.dependOn(run_step);
+        }
     }
 
     const host_boundary_dep = b.dependency("boundary", .{
@@ -1390,6 +1662,20 @@ pub fn build(b: *std.Build) void {
     appliance_wasm_export_check_step.dependOn(&run_appliance_wasm_export_check.step);
     check_world_appliance_wasm_step.dependOn(&run_appliance_wasm_export_check.step);
     check_step.dependOn(check_world_appliance_wasm_step);
+    const universal_appliance_wasm_export_check_mod = b.createModule(.{
+        .root_source_file = b.path("examples/world_universal_appliance_wasm_export_check.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    universal_appliance_wasm_export_check_mod.addImport("world", host_world);
+    const universal_appliance_wasm_export_check = b.addExecutable(.{ .name = "world-universal-appliance-wasm-export-check", .root_module = universal_appliance_wasm_export_check_mod });
+    const run_universal_appliance_wasm_export_check = b.addRunArtifact(universal_appliance_wasm_export_check);
+    run_universal_appliance_wasm_export_check.addFileArg(universal_appliance_wasm.getEmittedBin());
+    const universal_appliance_wasm_export_check_step = b.step("run-world-universal-appliance-wasm-export-check", "Inspect generic World universal Appliance wasm exports and imports.");
+    universal_appliance_wasm_export_check_step.dependOn(&run_universal_appliance_wasm_export_check.step);
+    check_world_universal_appliance_wasm_step.dependOn(&run_universal_appliance_wasm_export_check.step);
+    check_world_universal_step.dependOn(check_world_universal_appliance_wasm_step);
+    check_step.dependOn(check_world_universal_appliance_wasm_step);
     const run_wasm_one_port_step = b.step("run-world-wasm-one-port", "Optionally run the World wasm one-port guest with an external runtime.");
     const skip_wasm_runtime = b.addSystemCommand(&.{
         "sh",

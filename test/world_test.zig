@@ -132,11 +132,11 @@ fn fabricTestRoute(kind: world.Fabric.RouteKind, provider_target_ref_fingerprint
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const mapping = fabricTestMapping(.payload_to_provider_args);
     const provider_target_fingerprint: ?u64 = switch (kind) {
-        .target_export, .admitted_run, .guest => provider_target_ref_fingerprint orelse provider_ref.target_ref_fingerprint,
+        .target_export, .loaded_module_export, .admitted_run, .guest => provider_target_ref_fingerprint orelse provider_ref.target_ref_fingerprint,
         else => null,
     };
     return world.Fabric.Route.init(.{
-        .route_id = @intFromEnum(kind) + 1,
+        .route_id = @as(u64, @intFromEnum(kind)) + 1,
         .kind = kind,
         .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
         .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
@@ -166,7 +166,7 @@ test "fabric route fingerprint stable and route kinds represented" {
     const changed = fabricTestRoute(.target_export, world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint);
     try std.testing.expect(route.route_fingerprint != changed.route_fingerprint);
 
-    inline for (.{ .adapter, .target_export, .admitted_run, .replay, .reject, .unsupported }) |kind| {
+    inline for (.{ .adapter, .target_export, .loaded_module_export, .admitted_run, .replay, .reject, .unsupported }) |kind| {
         const represented = fabricTestRoute(kind, provider_ref.target_ref_fingerprint);
         try represented.validate();
         try std.testing.expectEqual(kind, represented.kind);
@@ -14653,7 +14653,7 @@ test "link target hint selects module-ref-only provider" {
         .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
         .parent_world_port_id = root_import.world_port_id,
         .provider_target_ref_fingerprint = strict_ref.target_ref_fingerprint,
-        .route_kind = .target_export,
+        .route_kind = .loaded_module_export,
         .label = "strict-target",
     });
     var linked = try world.Linker.link(std.testing.allocator, .{
@@ -39599,6 +39599,418 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, overridden_mode.report.blockers[0]);
     try std.testing.expect(overridden_mode.receipt == null);
     try std.testing.expect(overridden_mode.admitted_run == null);
+}
+
+test "Executable Builder seals full module image with explicit residual external binding" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    const root_module = builder.modules.items[0];
+    try std.testing.expectEqual(@as(usize, 1), root_module.imports.len);
+    const root_import = root_module.imports[0];
+    const actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "seed.fixture",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture",
+    });
+    try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "seed.fixture",
+    }));
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(prepared.plan.compatibility_report.compatible);
+    try std.testing.expectEqual(@as(usize, 1), prepared.plan.external_bindings.len);
+    try std.testing.expectEqual(@as(usize, 1), prepared.plan.link_plan.external_environment_requirements.len);
+    try std.testing.expect(prepared.plan.dispatch_image.dispatch_fingerprint != 0);
+
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+    const report = try image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(report.compatible);
+    try std.testing.expectEqual(image.image_fingerprint, image.certificate.image_fingerprint);
+    try std.testing.expectEqual(
+        root_module.module_ref.boundary_module_fingerprint,
+        image.module_set.root().?.module_ref.boundary_module_fingerprint,
+    );
+}
+
+test "Executable Builder reports residual binding blockers before image seal" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(!prepared.plan.compatibility_report.compatible);
+    try std.testing.expect(prepared.plan.compatibility_report.hard_blockers != 0);
+    try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
+}
+
+test "Executable Builder deduplicates identical provider module bytes" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(root_bytes);
+    try builder.addProviderModule(root_bytes);
+
+    try std.testing.expectEqual(@as(usize, 1), builder.modules.items.len);
+}
+
+test "Loaded Runspace installs executable roots as ordinary slots" {
+    const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(strict_bytes);
+
+    var strict_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer strict_builder.deinit();
+    try strict_builder.addRootModule(strict_bytes);
+    var strict_prepared = try strict_builder.prepare();
+    defer strict_prepared.deinit();
+    var strict_image = try strict_prepared.seal();
+    defer strict_image.deinit(std.testing.allocator);
+
+    var complete_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer complete_runspace.deinit();
+    const complete_handle = try complete_runspace.installExecutableRoot(strict_image, .{});
+    const complete_installed = try complete_runspace.getSlotSummary(complete_handle);
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, complete_installed.backend_kind);
+    const complete_report = try complete_runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), complete_report.completed_count);
+    try std.testing.expect(complete_runspace.slots.items[0].completed_result_image != null);
+
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    const root_module = builder.modules.items[0];
+    const root_import = root_module.imports[0];
+    const actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "loaded-runspace.fixture",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "loaded-runspace.fixture",
+    });
+    try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "loaded-runspace.fixture",
+    }));
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installExecutableRoot(image, .{});
+    const installed = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, installed.backend_kind);
+    try std.testing.expectEqual(image.image_fingerprint, installed.executable_image_fingerprint.?);
+
+    const parked_report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), parked_report.parked_count);
+    try std.testing.expectEqual(@as(usize, 1), parked_report.pending_port_count);
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    try std.testing.expectEqual(root_import.world_port_id, request.world_port_id);
+    try std.testing.expect(request.payload_image != null);
+    try std.testing.expect(request.payload_image.?.bytes.len != 0);
+}
+
+test "Loaded Linker emits dense loaded module provider route evidence" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .module_ref = provider_module_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .value_ref_fingerprint = root_import.response_value_ref_fingerprint },
+        .label = "provider-module",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.moduleRef(.{
+            .module_ref = provider_module_ref,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "provider-module",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    const route = linked.plan.fabric_plans[0].routes[0];
+    try std.testing.expectEqual(world.Fabric.RouteKind.loaded_module_export, route.kind);
+    try std.testing.expectEqual(provider_module_ref.module_ref_fingerprint, route.provider_module_fingerprint.?);
+}
+
+test "Loaded Admission admits executable image without local target registry" {
+    const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(strict_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(strict_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    const empty_registry = world.Admission.TargetRegistry.init(&.{});
+    const strict_admitter = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = .strict_local_execution,
+    });
+    const strict_result = strict_admitter.admitExecutableImage(image, .{});
+    try std.testing.expect(!strict_result.report.accepted);
+    try std.testing.expect(strict_result.loaded_run == null);
+
+    const receiver = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = .executable_receiver,
+    });
+    const admitted = receiver.admitExecutableImage(image, .{});
+    try std.testing.expect(admitted.report.accepted);
+    try std.testing.expect(admitted.loaded_run != null);
+    try std.testing.expectEqual(image.image_fingerprint, admitted.loaded_run.?.executable_image_fingerprint);
+    try std.testing.expectEqual(image.dispatch_image.dispatch_fingerprint, admitted.loaded_run.?.dispatch_fingerprint);
+    try std.testing.expectEqual(image.module_set.root().?.module_ref.module_ref_fingerprint, admitted.loaded_run.?.root_module_ref_fingerprint);
+}
+
+test "Loaded Fabric installs provider from sealed executable image route" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(provider_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .linker_policy = .strict_closed,
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(prepared.plan.compatibility_report.compatible);
+    try std.testing.expectEqual(@as(usize, 1), prepared.plan.link_plan.fabric_plans.len);
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_module = image.module_set.modules[1];
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const response_mapping = world.Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_result_value_table_id = root_import.response_value_table_id,
+        .provider_result_value_fingerprint = provider_module.export_summary.result_value_ref_fingerprint,
+        .parent_response_value_table_id = root_import.response_value_table_id,
+        .parent_response_value_fingerprint = root_import.response_value_ref_fingerprint,
+        .require_portable_images = true,
+    });
+    const route = world.Fabric.Route.init(.{
+        .route_id = 0x5150_5008,
+        .kind = .loaded_module_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .parent_world_port_id = root_import.world_port_id,
+        .provider_module_fingerprint = provider_module.module_ref.module_ref_fingerprint,
+        .value_mapping_fingerprint = response_mapping.mapping_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{response_mapping},
+    });
+    var runtime = boundary.Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
+        .mode = .fresh,
+        .fabric_plan_fingerprint = plan.plan_fingerprint,
+        .policy = world.SupervisionPolicy.init(.{
+            .allow_fresh_calls = true,
+            .allow_fabric_routes = true,
+            .allow_target_export_routes = true,
+        }),
+    });
+    const root_handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsMissingEnv, &runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+        .fabric_plan = plan,
+        .permit = permit,
+    });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(root_handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    const invocation = try runspace.routePendingToLoadedProvider(0, image, plan);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_running, invocation.status);
+    try std.testing.expectEqual(@as(usize, 2), runspace.slots.items.len);
+    const provider_summary = try runspace.getSlotSummary(runspace.slots.items[1].handle);
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, provider_summary.backend_kind);
+    try std.testing.expectEqual(root_handle.handle_fingerprint, provider_summary.parent_run_handle_fingerprint.?);
+
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(runspace.slots.items[1].handle)).status);
+    const event = try runspace.respondFromFabric(invocation);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+
+    const final_report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 2), final_report.completed_count);
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(root_handle)).status);
+}
+
+test "Loaded Capsule binds run slot executable and loaded session identity" {
+    const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(strict_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(strict_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installExecutableRoot(image, .{});
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+
+    var capsule = try world.Capsule.freezeRunspace(&runspace, .{});
+    defer capsule.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), capsule.runspace_image.run_slots.len);
+    const slot = capsule.runspace_image.run_slots[0];
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, slot.backend_kind);
+    try std.testing.expectEqual(image.image_fingerprint, slot.executable_image_fingerprint.?);
+    try std.testing.expectEqual(image.module_set.root().?.executable_plan_fingerprint, slot.executable_plan_fingerprint.?);
+    try std.testing.expect(slot.loaded_session_fingerprint != null);
+
+    const malformed_loaded_slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_5008,
+        .role = .root,
+        .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+        .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+        .backend_kind = .loaded_module,
+        .run_state_fingerprint = 0x5150_5009,
+        .status = .completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, malformed_loaded_slot.validate(.{}));
+}
+
+test "World Seed Migration restores loaded executable slot identity into new runspace" {
+    const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(strict_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(strict_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const source_handle = try source.installExecutableRoot(image, .{});
+    _ = try source.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try source.getSlotSummary(source_handle)).status);
+
+    var capsule = try world.Capsule.freezeRunspace(&source, .{});
+    defer capsule.deinit(std.testing.allocator);
+
+    var receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer receiver.deinit();
+    var restored = try world.Capsule.thawIntoRunspace(
+        capsule,
+        &receiver,
+        image.module_set.root().?.target_ref.target_ref_fingerprint,
+        0,
+        null,
+        .{
+            .mode = .restore_completed,
+            .require_local_permit = false,
+            .require_link_match = false,
+        },
+    );
+    defer restored.deinit(std.testing.allocator);
+    try std.testing.expect(restored.accepted);
+    try std.testing.expectEqual(@as(usize, 1), receiver.slots.items.len);
+    const restored_summary = try receiver.getSlotSummary(receiver.slots.items[0].handle);
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, restored_summary.backend_kind);
+    try std.testing.expectEqual(image.image_fingerprint, restored_summary.executable_image_fingerprint.?);
+    try std.testing.expectEqual(image.module_set.root().?.executable_plan_fingerprint, restored_summary.executable_plan_fingerprint.?);
 }
 
 test "admission rejects bare target reference when reference targets are disabled" {

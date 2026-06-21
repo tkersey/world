@@ -468,6 +468,7 @@ pub fn Appliance(comptime World: type) type {
             actuation_descriptor_fingerprints: []const u64 = &.{},
             actuation_binding_fingerprints: []const u64 = &.{},
             actuation_actuator_ref_fingerprints: []const u64 = &.{},
+            actuation_world_port_ids: []const u64 = &.{},
             actuation_classes: []const World.Actuation.Class = &.{},
             actuation_allowed_response_statuses: []const World.Actuation.ResponseStatusSet = &.{},
             supervision_policy_fingerprint: u64 = 0,
@@ -495,6 +496,7 @@ pub fn Appliance(comptime World: type) type {
                 actuation_descriptor_fingerprints: []const u64 = &.{},
                 actuation_binding_fingerprints: []const u64 = &.{},
                 actuation_actuator_ref_fingerprints: []const u64 = &.{},
+                actuation_world_port_ids: []const u64 = &.{},
                 actuation_classes: []const World.Actuation.Class = &.{},
                 actuation_allowed_response_statuses: []const World.Actuation.ResponseStatusSet = &.{},
                 supervision_policy_fingerprint: u64 = 0,
@@ -522,6 +524,7 @@ pub fn Appliance(comptime World: type) type {
                     .actuation_descriptor_fingerprints = args.actuation_descriptor_fingerprints,
                     .actuation_binding_fingerprints = args.actuation_binding_fingerprints,
                     .actuation_actuator_ref_fingerprints = args.actuation_actuator_ref_fingerprints,
+                    .actuation_world_port_ids = args.actuation_world_port_ids,
                     .actuation_classes = args.actuation_classes,
                     .actuation_allowed_response_statuses = args.actuation_allowed_response_statuses,
                     .supervision_policy_fingerprint = args.supervision_policy_fingerprint,
@@ -550,9 +553,9 @@ pub fn Appliance(comptime World: type) type {
                 if (self.required_host_capabilities._reserved != 0) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_binding_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_actuator_ref_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.actuation_descriptor_fingerprints.len != self.actuation_world_port_ids.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_classes.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_allowed_response_statuses.len) return error.InvalidFrameEncoding;
-                if (self.actuation_binding_fingerprints.len > 1) return error.InvalidFrameEncoding;
                 if (self.actuation_binding_fingerprints.len != 0 and (!self.enabled_features.actuation or !self.required_host_capabilities.actuation or !self.supported_execution_modes.fresh or self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
                 for (self.provider_target_ref_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
@@ -568,6 +571,12 @@ pub fn Appliance(comptime World: type) type {
                 }
                 for (self.actuation_actuator_ref_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
+                }
+                for (self.actuation_world_port_ids, 0..) |world_port_id, index| {
+                    if (world_port_id > std.math.maxInt(u32)) return error.InvalidFrameEncoding;
+                    for (self.actuation_world_port_ids[index + 1 ..]) |other| {
+                        if (world_port_id == other) return error.InvalidFrameEncoding;
+                    }
                 }
                 for (self.actuation_classes) |class| {
                     if (class == .unknown_effect) return error.InvalidFrameEncoding;
@@ -615,6 +624,7 @@ pub fn Appliance(comptime World: type) type {
                     allocator.free(self.actuation_descriptor_fingerprints);
                     allocator.free(self.actuation_binding_fingerprints);
                     allocator.free(self.actuation_actuator_ref_fingerprints);
+                    allocator.free(self.actuation_world_port_ids);
                     allocator.free(self.actuation_classes);
                     allocator.free(self.actuation_allowed_response_statuses);
                     allocator.free(self.default_permit_requirement_fingerprints);
@@ -719,7 +729,6 @@ pub fn Appliance(comptime World: type) type {
                     if (reply.outcome.host_request_fingerprint != reply.target_host_request_fingerprint) return error.InvalidFrameEncoding;
                 }
                 try validateDistinctHostReplyTargets(self.host_replies);
-                if (self.host_replies.len > 1) return error.InvalidFrameEncoding;
                 if (self.retention_ack) |ack| {
                     if (self.kind != .@"continue" and self.kind != .restore) return error.InvalidFrameEncoding;
                     try ack.validate(null, capacity);
@@ -730,13 +739,10 @@ pub fn Appliance(comptime World: type) type {
                     try checkpoint.validate(expected_manifest_fingerprint, capacity);
                     if (checkpoint.core_state == .runnable or checkpoint.core_state == .uninitialized) return error.InvalidFrameEncoding;
                     if (checkpoint.turn_sequence_number == std.math.maxInt(u64)) return error.InvalidFrameEncoding;
-                    if (checkpoint.outstanding_host_requests.len > 1) return error.InvalidFrameEncoding;
                     if (self.turn_sequence_number != checkpoint.turn_sequence_number + 1) return error.InvalidFrameEncoding;
                     if (self.previous_turn_receipt_fingerprint != checkpoint.previous_turn_receipt_fingerprint) return error.InvalidFrameEncoding;
-                    if (self.host_replies.len != 0) {
-                        if (checkpoint.outstanding_host_requests.len != 1 or self.host_replies.len != 1) return error.InvalidFrameEncoding;
-                        try self.host_replies[0].validate(checkpoint.outstanding_host_requests, capacity);
-                    }
+                    if (self.host_replies.len != 0 and checkpoint.outstanding_host_requests.len == 0) return error.InvalidFrameEncoding;
+                    for (self.host_replies) |reply| try reply.validate(checkpoint.outstanding_host_requests, capacity);
                     if (try effectiveRetentionAck(self)) |ack| {
                         try ack.validate(checkpoint.pending_archive_append_batch_fingerprint orelse return error.ArchiveParentMismatch, capacity);
                     }
@@ -868,6 +874,15 @@ pub fn Appliance(comptime World: type) type {
             supervision_ref_fingerprint: ?u64 = null,
             metadata: []const u8 = "",
             owns_metadata: bool = false,
+            frame_request_bytes: []const u8 = "",
+            payload_value_image_bytes: []const u8 = "",
+            payload_value_ref_fingerprint: ?u64 = null,
+            payload_schema_ref_fingerprint: ?u64 = null,
+            expected_response_value_ref_fingerprint: ?u64 = null,
+            expected_response_schema_ref_fingerprint: ?u64 = null,
+            prepared_actuation_evidence_bytes: []const u8 = "",
+            idempotency_key_bytes: []const u8 = "",
+            owns_byte_payloads: bool = false,
 
             pub fn init(args: anytype) @This() {
                 var result = @This(){
@@ -888,6 +903,15 @@ pub fn Appliance(comptime World: type) type {
                     .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
                     .supervision_ref_fingerprint = if (@hasField(@TypeOf(args), "supervision_ref_fingerprint")) args.supervision_ref_fingerprint else null,
                     .metadata = if (@hasField(@TypeOf(args), "metadata")) args.metadata else "",
+                    .frame_request_bytes = if (@hasField(@TypeOf(args), "frame_request_bytes")) args.frame_request_bytes else "",
+                    .payload_value_image_bytes = if (@hasField(@TypeOf(args), "payload_value_image_bytes")) args.payload_value_image_bytes else "",
+                    .payload_value_ref_fingerprint = if (@hasField(@TypeOf(args), "payload_value_ref_fingerprint")) args.payload_value_ref_fingerprint else null,
+                    .payload_schema_ref_fingerprint = if (@hasField(@TypeOf(args), "payload_schema_ref_fingerprint")) args.payload_schema_ref_fingerprint else null,
+                    .expected_response_value_ref_fingerprint = if (@hasField(@TypeOf(args), "expected_response_value_ref_fingerprint")) args.expected_response_value_ref_fingerprint else null,
+                    .expected_response_schema_ref_fingerprint = if (@hasField(@TypeOf(args), "expected_response_schema_ref_fingerprint")) args.expected_response_schema_ref_fingerprint else null,
+                    .prepared_actuation_evidence_bytes = if (@hasField(@TypeOf(args), "prepared_actuation_evidence_bytes")) args.prepared_actuation_evidence_bytes else "",
+                    .idempotency_key_bytes = if (@hasField(@TypeOf(args), "idempotency_key_bytes")) args.idempotency_key_bytes else "",
+                    .owns_byte_payloads = if (@hasField(@TypeOf(args), "owns_byte_payloads")) args.owns_byte_payloads else false,
                 };
                 result.request_fingerprint = fingerprintHostRequest(result);
                 return result;
@@ -905,6 +929,14 @@ pub fn Appliance(comptime World: type) type {
                 if (self.expected_response_descriptor_fingerprint == 0 or self.idempotency_key_fingerprint == 0) return error.InvalidFrameEncoding;
                 try validateOptionalFingerprint(self.supervision_ref_fingerprint);
                 if (self.metadata.len > capacity.max_metadata_bytes) return error.CapacityExceeded;
+                try validateOptionalFingerprint(self.payload_value_ref_fingerprint);
+                try validateOptionalFingerprint(self.payload_schema_ref_fingerprint);
+                try validateOptionalFingerprint(self.expected_response_value_ref_fingerprint);
+                try validateOptionalFingerprint(self.expected_response_schema_ref_fingerprint);
+                if (self.frame_request_bytes.len > capacity.max_command_bytes) return error.CapacityExceeded;
+                if (self.payload_value_image_bytes.len > capacity.max_command_bytes) return error.CapacityExceeded;
+                if (self.prepared_actuation_evidence_bytes.len > capacity.max_command_bytes) return error.CapacityExceeded;
+                if (self.idempotency_key_bytes.len > capacity.max_command_bytes) return error.CapacityExceeded;
                 if (self.request_fingerprint != fingerprintHostRequest(self)) return error.InvalidFrameEncoding;
             }
 
@@ -929,6 +961,14 @@ pub fn Appliance(comptime World: type) type {
                 try writeU64(out, allocator, self.idempotency_key_fingerprint);
                 try writeOptionalU64(out, allocator, self.supervision_ref_fingerprint);
                 try writeBytes(out, allocator, self.metadata);
+                try writeBytes(out, allocator, self.frame_request_bytes);
+                try writeBytes(out, allocator, self.payload_value_image_bytes);
+                try writeOptionalU64(out, allocator, self.payload_value_ref_fingerprint);
+                try writeOptionalU64(out, allocator, self.payload_schema_ref_fingerprint);
+                try writeOptionalU64(out, allocator, self.expected_response_value_ref_fingerprint);
+                try writeOptionalU64(out, allocator, self.expected_response_schema_ref_fingerprint);
+                try writeBytes(out, allocator, self.prepared_actuation_evidence_bytes);
+                try writeBytes(out, allocator, self.idempotency_key_bytes);
             }
 
             pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
@@ -942,6 +982,12 @@ pub fn Appliance(comptime World: type) type {
 
             pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
                 if (self.owns_metadata) allocator.free(self.metadata);
+                if (self.owns_byte_payloads) {
+                    allocator.free(self.frame_request_bytes);
+                    allocator.free(self.payload_value_image_bytes);
+                    allocator.free(self.prepared_actuation_evidence_bytes);
+                    allocator.free(self.idempotency_key_bytes);
+                }
                 self.* = undefined;
             }
         };
@@ -1501,9 +1547,14 @@ pub fn Appliance(comptime World: type) type {
             host_requests: []const HostRequest = &.{},
             finalized_actuation_receipt_fingerprints: []const u64 = &.{},
             root_result_fingerprint: ?u64 = null,
+            root_result_value_image_bytes: []const u8 = "",
+            root_result_value_ref_fingerprint: ?u64 = null,
             run_receipt_fingerprint: ?u64 = null,
+            run_receipt_bytes: []const u8 = "",
             archive_append_batch_fingerprint: ?u64 = null,
             archive_append_batch_ref_fingerprint: ?u64 = null,
+            checkpoint_bytes: []const u8 = "",
+            archive_append_batch_bytes: []const u8 = "",
             checkpoint: Checkpoint,
             turn_receipt: TurnReceipt,
             blocker_count: usize = 0,
@@ -1514,6 +1565,7 @@ pub fn Appliance(comptime World: type) type {
             owns_checkpoint_payloads: bool = false,
             owns_turn_receipt_payloads: bool = false,
             owns_diagnostic_metadata: bool = false,
+            owns_byte_payloads: bool = false,
 
             pub fn init(args: struct {
                 manifest_fingerprint: u64,
@@ -1525,9 +1577,14 @@ pub fn Appliance(comptime World: type) type {
                 host_requests: []const HostRequest = &.{},
                 finalized_actuation_receipt_fingerprints: []const u64 = &.{},
                 root_result_fingerprint: ?u64 = null,
+                root_result_value_image_bytes: []const u8 = "",
+                root_result_value_ref_fingerprint: ?u64 = null,
                 run_receipt_fingerprint: ?u64 = null,
+                run_receipt_bytes: []const u8 = "",
                 archive_append_batch_fingerprint: ?u64 = null,
                 archive_append_batch_ref_fingerprint: ?u64 = null,
+                checkpoint_bytes: []const u8 = "",
+                archive_append_batch_bytes: []const u8 = "",
                 checkpoint: Checkpoint,
                 turn_receipt: TurnReceipt,
                 blocker_count: usize = 0,
@@ -1544,9 +1601,14 @@ pub fn Appliance(comptime World: type) type {
                     .host_requests = args.host_requests,
                     .finalized_actuation_receipt_fingerprints = args.finalized_actuation_receipt_fingerprints,
                     .root_result_fingerprint = args.root_result_fingerprint,
+                    .root_result_value_image_bytes = args.root_result_value_image_bytes,
+                    .root_result_value_ref_fingerprint = args.root_result_value_ref_fingerprint,
                     .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                    .run_receipt_bytes = args.run_receipt_bytes,
                     .archive_append_batch_fingerprint = args.archive_append_batch_fingerprint,
                     .archive_append_batch_ref_fingerprint = args.archive_append_batch_ref_fingerprint orelse defaultArchiveAppendBatchRef(args.archive_append_batch_fingerprint),
+                    .checkpoint_bytes = args.checkpoint_bytes,
+                    .archive_append_batch_bytes = args.archive_append_batch_bytes,
                     .checkpoint = args.checkpoint,
                     .turn_receipt = args.turn_receipt,
                     .blocker_count = args.blocker_count,
@@ -1567,7 +1629,6 @@ pub fn Appliance(comptime World: type) type {
                 try self.quiescence.validate();
                 if (!self.quiescence.quiescent or self.quiescence.runnable_run_count != 0 or self.quiescence.parked_run_count != 0 or self.quiescence.active_fabric_count != 0) return error.InvalidFrameEncoding;
                 if (self.host_requests.len > capacity.max_host_requests_per_turn) return error.CapacityExceeded;
-                if (self.host_requests.len > 1) return error.InvalidFrameEncoding;
                 if (self.status == .needs_host and self.host_requests.len == 0) return error.InvalidFrameEncoding;
                 if (self.status != .needs_host and self.host_requests.len != 0) return error.InvalidFrameEncoding;
                 if (self.quiescence.pending_host_request_count != self.checkpoint.outstanding_host_requests.len) return error.InvalidFrameEncoding;
@@ -1596,7 +1657,6 @@ pub fn Appliance(comptime World: type) type {
                 if (self.archive_append_batch_ref_fingerprint != defaultArchiveAppendBatchRef(self.archive_append_batch_fingerprint)) return error.InvalidFrameEncoding;
                 if (self.diagnostic_metadata.len > capacity.max_metadata_bytes) return error.CapacityExceeded;
                 try self.checkpoint.validate(expected_manifest_fingerprint, capacity);
-                if (self.checkpoint.outstanding_host_requests.len > 1) return error.InvalidFrameEncoding;
                 try self.turn_receipt.validate(expected_manifest_fingerprint, capacity);
                 if (self.turn_sequence_number != self.checkpoint.turn_sequence_number and !(self.checkpoint.core_state == .uninitialized and self.checkpoint.turn_sequence_number == 0)) return error.InvalidFrameEncoding;
                 if (self.turn_sequence_number != self.turn_receipt.turn_sequence_number) return error.InvalidFrameEncoding;
@@ -1614,10 +1674,19 @@ pub fn Appliance(comptime World: type) type {
                     if (self.root_result_fingerprint == null) return error.InvalidFrameEncoding;
                 } else if (self.root_result_fingerprint != null) {
                     return error.InvalidFrameEncoding;
+                } else if (self.root_result_value_image_bytes.len != 0 or self.root_result_value_ref_fingerprint != null) {
+                    return error.InvalidFrameEncoding;
                 }
+                try validateOptionalFingerprint(self.root_result_value_ref_fingerprint);
                 if (self.run_receipt_fingerprint != self.turn_receipt.run_receipt_fingerprint) return error.InvalidFrameEncoding;
+                if (self.run_receipt_fingerprint == null and self.run_receipt_bytes.len != 0) return error.InvalidFrameEncoding;
                 if (self.archive_append_batch_fingerprint != self.turn_receipt.archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
                 if (self.archive_append_batch_fingerprint != null and self.archive_append_batch_fingerprint != self.checkpoint.pending_archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
+                if (self.archive_append_batch_fingerprint == null and self.archive_append_batch_bytes.len != 0) return error.InvalidFrameEncoding;
+                if (self.root_result_value_image_bytes.len > capacity.max_output_bytes) return error.CapacityExceeded;
+                if (self.run_receipt_bytes.len > capacity.max_output_bytes) return error.CapacityExceeded;
+                if (self.checkpoint_bytes.len > capacity.max_output_bytes) return error.CapacityExceeded;
+                if (self.archive_append_batch_bytes.len > capacity.max_archive_append_bytes) return error.CapacityExceeded;
                 if (self.blocker_count != self.turn_receipt.blocker_count or self.blocker_count != self.quiescence.blocker_count) return error.InvalidFrameEncoding;
                 if (self.warning_count != self.turn_receipt.warning_count or self.warning_count != self.quiescence.warning_count) return error.InvalidFrameEncoding;
                 if (self.status == .blocked and self.blocker_count == 0) return error.InvalidFrameEncoding;
@@ -1659,9 +1728,14 @@ pub fn Appliance(comptime World: type) type {
                 for (self.host_requests) |request| try request.encode(&out, allocator);
                 try writeU64Slice(&out, allocator, self.finalized_actuation_receipt_fingerprints);
                 try writeOptionalU64(&out, allocator, self.root_result_fingerprint);
+                try writeBytes(&out, allocator, self.root_result_value_image_bytes);
+                try writeOptionalU64(&out, allocator, self.root_result_value_ref_fingerprint);
                 try writeOptionalU64(&out, allocator, self.run_receipt_fingerprint);
+                try writeBytes(&out, allocator, self.run_receipt_bytes);
                 try writeOptionalU64(&out, allocator, self.archive_append_batch_fingerprint);
                 try writeOptionalU64(&out, allocator, self.archive_append_batch_ref_fingerprint);
+                try writeBytes(&out, allocator, self.checkpoint_bytes);
+                try writeBytes(&out, allocator, self.archive_append_batch_bytes);
                 try self.checkpoint.encode(&out, allocator);
                 try self.turn_receipt.encode(&out, allocator);
                 try writeU64(&out, allocator, self.blocker_count);
@@ -2102,7 +2176,8 @@ pub fn Appliance(comptime World: type) type {
             current_turn_sequence_number: u64 = 0,
             previous_turn_receipt_fingerprint: ?u64 = null,
             outstanding_host_request: ?HostRequest = null,
-            outstanding_host_request_metadata_owned: bool = false,
+            outstanding_host_requests: []const HostRequest = &.{},
+            outstanding_host_requests_owned: bool = false,
             pending_archive_append_batch_fingerprint: ?u64 = null,
             pending_archive_resulting_cursor: ?World.Continuity.Chronicle.Cursor = null,
             latest_archive_cursor: World.Continuity.Chronicle.Cursor = World.Continuity.Chronicle.Cursor.initial(),
@@ -2114,9 +2189,8 @@ pub fn Appliance(comptime World: type) type {
                 state: CoreState,
                 current_turn_sequence_number: u64,
                 previous_turn_receipt_fingerprint: ?u64,
-                outstanding_host_request: ?HostRequest,
-                outstanding_host_request_metadata_owned: bool,
-                snapshot_metadata_owned: bool = false,
+                outstanding_host_requests: []const HostRequest,
+                snapshot_requests_owned: bool = false,
                 pending_archive_append_batch_fingerprint: ?u64,
                 pending_archive_resulting_cursor: ?World.Continuity.Chronicle.Cursor,
                 latest_archive_cursor: World.Continuity.Chronicle.Cursor,
@@ -2127,21 +2201,18 @@ pub fn Appliance(comptime World: type) type {
                 last_turn_status: ?TurnStatus,
 
                 fn capture(core: *Core) !@This() {
-                    var request = core.outstanding_host_request;
-                    var owns_snapshot_metadata = false;
-                    if (core.outstanding_host_request_metadata_owned) {
-                        if (request) |*captured| {
-                            captured.metadata = try core.allocator.dupe(u8, captured.metadata);
-                            owns_snapshot_metadata = true;
-                        }
-                    }
+                    const requests = if (core.outstanding_host_requests.len != 0)
+                        try cloneHostRequestsOwned(core.allocator, core.outstanding_host_requests)
+                    else if (core.outstanding_host_request) |request|
+                        try cloneHostRequestsOwned(core.allocator, &.{request})
+                    else
+                        try cloneHostRequestsOwned(core.allocator, &.{});
                     return .{
                         .state = core.state,
                         .current_turn_sequence_number = core.current_turn_sequence_number,
                         .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
-                        .outstanding_host_request = request,
-                        .outstanding_host_request_metadata_owned = core.outstanding_host_request_metadata_owned,
-                        .snapshot_metadata_owned = owns_snapshot_metadata,
+                        .outstanding_host_requests = requests,
+                        .snapshot_requests_owned = true,
                         .pending_archive_append_batch_fingerprint = core.pending_archive_append_batch_fingerprint,
                         .pending_archive_resulting_cursor = core.pending_archive_resulting_cursor,
                         .latest_archive_cursor = core.latest_archive_cursor,
@@ -2154,12 +2225,13 @@ pub fn Appliance(comptime World: type) type {
                 }
 
                 fn restore(self: *@This(), core: *Core) void {
-                    core.clearOutstandingHostRequest();
+                    core.clearOutstandingHostRequests();
                     core.state = self.state;
                     core.current_turn_sequence_number = self.current_turn_sequence_number;
                     core.previous_turn_receipt_fingerprint = self.previous_turn_receipt_fingerprint;
-                    core.outstanding_host_request = self.outstanding_host_request;
-                    core.outstanding_host_request_metadata_owned = self.outstanding_host_request_metadata_owned;
+                    core.outstanding_host_requests = self.outstanding_host_requests;
+                    core.outstanding_host_requests_owned = self.snapshot_requests_owned;
+                    core.outstanding_host_request = if (self.outstanding_host_requests.len == 0) null else self.outstanding_host_requests[0];
                     core.pending_archive_append_batch_fingerprint = self.pending_archive_append_batch_fingerprint;
                     core.pending_archive_resulting_cursor = self.pending_archive_resulting_cursor;
                     core.latest_archive_cursor = self.latest_archive_cursor;
@@ -2168,16 +2240,14 @@ pub fn Appliance(comptime World: type) type {
                     core.latest_chronicle_cursor_fingerprint = self.latest_chronicle_cursor_fingerprint;
                     core.last_output_status = self.last_output_status;
                     core.last_turn_status = self.last_turn_status;
-                    self.outstanding_host_request = null;
-                    self.snapshot_metadata_owned = false;
+                    self.outstanding_host_requests = &.{};
+                    self.snapshot_requests_owned = false;
                 }
 
                 fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-                    if (self.snapshot_metadata_owned) {
-                        if (self.outstanding_host_request) |request| allocator.free(request.metadata);
-                    }
-                    self.outstanding_host_request = null;
-                    self.snapshot_metadata_owned = false;
+                    if (self.snapshot_requests_owned) freeHostRequests(allocator, self.outstanding_host_requests);
+                    self.outstanding_host_requests = &.{};
+                    self.snapshot_requests_owned = false;
                 }
             };
 
@@ -2188,6 +2258,39 @@ pub fn Appliance(comptime World: type) type {
                     .memory_plan_value = memory_plan,
                     .capacity_value = capacity,
                 };
+            }
+
+            pub fn initExecutable(
+                allocator: std.mem.Allocator,
+                image: World.Executable.Image,
+                options: struct {
+                    profile: Profile = .wasm_agent,
+                    capacity: ?Capacity = null,
+                    metadata: []const u8 = "world-executable-image",
+                },
+            ) !@This() {
+                const compatibility = try image.validate(World.Executable.RuntimeProfile.universal_v1);
+                if (!compatibility.compatible) return error.ExecutableLoadRejected;
+                const capacity = options.capacity orelse capacityFromExecutableMemoryPlan(image.memory_plan, options.profile);
+                try capacity.validateForProfile(options.profile);
+                if (image.external_bindings.len > capacity.max_host_requests_per_turn) return error.CapacityExceeded;
+                if (image.external_bindings.len > capacity.max_host_replies_per_turn) return error.CapacityExceeded;
+                if (image.external_bindings.len > capacity.max_actuation_records) return error.CapacityExceeded;
+                var manifest = try manifestFromExecutableImage(allocator, image, options.profile, capacity, options.metadata);
+                errdefer manifest.deinit(allocator);
+                const memory_plan = MemoryPlan.derive(capacity, options.profile);
+                return initWithCapacity(allocator, manifest, memory_plan, capacity);
+            }
+
+            pub fn deinit(self: *@This()) void {
+                self.clearContinuationState();
+                if (self.pending_command) |*command| command.deinit(self.allocator);
+                self.pending_command = null;
+                if (self.last_output_owned) self.allocator.free(self.last_output_bytes);
+                self.last_output_bytes = "";
+                self.last_output_owned = false;
+                self.manifest_value.deinit(self.allocator);
+                self.* = undefined;
             }
 
             pub fn submit(self: *@This(), command_bytes: []const u8) !void {
@@ -2235,44 +2338,46 @@ pub fn Appliance(comptime World: type) type {
                 };
                 var archive_append_batch_fingerprint: ?u64 = null;
                 var planned_archive_resulting_cursor: ?World.Continuity.Chronicle.Cursor = null;
-                var host_request_storage: [1]HostRequest = undefined;
+                var host_requests_owned = false;
+                var legacy_outstanding_host_request_storage: [1]HostRequest = undefined;
+                const current_outstanding_host_requests = if (self.outstanding_host_requests.len != 0)
+                    self.outstanding_host_requests
+                else if (self.outstanding_host_request) |request| blk: {
+                    legacy_outstanding_host_request_storage[0] = request;
+                    break :blk legacy_outstanding_host_request_storage[0..1];
+                } else &.{};
                 const host_requests = if (status == .needs_host) blk: {
                     if (self.capacity_value.max_host_requests_per_turn == 0) return error.CapacityExceeded;
                     if (commandHasNonTerminalHostReply(command) or command.kind == .restore) {
-                        if (self.outstanding_host_request) |request| {
-                            host_request_storage[0] = request;
-                            break :blk host_request_storage[0..1];
-                        }
+                        if (current_outstanding_host_requests.len != 0) break :blk current_outstanding_host_requests;
                     }
-                    host_request_storage[0] = self.hostRequestFor(command, turn_sequence_number, capsule_fingerprint);
-                    break :blk host_request_storage[0..1];
+                    const request_count = self.manifest_value.actuation_binding_fingerprints.len;
+                    if (request_count == 0) break :blk &.{};
+                    if (request_count > self.capacity_value.max_host_requests_per_turn) return error.CapacityExceeded;
+                    const generated = try self.allocator.alloc(HostRequest, request_count);
+                    host_requests_owned = true;
+                    for (generated, 0..) |*request, index| {
+                        request.* = try self.hostRequestFor(command, turn_sequence_number, capsule_fingerprint, @intCast(index));
+                    }
+                    break :blk generated;
                 } else &.{};
-                var checkpoint_outstanding_host_request_storage: [1]HostRequest = undefined;
+                defer if (host_requests_owned) freeHostRequests(self.allocator, host_requests);
                 const checkpoint_outstanding_host_requests = if (host_requests.len != 0)
                     host_requests
-                else if (resulting_core_state == .waiting_host) blk: {
-                    if (self.outstanding_host_request) |request| {
-                        checkpoint_outstanding_host_request_storage[0] = request;
-                        break :blk checkpoint_outstanding_host_request_storage[0..1];
-                    }
-                    return error.InvalidFrameEncoding;
-                } else &.{};
-                var applied_host_reply_fingerprint_storage: [1]u64 = undefined;
-                const applied_host_reply_fingerprints = if (command.host_replies.len != 0) blk: {
-                    applied_host_reply_fingerprint_storage[0] = command.host_replies[0].reply_fingerprint;
-                    break :blk applied_host_reply_fingerprint_storage[0..1];
-                } else &.{};
-                var finalized_actuation_receipt_fingerprint_storage: [1]u64 = undefined;
+                else if (resulting_core_state == .waiting_host)
+                    if (current_outstanding_host_requests.len != 0) current_outstanding_host_requests else return error.InvalidFrameEncoding
+                else
+                    &.{};
+                const applied_host_reply_fingerprints = try hostReplyFingerprintsOwned(self.allocator, command.host_replies);
+                defer self.allocator.free(applied_host_reply_fingerprints);
                 const finalized_actuation_receipt_fingerprints = try finalizedActuationReceiptFingerprintsFor(
-                    self.outstanding_host_request,
+                    current_outstanding_host_requests,
                     command,
-                    &finalized_actuation_receipt_fingerprint_storage,
+                    self.allocator,
                 );
-                var emitted_host_request_fingerprint_storage: [1]u64 = undefined;
-                const emitted_host_request_fingerprints = if (host_requests.len != 0) blk: {
-                    emitted_host_request_fingerprint_storage[0] = host_requests[0].request_fingerprint;
-                    break :blk emitted_host_request_fingerprint_storage[0..1];
-                } else &.{};
+                defer self.allocator.free(finalized_actuation_receipt_fingerprints);
+                const emitted_host_request_fingerprints = try hostRequestFingerprintsOwned(self.allocator, host_requests);
+                defer self.allocator.free(emitted_host_request_fingerprints);
                 const prior_checkpoint_fingerprint = if (command.restore_checkpoint) |checkpoint|
                     checkpoint.checkpoint_fingerprint
                 else
@@ -2347,6 +2452,15 @@ pub fn Appliance(comptime World: type) type {
                     stateFingerprintFor(.uninitialized, 0, null)
                 else
                     stateFingerprintFor(resulting_core_state, turn_sequence_number, turn_receipt.receipt_fingerprint);
+                const root_result_value_image_bytes = if (root_result_fingerprint) |fingerprint|
+                    try encodeFingerprintImageOwned(self.allocator, "world.appliance.root_result.value_image", fingerprint)
+                else
+                    "";
+                defer if (root_result_fingerprint != null) self.allocator.free(root_result_value_image_bytes);
+                var checkpoint_bytes = try encodeCheckpointOwned(self.allocator, checkpoint);
+                defer self.allocator.free(checkpoint_bytes);
+                var archive_append_batch_bytes: []const u8 = "";
+                defer if (archive_append_batch_bytes.len != 0) self.allocator.free(archive_append_batch_bytes);
                 var output = TurnOutput.init(.{
                     .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
                     .turn_sequence_number = turn_sequence_number,
@@ -2357,7 +2471,10 @@ pub fn Appliance(comptime World: type) type {
                     .host_requests = host_requests,
                     .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_fingerprints,
                     .root_result_fingerprint = root_result_fingerprint,
+                    .root_result_value_image_bytes = root_result_value_image_bytes,
+                    .root_result_value_ref_fingerprint = root_result_fingerprint,
                     .archive_append_batch_fingerprint = output_archive_append_batch_fingerprint,
+                    .checkpoint_bytes = checkpoint_bytes,
                     .checkpoint = checkpoint,
                     .turn_receipt = turn_receipt,
                     .blocker_count = if (status == .blocked) 1 else 0,
@@ -2419,6 +2536,10 @@ pub fn Appliance(comptime World: type) type {
                         .execution_mode = command.execution_mode,
                         .metadata = "core-shell",
                     });
+                    const updated_checkpoint_bytes = try encodeCheckpointOwned(self.allocator, checkpoint);
+                    self.allocator.free(checkpoint_bytes);
+                    checkpoint_bytes = updated_checkpoint_bytes;
+                    archive_append_batch_bytes = try encodeArchiveAppendBatchFingerprintOwned(self.allocator, output_archive_append_batch_fingerprint.?);
                     output = TurnOutput.init(.{
                         .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
                         .turn_sequence_number = turn_sequence_number,
@@ -2429,7 +2550,11 @@ pub fn Appliance(comptime World: type) type {
                         .host_requests = host_requests,
                         .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_fingerprints,
                         .root_result_fingerprint = root_result_fingerprint,
+                        .root_result_value_image_bytes = root_result_value_image_bytes,
+                        .root_result_value_ref_fingerprint = root_result_fingerprint,
                         .archive_append_batch_fingerprint = output_archive_append_batch_fingerprint,
+                        .checkpoint_bytes = checkpoint_bytes,
+                        .archive_append_batch_bytes = archive_append_batch_bytes,
                         .checkpoint = checkpoint,
                         .turn_receipt = turn_receipt,
                         .blocker_count = if (status == .blocked) 1 else 0,
@@ -2450,12 +2575,9 @@ pub fn Appliance(comptime World: type) type {
                     self.current_turn_sequence_number = turn_sequence_number;
                     self.previous_turn_receipt_fingerprint = turn_receipt.receipt_fingerprint;
                     if (status == .needs_host and host_requests.len != 0) {
-                        if (!(self.outstanding_host_request != null and self.outstanding_host_request.?.request_fingerprint == host_requests[0].request_fingerprint)) {
-                            self.clearOutstandingHostRequest();
-                            self.outstanding_host_request = host_requests[0];
-                        }
+                        if (!hostRequestSlicesMatch(self.outstanding_host_requests, host_requests)) try self.setOutstandingHostRequests(host_requests);
                     } else {
-                        self.clearOutstandingHostRequest();
+                        self.clearOutstandingHostRequests();
                     }
                     if (retention_ack != null) self.latest_archive_cursor = acknowledged_archive_cursor_value;
                     if (output_archive_append_batch_fingerprint == null or retention_ack != null or self.pending_archive_append_batch_fingerprint != output_archive_append_batch_fingerprint) {
@@ -2565,21 +2687,27 @@ pub fn Appliance(comptime World: type) type {
             fn validateCommandReplies(self: @This(), command: Command) !void {
                 if (command.kind != .@"continue" and command.kind != .restore) return;
                 if (command.host_replies.len != 0 and command.execution_mode != .fresh) return error.InvalidMode;
+                var legacy_outstanding_host_request_storage: [1]HostRequest = undefined;
+                const current_outstanding_host_requests = if (self.outstanding_host_requests.len != 0)
+                    self.outstanding_host_requests
+                else if (self.outstanding_host_request) |request| blk: {
+                    legacy_outstanding_host_request_storage[0] = request;
+                    break :blk legacy_outstanding_host_request_storage[0..1];
+                } else &.{};
                 const outstanding = if (command.kind == .restore) blk: {
                     const checkpoint = command.restore_checkpoint orelse return error.RestoreRejected;
                     if (checkpoint.outstanding_host_requests.len == 0) {
                         if (command.host_replies.len != 0) return error.UnknownRequest;
                         return;
                     }
-                    if (checkpoint.outstanding_host_requests.len != 1) return error.UnknownRequest;
                     if (command.host_replies.len == 0) return;
-                    break :blk checkpoint.outstanding_host_requests[0];
-                } else self.outstanding_host_request orelse {
+                    break :blk checkpoint.outstanding_host_requests;
+                } else if (current_outstanding_host_requests.len != 0) current_outstanding_host_requests else {
                     if (command.host_replies.len != 0) return error.UnknownRequest;
                     return;
                 };
-                if (command.host_replies.len != 1) return error.UnknownRequest;
-                try command.host_replies[0].validate(&.{outstanding}, self.capacity_value);
+                if (command.kind == .@"continue" and command.host_replies.len == 0 and !commandHasRetentionAck(command)) return error.UnknownRequest;
+                for (command.host_replies) |reply| try reply.validate(outstanding, self.capacity_value);
             }
 
             fn validateCommandRetentionAck(self: @This(), command: Command) !void {
@@ -2638,14 +2766,14 @@ pub fn Appliance(comptime World: type) type {
                 if (checkpoint.latest_chronicle_cursor_fingerprint != self.latest_chronicle_cursor_fingerprint) return error.StaleTurn;
                 if (checkpoint.latest_chronicle_cursor_fingerprint != null and !optionalCursorMatches(checkpoint.latest_archive_cursor, self.latest_archive_cursor)) return error.StaleTurn;
 
-                if (checkpoint.outstanding_host_requests.len == 0) {
-                    if (self.outstanding_host_request != null) return error.StaleTurn;
-                } else if (checkpoint.outstanding_host_requests.len == 1) {
-                    const live_request = self.outstanding_host_request orelse return error.StaleTurn;
-                    if (checkpoint.outstanding_host_requests[0].request_fingerprint != live_request.request_fingerprint) return error.StaleTurn;
-                } else {
-                    return error.StaleTurn;
-                }
+                var legacy_outstanding_host_request_storage: [1]HostRequest = undefined;
+                const current_outstanding_host_requests = if (self.outstanding_host_requests.len != 0)
+                    self.outstanding_host_requests
+                else if (self.outstanding_host_request) |request| blk: {
+                    legacy_outstanding_host_request_storage[0] = request;
+                    break :blk legacy_outstanding_host_request_storage[0..1];
+                } else &.{};
+                if (!hostRequestSlicesMatch(checkpoint.outstanding_host_requests, current_outstanding_host_requests)) return error.StaleTurn;
             }
 
             fn validateRestoreCheckpointManifestBindings(self: @This(), checkpoint: Checkpoint) !void {
@@ -2653,15 +2781,9 @@ pub fn Appliance(comptime World: type) type {
             }
 
             fn applyCheckpointState(self: *@This(), checkpoint: Checkpoint) !void {
-                if (checkpoint.outstanding_host_requests.len > 1) return error.InvalidFrameEncoding;
                 self.current_turn_sequence_number = checkpoint.turn_sequence_number;
                 self.previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint;
-                self.clearOutstandingHostRequest();
-                if (checkpoint.outstanding_host_requests.len == 1) {
-                    self.outstanding_host_request = checkpoint.outstanding_host_requests[0];
-                    self.outstanding_host_request.?.metadata = try self.allocator.dupe(u8, checkpoint.outstanding_host_requests[0].metadata);
-                    self.outstanding_host_request_metadata_owned = true;
-                }
+                try self.setOutstandingHostRequests(checkpoint.outstanding_host_requests);
                 self.pending_archive_append_batch_fingerprint = checkpoint.pending_archive_append_batch_fingerprint;
                 self.pending_archive_resulting_cursor = if (checkpoint.pending_archive_resulting_cursor) |cursor| blk: {
                     var resident_cursor = cursor;
@@ -2689,7 +2811,7 @@ pub fn Appliance(comptime World: type) type {
             fn clearContinuationState(self: *@This()) void {
                 self.current_turn_sequence_number = 0;
                 self.previous_turn_receipt_fingerprint = null;
-                self.clearOutstandingHostRequest();
+                self.clearOutstandingHostRequests();
                 self.pending_archive_append_batch_fingerprint = null;
                 self.pending_archive_resulting_cursor = null;
                 self.latest_archive_cursor = World.Continuity.Chronicle.Cursor.initial();
@@ -2698,12 +2820,20 @@ pub fn Appliance(comptime World: type) type {
                 self.latest_chronicle_cursor_fingerprint = null;
             }
 
-            fn clearOutstandingHostRequest(self: *@This()) void {
-                if (self.outstanding_host_request_metadata_owned) {
-                    if (self.outstanding_host_request) |request| self.allocator.free(request.metadata);
-                }
+            fn clearOutstandingHostRequests(self: *@This()) void {
+                if (self.outstanding_host_requests_owned) freeHostRequests(self.allocator, self.outstanding_host_requests);
                 self.outstanding_host_request = null;
-                self.outstanding_host_request_metadata_owned = false;
+                self.outstanding_host_requests = &.{};
+                self.outstanding_host_requests_owned = false;
+            }
+
+            fn setOutstandingHostRequests(self: *@This(), requests: []const HostRequest) !void {
+                const cloned = try cloneHostRequestsOwned(self.allocator, requests);
+                errdefer freeHostRequests(self.allocator, cloned);
+                self.clearOutstandingHostRequests();
+                self.outstanding_host_requests = cloned;
+                self.outstanding_host_requests_owned = true;
+                self.outstanding_host_request = if (cloned.len == 0) null else cloned[0];
             }
 
             fn statusForCommand(self: @This(), command: Command) TurnStatus {
@@ -2726,7 +2856,7 @@ pub fn Appliance(comptime World: type) type {
                     }
                 }
                 if (commandHasNonTerminalHostReply(command)) return .needs_host;
-                if (command.host_replies.len != 0) return turnStatusForHostOutcome(command.host_replies[0].outcome.status);
+                if (command.host_replies.len != 0) return turnStatusForHostReplies(command.host_replies);
                 if (self.commandIsTerminalArchiveAckOnly(command)) return .completed;
                 if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
                 if (command.execution_mode == .fresh) return .needs_host;
@@ -2753,24 +2883,40 @@ pub fn Appliance(comptime World: type) type {
                 };
             }
 
-            fn hostRequestFor(self: @This(), command: Command, turn_sequence_number: u64, capsule_fingerprint: u64) HostRequest {
-                const descriptor_fingerprint = self.manifest_value.actuation_descriptor_fingerprints[0];
-                const binding_fingerprint = self.manifest_value.actuation_binding_fingerprints[0];
+            fn turnStatusForHostReplies(replies: []const HostReply) TurnStatus {
+                var saw_rejected = false;
+                for (replies) |reply| {
+                    switch (turnStatusForHostOutcome(reply.outcome.status)) {
+                        .needs_host => return .needs_host,
+                        .failed => return .failed,
+                        .cancelled => return .cancelled,
+                        .blocked => saw_rejected = true,
+                        .completed => {},
+                        .inspected => unreachable,
+                    }
+                }
+                return if (saw_rejected) .blocked else .completed;
+            }
+
+            fn hostRequestFor(self: @This(), command: Command, turn_sequence_number: u64, capsule_fingerprint: u64, binding_index: usize) !HostRequest {
+                const descriptor_fingerprint = self.manifest_value.actuation_descriptor_fingerprints[binding_index];
+                const binding_fingerprint = self.manifest_value.actuation_binding_fingerprints[binding_index];
+                const world_port_id: u32 = @intCast(self.manifest_value.actuation_world_port_ids[binding_index]);
                 const intent_fingerprint = fingerprintCoreHostIntent(self.manifest_value.manifest_fingerprint, command.command_fingerprint, binding_fingerprint, turn_sequence_number);
                 const envelope_fingerprint = fingerprintCoreHostEnvelope(intent_fingerprint, capsule_fingerprint);
-                const idempotency_key_fingerprint = fingerprintCoreHostIdempotencyKey(self.manifest_value.manifest_fingerprint, command.command_fingerprint, turn_sequence_number);
+                const idempotency_key_fingerprint = fingerprintCoreHostIdempotencyKey(self.manifest_value.manifest_fingerprint, command.command_fingerprint, binding_fingerprint, turn_sequence_number);
                 const decision_fingerprint = fingerprintCoreHostDecision(intent_fingerprint, descriptor_fingerprint);
                 return HostRequest.init(.{
                     .turn_sequence_number = turn_sequence_number,
-                    .request_ordinal = 0,
+                    .request_ordinal = @as(u32, @intCast(binding_index)),
                     .run_handle_fingerprint = stateFingerprintFor(self.state, self.current_turn_sequence_number, self.previous_turn_receipt_fingerprint),
                     .pending_port_fingerprint = capsule_fingerprint,
-                    .world_port_id = 0,
+                    .world_port_id = world_port_id,
                     .target_ref_fingerprint = self.manifest_value.root_target_ref_fingerprint,
                     .world_surface_fingerprint = self.manifest_value.root_world_surface_fingerprint,
-                    .actuator_ref_fingerprint = self.manifest_value.actuation_actuator_ref_fingerprints[0],
-                    .actuation_class = self.manifest_value.actuation_classes[0],
-                    .allowed_response_statuses = self.manifest_value.actuation_allowed_response_statuses[0],
+                    .actuator_ref_fingerprint = self.manifest_value.actuation_actuator_ref_fingerprints[binding_index],
+                    .actuation_class = self.manifest_value.actuation_classes[binding_index],
+                    .allowed_response_statuses = self.manifest_value.actuation_allowed_response_statuses[binding_index],
                     .intent_fingerprint = intent_fingerprint,
                     .envelope_fingerprint = envelope_fingerprint,
                     .decision_fingerprint = decision_fingerprint,
@@ -2778,6 +2924,14 @@ pub fn Appliance(comptime World: type) type {
                     .idempotency_key_fingerprint = idempotency_key_fingerprint,
                     .supervision_ref_fingerprint = if (self.manifest_value.supervision_policy_fingerprint == 0) null else self.manifest_value.supervision_policy_fingerprint,
                     .metadata = "core-shell.host-request",
+                    .frame_request_bytes = "world.appliance.frame_request.v1",
+                    .payload_value_image_bytes = "world.appliance.payload_value_image.v1",
+                    .payload_value_ref_fingerprint = descriptor_fingerprint,
+                    .payload_schema_ref_fingerprint = binding_fingerprint,
+                    .expected_response_value_ref_fingerprint = descriptor_fingerprint,
+                    .expected_response_schema_ref_fingerprint = binding_fingerprint,
+                    .prepared_actuation_evidence_bytes = "world.appliance.prepared_actuation.v1",
+                    .idempotency_key_bytes = "world.appliance.idempotency_key.v1",
                 });
             }
 
@@ -2866,6 +3020,7 @@ pub fn Appliance(comptime World: type) type {
 
         pub const Abi = struct {
             pub const version: u32 = World.world_appliance_abi_version;
+            pub const universal_version: u32 = 2;
             pub const Status = enum(u32) {
                 ok = 0,
                 output_ready = 1,
@@ -2973,6 +3128,23 @@ pub fn Appliance(comptime World: type) type {
                 "world_appliance_last_error_len",
                 "world_appliance_read_last_error",
                 "world_appliance_reset",
+            };
+            pub const universal_required_exports = [_][]const u8{
+                "world_appliance_abi_version",
+                "world_appliance_runtime_manifest_len",
+                "world_appliance_read_runtime_manifest",
+                "world_appliance_load_executable",
+                "world_appliance_unload_executable",
+                "world_appliance_manifest_len",
+                "world_appliance_read_manifest",
+                "world_appliance_submit_command",
+                "world_appliance_output_len",
+                "world_appliance_read_output",
+                "world_appliance_last_error_len",
+                "world_appliance_read_last_error",
+                "world_appliance_reset",
+                "world_appliance_alloc",
+                "world_appliance_free",
             };
             pub const metadata_exports = [_][]const u8{
                 "world_appliance_manifest_fingerprint_lo",
@@ -3908,7 +4080,7 @@ pub fn Appliance(comptime World: type) type {
                             try exact_stack.pop(.i32);
                             try exact_stack.push(.i32);
                         }
-                        try wasmConsumeI32ForMode(&i32_stack_depth, 3, strict_stack);
+                        try wasmConsumeI32ForMode(&i32_stack_depth, 3, strict_stack and exact_stack_reliable);
                         i32_stack_depth += 1;
                         last_value_type = .i32;
                     },
@@ -3941,7 +4113,7 @@ pub fn Appliance(comptime World: type) type {
                         if (depth == 0) return error.InvalidFrameEncoding;
                         const frame_index = depth - 1;
                         if (control_frames[frame_index].kind != .if_then) return error.InvalidFrameEncoding;
-                        if (strict_stack) try wasmValidateControlFrameStack(control_frames[frame_index], i32_stack_depth, non_i32_stack_depth);
+                        if (strict_stack and exact_stack_reliable) try wasmValidateControlFrameStack(control_frames[frame_index], i32_stack_depth, non_i32_stack_depth);
                         i32_stack_depth = control_frames[frame_index].base_i32_stack_depth;
                         non_i32_stack_depth = control_frames[frame_index].base_non_i32_stack_depth;
                         control_frames[frame_index].kind = .if_else;
@@ -3951,7 +4123,7 @@ pub fn Appliance(comptime World: type) type {
                         if (depth == 0) {
                             if (cursor != body.len) return error.InvalidFrameEncoding;
                             if (strict_stack) {
-                                if (non_i32_stack_depth != 0) return error.InvalidFrameEncoding;
+                                if (exact_stack_reliable and non_i32_stack_depth != 0) return error.InvalidFrameEncoding;
                                 if (i32_stack_depth != expected_result_count and !returned) return error.InvalidFrameEncoding;
                             } else if (!returned and exact_stack_reliable) {
                                 if (i32_stack_depth != function_signature.i32_result_count) return error.InvalidFrameEncoding;
@@ -3963,7 +4135,11 @@ pub fn Appliance(comptime World: type) type {
                         }
                         const frame = control_frames[depth - 1];
                         if (strict_stack and frame.kind == .if_then and frame.result_count > 0) return error.InvalidFrameEncoding;
-                        if (strict_stack) try wasmValidateControlFrameStack(frame, i32_stack_depth, non_i32_stack_depth);
+                        if (strict_stack and exact_stack_reliable) {
+                            try wasmValidateControlFrameStack(frame, i32_stack_depth, non_i32_stack_depth);
+                        } else if (strict_stack and i32_stack_depth < frame.result_count) {
+                            return error.InvalidFrameEncoding;
+                        }
                         if (frame.polymorphic_stack) {
                             i32_stack_depth = std.math.add(u32, frame.base_i32_stack_depth, frame.result_count) catch return error.CapacityExceeded;
                             non_i32_stack_depth = frame.base_non_i32_stack_depth;
@@ -4697,6 +4873,7 @@ pub fn Appliance(comptime World: type) type {
             const actuation_descriptor_fingerprints = actuationDescriptorFingerprints(actuation_bindings);
             const actuation_binding_fingerprints = actuationBindingFingerprints(actuation_bindings);
             const actuation_actuator_ref_fingerprints = actuationActuatorRefFingerprints(actuation_bindings);
+            const actuation_world_port_ids = actuationWorldPortIds(actuation_bindings);
             const actuation_classes = actuationClasses(actuation_bindings);
             const actuation_allowed_response_statuses = actuationAllowedResponseStatuses(actuation_bindings);
             const plan = MemoryPlan.derive(capacity, profile);
@@ -4713,6 +4890,7 @@ pub fn Appliance(comptime World: type) type {
                 .actuation_descriptor_fingerprints = &actuation_descriptor_fingerprints,
                 .actuation_binding_fingerprints = &actuation_binding_fingerprints,
                 .actuation_actuator_ref_fingerprints = &actuation_actuator_ref_fingerprints,
+                .actuation_world_port_ids = &actuation_world_port_ids,
                 .actuation_classes = &actuation_classes,
                 .actuation_allowed_response_statuses = &actuation_allowed_response_statuses,
                 .supported_execution_modes = ExecutionModeSet.forManifest(profile, actuation_bindings.len),
@@ -4805,8 +4983,6 @@ pub fn Appliance(comptime World: type) type {
                         if (count > 1) @compileError("World Appliance strict closed-world definition rejects duplicate actuation bindings for a port");
                     }
                 }
-                if (actuation_bindings.len > 1) @compileError("World Appliance Core currently supports one external Actuation binding");
-                if (actuation_bindings.len == 1 and actuation_bindings[0].world_port_id != 0) @compileError("World Appliance Core currently supports only world_port_id 0 external Actuation");
             }
         }
 
@@ -4853,6 +5029,14 @@ pub fn Appliance(comptime World: type) type {
             var values: [actuation_bindings.len]u64 = undefined;
             inline for (actuation_bindings, 0..) |BindingDecl, index| {
                 values[index] = BindingDecl.actuator_ref.ref_fingerprint;
+            }
+            return values;
+        }
+
+        fn actuationWorldPortIds(comptime actuation_bindings: anytype) [actuation_bindings.len]u64 {
+            var values: [actuation_bindings.len]u64 = undefined;
+            inline for (actuation_bindings, 0..) |BindingDecl, index| {
+                values[index] = BindingDecl.world_port_id;
             }
             return values;
         }
@@ -5024,6 +5208,7 @@ pub fn Appliance(comptime World: type) type {
             hashU64Slice(&hasher, manifest.actuation_descriptor_fingerprints);
             hashU64Slice(&hasher, manifest.actuation_binding_fingerprints);
             hashU64Slice(&hasher, manifest.actuation_actuator_ref_fingerprints);
+            hashU64Slice(&hasher, manifest.actuation_world_port_ids);
             hashActuationClassSlice(&hasher, manifest.actuation_classes);
             hashResponseStatusSetSlice(&hasher, manifest.actuation_allowed_response_statuses);
             hashU64(&hasher, manifest.supervision_policy_fingerprint);
@@ -5061,6 +5246,8 @@ pub fn Appliance(comptime World: type) type {
             errdefer allocator.free(actuation_binding_fingerprints);
             const actuation_actuator_ref_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(actuation_actuator_ref_fingerprints);
+            const actuation_world_port_ids = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(actuation_world_port_ids);
             const actuation_classes = try readActuationClassSliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(actuation_classes);
             const actuation_allowed_response_statuses = try readResponseStatusSetSliceOwned(allocator, bytes, cursor);
@@ -5094,6 +5281,7 @@ pub fn Appliance(comptime World: type) type {
                 .actuation_descriptor_fingerprints = actuation_descriptor_fingerprints,
                 .actuation_binding_fingerprints = actuation_binding_fingerprints,
                 .actuation_actuator_ref_fingerprints = actuation_actuator_ref_fingerprints,
+                .actuation_world_port_ids = actuation_world_port_ids,
                 .actuation_classes = actuation_classes,
                 .actuation_allowed_response_statuses = actuation_allowed_response_statuses,
                 .supervision_policy_fingerprint = supervision_policy_fingerprint,
@@ -5119,6 +5307,7 @@ pub fn Appliance(comptime World: type) type {
                 u64SliceEncodedLen(manifest.actuation_descriptor_fingerprints) +
                 u64SliceEncodedLen(manifest.actuation_binding_fingerprints) +
                 u64SliceEncodedLen(manifest.actuation_actuator_ref_fingerprints) +
+                u64SliceEncodedLen(manifest.actuation_world_port_ids) +
                 actuationClassSliceEncodedLen(manifest.actuation_classes) +
                 responseStatusSetSliceEncodedLen(manifest.actuation_allowed_response_statuses) +
                 @sizeOf(u64) +
@@ -5169,6 +5358,7 @@ pub fn Appliance(comptime World: type) type {
             try putU64Slice(dest, &cursor, manifest.actuation_descriptor_fingerprints);
             try putU64Slice(dest, &cursor, manifest.actuation_binding_fingerprints);
             try putU64Slice(dest, &cursor, manifest.actuation_actuator_ref_fingerprints);
+            try putU64Slice(dest, &cursor, manifest.actuation_world_port_ids);
             try putActuationClassSlice(dest, &cursor, manifest.actuation_classes);
             try putResponseStatusSetSlice(dest, &cursor, manifest.actuation_allowed_response_statuses);
             try putU64(dest, &cursor, manifest.supervision_policy_fingerprint);
@@ -5354,9 +5544,14 @@ pub fn Appliance(comptime World: type) type {
             for (output.host_requests) |request| hashU64(&hasher, request.request_fingerprint);
             hashU64Slice(&hasher, output.finalized_actuation_receipt_fingerprints);
             hashOptionalU64(&hasher, output.root_result_fingerprint);
+            hashBytes(&hasher, output.root_result_value_image_bytes);
+            hashOptionalU64(&hasher, output.root_result_value_ref_fingerprint);
             hashOptionalU64(&hasher, output.run_receipt_fingerprint);
+            hashBytes(&hasher, output.run_receipt_bytes);
             hashOptionalU64(&hasher, output.archive_append_batch_fingerprint);
             hashOptionalU64(&hasher, output.archive_append_batch_ref_fingerprint);
+            hashBytes(&hasher, output.checkpoint_bytes);
+            hashBytes(&hasher, output.archive_append_batch_bytes);
             hashU64(&hasher, output.checkpoint.checkpoint_fingerprint);
             hashU64(&hasher, output.turn_receipt.receipt_fingerprint);
             hashU64(&hasher, output.blocker_count);
@@ -5387,6 +5582,14 @@ pub fn Appliance(comptime World: type) type {
             hashU64(&hasher, request.idempotency_key_fingerprint);
             hashOptionalU64(&hasher, request.supervision_ref_fingerprint);
             hashBytes(&hasher, request.metadata);
+            hashBytes(&hasher, request.frame_request_bytes);
+            hashBytes(&hasher, request.payload_value_image_bytes);
+            hashOptionalU64(&hasher, request.payload_value_ref_fingerprint);
+            hashOptionalU64(&hasher, request.payload_schema_ref_fingerprint);
+            hashOptionalU64(&hasher, request.expected_response_value_ref_fingerprint);
+            hashOptionalU64(&hasher, request.expected_response_schema_ref_fingerprint);
+            hashBytes(&hasher, request.prepared_actuation_evidence_bytes);
+            hashBytes(&hasher, request.idempotency_key_bytes);
             return nonzero(hasher.final());
         }
 
@@ -5561,14 +5764,35 @@ pub fn Appliance(comptime World: type) type {
             return false;
         }
 
-        fn finalizedActuationReceiptFingerprintsFor(request: ?HostRequest, command: Command, storage: *[1]u64) ![]const u64 {
-            if (command.host_replies.len == 0) return &.{};
-            const reply = command.host_replies[0];
-            if (!hostOutcomeStatusIsTerminal(reply.outcome.status)) return &.{};
-            const finalized_request = request orelse return error.UnknownRequest;
-            if (reply.target_host_request_fingerprint != finalized_request.request_fingerprint) return error.UnknownRequest;
-            storage[0] = try finalizedActuationReceiptFingerprintFor(finalized_request, reply);
-            return storage[0..1];
+        fn hostReplyFingerprintsOwned(allocator: std.mem.Allocator, replies: []const HostReply) ![]u64 {
+            const fingerprints = try allocator.alloc(u64, replies.len);
+            errdefer allocator.free(fingerprints);
+            for (replies, 0..) |reply, index| fingerprints[index] = reply.reply_fingerprint;
+            return fingerprints;
+        }
+
+        fn hostRequestFingerprintsOwned(allocator: std.mem.Allocator, requests: []const HostRequest) ![]u64 {
+            const fingerprints = try allocator.alloc(u64, requests.len);
+            errdefer allocator.free(fingerprints);
+            for (requests, 0..) |request, index| fingerprints[index] = request.request_fingerprint;
+            return fingerprints;
+        }
+
+        fn finalizedActuationReceiptFingerprintsFor(requests: []const HostRequest, command: Command, allocator: std.mem.Allocator) ![]u64 {
+            var finalized_count: usize = 0;
+            for (command.host_replies) |reply| {
+                if (hostOutcomeStatusIsTerminal(reply.outcome.status)) finalized_count += 1;
+            }
+            const fingerprints = try allocator.alloc(u64, finalized_count);
+            errdefer allocator.free(fingerprints);
+            var index: usize = 0;
+            for (command.host_replies) |reply| {
+                if (!hostOutcomeStatusIsTerminal(reply.outcome.status)) continue;
+                const finalized_request = findHostRequest(requests, reply.target_host_request_fingerprint) orelse return error.UnknownRequest;
+                fingerprints[index] = try finalizedActuationReceiptFingerprintFor(finalized_request, reply);
+                index += 1;
+            }
+            return fingerprints;
         }
 
         fn finalizedActuationReceiptFingerprintFor(request: HostRequest, reply: HostReply) !u64 {
@@ -5749,6 +5973,18 @@ pub fn Appliance(comptime World: type) type {
             const supervision_ref_fingerprint = try readOptionalU64(bytes, cursor);
             const metadata = try readBytesOwned(allocator, bytes, cursor);
             errdefer allocator.free(metadata);
+            const frame_request_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(frame_request_bytes);
+            const payload_value_image_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(payload_value_image_bytes);
+            const payload_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const payload_schema_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const expected_response_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const expected_response_schema_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const prepared_actuation_evidence_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(prepared_actuation_evidence_bytes);
+            const idempotency_key_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(idempotency_key_bytes);
             return .{
                 .request_format_version = request_format_version,
                 .request_fingerprint_version = request_fingerprint_version,
@@ -5771,6 +6007,15 @@ pub fn Appliance(comptime World: type) type {
                 .supervision_ref_fingerprint = supervision_ref_fingerprint,
                 .metadata = metadata,
                 .owns_metadata = true,
+                .frame_request_bytes = frame_request_bytes,
+                .payload_value_image_bytes = payload_value_image_bytes,
+                .payload_value_ref_fingerprint = payload_value_ref_fingerprint,
+                .payload_schema_ref_fingerprint = payload_schema_ref_fingerprint,
+                .expected_response_value_ref_fingerprint = expected_response_value_ref_fingerprint,
+                .expected_response_schema_ref_fingerprint = expected_response_schema_ref_fingerprint,
+                .prepared_actuation_evidence_bytes = prepared_actuation_evidence_bytes,
+                .idempotency_key_bytes = idempotency_key_bytes,
+                .owns_byte_payloads = true,
             };
         }
 
@@ -6026,9 +6271,18 @@ pub fn Appliance(comptime World: type) type {
             const finalized_actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(finalized_actuation_receipt_fingerprints);
             const root_result_fingerprint = try readOptionalU64(bytes, cursor);
+            const root_result_value_image_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(root_result_value_image_bytes);
+            const root_result_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
             const run_receipt_fingerprint = try readOptionalU64(bytes, cursor);
+            const run_receipt_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(run_receipt_bytes);
             const archive_append_batch_fingerprint = try readOptionalU64(bytes, cursor);
             const archive_append_batch_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const checkpoint_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(checkpoint_bytes);
+            const archive_append_batch_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(archive_append_batch_bytes);
             const checkpoint = try readCheckpointOwned(allocator, bytes, cursor);
             errdefer {
                 var cleanup = checkpoint;
@@ -6056,9 +6310,14 @@ pub fn Appliance(comptime World: type) type {
                 .host_requests = host_requests,
                 .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_fingerprints,
                 .root_result_fingerprint = root_result_fingerprint,
+                .root_result_value_image_bytes = root_result_value_image_bytes,
+                .root_result_value_ref_fingerprint = root_result_value_ref_fingerprint,
                 .run_receipt_fingerprint = run_receipt_fingerprint,
+                .run_receipt_bytes = run_receipt_bytes,
                 .archive_append_batch_fingerprint = archive_append_batch_fingerprint,
                 .archive_append_batch_ref_fingerprint = archive_append_batch_ref_fingerprint,
+                .checkpoint_bytes = checkpoint_bytes,
+                .archive_append_batch_bytes = archive_append_batch_bytes,
                 .checkpoint = checkpoint,
                 .turn_receipt = turn_receipt,
                 .blocker_count = blocker_count,
@@ -6069,6 +6328,7 @@ pub fn Appliance(comptime World: type) type {
                 .owns_checkpoint_payloads = true,
                 .owns_turn_receipt_payloads = true,
                 .owns_diagnostic_metadata = true,
+                .owns_byte_payloads = true,
             };
         }
 
@@ -6137,8 +6397,60 @@ pub fn Appliance(comptime World: type) type {
             allocator.free(requests);
         }
 
+        fn cloneHostRequestsOwned(allocator: std.mem.Allocator, requests: []const HostRequest) ![]HostRequest {
+            const cloned = try allocator.alloc(HostRequest, requests.len);
+            errdefer allocator.free(cloned);
+            var initialized: usize = 0;
+            errdefer {
+                for (cloned[0..initialized]) |*request| freeHostRequest(allocator, request);
+            }
+            for (requests, 0..) |request, index| {
+                cloned[index] = request;
+                if (request.owns_metadata) {
+                    cloned[index].metadata = try allocator.dupe(u8, request.metadata);
+                    cloned[index].owns_metadata = true;
+                } else {
+                    cloned[index].owns_metadata = false;
+                }
+                if (request.owns_byte_payloads) {
+                    cloned[index].owns_byte_payloads = false;
+                    const frame_request_bytes = try allocator.dupe(u8, request.frame_request_bytes);
+                    errdefer allocator.free(frame_request_bytes);
+                    const payload_value_image_bytes = try allocator.dupe(u8, request.payload_value_image_bytes);
+                    errdefer allocator.free(payload_value_image_bytes);
+                    const prepared_actuation_evidence_bytes = try allocator.dupe(u8, request.prepared_actuation_evidence_bytes);
+                    errdefer allocator.free(prepared_actuation_evidence_bytes);
+                    const idempotency_key_bytes = try allocator.dupe(u8, request.idempotency_key_bytes);
+                    cloned[index].frame_request_bytes = frame_request_bytes;
+                    cloned[index].payload_value_image_bytes = payload_value_image_bytes;
+                    cloned[index].prepared_actuation_evidence_bytes = prepared_actuation_evidence_bytes;
+                    cloned[index].idempotency_key_bytes = idempotency_key_bytes;
+                    cloned[index].owns_byte_payloads = true;
+                } else {
+                    cloned[index].owns_byte_payloads = false;
+                }
+                initialized += 1;
+            }
+            return cloned;
+        }
+
+        fn hostRequestSlicesMatch(lhs: []const HostRequest, rhs: []const HostRequest) bool {
+            if (lhs.len != rhs.len) return false;
+            for (lhs, rhs) |left, right| {
+                if (left.request_fingerprint != right.request_fingerprint) return false;
+            }
+            return true;
+        }
+
         fn freeHostRequest(allocator: std.mem.Allocator, request: *HostRequest) void {
             if (request.owns_metadata) allocator.free(request.metadata);
+            if (request.owns_byte_payloads) {
+                allocator.free(request.frame_request_bytes);
+                allocator.free(request.payload_value_image_bytes);
+                allocator.free(request.prepared_actuation_evidence_bytes);
+                allocator.free(request.idempotency_key_bytes);
+                request.owns_byte_payloads = false;
+            }
         }
 
         fn freeHostReply(allocator: std.mem.Allocator, reply: *HostReply) void {
@@ -6187,6 +6499,13 @@ pub fn Appliance(comptime World: type) type {
             if (output.owns_checkpoint_payloads) freeCheckpoint(allocator, &output.checkpoint);
             if (output.owns_turn_receipt_payloads) freeTurnReceipt(allocator, &output.turn_receipt);
             if (output.owns_diagnostic_metadata) allocator.free(output.diagnostic_metadata);
+            if (output.owns_byte_payloads) {
+                allocator.free(output.root_result_value_image_bytes);
+                allocator.free(output.run_receipt_bytes);
+                allocator.free(output.checkpoint_bytes);
+                allocator.free(output.archive_append_batch_bytes);
+                output.owns_byte_payloads = false;
+            }
         }
 
         fn fingerprintCoreHostIntent(manifest_fingerprint: u64, command_fingerprint: u64, binding_fingerprint: u64, turn_sequence_number: u64) u64 {
@@ -6207,11 +6526,12 @@ pub fn Appliance(comptime World: type) type {
             return nonzero(hasher.final());
         }
 
-        fn fingerprintCoreHostIdempotencyKey(manifest_fingerprint: u64, command_fingerprint: u64, turn_sequence_number: u64) u64 {
+        fn fingerprintCoreHostIdempotencyKey(manifest_fingerprint: u64, command_fingerprint: u64, binding_fingerprint: u64, turn_sequence_number: u64) u64 {
             var hasher = std.hash.Wyhash.init(0);
             hashBytes(&hasher, "world.appliance.core_shell.host_idempotency_key.fingerprint");
             hashU64(&hasher, manifest_fingerprint);
             hashU64(&hasher, command_fingerprint);
+            hashU64(&hasher, binding_fingerprint);
             hashU64(&hasher, turn_sequence_number);
             return nonzero(hasher.final());
         }
@@ -6280,6 +6600,163 @@ pub fn Appliance(comptime World: type) type {
             errdefer out.deinit(allocator);
             try receipt.encode(&out, allocator);
             return out.toOwnedSlice(allocator);
+        }
+
+        fn encodeFingerprintImageOwned(allocator: std.mem.Allocator, label: []const u8, fingerprint: u64) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeBytes(&out, allocator, label);
+            try writeU64(&out, allocator, fingerprint);
+            return out.toOwnedSlice(allocator);
+        }
+
+        fn encodeHostFrameRequestOwned(allocator: std.mem.Allocator, args: anytype) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeBytes(&out, allocator, "world.appliance.frame_request.v1");
+            try writeU64(&out, allocator, args.manifest_fingerprint);
+            try writeU64(&out, allocator, args.command_fingerprint);
+            try writeU64(&out, allocator, args.turn_sequence_number);
+            try writeU64(&out, allocator, args.request_ordinal);
+            try writeU32(&out, allocator, args.world_port_id);
+            try writeU64(&out, allocator, args.binding_fingerprint);
+            try writeU64(&out, allocator, args.descriptor_fingerprint);
+            try writeU64(&out, allocator, args.intent_fingerprint);
+            try writeU64(&out, allocator, args.envelope_fingerprint);
+            return out.toOwnedSlice(allocator);
+        }
+
+        fn encodeHostPayloadValueImageOwned(allocator: std.mem.Allocator, command: Command, binding_fingerprint: u64, world_port_id: u32) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeBytes(&out, allocator, "world.appliance.payload_value_image.v1");
+            try writeU64(&out, allocator, command.command_fingerprint);
+            try writeU64(&out, allocator, binding_fingerprint);
+            try writeU32(&out, allocator, world_port_id);
+            try writeBytes(&out, allocator, command.root_argument_image);
+            return out.toOwnedSlice(allocator);
+        }
+
+        fn encodePreparedActuationEvidenceOwned(allocator: std.mem.Allocator, args: anytype) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeBytes(&out, allocator, "world.appliance.prepared_actuation.v1");
+            try writeU64(&out, allocator, args.descriptor_fingerprint);
+            try writeU64(&out, allocator, args.binding_fingerprint);
+            try writeU64(&out, allocator, args.actuator_ref_fingerprint);
+            try writeU32(&out, allocator, args.world_port_id);
+            try writeU64(&out, allocator, args.decision_fingerprint);
+            return out.toOwnedSlice(allocator);
+        }
+
+        fn encodeIdempotencyKeyImageOwned(allocator: std.mem.Allocator, args: anytype) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeBytes(&out, allocator, "world.appliance.idempotency_key.v1");
+            try writeU64(&out, allocator, args.manifest_fingerprint);
+            try writeU64(&out, allocator, args.command_fingerprint);
+            try writeU64(&out, allocator, args.binding_fingerprint);
+            try writeU64(&out, allocator, args.turn_sequence_number);
+            try writeU64(&out, allocator, args.idempotency_key_fingerprint);
+            return out.toOwnedSlice(allocator);
+        }
+
+        fn encodeArchiveAppendBatchFingerprintOwned(allocator: std.mem.Allocator, append_batch_fingerprint: u64) ![]const u8 {
+            return encodeFingerprintImageOwned(allocator, "world.appliance.archive_append_batch.ref", append_batch_fingerprint);
+        }
+
+        fn capacityFromExecutableMemoryPlan(plan: World.Executable.MemoryPlan, profile: Profile) Capacity {
+            var capacity = switch (profile.kind) {
+                .minimal, .wasm_small => Capacity.wasm_small,
+                .wasm_agent, .native_debug, .replay_only, .full_evidence => Capacity.wasm_agent,
+            };
+            capacity.max_provider_runs = @max(capacity.max_provider_runs, plan.max_provider_runs);
+            capacity.max_pending_ports = @max(capacity.max_pending_ports, plan.max_mailbox_entries);
+            capacity.max_host_requests_per_turn = @max(capacity.max_host_requests_per_turn, plan.max_host_requests_per_turn);
+            capacity.max_host_replies_per_turn = @max(capacity.max_host_replies_per_turn, plan.max_host_requests_per_turn);
+            capacity.max_capsule_bytes = @max(capacity.max_capsule_bytes, plan.max_capsule_bytes);
+            capacity.max_archive_append_bytes = @max(capacity.max_archive_append_bytes, plan.max_archive_append_bytes);
+            capacity.max_command_bytes = @max(capacity.max_command_bytes, plan.max_command_bytes);
+            capacity.max_output_bytes = @max(capacity.max_output_bytes, plan.max_output_bytes);
+            return capacity;
+        }
+
+        fn manifestFromExecutableImage(
+            allocator: std.mem.Allocator,
+            image: World.Executable.Image,
+            profile: Profile,
+            capacity: Capacity,
+            metadata: []const u8,
+        ) !Manifest {
+            const root = image.module_set.root() orelse return error.ExecutableLoadRejected;
+            const provider_count = blk: {
+                var count: usize = 0;
+                for (image.module_set.modules) |module| {
+                    if (module.role == .provider) count += 1;
+                }
+                break :blk count;
+            };
+            const provider_target_ref_fingerprints = try allocator.alloc(u64, provider_count);
+            errdefer allocator.free(provider_target_ref_fingerprints);
+            var provider_index: usize = 0;
+            for (image.module_set.modules) |module| {
+                if (module.role != .provider) continue;
+                provider_target_ref_fingerprints[provider_index] = module.target_ref.target_ref_fingerprint;
+                provider_index += 1;
+            }
+
+            const fabric_plan_fingerprints = try allocator.dupe(u64, image.dispatch_image.route_ids);
+            errdefer allocator.free(fabric_plan_fingerprints);
+            const binding_count = image.external_bindings.len;
+            const descriptor_fingerprints = try allocator.alloc(u64, binding_count);
+            errdefer allocator.free(descriptor_fingerprints);
+            const binding_fingerprints = try allocator.alloc(u64, binding_count);
+            errdefer allocator.free(binding_fingerprints);
+            const actuator_ref_fingerprints = try allocator.alloc(u64, binding_count);
+            errdefer allocator.free(actuator_ref_fingerprints);
+            const world_port_ids = try allocator.alloc(u64, binding_count);
+            errdefer allocator.free(world_port_ids);
+            const classes = try allocator.alloc(World.Actuation.Class, binding_count);
+            errdefer allocator.free(classes);
+            const statuses = try allocator.alloc(World.Actuation.ResponseStatusSet, binding_count);
+            errdefer allocator.free(statuses);
+            for (image.external_bindings, 0..) |binding, index| {
+                try binding.validate();
+                descriptor_fingerprints[index] = binding.descriptor.descriptor_fingerprint;
+                binding_fingerprints[index] = binding.binding_fingerprint;
+                actuator_ref_fingerprints[index] = binding.actuator_ref.ref_fingerprint;
+                world_port_ids[index] = binding.world_port_id;
+                classes[index] = binding.actuation_class;
+                statuses[index] = binding.allowed_response_statuses;
+            }
+            const metadata_owned = try allocator.dupe(u8, metadata);
+            errdefer allocator.free(metadata_owned);
+            var manifest = Manifest.init(.{
+                .root_target_ref_fingerprint = root.target_ref.target_ref_fingerprint,
+                .root_world_surface_fingerprint = root.target_ref.world_surface_fingerprint,
+                .root_target_certificate_fingerprint = root.target_ref.target_certificate_fingerprint,
+                .link_plan_fingerprint = image.link_plan_fingerprint,
+                .link_certificate_fingerprint = image.linker_certificate_fingerprint,
+                .assembly_fingerprint = image.assembly_fingerprint,
+                .provider_target_ref_fingerprints = provider_target_ref_fingerprints,
+                .fabric_plan_fingerprints = fabric_plan_fingerprints,
+                .residual_import_set_fingerprint = image.dispatch_image.dispatch_fingerprint,
+                .actuation_descriptor_fingerprints = descriptor_fingerprints,
+                .actuation_binding_fingerprints = binding_fingerprints,
+                .actuation_actuator_ref_fingerprints = actuator_ref_fingerprints,
+                .actuation_world_port_ids = world_port_ids,
+                .actuation_classes = classes,
+                .actuation_allowed_response_statuses = statuses,
+                .supported_execution_modes = ExecutionModeSet.forManifest(profile, binding_count),
+                .enabled_features = FeatureSet.fromProfile(profile),
+                .capacity_fingerprint = capacity.fingerprint(),
+                .memory_plan_fingerprint = MemoryPlan.derive(capacity, profile).plan_fingerprint,
+                .required_host_capabilities = HostCapabilityFlags.forManifest(profile, binding_count),
+                .metadata = metadata_owned,
+            });
+            manifest.owns_payloads = true;
+            try manifest.validate();
+            return manifest;
         }
 
         fn cloneEnvelope(

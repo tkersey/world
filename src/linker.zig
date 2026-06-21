@@ -1981,7 +1981,7 @@ pub fn Linker(comptime W: type) type {
             for (plan.routes) |route| {
                 try route.validate();
                 switch (route.kind) {
-                    .target_export, .admitted_run => {
+                    .target_export, .loaded_module_export, .admitted_run => {
                         if (route.provider_target_ref_fingerprint == null and route.provider_module_fingerprint == null) return error.ProviderRunDenied;
                         if (route.response_value_mapping_fingerprint == null and route.value_mapping_fingerprint == null) return error.UnsupportedMapping;
                     },
@@ -2004,7 +2004,8 @@ pub fn Linker(comptime W: type) type {
 
         fn routeKindForEntry(entry: Catalog.Entry) W.Fabric.RouteKind {
             return switch (entry.provider_kind) {
-                .target, .module_ref => .target_export,
+                .target => .target_export,
+                .module_ref => .loaded_module_export,
                 .admitted_run => .admitted_run,
                 .guest_provider => .guest,
                 .replay_provider => .replay,
@@ -2109,14 +2110,14 @@ pub fn Linker(comptime W: type) type {
 
         fn routeKindRequiresProviderRun(kind: W.Fabric.RouteKind) bool {
             return switch (kind) {
-                .target_export, .admitted_run, .guest => true,
+                .target_export, .loaded_module_export, .admitted_run, .guest => true,
                 .adapter, .replay, .reject, .unsupported => false,
             };
         }
 
         fn routeKindUsesResponseMapping(kind: W.Fabric.RouteKind) bool {
             return switch (kind) {
-                .target_export, .admitted_run => true,
+                .target_export, .loaded_module_export, .admitted_run => true,
                 .adapter, .guest, .replay, .reject, .unsupported => false,
             };
         }
