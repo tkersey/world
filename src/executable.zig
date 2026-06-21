@@ -556,8 +556,8 @@ pub fn Executable(comptime W: type) type {
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
                 const modules = try cloneModuleSlice(allocator, self.module_set.modules);
                 errdefer freeModuleSlice(allocator, modules);
-                const bindings = try allocator.dupe(ExternalBinding, self.external_bindings);
-                errdefer allocator.free(bindings);
+                const bindings = try cloneExternalBindingSlice(allocator, self.external_bindings);
+                errdefer freeExternalBindingSlice(allocator, bindings);
                 const dispatch_image = try cloneDispatchImage(allocator, self.dispatch_image);
                 errdefer freeDispatchImage(allocator, dispatch_image);
                 var image = Image.init(.{
@@ -674,7 +674,7 @@ pub fn Executable(comptime W: type) type {
                 if (self.owns_memory) {
                     freeModuleSlice(allocator, @constCast(self.module_set.modules.ptr)[0..self.module_set.modules.len]);
                     freeDispatchImage(allocator, self.dispatch_image);
-                    allocator.free(self.external_bindings);
+                    freeExternalBindingSlice(allocator, self.external_bindings);
                 }
                 self.* = undefined;
             }
@@ -1298,6 +1298,17 @@ pub fn Executable(comptime W: type) type {
             const profile = image.required_runtime_profile;
             if (image.module_set.modules.len > profile.max_modules) return error.InvalidFrameEncoding;
             if (image.external_bindings.len > profile.max_external_bindings) return error.InvalidFrameEncoding;
+            if (!profile.supports_external_actuation and image.external_bindings.len != 0) return error.InvalidFrameEncoding;
+            if (!profile.supports_internal_providers) {
+                for (image.module_set.modules) |module| {
+                    if (module.role == .provider) return error.InvalidFrameEncoding;
+                }
+                if (image.dispatch_image.fabric_plan_fingerprints.len != 0 or
+                    image.dispatch_image.route_ids.len != 0)
+                {
+                    return error.InvalidFrameEncoding;
+                }
+            }
             var total_module_bytes: usize = 0;
             for (image.module_set.modules) |module| {
                 if (module.canonical_bytes.len > profile.max_module_bytes) return error.InvalidFrameEncoding;
@@ -1495,6 +1506,49 @@ pub fn Executable(comptime W: type) type {
             allocator.free(image.route_kinds);
             allocator.free(image.route_parent_world_port_ids);
             allocator.free(image.route_provider_module_fingerprints);
+        }
+
+        fn cloneExternalBinding(allocator: std.mem.Allocator, binding: ExternalBinding) !ExternalBinding {
+            var result = binding;
+            result.actuator_ref.label = try allocator.dupe(u8, binding.actuator_ref.label);
+            errdefer allocator.free(result.actuator_ref.label);
+            result.actuator_ref.metadata = try allocator.dupe(u8, binding.actuator_ref.metadata);
+            errdefer allocator.free(result.actuator_ref.metadata);
+            result.descriptor.label = try allocator.dupe(u8, binding.descriptor.label);
+            errdefer allocator.free(result.descriptor.label);
+            result.descriptor.metadata = try allocator.dupe(u8, binding.descriptor.metadata);
+            errdefer allocator.free(result.descriptor.metadata);
+            result.label = try allocator.dupe(u8, binding.label);
+            errdefer allocator.free(result.label);
+            result.metadata = try allocator.dupe(u8, binding.metadata);
+            return result;
+        }
+
+        fn cloneExternalBindingSlice(allocator: std.mem.Allocator, bindings: []const ExternalBinding) ![]ExternalBinding {
+            const result = try allocator.alloc(ExternalBinding, bindings.len);
+            errdefer allocator.free(result);
+            var index: usize = 0;
+            errdefer {
+                for (result[0..index]) |binding| freeExternalBinding(allocator, binding);
+            }
+            while (index < bindings.len) : (index += 1) {
+                result[index] = try cloneExternalBinding(allocator, bindings[index]);
+            }
+            return result;
+        }
+
+        fn freeExternalBinding(allocator: std.mem.Allocator, binding: ExternalBinding) void {
+            allocator.free(binding.actuator_ref.label);
+            allocator.free(binding.actuator_ref.metadata);
+            allocator.free(binding.descriptor.label);
+            allocator.free(binding.descriptor.metadata);
+            allocator.free(binding.label);
+            allocator.free(binding.metadata);
+        }
+
+        fn freeExternalBindingSlice(allocator: std.mem.Allocator, bindings: []const ExternalBinding) void {
+            for (bindings) |binding| freeExternalBinding(allocator, binding);
+            allocator.free(bindings);
         }
 
         fn moduleKindFromBoundary(kind: BoundaryModule.Kind) W.Admission.BoundaryModuleKind {

@@ -84,11 +84,11 @@ pub export fn world_appliance_read_manifest(ptr: usize, cap: usize) usize {
 }
 
 pub export fn world_appliance_submit_command(ptr: usize, len: usize) u32 {
+    output_len_value = 0;
     if (image_len == 0) return setError(status_invalid_command, "no executable envelope loaded");
     if (len == 0 or len > max_command_bytes) return setError(status_capacity_exceeded, "invalid command length");
     const command = guestRange(ptr, len) orelse return setError(status_invalid_command, "command outside appliance memory");
 
-    output_len_value = 0;
     appendOutput("world.universal_appliance.output.v2\n") catch return setError(status_capacity_exceeded, "output capacity exceeded");
     appendOutput("image=") catch return setError(status_capacity_exceeded, "output capacity exceeded");
     appendHex(image_fingerprint) catch return setError(status_capacity_exceeded, "output capacity exceeded");

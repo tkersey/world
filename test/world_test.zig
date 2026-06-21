@@ -39741,6 +39741,74 @@ test "Executable Builder seals full module image with explicit residual external
         image.module_set.root().?.module_ref.boundary_module_fingerprint,
     );
     {
+        var mutable_ref_label = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.ref");
+        defer std.testing.allocator.free(mutable_ref_label);
+        var mutable_ref_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.ref.metadata");
+        defer std.testing.allocator.free(mutable_ref_metadata);
+        var mutable_descriptor_label = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.descriptor");
+        defer std.testing.allocator.free(mutable_descriptor_label);
+        var mutable_descriptor_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.descriptor.metadata");
+        defer std.testing.allocator.free(mutable_descriptor_metadata);
+        var mutable_binding_label = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.binding");
+        defer std.testing.allocator.free(mutable_binding_label);
+        var mutable_binding_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.binding.metadata");
+        defer std.testing.allocator.free(mutable_binding_metadata);
+
+        var mutable_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+        defer mutable_builder.deinit();
+        try mutable_builder.addRootModule(root_bytes);
+        const mutable_root_module = mutable_builder.modules.items[0];
+        const mutable_root_import = mutable_root_module.imports[0];
+        const mutable_actuator_ref = world.Actuation.Ref.init(.{
+            .kind = .fixture,
+            .class = .deterministic_fixture,
+            .label = mutable_ref_label,
+            .supported_modes = .all,
+            .supported_response_statuses = .all,
+            .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+            .metadata = mutable_ref_metadata,
+        });
+        const mutable_descriptor = world.Actuation.Descriptor.init(.{
+            .actuator_ref = mutable_actuator_ref,
+            .world_surface_fingerprint = mutable_root_module.target_ref.world_surface_fingerprint,
+            .target_ref_fingerprint = mutable_root_module.target_ref.target_ref_fingerprint,
+            .world_port_id = mutable_root_import.world_port_id,
+            .world_port_ref_fingerprint = mutable_root_import.world_port_ref_fingerprint,
+            .source_effect_shape_ref_fingerprint = mutable_root_import.source_effect_shape_ref_fingerprint,
+            .payload_value_table_id = mutable_root_import.payload_value_table_id,
+            .response_value_table_id = mutable_root_import.response_value_table_id,
+            .label = mutable_descriptor_label,
+            .metadata = mutable_descriptor_metadata,
+        });
+        try mutable_builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+            .parent_module_fingerprint = mutable_root_module.module_ref.boundary_module_fingerprint,
+            .world_port_id = mutable_root_import.world_port_id,
+            .world_port_ref_fingerprint = mutable_root_import.world_port_ref_fingerprint,
+            .payload_value_table_id = mutable_root_import.payload_value_table_id,
+            .payload_value_ref_fingerprint = mutable_root_import.payload_value_ref_fingerprint,
+            .response_value_table_id = mutable_root_import.response_value_table_id,
+            .response_value_ref_fingerprint = mutable_root_import.response_value_ref_fingerprint,
+            .actuator_ref = mutable_actuator_ref,
+            .descriptor = mutable_descriptor,
+            .label = mutable_binding_label,
+            .metadata = mutable_binding_metadata,
+        }));
+        var mutable_prepared = try mutable_builder.prepare();
+        defer mutable_prepared.deinit();
+        var mutable_image = try mutable_prepared.seal();
+        defer mutable_image.deinit(std.testing.allocator);
+
+        mutable_ref_label[0] = 'X';
+        mutable_ref_metadata[0] = 'X';
+        mutable_descriptor_label[0] = 'X';
+        mutable_descriptor_metadata[0] = 'X';
+        mutable_binding_label[0] = 'X';
+        mutable_binding_metadata[0] = 'X';
+
+        const mutable_report = try mutable_image.validate(world.Executable.RuntimeProfile.universal_v1);
+        try std.testing.expect(mutable_report.compatible);
+    }
+    {
         var forged_import = root_import;
         forged_import.response_value_ref_fingerprint = (forged_import.response_value_ref_fingerprint orelse 0) +% 1;
         const forged_imports = [_]world.ImportRequirement{forged_import};
@@ -39793,6 +39861,23 @@ test "Executable Builder seals full module image with explicit residual external
         .metadata = image.metadata,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, undersized_profile_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const no_external_profile = world.Executable.RuntimeProfile.init(.{
+        .supports_external_actuation = false,
+    });
+    const no_external_image = world.Executable.Image.init(.{
+        .required_runtime_profile = no_external_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = world.Executable.MemoryPlan.derive(no_external_profile, image.module_set.modules, image.external_bindings.len),
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, no_external_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
     const wrong_module_fingerprints = [_]u64{root_module.module_ref.boundary_module_fingerprint + 1};
     const forged_module_dispatch = world.Executable.DispatchImage.init(.{
@@ -40376,6 +40461,23 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     defer image.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), image.dispatch_image.fabric_plan_fingerprints.len);
     try std.testing.expectEqual(prepared.plan.linker_certificate.fabric_plan_fingerprints[0], image.dispatch_image.fabric_plan_fingerprints[0]);
+
+    const no_internal_profile = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = false,
+    });
+    const no_internal_image = world.Executable.Image.init(.{
+        .required_runtime_profile = no_internal_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = world.Executable.MemoryPlan.derive(no_internal_profile, image.module_set.modules, image.external_bindings.len),
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, no_internal_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
     var duplicate_module_id_modules = try std.testing.allocator.dupe(world.Executable.Module, image.module_set.modules);
     defer std.testing.allocator.free(duplicate_module_id_modules);
