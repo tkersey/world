@@ -39688,6 +39688,8 @@ test "Executable Builder seals full module image with explicit residual external
     try std.testing.expect(prepared.plan.compatibility_report.compatible);
     try std.testing.expectEqual(@as(usize, 1), prepared.plan.external_bindings.len);
     try std.testing.expectEqual(@as(usize, 1), prepared.plan.link_plan.external_environment_requirements.len);
+    try std.testing.expectEqual(@as(usize, 1), prepared.plan.dispatch_image.residual_request_order.len);
+    try std.testing.expectEqual(root_import.requirement_fingerprint, prepared.plan.dispatch_image.residual_request_order[0]);
     try std.testing.expect(prepared.plan.dispatch_image.dispatch_fingerprint != 0);
 
     var image = try prepared.seal();
@@ -39699,6 +39701,27 @@ test "Executable Builder seals full module image with explicit residual external
         root_module.module_ref.boundary_module_fingerprint,
         image.module_set.root().?.module_ref.boundary_module_fingerprint,
     );
+    {
+        var forged_import = root_import;
+        forged_import.response_value_ref_fingerprint = (forged_import.response_value_ref_fingerprint orelse 0) +% 1;
+        const forged_imports = [_]world.ImportRequirement{forged_import};
+        var forged_modules = [_]world.Executable.Module{image.module_set.modules[0]};
+        forged_modules[0].imports = &forged_imports;
+        const forged_module_set = world.Executable.ModuleSet.init(&forged_modules, image.module_set.root_module_id);
+        const forged_import_image = world.Executable.Image.init(.{
+            .required_runtime_profile = image.required_runtime_profile,
+            .module_set = forged_module_set,
+            .link_plan_fingerprint = image.link_plan_fingerprint,
+            .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+            .assembly_fingerprint = image.assembly_fingerprint,
+            .dispatch_image = image.dispatch_image,
+            .external_bindings = image.external_bindings,
+            .memory_plan = image.memory_plan,
+            .compatibility_report = image.compatibility_report,
+            .metadata = image.metadata,
+        });
+        try std.testing.expectError(error.InvalidFrameEncoding, forged_import_image.validate(world.Executable.RuntimeProfile.universal_v1));
+    }
     {
         var owned_prepared_builder = world.Executable.Builder.init(std.testing.allocator, .{});
         try owned_prepared_builder.addRootModule(root_bytes);
@@ -39771,6 +39794,35 @@ test "Executable Builder seals full module image with explicit residual external
         .metadata = image.metadata,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_dispatch_proof_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const wrong_residual_order = [_]u64{root_import.requirement_fingerprint +% 1};
+    const forged_residual_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = &wrong_residual_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_residual_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_residual_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_residual_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
     const contradictory_report = world.Executable.CompatibilityReport.init(.{
         .compatible = true,

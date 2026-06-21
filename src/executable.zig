@@ -68,6 +68,28 @@ pub fn Executable(comptime W: type) type {
                 if (self.canonical_bytes.len == 0) return error.InvalidFrameEncoding;
                 for (self.imports) |requirement| {
                     if (requirement.requirement_fingerprint == 0) return error.InvalidFrameEncoding;
+                    const canonical_requirement = W.ImportRequirement.init(.{
+                        .target_ref_fingerprint = requirement.target_ref_fingerprint,
+                        .world_value_table_fingerprint = requirement.world_value_table_fingerprint,
+                        .world_surface_fingerprint = requirement.world_surface_fingerprint,
+                        .world_port_id = requirement.world_port_id,
+                        .world_port_ref_fingerprint = requirement.world_port_ref_fingerprint,
+                        .source_effect_shape_ref_fingerprint = requirement.source_effect_shape_ref_fingerprint,
+                        .residual_site_index = requirement.residual_site_index,
+                        .residual_site_fingerprint = requirement.residual_site_fingerprint,
+                        .payload_value_table_id = requirement.payload_value_table_id,
+                        .payload_value_ref_fingerprint = requirement.payload_value_ref_fingerprint,
+                        .response_value_table_id = requirement.response_value_table_id,
+                        .response_value_ref_fingerprint = requirement.response_value_ref_fingerprint,
+                        .mode = requirement.mode,
+                        .allowed_response_kinds = requirement.allowed_response_kinds,
+                        .replay_key_recipe_fingerprint = requirement.replay_key_recipe_fingerprint,
+                        .suggested_symbolic_name = requirement.suggested_symbolic_name,
+                        .required = requirement.required,
+                        .tags = requirement.tags,
+                        .metadata = requirement.metadata,
+                    });
+                    if (requirement.requirement_fingerprint != canonical_requirement.requirement_fingerprint) return error.InvalidFrameEncoding;
                     if (requirement.target_ref_fingerprint == null or requirement.target_ref_fingerprint.? != self.target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
                     if (requirement.world_surface_fingerprint != self.target_ref.world_surface_fingerprint) return error.InvalidFrameEncoding;
                 }
@@ -285,7 +307,7 @@ pub fn Executable(comptime W: type) type {
             root_module_id: u32,
             module_fingerprints: []const u64 = &.{},
             external_binding_fingerprints: []const u64 = &.{},
-            residual_request_order: []const u32 = &.{},
+            residual_request_order: []const u64 = &.{},
             fabric_plan_fingerprints: []const u64 = &.{},
             route_ids: []const u64 = &.{},
             route_kinds: []const W.Fabric.RouteKind = &.{},
@@ -299,7 +321,7 @@ pub fn Executable(comptime W: type) type {
                 root_module_id: u32,
                 module_fingerprints: []const u64 = &.{},
                 external_binding_fingerprints: []const u64 = &.{},
-                residual_request_order: []const u32 = &.{},
+                residual_request_order: []const u64 = &.{},
                 fabric_plan_fingerprints: []const u64 = &.{},
                 route_ids: []const u64 = &.{},
                 route_kinds: []const W.Fabric.RouteKind = &.{},
@@ -895,7 +917,7 @@ pub fn Executable(comptime W: type) type {
             owned_catalog_entries: []W.Linker.Catalog.Entry,
             owned_module_fingerprints: []u64,
             owned_binding_fingerprints: []u64,
-            owned_residual_order: []u32,
+            owned_residual_order: []u64,
             owned_dispatch_routes: DispatchRouteSlices,
 
             pub fn deinit(self: *@This()) void {
@@ -1132,11 +1154,11 @@ pub fn Executable(comptime W: type) type {
         fn validateExternalBindingsForImage(image: Image) !void {
             for (image.external_bindings) |binding| try binding.validate();
             const root = image.module_set.root() orelse return error.InvalidFrameEncoding;
-            for (image.dispatch_image.residual_request_order, 0..) |world_port_id, index| {
-                for (image.dispatch_image.residual_request_order[0..index]) |prior_world_port_id| {
-                    if (prior_world_port_id == world_port_id) return error.InvalidFrameEncoding;
+            for (image.dispatch_image.residual_request_order, 0..) |requirement_fingerprint, index| {
+                for (image.dispatch_image.residual_request_order[0..index]) |prior_requirement_fingerprint| {
+                    if (prior_requirement_fingerprint == requirement_fingerprint) return error.InvalidFrameEncoding;
                 }
-                const requirement = importRequirementForWorldPort(root, world_port_id) orelse return error.InvalidFrameEncoding;
+                const requirement = importRequirementForFingerprint(root, requirement_fingerprint) orelse return error.InvalidFrameEncoding;
                 var count: usize = 0;
                 for (image.external_bindings) |binding| {
                     if (binding.matchesRequirement(root, requirement)) count += 1;
@@ -1145,8 +1167,8 @@ pub fn Executable(comptime W: type) type {
             }
             for (image.external_bindings) |binding| {
                 var used = false;
-                for (image.dispatch_image.residual_request_order) |world_port_id| {
-                    const requirement = importRequirementForWorldPort(root, world_port_id) orelse return error.InvalidFrameEncoding;
+                for (image.dispatch_image.residual_request_order) |requirement_fingerprint| {
+                    const requirement = importRequirementForFingerprint(root, requirement_fingerprint) orelse return error.InvalidFrameEncoding;
                     if (binding.matchesRequirement(root, requirement)) {
                         used = true;
                         break;
@@ -1156,9 +1178,9 @@ pub fn Executable(comptime W: type) type {
             }
         }
 
-        fn importRequirementForWorldPort(root: Module, world_port_id: u32) ?W.ImportRequirement {
+        fn importRequirementForFingerprint(root: Module, requirement_fingerprint: u64) ?W.ImportRequirement {
             for (root.imports) |requirement| {
-                if (requirement.world_port_id == world_port_id) return requirement;
+                if (requirement.requirement_fingerprint == requirement_fingerprint) return requirement;
             }
             return null;
         }
@@ -1254,10 +1276,10 @@ pub fn Executable(comptime W: type) type {
             return values;
         }
 
-        fn residualOrderSlice(allocator: std.mem.Allocator, residuals: []const W.ImportRequirement) ![]u32 {
-            const values = try allocator.alloc(u32, residuals.len);
-            for (residuals, 0..) |requirement, index| values[index] = requirement.world_port_id;
-            std.mem.sort(u32, values, {}, std.sort.asc(u32));
+        fn residualOrderSlice(allocator: std.mem.Allocator, residuals: []const W.ImportRequirement) ![]u64 {
+            const values = try allocator.alloc(u64, residuals.len);
+            for (residuals, 0..) |requirement, index| values[index] = requirement.requirement_fingerprint;
+            std.mem.sort(u64, values, {}, std.sort.asc(u64));
             return values;
         }
 
@@ -1310,7 +1332,7 @@ pub fn Executable(comptime W: type) type {
             errdefer allocator.free(result.module_fingerprints);
             result.external_binding_fingerprints = try allocator.dupe(u64, image.external_binding_fingerprints);
             errdefer allocator.free(result.external_binding_fingerprints);
-            result.residual_request_order = try allocator.dupe(u32, image.residual_request_order);
+            result.residual_request_order = try allocator.dupe(u64, image.residual_request_order);
             errdefer allocator.free(result.residual_request_order);
             result.fabric_plan_fingerprints = try allocator.dupe(u64, image.fabric_plan_fingerprints);
             errdefer allocator.free(result.fabric_plan_fingerprints);
@@ -1431,6 +1453,8 @@ pub fn Executable(comptime W: type) type {
                 hashU64(&hasher, module.module_ref.module_ref_fingerprint);
                 hashU64(&hasher, module.module_ref.boundary_module_fingerprint);
                 hashU64(&hasher, module.import_set.import_set_fingerprint);
+                hashU64(&hasher, module.imports.len);
+                for (module.imports) |requirement| hashU64(&hasher, requirement.requirement_fingerprint);
                 hashU64(&hasher, module.export_summary.export_summary_fingerprint);
                 hashU64(&hasher, module.executable_plan_fingerprint);
                 hashU64(&hasher, hashBytesDomain("world.executable.module.bytes", module.canonical_bytes));
