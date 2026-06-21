@@ -39660,6 +39660,59 @@ test "Executable Builder seals full module image with explicit residual external
         root_module.module_ref.boundary_module_fingerprint,
         image.module_set.root().?.module_ref.boundary_module_fingerprint,
     );
+
+    const wrong_port_id = root_import.world_port_id + 1;
+    const wrong_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = wrong_port_id,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture.wrong-port",
+    });
+    const forged_bindings = [_]world.Executable.ExternalBinding{
+        world.Executable.ExternalBinding.init(.{
+            .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+            .world_port_id = wrong_port_id,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+            .response_value_table_id = root_import.response_value_table_id,
+            .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+            .actuator_ref = actuator_ref,
+            .descriptor = wrong_descriptor,
+            .label = "seed.fixture.wrong-port",
+        }),
+    };
+    const forged_binding_fingerprints = [_]u64{forged_bindings[0].binding_fingerprint};
+    const forged_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = &forged_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_dispatch,
+        .external_bindings = &forged_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_image.validate(world.Executable.RuntimeProfile.universal_v1));
 }
 
 test "Executable Image validation rejects forged compatibility report fields" {

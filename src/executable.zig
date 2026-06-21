@@ -648,6 +648,7 @@ pub fn Executable(comptime W: type) type {
                 {
                     return error.InvalidFrameEncoding;
                 }
+                try validateExternalBindingsForImage(self);
                 if (!supported_profile.supports(self.required_runtime_profile)) return CompatibilityReport.init(.{
                     .compatible = false,
                     .profile_compatible = false,
@@ -1032,6 +1033,40 @@ pub fn Executable(comptime W: type) type {
         }
 
         const BindingReport = struct { missing: usize = 0, unused: usize = 0, duplicates: usize = 0 };
+
+        fn validateExternalBindingsForImage(image: Image) !void {
+            for (image.external_bindings) |binding| try binding.validate();
+            const root = image.module_set.root() orelse return error.InvalidFrameEncoding;
+            for (image.dispatch_image.residual_request_order, 0..) |world_port_id, index| {
+                for (image.dispatch_image.residual_request_order[0..index]) |prior_world_port_id| {
+                    if (prior_world_port_id == world_port_id) return error.InvalidFrameEncoding;
+                }
+                const requirement = importRequirementForWorldPort(root, world_port_id) orelse return error.InvalidFrameEncoding;
+                var count: usize = 0;
+                for (image.external_bindings) |binding| {
+                    if (binding.matchesRequirement(root, requirement)) count += 1;
+                }
+                if (count != 1) return error.InvalidFrameEncoding;
+            }
+            for (image.external_bindings) |binding| {
+                var used = false;
+                for (image.dispatch_image.residual_request_order) |world_port_id| {
+                    const requirement = importRequirementForWorldPort(root, world_port_id) orelse return error.InvalidFrameEncoding;
+                    if (binding.matchesRequirement(root, requirement)) {
+                        used = true;
+                        break;
+                    }
+                }
+                if (!used) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn importRequirementForWorldPort(root: Module, world_port_id: u32) ?W.ImportRequirement {
+            for (root.imports) |requirement| {
+                if (requirement.world_port_id == world_port_id) return requirement;
+            }
+            return null;
+        }
 
         fn checkExternalBindings(strict: bool, root: Module, residuals: []const W.ImportRequirement, bindings: []const ExternalBinding) BindingReport {
             var report: BindingReport = .{};

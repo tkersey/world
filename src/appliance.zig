@@ -2348,8 +2348,8 @@ pub fn Appliance(comptime World: type) type {
                 } else &.{};
                 const host_requests = if (status == .needs_host) blk: {
                     if (self.capacity_value.max_host_requests_per_turn == 0) return error.CapacityExceeded;
-                    if (commandHasNonTerminalHostReply(command)) {
-                        const retained = try nonTerminalHostReplyRequestsOwned(self.allocator, current_outstanding_host_requests, command);
+                    if (command.kind == .@"continue" and command.host_replies.len != 0 and commandLeavesOutstandingHostRequests(current_outstanding_host_requests, command)) {
+                        const retained = try remainingHostRequestsAfterRepliesOwned(self.allocator, current_outstanding_host_requests, command);
                         host_requests_owned = true;
                         break :blk retained;
                     }
@@ -2860,7 +2860,14 @@ pub fn Appliance(comptime World: type) type {
                         .uninitialized, .runnable, .waiting_host => {},
                     }
                 }
-                if (commandHasNonTerminalHostReply(command)) return .needs_host;
+                var legacy_outstanding_host_request_storage: [1]HostRequest = undefined;
+                const current_outstanding_host_requests = if (self.outstanding_host_requests.len != 0)
+                    self.outstanding_host_requests
+                else if (self.outstanding_host_request) |request| blk: {
+                    legacy_outstanding_host_request_storage[0] = request;
+                    break :blk legacy_outstanding_host_request_storage[0..1];
+                } else &.{};
+                if (commandLeavesOutstandingHostRequests(current_outstanding_host_requests, command)) return .needs_host;
                 if (command.host_replies.len != 0) return turnStatusForHostReplies(command.host_replies);
                 if (self.commandIsTerminalArchiveAckOnly(command)) return .completed;
                 if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
@@ -5761,31 +5768,36 @@ pub fn Appliance(comptime World: type) type {
             return false;
         }
 
-        fn nonTerminalHostReplyRequestsOwned(allocator: std.mem.Allocator, requests: []const HostRequest, command: Command) ![]HostRequest {
+        fn commandLeavesOutstandingHostRequests(requests: []const HostRequest, command: Command) bool {
+            for (requests) |request| {
+                if (!commandHasTerminalHostReplyForRequest(command, request.request_fingerprint)) return true;
+            }
+            return false;
+        }
+
+        fn commandHasTerminalHostReplyForRequest(command: Command, request_fingerprint: u64) bool {
+            for (command.host_replies) |reply| {
+                if (reply.target_host_request_fingerprint == request_fingerprint and hostOutcomeStatusIsTerminal(reply.outcome.status)) return true;
+            }
+            return false;
+        }
+
+        fn remainingHostRequestsAfterRepliesOwned(allocator: std.mem.Allocator, requests: []const HostRequest, command: Command) ![]HostRequest {
             var retained_count: usize = 0;
             for (requests) |request| {
-                for (command.host_replies) |reply| {
-                    if (reply.target_host_request_fingerprint == request.request_fingerprint and !hostOutcomeStatusIsTerminal(reply.outcome.status)) {
-                        retained_count += 1;
-                        break;
-                    }
-                }
+                if (!commandHasTerminalHostReplyForRequest(command, request.request_fingerprint)) retained_count += 1;
             }
             if (retained_count == 0) return error.UnknownRequest;
             const retained = try allocator.alloc(HostRequest, retained_count);
             errdefer allocator.free(retained);
             var retained_index: usize = 0;
             for (requests) |request| {
-                for (command.host_replies) |reply| {
-                    if (reply.target_host_request_fingerprint == request.request_fingerprint and !hostOutcomeStatusIsTerminal(reply.outcome.status)) {
-                        retained[retained_index] = request;
-                        retained[retained_index].request_fingerprint = 0;
-                        retained[retained_index].request_ordinal = @intCast(retained_index);
-                        retained[retained_index].request_fingerprint = fingerprintHostRequest(retained[retained_index]);
-                        retained_index += 1;
-                        break;
-                    }
-                }
+                if (commandHasTerminalHostReplyForRequest(command, request.request_fingerprint)) continue;
+                retained[retained_index] = request;
+                retained[retained_index].request_fingerprint = 0;
+                retained[retained_index].request_ordinal = @intCast(retained_index);
+                retained[retained_index].request_fingerprint = fingerprintHostRequest(retained[retained_index]);
+                retained_index += 1;
             }
             const cloned = try cloneHostRequestsOwned(allocator, retained);
             allocator.free(retained);
