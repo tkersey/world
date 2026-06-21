@@ -39721,6 +39721,21 @@ test "Executable Builder seals full module image with explicit residual external
     const report = try image.validate(world.Executable.RuntimeProfile.universal_v1);
     try std.testing.expect(report.compatible);
     try std.testing.expectEqual(image.image_fingerprint, image.certificate.image_fingerprint);
+    var borrowed_image_owner = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    borrowed_image_owner.deinit(std.testing.allocator);
+    const still_owned_report = try image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(still_owned_report.compatible);
     try std.testing.expectEqual(
         root_module.module_ref.boundary_module_fingerprint,
         image.module_set.root().?.module_ref.boundary_module_fingerprint,

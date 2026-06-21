@@ -588,6 +588,7 @@ pub fn Executable(comptime W: type) type {
                     .warning_count = image.compatibility_report.warnings,
                 });
                 image.certificate = cert;
+                image.owns_memory = true;
                 image.image_fingerprint = fingerprintImage(image);
                 image.certificate = Certificate.init(.{
                     .image_fingerprint = image.image_fingerprint,
@@ -623,6 +624,7 @@ pub fn Executable(comptime W: type) type {
             compatibility_report: CompatibilityReport,
             certificate: Certificate = undefined,
             metadata: []const u8 = "",
+            owns_memory: bool = false,
 
             pub fn init(args: struct {
                 required_runtime_profile: RuntimeProfile,
@@ -669,9 +671,11 @@ pub fn Executable(comptime W: type) type {
             }
 
             pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-                freeModuleSlice(allocator, @constCast(self.module_set.modules.ptr)[0..self.module_set.modules.len]);
-                freeDispatchImage(allocator, self.dispatch_image);
-                allocator.free(self.external_bindings);
+                if (self.owns_memory) {
+                    freeModuleSlice(allocator, @constCast(self.module_set.modules.ptr)[0..self.module_set.modules.len]);
+                    freeDispatchImage(allocator, self.dispatch_image);
+                    allocator.free(self.external_bindings);
+                }
                 self.* = undefined;
             }
 
