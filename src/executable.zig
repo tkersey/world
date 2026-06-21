@@ -524,6 +524,8 @@ pub fn Executable(comptime W: type) type {
                     .assembly_fingerprint = image.assembly_fingerprint,
                     .module_count = image.module_set.modules.len,
                     .residual_external_binding_count = image.external_bindings.len,
+                    .blocker_count = image.compatibility_report.hard_blockers,
+                    .warning_count = image.compatibility_report.warnings,
                 });
                 image.certificate = cert;
                 image.image_fingerprint = fingerprintImage(image);
@@ -539,6 +541,8 @@ pub fn Executable(comptime W: type) type {
                     .assembly_fingerprint = image.assembly_fingerprint,
                     .module_count = image.module_set.modules.len,
                     .residual_external_binding_count = image.external_bindings.len,
+                    .blocker_count = image.compatibility_report.hard_blockers,
+                    .warning_count = image.compatibility_report.warnings,
                 });
                 return image;
             }
@@ -598,6 +602,8 @@ pub fn Executable(comptime W: type) type {
                     .assembly_fingerprint = result.assembly_fingerprint,
                     .module_count = result.module_set.modules.len,
                     .residual_external_binding_count = result.external_bindings.len,
+                    .blocker_count = result.compatibility_report.hard_blockers,
+                    .warning_count = result.compatibility_report.warnings,
                 });
                 return result;
             }
@@ -627,6 +633,21 @@ pub fn Executable(comptime W: type) type {
                 if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
                 if (self.certificate.image_fingerprint != self.image_fingerprint or
                     self.certificate.certificate_fingerprint != fingerprintCertificate(self.certificate))
+                {
+                    return error.InvalidFrameEncoding;
+                }
+                if (self.certificate.module_set_fingerprint != self.module_set.module_set_fingerprint or
+                    self.certificate.runtime_profile_fingerprint != self.required_runtime_profile.profile_fingerprint or
+                    self.certificate.dispatch_fingerprint != self.dispatch_image.dispatch_fingerprint or
+                    self.certificate.memory_plan_fingerprint != self.memory_plan.memory_plan_fingerprint or
+                    self.certificate.compatibility_report_fingerprint != self.compatibility_report.report_fingerprint or
+                    self.certificate.link_plan_fingerprint != self.link_plan_fingerprint or
+                    self.certificate.linker_certificate_fingerprint != self.linker_certificate_fingerprint or
+                    self.certificate.assembly_fingerprint != self.assembly_fingerprint or
+                    self.certificate.module_count != self.module_set.modules.len or
+                    self.certificate.residual_external_binding_count != self.external_bindings.len or
+                    self.certificate.blocker_count != self.compatibility_report.hard_blockers or
+                    self.certificate.warning_count != self.compatibility_report.warnings)
                 {
                     return error.InvalidFrameEncoding;
                 }

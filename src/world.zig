@@ -314,7 +314,7 @@ pub const world_executable_load_report_fingerprint_version: u32 = 1;
 pub const world_capsule_manifest_format_version: u32 = 2;
 pub const world_capsule_manifest_fingerprint_version: u32 = 1;
 pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
-pub const world_capsule_runspace_image_format_version: u32 = 3;
+pub const world_capsule_runspace_image_format_version: u32 = 4;
 pub const world_capsule_runspace_image_fingerprint_version: u32 = 1;
 pub const world_capsule_run_slot_image_fingerprint_version: u32 = 1;
 pub const world_capsule_pending_port_image_fingerprint_version: u32 = 4;
@@ -10126,8 +10126,23 @@ pub const Runspace = struct {
             const contract = self.contractForLoadedRequest(request) orelse return error.PayloadRefMismatch;
             if (response.response_value_table_id != contract.response_value_table_id) return error.FrameValueTableMismatch;
             if (image.value_table_id != contract.response_value_table_id) return error.FrameValueTableMismatch;
-            const loaded_fingerprint = Executable.Boundary.LoadedExecution.loadedValueImageFingerprint(image.bytes) catch return error.InvalidFrameEncoding;
-            try self.session.@"resume"(request, image.bytes);
+            const loaded_response_bytes = try self.loadedResponseImageBytesFromFrameImage(request, image);
+            defer self.allocator.free(loaded_response_bytes);
+            const loaded_fingerprint = Executable.Boundary.LoadedExecution.loadedValueImageFingerprint(loaded_response_bytes) catch return error.InvalidFrameEncoding;
+            var rebound_response: ?Frame.Response = null;
+            defer if (rebound_response) |*frame| frame.deinit(self.allocator);
+            const effective_response = if (response.responseFingerprintDeferred()) effective: {
+                const frame = self.last_request_frame orelse return error.InvalidPendingPortTransition;
+                rebound_response = try response.bindDeferredResponseFingerprint(self.allocator, frame, loaded_fingerprint);
+                break :effective rebound_response.?;
+            } else effective: {
+                if (response.response_fingerprint != loaded_fingerprint) return error.InvalidFrameEncoding;
+                if (image.boundary_value_fingerprint == null or image.boundary_value_fingerprint.? != loaded_fingerprint) return error.InvalidFrameEncoding;
+                break :effective response;
+            };
+            try validateResponseFrameImage(effective_response, false);
+            _ = effective_response.response_image orelse return error.MissingValueImage;
+            try self.session.@"resume"(request, loaded_response_bytes);
             self.pending_request = null;
             if (self.last_request_frame) |*frame| {
                 frame.deinit(self.allocator);
@@ -10135,10 +10150,51 @@ pub const Runspace = struct {
             }
             return .{
                 .response_fingerprint = loaded_fingerprint,
-                .response_frame_fingerprint = response.frame_fingerprint,
-                .response_value_table_id = response.response_value_table_id,
-                .response_value_image_fingerprint = response.response_value_fingerprint,
+                .response_frame_fingerprint = effective_response.frame_fingerprint,
+                .response_value_table_id = effective_response.response_value_table_id,
+                .response_value_image_fingerprint = effective_response.response_value_fingerprint,
                 .response_boundary_value_fingerprint = loaded_fingerprint,
+            };
+        }
+
+        fn loadedResponseImageBytesFromFrameImage(self: *@This(), request: Executable.Boundary.LoadedModule.Session.Request, image: Frame.ValueImage) ![]const u8 {
+            const expected_ref = loadedValueRefFromBoundary(request.expected_response_ref) orelse {
+                _ = Executable.Boundary.LoadedExecution.loadedValueImageFingerprint(image.bytes) catch return error.InvalidFrameEncoding;
+                return self.allocator.dupe(u8, image.bytes);
+            };
+            const executable_plan = self.session.executable_plan orelse return error.InvalidFrameEncoding;
+            const schemas = Executable.Boundary.LoadedExecution.SchemaSet{
+                .schemas = executable_plan.program_plan.value_schemas,
+                .fields = executable_plan.program_plan.value_fields,
+                .variants = executable_plan.program_plan.value_variants,
+            };
+            const LoadedValue = Executable.Boundary.LoadedExecution.LoadedValue;
+            return switch (expected_ref.codec) {
+                .unit => unit: {
+                    _ = try image.decodeValue(self.allocator, void);
+                    break :unit try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, LoadedValue.unit, .{});
+                },
+                .bool => boolean: {
+                    const value = try image.decodeValue(self.allocator, bool);
+                    break :boolean try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, .{ .boolean = value }, .{});
+                },
+                .i32 => i32_value: {
+                    const value = try image.decodeValue(self.allocator, i32);
+                    break :i32_value try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, .{ .i32 = value }, .{});
+                },
+                .usize => word_u64: {
+                    const value = try image.decodeValue(self.allocator, u64);
+                    break :word_u64 try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, .{ .word_u64 = value }, .{});
+                },
+                .string => bytes: {
+                    const value = try image.decodeValue(self.allocator, []const u8);
+                    defer self.allocator.free(value);
+                    break :bytes try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, .{ .bytes = value }, .{});
+                },
+                else => {
+                    _ = Executable.Boundary.LoadedExecution.loadedValueImageFingerprint(image.bytes) catch return error.InvalidFrameEncoding;
+                    return self.allocator.dupe(u8, image.bytes);
+                },
             };
         }
 
@@ -24225,7 +24281,12 @@ pub const Capsule = struct {
             try validateNoZeroU64(self.actuation_intent_refs);
             try validateNoZeroU64(self.actuation_receipt_refs);
             try validateNoZeroU64(self.actuation_journal_refs);
-            for (self.run_slots) |slot| try slot.validate(options);
+            for (self.run_slots) |slot| {
+                if (!capsuleRunspaceImageFormatSupportsLoadedSlots(self.format_version) and runSlotImageUsesLoadedFields(slot)) {
+                    return error.InvalidFrameEncoding;
+                }
+                try slot.validate(options);
+            }
             if (self.run_handle_mappings.len != 0 and !runspaceImageHandleMappingsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (!runspaceImageRoleRefsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (self.mailbox_image) |mailbox| try mailbox.validateForRunspaceImageFormat(options, self.format_version);
@@ -27598,7 +27659,7 @@ pub const Capsule = struct {
     }
 
     fn capsuleRunspaceImageFormatVersionSupported(format_version: u32) bool {
-        return format_version == 1 or format_version == 2 or format_version == world_capsule_runspace_image_format_version;
+        return format_version == 1 or format_version == 2 or format_version == 3 or format_version == world_capsule_runspace_image_format_version;
     }
 
     fn capsuleRunspaceImageFormatSupportsActuationRefs(format_version: u32) bool {
@@ -27607,6 +27668,18 @@ pub const Capsule = struct {
 
     fn capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(format_version: u32) bool {
         return format_version >= 3;
+    }
+
+    fn capsuleRunspaceImageFormatSupportsLoadedSlots(format_version: u32) bool {
+        return format_version >= 4;
+    }
+
+    fn runSlotImageUsesLoadedFields(slot: RunSlotImage) bool {
+        return slot.backend_kind != .generated_target or
+            slot.executable_image_fingerprint != null or
+            slot.executable_plan_fingerprint != null or
+            slot.loaded_session_fingerprint != null or
+            slot.loaded_session_image_fingerprint != null;
     }
 
     fn capsuleImageFormatVersionSupported(format_version: u32) bool {
@@ -28370,7 +28443,7 @@ pub const Capsule = struct {
         try std.testing.expectError(error.InvalidFrameEncoding, encodeManifest(&rejected_legacy, allocator, legacy_with_actuation));
     }
 
-    fn encodeRunSlotImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: RunSlotImage) !void {
+    fn encodeRunSlotImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: RunSlotImage, runspace_image_format_version: u32) !void {
         try writeU32(out, allocator, image.fingerprint_version);
         try writeU64(out, allocator, image.slot_image_fingerprint);
         try writeU64(out, allocator, image.original_run_handle_fingerprint);
@@ -28378,11 +28451,15 @@ pub const Capsule = struct {
         try writeU8(out, allocator, @intFromEnum(image.role));
         try writeU64(out, allocator, image.target_ref_fingerprint);
         try writeOptionalU64(out, allocator, image.module_ref_fingerprint);
-        try writeU8(out, allocator, @intFromEnum(image.backend_kind));
-        try writeOptionalU64(out, allocator, image.executable_image_fingerprint);
-        try writeOptionalU64(out, allocator, image.executable_plan_fingerprint);
-        try writeOptionalU64(out, allocator, image.loaded_session_fingerprint);
-        try writeOptionalU64(out, allocator, image.loaded_session_image_fingerprint);
+        if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version)) {
+            try writeU8(out, allocator, @intFromEnum(image.backend_kind));
+            try writeOptionalU64(out, allocator, image.executable_image_fingerprint);
+            try writeOptionalU64(out, allocator, image.executable_plan_fingerprint);
+            try writeOptionalU64(out, allocator, image.loaded_session_fingerprint);
+            try writeOptionalU64(out, allocator, image.loaded_session_image_fingerprint);
+        } else if (runSlotImageUsesLoadedFields(image)) {
+            return error.InvalidFrameEncoding;
+        }
         try writeOptionalU64(out, allocator, image.admission_receipt_fingerprint);
         try writeOptionalU64(out, allocator, image.environment_certificate_fingerprint);
         try writeOptionalU64(out, allocator, image.run_permit_fingerprint);
@@ -28396,7 +28473,7 @@ pub const Capsule = struct {
         try writeU8(out, allocator, @intFromEnum(image.status));
     }
 
-    fn decodeRunSlotImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !RunSlotImage {
+    fn decodeRunSlotImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions, runspace_image_format_version: u32) !RunSlotImage {
         const fingerprint_version = try readU32(bytes, cursor);
         const slot_image_fingerprint = try readU64(bytes, cursor);
         const original_run_handle_fingerprint = try readU64(bytes, cursor);
@@ -28404,11 +28481,26 @@ pub const Capsule = struct {
         const role = try enumFromByte(RunRole, try readU8(bytes, cursor));
         const target_ref_fingerprint = try readU64(bytes, cursor);
         const module_ref_fingerprint = try readOptionalU64(bytes, cursor);
-        const backend_kind = try enumFromByte(Runspace.BackendKind, try readU8(bytes, cursor));
-        const executable_image_fingerprint = try readOptionalU64(bytes, cursor);
-        const executable_plan_fingerprint = try readOptionalU64(bytes, cursor);
-        const loaded_session_fingerprint = try readOptionalU64(bytes, cursor);
-        const loaded_session_image_fingerprint = try readOptionalU64(bytes, cursor);
+        const backend_kind = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try enumFromByte(Runspace.BackendKind, try readU8(bytes, cursor))
+        else
+            Runspace.BackendKind.generated_target;
+        const executable_image_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
+        const executable_plan_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
+        const loaded_session_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
+        const loaded_session_image_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
         const admission_receipt_fingerprint = try readOptionalU64(bytes, cursor);
         const environment_certificate_fingerprint = try readOptionalU64(bytes, cursor);
         const run_permit_fingerprint = try readOptionalU64(bytes, cursor);
@@ -28457,12 +28549,12 @@ pub const Capsule = struct {
         return image;
     }
 
-    fn writeRunSlotImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const RunSlotImage) !void {
+    fn writeRunSlotImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const RunSlotImage, runspace_image_format_version: u32) !void {
         try writeU64(out, allocator, values.len);
-        for (values) |value| try encodeRunSlotImage(out, allocator, value);
+        for (values) |value| try encodeRunSlotImage(out, allocator, value, runspace_image_format_version);
     }
 
-    fn readRunSlotImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) ![]RunSlotImage {
+    fn readRunSlotImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions, runspace_image_format_version: u32) ![]RunSlotImage {
         const count = try readU64AsUsize(bytes, cursor);
         if (count > options.max_run_slots) return error.InvalidFrameEncoding;
         const values = try allocator.alloc(RunSlotImage, count);
@@ -28472,7 +28564,7 @@ pub const Capsule = struct {
             allocator.free(values);
         }
         for (values) |*value| {
-            value.* = try decodeRunSlotImage(allocator, bytes, cursor, options);
+            value.* = try decodeRunSlotImage(allocator, bytes, cursor, options, runspace_image_format_version);
             initialized += 1;
         }
         return values;
@@ -28703,7 +28795,7 @@ pub const Capsule = struct {
         try writeU64(out, allocator, image.runspace_fingerprint);
         try writeU64(out, allocator, image.runspace_report_fingerprint);
         try writeU64Slice(out, allocator, image.run_handle_mappings);
-        try writeRunSlotImageSlice(out, allocator, image.run_slots);
+        try writeRunSlotImageSlice(out, allocator, image.run_slots, image.format_version);
         try writeOptionalMailboxImage(out, allocator, image.mailbox_image, image.format_version);
         try writeU64Slice(out, allocator, image.runspace_event_fingerprints);
         try writeU64Slice(out, allocator, image.root_run_handle_fingerprints);
@@ -28735,7 +28827,8 @@ pub const Capsule = struct {
         const run_handle_mappings = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
         var run_handle_mappings_owned = true;
         errdefer if (run_handle_mappings_owned) allocator.free(run_handle_mappings);
-        const run_slots = try readRunSlotImageSliceOwned(allocator, bytes, cursor, options);
+        if (!capsuleRunspaceImageFormatVersionSupported(format_version)) return error.InvalidFrameEncoding;
+        const run_slots = try readRunSlotImageSliceOwned(allocator, bytes, cursor, options, format_version);
         var run_slots_owned = true;
         errdefer if (run_slots_owned) {
             for (run_slots) |*slot| slot.deinit(allocator);
@@ -28867,7 +28960,7 @@ pub const Capsule = struct {
         try writeU64(&encoded, allocator, legacy.runspace_fingerprint);
         try writeU64(&encoded, allocator, legacy.runspace_report_fingerprint);
         try writeU64Slice(&encoded, allocator, legacy.run_handle_mappings);
-        try writeRunSlotImageSlice(&encoded, allocator, legacy.run_slots);
+        try writeRunSlotImageSlice(&encoded, allocator, legacy.run_slots, legacy.format_version);
         try writeOptionalMailboxImage(&encoded, allocator, legacy.mailbox_image, legacy.format_version);
         try writeU64Slice(&encoded, allocator, legacy.runspace_event_fingerprints);
         try writeU64Slice(&encoded, allocator, legacy.root_run_handle_fingerprints);
@@ -28943,7 +29036,7 @@ pub const Capsule = struct {
         try writeU64(&encoded_mailbox, allocator, legacy_with_mailbox.runspace_fingerprint);
         try writeU64(&encoded_mailbox, allocator, legacy_with_mailbox.runspace_report_fingerprint);
         try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.run_handle_mappings);
-        try writeRunSlotImageSlice(&encoded_mailbox, allocator, legacy_with_mailbox.run_slots);
+        try writeRunSlotImageSlice(&encoded_mailbox, allocator, legacy_with_mailbox.run_slots, legacy_with_mailbox.format_version);
         try writeBool(&encoded_mailbox, allocator, true);
         try writeU32(&encoded_mailbox, allocator, legacy_mailbox.fingerprint_version);
         try writeU64(&encoded_mailbox, allocator, legacy_mailbox.mailbox_image_fingerprint);
@@ -29038,6 +29131,42 @@ pub const Capsule = struct {
         const decoded_v2_pending = decoded_v2.mailbox_image.?.pending_port_entries[0];
         try std.testing.expect(decoded_v2_pending.committed_actuation_receipt);
         try std.testing.expectEqual(@as(?u64, v2_receipt_refs[0]), decoded_v2_pending.pending_actuation_receipt_fingerprint);
+
+        const legacy_v3_slot = RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_ad01,
+            .role = .root,
+            .target_ref_fingerprint = 0x5150_ad02,
+            .module_ref_fingerprint = 0x5150_ad03,
+            .admission_receipt_fingerprint = 0x5150_ad04,
+            .environment_certificate_fingerprint = 0x5150_ad05,
+            .run_permit_fingerprint = 0x5150_ad06,
+            .run_state_fingerprint = 0x5150_ad07,
+            .status = .completed,
+        });
+        const legacy_v3_slots = [_]RunSlotImage{legacy_v3_slot};
+        var legacy_v3 = RunspaceImage{
+            .format_version = 3,
+            .fingerprint_version = world_capsule_runspace_image_fingerprint_version,
+            .image_fingerprint = 0,
+            .runspace_fingerprint = 0x5150_ad08,
+            .runspace_report_fingerprint = 0x5150_ad09,
+            .run_slots = &legacy_v3_slots,
+            .admission_receipt_refs = &.{0x5150_ad04},
+            .metadata = "v3-runspace-slot",
+        };
+        legacy_v3.image_fingerprint = fingerprintRunspaceImage(legacy_v3);
+        var encoded_v3: std.ArrayList(u8) = .empty;
+        defer encoded_v3.deinit(allocator);
+        try encodeRunspaceImage(&encoded_v3, allocator, legacy_v3);
+        var v3_cursor: usize = 0;
+        var decoded_v3 = try decodeRunspaceImage(allocator, encoded_v3.items, &v3_cursor, .{});
+        defer decoded_v3.deinit(allocator);
+        try std.testing.expectEqual(encoded_v3.items.len, v3_cursor);
+        try std.testing.expectEqual(@as(u32, 3), decoded_v3.format_version);
+        try std.testing.expectEqual(@as(usize, 1), decoded_v3.run_slots.len);
+        try std.testing.expectEqual(Runspace.BackendKind.generated_target, decoded_v3.run_slots[0].backend_kind);
+        try std.testing.expectEqual(@as(?u64, null), decoded_v3.run_slots[0].executable_image_fingerprint);
+        try std.testing.expectEqual(@as(?u64, 0x5150_ad04), decoded_v3.run_slots[0].admission_receipt_fingerprint);
 
         const actuation_refs = [_]u64{0x5150_aa06};
         var legacy_with_actuation_refs = legacy_with_mailbox;
@@ -29480,7 +29609,7 @@ pub const Continuity = struct {
             return switch (self) {
                 .capsule_image => format_version == 1 or format_version == 2 or format_version == world_capsule_image_format_version,
                 .capsule_manifest => format_version == 1 or format_version == world_capsule_manifest_format_version,
-                .capsule_runspace_image => format_version == 1 or format_version == 2 or format_version == world_capsule_runspace_image_format_version,
+                .capsule_runspace_image => format_version == 1 or format_version == 2 or format_version == 3 or format_version == world_capsule_runspace_image_format_version,
                 .run_image => format_version == 1 or format_version == 2 or format_version == world_run_image_format_version,
                 .transcript_image => format_version == 2 or format_version == world_transcript_image_format_version,
                 .actuation_receipt => format_version == world_actuation_receipt_legacy_format_version or format_version == world_actuation_receipt_format_version,

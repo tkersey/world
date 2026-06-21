@@ -1390,7 +1390,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Continuity capsule basic example.",
             .expected_stdout =
             \\stored_object_count=1
-            \\capsule_ref=886e63b600519640
+            \\capsule_ref=4e304187d2f4f22a
             \\capsule_certificate_ref=0
             \\graph_restorable=true
             \\graph_replayable=false
@@ -1416,7 +1416,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-bundle-roundtrip",
             .desc = "Run the World Continuity bundle roundtrip example.",
             .expected_stdout =
-            \\bundle_fingerprint=a320c156f921d764
+            \\bundle_fingerprint=9fa869dd110a951d
             \\imported_object_count=2
             \\capsule_restored_to_inspectable_state=true
             \\
@@ -1428,7 +1428,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-pending-actuation",
             .desc = "Run the World Continuity pending actuation example.",
             .expected_stdout =
-            \\capsule_ref=2af9818da304011f
+            \\capsule_ref=db8cf7a211f5e66f
             \\pending_actuation_count=1
             \\local_fresh_actuation_required=true
             \\
@@ -1440,7 +1440,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-continuity-agent-evidence",
             .desc = "Run the World Continuity agent evidence example.",
             .expected_stdout =
-            \\capsule_ref=886e63b600519640
+            \\capsule_ref=4e304187d2f4f22a
             \\model_receipt_count=1
             \\tool_receipt_count=1
             \\final_result=continuity-agent-evidence-ok
@@ -1453,9 +1453,9 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-chronicle-capsule-commit",
             .desc = "Run the World Chronicle capsule commit example.",
             .expected_stdout =
-            \\capsule_ref=886e63b600519640
-            \\commit_fingerprint=266537d0d9985584
-            \\cursor_fingerprint=ee986c0353dced7a
+            \\capsule_ref=4e304187d2f4f22a
+            \\commit_fingerprint=6f80cd831effde0f
+            \\cursor_fingerprint=386a1edab305e25e
             \\final_result=chronicle-capsule-commit-ok
             \\
             ,
@@ -1480,7 +1480,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Chronicle replay projection example.",
             .expected_stdout =
             \\event_count=7
-            \\replay_report_fingerprint=8570ccebf5923c4
+            \\replay_report_fingerprint=e9c3783fb57b22ed
             \\projection_match=true
             \\
             ,
@@ -1491,8 +1491,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-chronicle-bundle-inbox",
             .desc = "Run the World Chronicle bundle inbox example.",
             .expected_stdout =
-            \\outbound_envelope_ref=4b8a94ac7e375cdb
-            \\inbound_envelope_ref=eda78eed6788f67b
+            \\outbound_envelope_ref=c3116af50c6f6b44
+            \\inbound_envelope_ref=7c47ab7fa67d5ce5
             \\accepted=true
             \\
             ,
@@ -1503,8 +1503,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-chronicle-recovery",
             .desc = "Run the World Chronicle recovery example.",
             .expected_stdout =
-            \\recovery_plan_fingerprint=74ad15b2dd3df9e
-            \\recovery_report_fingerprint=9ed4c51da07a17aa
+            \\recovery_plan_fingerprint=27938c27164edc83
+            \\recovery_report_fingerprint=3998020aaa985f10
             \\restored=true
             \\final_result=chronicle-recovery-ok
             \\
@@ -1516,10 +1516,10 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-chronicle-agent-evidence",
             .desc = "Run the World Chronicle agent evidence example.",
             .expected_stdout =
-            \\capsule_ref=886e63b600519640
+            \\capsule_ref=4e304187d2f4f22a
             \\model_receipt_count=1
             \\tool_receipt_count=1
-            \\bundle_fingerprint=7aba34a125bdc7b4
+            \\bundle_fingerprint=62e288ea95e3976e
             \\projection_replay=true
             \\
             ,

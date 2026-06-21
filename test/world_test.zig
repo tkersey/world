@@ -8304,7 +8304,7 @@ test "capsule namespace exposes kernel model and stable manifest fingerprint" {
         .metadata = "capsule manifest",
     });
     try std.testing.expectEqual(@as(u32, 2), world.world_capsule_manifest_format_version);
-    try std.testing.expectEqual(@as(u32, 3), world.world_capsule_runspace_image_format_version);
+    try std.testing.expectEqual(@as(u32, 4), world.world_capsule_runspace_image_format_version);
     try std.testing.expectEqual(manifest.manifest_fingerprint, again.manifest_fingerprint);
     try std.testing.expect(manifest.manifest_fingerprint != 0);
     try std.testing.expectEqual(@as(u64, 0xaaaa), manifest.root_target_ref_fingerprint);
@@ -39682,6 +39682,27 @@ test "Executable Image validation rejects forged compatibility report fields" {
         error.InvalidFrameEncoding,
         forged.validate(world.Executable.RuntimeProfile.universal_v1),
     );
+
+    var forged_certificate = image;
+    forged_certificate.certificate = world.Executable.Certificate.init(.{
+        .image_fingerprint = image.image_fingerprint,
+        .module_set_fingerprint = image.module_set.module_set_fingerprint + 1,
+        .runtime_profile_fingerprint = image.required_runtime_profile.profile_fingerprint,
+        .dispatch_fingerprint = image.dispatch_image.dispatch_fingerprint,
+        .memory_plan_fingerprint = image.memory_plan.memory_plan_fingerprint,
+        .compatibility_report_fingerprint = image.compatibility_report.report_fingerprint,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .module_count = image.module_set.modules.len,
+        .residual_external_binding_count = image.external_bindings.len,
+        .blocker_count = image.compatibility_report.hard_blockers,
+        .warning_count = image.compatibility_report.warnings,
+    });
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        forged_certificate.validate(world.Executable.RuntimeProfile.universal_v1),
+    );
 }
 
 test "Executable Builder reports residual binding blockers before image seal" {
@@ -39943,6 +39964,7 @@ test "Loaded Fabric installs provider from sealed executable image route" {
 
     _ = try runspace.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(runspace.slots.items[1].handle)).status);
+
     const event = try runspace.respondFromFabric(invocation);
     try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
@@ -39950,6 +39972,60 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     const final_report = try runspace.tick();
     try std.testing.expectEqual(@as(usize, 2), final_report.completed_count);
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(root_handle)).status);
+}
+
+test "Loaded Run rejects response frame fingerprint mismatch" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(provider_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .linker_policy = .strict_closed,
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const root_handle = try runspace.installExecutableRoot(image, .{});
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(root_handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    const pending = try runspace.mailbox.get(0);
+    const pending_request = pending.request_frame.?;
+    const wrong_response_fingerprint: u64 = 0x5150_5bad;
+    var response_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        pending.expected_response_value_table_id,
+        wrong_response_fingerprint,
+        null,
+        @as(i32, 7),
+        .portable,
+    );
+    var response_image_owned = true;
+    defer if (response_image_owned) response_image.deinit(std.testing.allocator);
+    var response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = pending_request.world_surface_fingerprint,
+        .target_certificate_fingerprint = pending_request.target_certificate_fingerprint,
+        .world_port_id = pending_request.world_port_id,
+        .request_fingerprint = pending_request.request_fingerprint,
+        .response_kind = pending.expected_response_kind,
+        .response_value_table_id = pending.expected_response_value_table_id,
+        .response_fingerprint = wrong_response_fingerprint,
+        .response_image = response_image,
+        .replay_key = pending_request.replay_key_seed.withResponse(wrong_response_fingerprint).fingerprint(),
+        .status = .responded,
+    });
+    response_image_owned = false;
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.respond(0, response));
 }
 
 test "Loaded Capsule binds run slot executable and loaded session identity" {
