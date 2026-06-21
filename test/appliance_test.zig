@@ -3880,6 +3880,83 @@ test "appliance Core mixed host replies retain only nonterminal requests" {
     try std.testing.expectEqual(@as(usize, 0), core.outstanding_host_requests.len);
 }
 
+test "appliance Core failed host reply dominates partial outstanding replies" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.wasm_small,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.wasm_small,
+    );
+    defer core.reset();
+
+    const requests = [_]world.Appliance.HostRequest{
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 1,
+            .request_ordinal = 0,
+            .run_handle_fingerprint = 0xD5E0,
+            .pending_port_fingerprint = 0xD5E1,
+            .world_port_id = 0,
+            .intent_fingerprint = 0xD5E2,
+            .envelope_fingerprint = 0xD5E3,
+            .decision_fingerprint = 0xD5E4,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xD5E5,
+            .allowed_response_statuses = world.Actuation.ResponseStatusSet.all,
+            .metadata = "failed",
+        }),
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 1,
+            .request_ordinal = 1,
+            .run_handle_fingerprint = 0xD5E6,
+            .pending_port_fingerprint = 0xD5E7,
+            .world_port_id = 0,
+            .intent_fingerprint = 0xD5E8,
+            .envelope_fingerprint = 0xD5E9,
+            .decision_fingerprint = 0xD5EA,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xD5EB,
+            .metadata = "unreplied",
+        }),
+    };
+    core.state = .waiting_host;
+    core.current_turn_sequence_number = 1;
+    core.previous_turn_receipt_fingerprint = 0xD5EC;
+    core.outstanding_host_requests = requests[0..];
+
+    const failed_reply = applianceHostReplyWithStatusFor(requests[0], .failed);
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .host_replies = &.{failed_reply},
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+    try core.submit(continue_bytes);
+    try core.executeTurn();
+
+    var output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.wasm_small,
+    );
+    defer output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.failed, output.status);
+    try std.testing.expectEqual(@as(usize, 1), output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 0), output.host_requests.len);
+    try std.testing.expectEqual(@as(usize, 0), output.checkpoint.outstanding_host_requests.len);
+    try std.testing.expectEqual(@as(usize, 0), core.outstanding_host_requests.len);
+    try std.testing.expectEqual(world.Appliance.CoreState.failed, core.state);
+}
+
 test "appliance Core emitted checkpoint carries current TurnReceipt for restore" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,

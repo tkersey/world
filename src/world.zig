@@ -24014,6 +24014,12 @@ pub const Capsule = struct {
                     {
                         return error.InvalidFrameEncoding;
                     }
+                    if (self.executable_image_fingerprint.? == 0 or
+                        self.executable_plan_fingerprint.? == 0 or
+                        self.loaded_session_fingerprint.? == 0)
+                    {
+                        return error.InvalidFrameEncoding;
+                    }
                     if (self.loaded_session_image_fingerprint) |image_fingerprint| {
                         if (image_fingerprint == 0) return error.InvalidFrameEncoding;
                     }

@@ -40424,6 +40424,48 @@ test "Loaded Capsule binds run slot executable and loaded session identity" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, malformed_loaded_slot.validate(.{}));
 
+    const zero_loaded_identity_slots = [_]world.Capsule.RunSlotImage{
+        world.Capsule.RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_5012,
+            .role = .root,
+            .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+            .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+            .backend_kind = .loaded_module,
+            .executable_image_fingerprint = 0,
+            .executable_plan_fingerprint = image.module_set.root().?.executable_plan_fingerprint,
+            .loaded_session_fingerprint = slot.loaded_session_fingerprint,
+            .run_state_fingerprint = 0x5150_5013,
+            .status = .completed,
+        }),
+        world.Capsule.RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_5014,
+            .role = .root,
+            .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+            .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+            .backend_kind = .loaded_module,
+            .executable_image_fingerprint = image.image_fingerprint,
+            .executable_plan_fingerprint = 0,
+            .loaded_session_fingerprint = slot.loaded_session_fingerprint,
+            .run_state_fingerprint = 0x5150_5015,
+            .status = .completed,
+        }),
+        world.Capsule.RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_5016,
+            .role = .root,
+            .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+            .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+            .backend_kind = .loaded_module,
+            .executable_image_fingerprint = image.image_fingerprint,
+            .executable_plan_fingerprint = image.module_set.root().?.executable_plan_fingerprint,
+            .loaded_session_fingerprint = 0,
+            .run_state_fingerprint = 0x5150_5017,
+            .status = .completed,
+        }),
+    };
+    for (zero_loaded_identity_slots) |zero_identity_slot| {
+        try std.testing.expectError(error.InvalidFrameEncoding, zero_identity_slot.validate(.{}));
+    }
+
     const generated_slot_with_executable_image = world.Capsule.RunSlotImage.init(.{
         .original_run_handle_fingerprint = 0x5150_5010,
         .role = .root,

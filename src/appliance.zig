@@ -2889,8 +2889,18 @@ pub fn Appliance(comptime World: type) type {
                     legacy_outstanding_host_request_storage[0] = request;
                     break :blk legacy_outstanding_host_request_storage[0..1];
                 } else &.{};
+                if (command.host_replies.len != 0) {
+                    const host_reply_status = turnStatusForHostReplies(command.host_replies);
+                    switch (host_reply_status) {
+                        .failed, .blocked, .cancelled, .needs_host => return host_reply_status,
+                        .completed => {
+                            if (command.host_replies.len < current_outstanding_host_requests.len) return .needs_host;
+                            return .completed;
+                        },
+                        .inspected => unreachable,
+                    }
+                }
                 if (commandLeavesOutstandingHostRequests(current_outstanding_host_requests, command)) return .needs_host;
-                if (command.host_replies.len != 0) return turnStatusForHostReplies(command.host_replies);
                 if (self.commandIsTerminalArchiveAckOnly(command)) return .completed;
                 if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
                 if (command.execution_mode == .fresh) return .needs_host;
@@ -2918,18 +2928,25 @@ pub fn Appliance(comptime World: type) type {
             }
 
             fn turnStatusForHostReplies(replies: []const HostReply) TurnStatus {
+                var saw_failed = false;
+                var saw_cancelled = false;
                 var saw_rejected = false;
+                var saw_needs_host = false;
                 for (replies) |reply| {
                     switch (turnStatusForHostOutcome(reply.outcome.status)) {
-                        .needs_host => return .needs_host,
-                        .failed => return .failed,
-                        .cancelled => return .cancelled,
+                        .needs_host => saw_needs_host = true,
+                        .failed => saw_failed = true,
+                        .cancelled => saw_cancelled = true,
                         .blocked => saw_rejected = true,
                         .completed => {},
                         .inspected => unreachable,
                     }
                 }
-                return if (saw_rejected) .blocked else .completed;
+                if (saw_failed) return .failed;
+                if (saw_cancelled) return .cancelled;
+                if (saw_rejected) return .blocked;
+                if (saw_needs_host) return .needs_host;
+                return .completed;
             }
 
             fn hostRequestFor(self: @This(), command: Command, turn_sequence_number: u64, capsule_fingerprint: u64, binding_index: usize) !HostRequest {
