@@ -49,6 +49,10 @@ fn applianceSyntheticHostRequestArgs(comptime T: type, args: T) struct {
     idempotency_key_fingerprint: u64,
     supervision_ref_fingerprint: ?u64 = null,
     metadata: []const u8 = "",
+    frame_request_bytes: []const u8 = "",
+    payload_value_image_bytes: []const u8 = "",
+    prepared_actuation_evidence_bytes: []const u8 = "",
+    idempotency_key_bytes: []const u8 = "",
 } {
     return .{
         .turn_sequence_number = args.turn_sequence_number,
@@ -68,6 +72,10 @@ fn applianceSyntheticHostRequestArgs(comptime T: type, args: T) struct {
         .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
         .supervision_ref_fingerprint = if (@hasField(T, "supervision_ref_fingerprint")) args.supervision_ref_fingerprint else null,
         .metadata = if (@hasField(T, "metadata")) args.metadata else "",
+        .frame_request_bytes = if (@hasField(T, "frame_request_bytes")) args.frame_request_bytes else "",
+        .payload_value_image_bytes = if (@hasField(T, "payload_value_image_bytes")) args.payload_value_image_bytes else "",
+        .prepared_actuation_evidence_bytes = if (@hasField(T, "prepared_actuation_evidence_bytes")) args.prepared_actuation_evidence_bytes else "",
+        .idempotency_key_bytes = if (@hasField(T, "idempotency_key_bytes")) args.idempotency_key_bytes else "",
     };
 }
 
@@ -5507,6 +5515,59 @@ test "appliance host request validates and is carried by needs-host TurnOutput" 
         .metadata = "model",
     });
     try request.validate(world.Appliance.Capacity.tiny_one_port);
+    const segmented_frame_payload = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD100,
+        .pending_port_fingerprint = 0xD101,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD102,
+        .envelope_fingerprint = 0xD103,
+        .decision_fingerprint = 0xD104,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+        .idempotency_key_fingerprint = 0xD105,
+        .metadata = "model",
+        .frame_request_bytes = "ab",
+        .payload_value_image_bytes = "c",
+        .prepared_actuation_evidence_bytes = "de",
+        .idempotency_key_bytes = "f",
+    });
+    const shifted_frame_payload = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD100,
+        .pending_port_fingerprint = 0xD101,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD102,
+        .envelope_fingerprint = 0xD103,
+        .decision_fingerprint = 0xD104,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+        .idempotency_key_fingerprint = 0xD105,
+        .metadata = "model",
+        .frame_request_bytes = "a",
+        .payload_value_image_bytes = "bc",
+        .prepared_actuation_evidence_bytes = "de",
+        .idempotency_key_bytes = "f",
+    });
+    try std.testing.expect(segmented_frame_payload.request_fingerprint != shifted_frame_payload.request_fingerprint);
+    const shifted_prepared_key = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD100,
+        .pending_port_fingerprint = 0xD101,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD102,
+        .envelope_fingerprint = 0xD103,
+        .decision_fingerprint = 0xD104,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+        .idempotency_key_fingerprint = 0xD105,
+        .metadata = "model",
+        .frame_request_bytes = "ab",
+        .payload_value_image_bytes = "c",
+        .prepared_actuation_evidence_bytes = "d",
+        .idempotency_key_bytes = "ef",
+    });
+    try std.testing.expect(segmented_frame_payload.request_fingerprint != shifted_prepared_key.request_fingerprint);
 
     const capsule_fingerprint: u64 = 0xD106;
     const receipt = world.Appliance.TurnReceipt.init(.{

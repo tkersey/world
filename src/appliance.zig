@@ -5681,15 +5681,15 @@ pub fn Appliance(comptime World: type) type {
             hashU64(&hasher, request.expected_response_descriptor_fingerprint);
             hashU64(&hasher, request.idempotency_key_fingerprint);
             hashOptionalU64(&hasher, request.supervision_ref_fingerprint);
-            hashBytes(&hasher, request.metadata);
-            hashBytes(&hasher, request.frame_request_bytes);
-            hashBytes(&hasher, request.payload_value_image_bytes);
+            hashNamedBytes(&hasher, "metadata", request.metadata);
+            hashNamedBytes(&hasher, "frame_request_bytes", request.frame_request_bytes);
+            hashNamedBytes(&hasher, "payload_value_image_bytes", request.payload_value_image_bytes);
             hashOptionalU64(&hasher, request.payload_value_ref_fingerprint);
             hashOptionalU64(&hasher, request.payload_schema_ref_fingerprint);
             hashOptionalU64(&hasher, request.expected_response_value_ref_fingerprint);
             hashOptionalU64(&hasher, request.expected_response_schema_ref_fingerprint);
-            hashBytes(&hasher, request.prepared_actuation_evidence_bytes);
-            hashBytes(&hasher, request.idempotency_key_bytes);
+            hashNamedBytes(&hasher, "prepared_actuation_evidence_bytes", request.prepared_actuation_evidence_bytes);
+            hashNamedBytes(&hasher, "idempotency_key_bytes", request.idempotency_key_bytes);
             return nonzero(hasher.final());
         }
 
@@ -7177,6 +7177,11 @@ pub fn Appliance(comptime World: type) type {
         fn hashTurnStatusSlice(hasher: *std.hash.Wyhash, values: []const TurnStatus) void {
             hashU64(hasher, values.len);
             for (values) |value| hashU64(hasher, @intFromEnum(value));
+        }
+
+        fn hashNamedBytes(hasher: *std.hash.Wyhash, name: []const u8, bytes: []const u8) void {
+            hashBytes(hasher, name);
+            hashBytes(hasher, bytes);
         }
 
         fn validateOptionalFingerprint(value: ?u64) !void {
