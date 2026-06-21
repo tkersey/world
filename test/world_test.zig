@@ -39777,6 +39777,69 @@ test "Executable Builder seals full module image with explicit residual external
         .label = "seed.fixture.missing-shape",
     });
     try std.testing.expect(!missing_shape_binding.matchesRequirement(root_module, root_import));
+    const replay_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = root_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = root_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = root_import.world_surface_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = root_import.residual_site_index,
+        .residual_site_fingerprint = root_import.residual_site_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .mode = .replay,
+        .allowed_response_kinds = root_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = root_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = root_import.suggested_symbolic_name,
+        .required = root_import.required,
+        .tags = root_import.tags,
+        .metadata = root_import.metadata,
+    });
+    const fresh_only_actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "seed.fixture.fresh-only",
+        .supported_modes = .fresh_only,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const fresh_only_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = fresh_only_actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .supported_modes = .fresh_only,
+        .label = "seed.fixture.fresh-only",
+    });
+    const fresh_only_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = fresh_only_actuator_ref,
+        .descriptor = fresh_only_descriptor,
+        .label = "seed.fixture.fresh-only",
+    });
+    try std.testing.expect(!fresh_only_binding.matchesRequirement(root_module, replay_import));
+    var mode_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer mode_builder.deinit();
+    try mode_builder.addRootModule(root_bytes);
+    std.testing.allocator.free(mode_builder.modules.items[0].imports);
+    mode_builder.modules.items[0].imports = try std.testing.allocator.dupe(world.ImportRequirement, &.{replay_import});
+    try mode_builder.addExternalBinding(fresh_only_binding);
+    var mode_prepared = try mode_builder.prepare();
+    defer mode_prepared.deinit();
+    try std.testing.expect(!mode_prepared.plan.compatibility_report.compatible);
     const missing_payload_ref_binding = world.Executable.ExternalBinding.init(.{
         .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
         .world_port_id = root_import.world_port_id,

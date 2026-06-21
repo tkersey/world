@@ -89,14 +89,22 @@ pub export fn world_appliance_submit_command(ptr: usize, len: usize) u32 {
     if (len == 0 or len > max_command_bytes) return setError(status_capacity_exceeded, "invalid command length");
     const command = guestRange(ptr, len) orelse return setError(status_invalid_command, "command outside appliance memory");
 
-    appendOutput("world.universal_appliance.output.v2\n") catch return setError(status_capacity_exceeded, "output capacity exceeded");
-    appendOutput("image=") catch return setError(status_capacity_exceeded, "output capacity exceeded");
-    appendHex(image_fingerprint) catch return setError(status_capacity_exceeded, "output capacity exceeded");
-    appendOutput("\ncommand=") catch return setError(status_capacity_exceeded, "output capacity exceeded");
-    appendHex(fingerprintBytes(command)) catch return setError(status_capacity_exceeded, "output capacity exceeded");
-    appendOutput("\npayload=") catch return setError(status_capacity_exceeded, "output capacity exceeded");
-    appendOutput(image_bytes[image_payload_offset .. image_payload_offset + image_payload_len]) catch return setError(status_capacity_exceeded, "output capacity exceeded");
-    appendOutput("\n") catch return setError(status_capacity_exceeded, "output capacity exceeded");
+    const fixed_output_len =
+        "world.universal_appliance.output.v2\n".len +
+        "image=".len + 16 +
+        "\ncommand=".len + 16 +
+        "\npayload=".len +
+        "\n".len;
+    if (image_payload_len > max_output_bytes or fixed_output_len > max_output_bytes - image_payload_len) return setOutputCapacityExceeded();
+
+    appendOutput("world.universal_appliance.output.v2\n") catch return setOutputCapacityExceeded();
+    appendOutput("image=") catch return setOutputCapacityExceeded();
+    appendHex(image_fingerprint) catch return setOutputCapacityExceeded();
+    appendOutput("\ncommand=") catch return setOutputCapacityExceeded();
+    appendHex(fingerprintBytes(command)) catch return setOutputCapacityExceeded();
+    appendOutput("\npayload=") catch return setOutputCapacityExceeded();
+    appendOutput(image_bytes[image_payload_offset .. image_payload_offset + image_payload_len]) catch return setOutputCapacityExceeded();
+    appendOutput("\n") catch return setOutputCapacityExceeded();
     clearError();
     return status_completed;
 }
@@ -224,6 +232,11 @@ fn appendHex(value: u64) !void {
         if (shift == 0) break;
         shift -= 4;
     }
+}
+
+fn setOutputCapacityExceeded() u32 {
+    output_len_value = 0;
+    return setError(status_capacity_exceeded, "output capacity exceeded");
 }
 
 fn fingerprintBytes(bytes: []const u8) u64 {

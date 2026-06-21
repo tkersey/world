@@ -45,6 +45,14 @@ test "Universal Appliance ABI v2 lifecycle keeps image and output boundaries det
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
     try std.testing.expect(universal.world_appliance_last_error_len() > 0);
 
+    const oversized_payload_image = try oversizedPayloadImage();
+    defer std.testing.allocator.free(oversized_payload_image);
+    const oversized_payload_image_ptr = try writeGuest(oversized_payload_image);
+    try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_load_executable(oversized_payload_image_ptr, oversized_payload_image.len));
+    try std.testing.expectEqual(@as(u32, 12), universal.world_appliance_submit_command(command_ptr, command.len));
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
+    try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_load_executable(image_ptr, image.len));
+
     try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_reset());
     try std.testing.expectEqual(image.len, universal.world_appliance_manifest_len());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
@@ -60,6 +68,33 @@ fn writeGuest(bytes: []const u8) !usize {
     const out = guestSlice(ptr, bytes.len);
     @memcpy(out, bytes);
     return ptr;
+}
+
+fn oversizedPayloadImage() ![]u8 {
+    const payload = try std.testing.allocator.alloc(u8, 128 * 1024);
+    defer std.testing.allocator.free(payload);
+    @memset(payload, 'x');
+    const fixed_output_len =
+        "world.universal_appliance.output.v2\n".len +
+        "image=".len + 16 +
+        "\ncommand=".len + 16 +
+        "\npayload=".len +
+        "\n".len;
+    const payload_len = 128 * 1024 - fixed_output_len + 1;
+    return std.fmt.allocPrint(
+        std.testing.allocator,
+        "world.Executable.TextEnvelope.v1\nfingerprint={x:0>16}\npayload={s}",
+        .{ fingerprintBytes(payload[0..payload_len]), payload[0..payload_len] },
+    );
+}
+
+fn fingerprintBytes(bytes: []const u8) u64 {
+    var hash: u64 = 0xcbf29ce484222325;
+    for (bytes) |byte| {
+        hash ^= byte;
+        hash *%= 0x100000001b3;
+    }
+    return hash;
 }
 
 fn guestSlice(ptr: usize, len: usize) []u8 {

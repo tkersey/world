@@ -295,6 +295,7 @@ pub fn Executable(comptime W: type) type {
                     if (target_ref_fingerprint != module.target_ref.target_ref_fingerprint) return false;
                 }
                 if (!bindingRefSatisfiesRequirement(self.descriptor.source_effect_shape_ref_fingerprint, requirement.source_effect_shape_ref_fingerprint)) return false;
+                if (!descriptorSupportsRequirementMode(self.descriptor.supported_modes, requirement.mode)) return false;
                 if (!optionalU32Matches(self.descriptor.payload_value_table_id, requirement.payload_value_table_id)) return false;
                 if (!optionalU32Matches(self.descriptor.response_value_table_id, requirement.response_value_table_id)) return false;
                 if (!bindingRefSatisfiesRequirement(self.world_port_ref_fingerprint, requirement.world_port_ref_fingerprint)) return false;
@@ -1624,6 +1625,17 @@ pub fn Executable(comptime W: type) type {
                 return actual == expected;
             }
             return true;
+        }
+
+        fn descriptorSupportsRequirementMode(supported_modes: W.Actuation.ModeSet, requirement_mode: W.BindingModePolicy) bool {
+            return switch (requirement_mode) {
+                .fresh => supported_modes.allows(.fresh),
+                .replay => supported_modes.allows(.replay),
+                .verify => supported_modes.allows(.verify),
+                .audit => supported_modes.allows(.audit),
+                .fresh_and_replay => supported_modes.allows(.fresh) and supported_modes.allows(.replay),
+                .all => supported_modes.allows(.fresh) and supported_modes.allows(.replay) and supported_modes.allows(.verify) and supported_modes.allows(.audit),
+            };
         }
 
         fn optionalU32Matches(left: ?u32, right: ?u32) bool {
