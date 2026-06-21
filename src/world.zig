@@ -9002,12 +9002,12 @@ pub const Fabric = struct {
     pub const RouteKind = enum {
         adapter,
         target_export,
-        loaded_module_export,
         admitted_run,
         guest,
         replay,
         reject,
         unsupported,
+        loaded_module_export,
     };
 
     pub const ValueMappingKind = enum {

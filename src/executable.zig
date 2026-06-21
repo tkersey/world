@@ -178,6 +178,10 @@ pub fn Executable(comptime W: type) type {
                     self.max_output_bytes >= required.max_output_bytes and
                     self.max_linear_memory_pages >= required.max_linear_memory_pages;
             }
+
+            pub fn validate(self: @This()) !void {
+                if (self.profile_fingerprint == 0 or self.profile_fingerprint != fingerprintRuntimeProfile(self)) return error.InvalidFrameEncoding;
+            }
         };
 
         pub const ExternalBinding = struct {
@@ -637,6 +641,7 @@ pub fn Executable(comptime W: type) type {
             }
 
             pub fn validate(self: @This(), supported_profile: RuntimeProfile) !CompatibilityReport {
+                try self.required_runtime_profile.validate();
                 try self.module_set.validate();
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
                 try validateDispatchTablesForImage(self);

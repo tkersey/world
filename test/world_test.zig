@@ -39675,6 +39675,9 @@ test "Executable Builder seals full module image with explicit residual external
         root_module.module_ref.boundary_module_fingerprint,
         image.module_set.root().?.module_ref.boundary_module_fingerprint,
     );
+    var forged_profile_image = image;
+    forged_profile_image.required_runtime_profile.max_modules = 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_profile_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
     const wrong_module_fingerprints = [_]u64{root_module.module_ref.boundary_module_fingerprint + 1};
     const forged_module_dispatch = world.Executable.DispatchImage.init(.{
