@@ -2890,6 +2890,11 @@ test "appliance Core validates continue host replies before completion" {
         .actuation_bindings = .{ApplianceActuationBinding},
     });
     const manifest = PortsAppliance.manifest();
+    const static_requirement = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, ApplianceActuationBinding.world_port_id);
+    try std.testing.expectEqual(@as(usize, 1), manifest.actuation_payload_value_ref_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), manifest.actuation_response_value_ref_fingerprints.len);
+    try std.testing.expectEqual(static_requirement.payload_value_ref_fingerprint.?, manifest.actuation_payload_value_ref_fingerprints[0]);
+    try std.testing.expectEqual(static_requirement.response_value_ref_fingerprint.?, manifest.actuation_response_value_ref_fingerprints[0]);
     var core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
         manifest,
@@ -2910,6 +2915,8 @@ test "appliance Core validates continue host replies before completion" {
     try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
     try std.testing.expect(core.outstanding_host_request != null);
     const outstanding = core.outstanding_host_request.?;
+    try std.testing.expectEqual(static_requirement.payload_value_ref_fingerprint, outstanding.payload_value_ref_fingerprint);
+    try std.testing.expectEqual(static_requirement.response_value_ref_fingerprint, outstanding.expected_response_value_ref_fingerprint);
     const first_output = try std.testing.allocator.dupe(u8, core.readOutput());
     defer std.testing.allocator.free(first_output);
     const prior_receipt = core.previous_turn_receipt_fingerprint.?;

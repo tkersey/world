@@ -4962,6 +4962,8 @@ pub fn Appliance(comptime World: type) type {
             const actuation_binding_fingerprints = actuationBindingFingerprints(actuation_bindings);
             const actuation_actuator_ref_fingerprints = actuationActuatorRefFingerprints(actuation_bindings);
             const actuation_world_port_ids = actuationWorldPortIds(actuation_bindings);
+            const actuation_payload_value_ref_fingerprints = actuationPayloadValueRefFingerprints(actuation_bindings);
+            const actuation_response_value_ref_fingerprints = actuationResponseValueRefFingerprints(actuation_bindings);
             const actuation_classes = actuationClasses(actuation_bindings);
             const actuation_allowed_response_statuses = actuationAllowedResponseStatuses(actuation_bindings);
             const plan = MemoryPlan.derive(capacity, profile);
@@ -4979,6 +4981,8 @@ pub fn Appliance(comptime World: type) type {
                 .actuation_binding_fingerprints = &actuation_binding_fingerprints,
                 .actuation_actuator_ref_fingerprints = &actuation_actuator_ref_fingerprints,
                 .actuation_world_port_ids = &actuation_world_port_ids,
+                .actuation_payload_value_ref_fingerprints = &actuation_payload_value_ref_fingerprints,
+                .actuation_response_value_ref_fingerprints = &actuation_response_value_ref_fingerprints,
                 .actuation_classes = &actuation_classes,
                 .actuation_allowed_response_statuses = &actuation_allowed_response_statuses,
                 .supported_execution_modes = ExecutionModeSet.forManifest(profile, actuation_bindings.len),
@@ -5125,6 +5129,24 @@ pub fn Appliance(comptime World: type) type {
             var values: [actuation_bindings.len]u64 = undefined;
             inline for (actuation_bindings, 0..) |BindingDecl, index| {
                 values[index] = BindingDecl.world_port_id;
+            }
+            return values;
+        }
+
+        fn actuationPayloadValueRefFingerprints(comptime actuation_bindings: anytype) [actuation_bindings.len]u64 {
+            var values: [actuation_bindings.len]u64 = undefined;
+            inline for (actuation_bindings, 0..) |BindingDecl, index| {
+                const requirement = World.ImportRequirement.fromTargetPort(BindingDecl.TargetType, BindingDecl.world_port_id);
+                values[index] = requirement.payload_value_ref_fingerprint orelse 0;
+            }
+            return values;
+        }
+
+        fn actuationResponseValueRefFingerprints(comptime actuation_bindings: anytype) [actuation_bindings.len]u64 {
+            var values: [actuation_bindings.len]u64 = undefined;
+            inline for (actuation_bindings, 0..) |BindingDecl, index| {
+                const requirement = World.ImportRequirement.fromTargetPort(BindingDecl.TargetType, BindingDecl.world_port_id);
+                values[index] = requirement.response_value_ref_fingerprint orelse 0;
             }
             return values;
         }

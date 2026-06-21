@@ -609,8 +609,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Seed migration example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=63f2931161c7133e
-            \\restored_output=63f2931161c7133e
+            \\resident_output=6d7240b629b19ad9
+            \\restored_output=6d7240b629b19ad9
             \\
             ,
         },
@@ -637,7 +637,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=74524156d1a4ea6a
+            \\replay_evidence=7595439cc1a074d7
             \\replay_final_result=false
             \\
             ,
@@ -1309,8 +1309,8 @@ pub fn build(b: *std.Build) void {
             \\turn_state=waiting_host
             \\actuation_bindings=1
             \\checkpoint_every_turn=true
-            \\output_bytes=5547
-            \\turn_receipt=84f08a0a8523f704
+            \\output_bytes=5643
+            \\turn_receipt=25bc33784649e87d
             \\
             ,
         },
@@ -1337,8 +1337,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=63f2931161c7133e
-            \\restored_output=63f2931161c7133e
+            \\resident_output=6d7240b629b19ad9
+            \\restored_output=6d7240b629b19ad9
             \\
             ,
         },
@@ -1365,7 +1365,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=74524156d1a4ea6a
+            \\replay_evidence=7595439cc1a074d7
             \\replay_final_result=false
             \\
             ,
@@ -1377,7 +1377,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance WASM probe example.",
             .expected_stdout =
             \\appliance_abi_version=1
-            \\manifest=4affa80862b802ff
+            \\manifest=7f96cca39e26a407
             \\capacity=5fcf964fbaa4a66b
             \\memory_plan=ed1c9222ab3bed1d
             \\required_exports=9
