@@ -113,7 +113,7 @@ Appliance ABI v1 is a deployment ABI above Guest ABI v1. Required exports includ
 
 The runtime manifest is readable before image load. The executable manifest is readable only after successful load. Load is transactional, `reset` clears execution state while retaining the loaded image, `unload` clears image and execution state, and output remains readable until the next mutating call. The artifact has zero imports, no WASI, no host callbacks, and bounded linear memory.
 
-`zig build check-world-universal-appliance-wasm` builds and inspects the artifact. `zig build check-world-universal-appliance-node` is the external runtime proof: installed Node compiles the same WASM bytes once, instantiates with an empty import object, runs two unrelated executable text envelopes in fresh instances, and checks exact canonical WASM outputs.
+`zig build check-world-universal-appliance-wasm` builds and inspects the artifact. `zig build check-world-universal-appliance-node` is the external runtime proof and is part of `zig build check-world-universal`: installed Node compiles the same WASM bytes once, instantiates with an empty import object, runs two unrelated executable text envelopes in fresh instances, and checks exact canonical WASM outputs.
 
 ## Agent appliance walkthrough
 

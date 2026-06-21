@@ -410,6 +410,7 @@ pub fn build(b: *std.Build) void {
     check_world_universal_step.dependOn(check_world_universal_runtime_step);
     check_world_universal_step.dependOn(check_world_seed_replay_step);
     check_world_universal_step.dependOn(check_world_universal_appliance_wasm_step);
+    check_world_universal_step.dependOn(check_world_universal_appliance_node_step);
 
     const forged_descriptor_test = b.addTest(.{
         .root_module = b.createModule(.{
