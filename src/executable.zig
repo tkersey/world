@@ -568,8 +568,11 @@ pub fn Executable(comptime W: type) type {
                 errdefer freeExternalBindingSlice(allocator, bindings);
                 const dispatch_image = try cloneDispatchImage(allocator, self.dispatch_image);
                 errdefer freeDispatchImage(allocator, dispatch_image);
+                var runtime_profile = self.runtime_profile;
+                runtime_profile.metadata = try allocator.dupe(u8, self.runtime_profile.metadata);
+                errdefer allocator.free(runtime_profile.metadata);
                 var image = Image.init(.{
-                    .required_runtime_profile = self.runtime_profile,
+                    .required_runtime_profile = runtime_profile,
                     .module_set = ModuleSet.init(modules, self.module_set.root_module_id),
                     .link_plan_fingerprint = self.link_plan.plan_fingerprint,
                     .linker_certificate_fingerprint = self.linker_certificate.certificate_fingerprint,
@@ -684,6 +687,7 @@ pub fn Executable(comptime W: type) type {
                     freeModuleSlice(allocator, @constCast(self.module_set.modules.ptr)[0..self.module_set.modules.len]);
                     freeDispatchImage(allocator, self.dispatch_image);
                     freeExternalBindingSlice(allocator, self.external_bindings);
+                    allocator.free(self.required_runtime_profile.metadata);
                 }
                 self.* = undefined;
             }
@@ -1079,10 +1083,23 @@ pub fn Executable(comptime W: type) type {
             for (decoded.imports, module.imports) |decoded_import, declared_import| {
                 if (decoded_import.requirement_fingerprint != declared_import.requirement_fingerprint) return error.InvalidFrameEncoding;
             }
-            if (decoded.export_summary.export_summary_fingerprint != module.export_summary.export_summary_fingerprint) return error.InvalidFrameEncoding;
+            if (!exportSummaryMatchesDecoded(decoded.export_summary, module.export_summary)) return error.InvalidFrameEncoding;
             if (decoded.executable_plan_fingerprint != module.executable_plan_fingerprint) return error.InvalidFrameEncoding;
             if (decoded.validation_report_fingerprint != module.validation_report_fingerprint) return error.InvalidFrameEncoding;
             if (decoded.compatibility_report_fingerprint != module.compatibility_report_fingerprint) return error.InvalidFrameEncoding;
+        }
+
+        fn exportSummaryMatchesDecoded(decoded: W.Admission.ExportSummary, declared: W.Admission.ExportSummary) bool {
+            return decoded.export_summary_fingerprint == declared.export_summary_fingerprint and
+                decoded.target_ref_fingerprint == declared.target_ref_fingerprint and
+                optionalU64MatchesExact(decoded.module_ref_fingerprint, declared.module_ref_fingerprint) and
+                decoded.main_export_present == declared.main_export_present and
+                optionalU64MatchesExact(decoded.result_value_ref_fingerprint, declared.result_value_ref_fingerprint) and
+                decoded.argument_value_ref_count == declared.argument_value_ref_count and
+                decoded.normal_form_kind == declared.normal_form_kind and
+                optionalBytesEqual(decoded.target_label, declared.target_label) and
+                decoded.loaded_execution_supported == declared.loaded_execution_supported and
+                optionalBytesEqual(decoded.loaded_execution_unsupported_reason, declared.loaded_execution_unsupported_reason);
         }
 
         fn moduleRefFromLoaded(loaded: BoundaryModule.LoadedModule) W.Admission.ModuleRef {
@@ -1617,6 +1634,16 @@ pub fn Executable(comptime W: type) type {
         fn optionalU64Matches(left: ?u64, right: ?u64) bool {
             if (left == null or right == null) return true;
             return left.? == right.?;
+        }
+
+        fn optionalU64MatchesExact(left: ?u64, right: ?u64) bool {
+            if (left == null or right == null) return left == null and right == null;
+            return left.? == right.?;
+        }
+
+        fn optionalBytesEqual(left: ?[]const u8, right: ?[]const u8) bool {
+            if (left == null or right == null) return left == null and right == null;
+            return std.mem.eql(u8, left.?, right.?);
         }
 
         fn bindingRefSatisfiesRequirement(binding_ref: ?u64, requirement_ref: ?u64) bool {

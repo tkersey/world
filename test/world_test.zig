@@ -39925,8 +39925,14 @@ test "Executable Builder seals full module image with explicit residual external
         defer std.testing.allocator.free(mutable_binding_label);
         var mutable_binding_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.binding.metadata");
         defer std.testing.allocator.free(mutable_binding_metadata);
+        var mutable_runtime_profile_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.profile.metadata");
+        defer std.testing.allocator.free(mutable_runtime_profile_metadata);
 
-        var mutable_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+        var mutable_builder = world.Executable.Builder.init(std.testing.allocator, .{
+            .runtime_profile = world.Executable.RuntimeProfile.init(.{
+                .metadata = mutable_runtime_profile_metadata,
+            }),
+        });
         defer mutable_builder.deinit();
         try mutable_builder.addRootModule(root_bytes);
         const mutable_root_module = mutable_builder.modules.items[0];
@@ -39976,6 +39982,7 @@ test "Executable Builder seals full module image with explicit residual external
         mutable_descriptor_metadata[0] = 'X';
         mutable_binding_label[0] = 'X';
         mutable_binding_metadata[0] = 'X';
+        mutable_runtime_profile_metadata[0] = 'X';
 
         const mutable_report = try mutable_image.validate(world.Executable.RuntimeProfile.universal_v1);
         try std.testing.expect(mutable_report.compatible);
@@ -40000,6 +40007,25 @@ test "Executable Builder seals full module image with explicit residual external
             .metadata = image.metadata,
         });
         try std.testing.expectError(error.InvalidFrameEncoding, forged_import_image.validate(world.Executable.RuntimeProfile.universal_v1));
+    }
+    {
+        var forged_export_modules = [_]world.Executable.Module{image.module_set.modules[0]};
+        forged_export_modules[0].export_summary.result_value_ref_fingerprint =
+            (forged_export_modules[0].export_summary.result_value_ref_fingerprint orelse 0) +% 1;
+        const forged_export_module_set = world.Executable.ModuleSet.init(&forged_export_modules, image.module_set.root_module_id);
+        const forged_export_image = world.Executable.Image.init(.{
+            .required_runtime_profile = image.required_runtime_profile,
+            .module_set = forged_export_module_set,
+            .link_plan_fingerprint = image.link_plan_fingerprint,
+            .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+            .assembly_fingerprint = image.assembly_fingerprint,
+            .dispatch_image = image.dispatch_image,
+            .external_bindings = image.external_bindings,
+            .memory_plan = image.memory_plan,
+            .compatibility_report = image.compatibility_report,
+            .metadata = image.metadata,
+        });
+        try std.testing.expectError(error.InvalidFrameEncoding, forged_export_image.validate(world.Executable.RuntimeProfile.universal_v1));
     }
     {
         var owned_prepared_builder = world.Executable.Builder.init(std.testing.allocator, .{});
