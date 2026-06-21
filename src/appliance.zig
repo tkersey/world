@@ -2367,8 +2367,14 @@ pub fn Appliance(comptime World: type) type {
                     if (request_count > self.capacity_value.max_host_requests_per_turn) return error.CapacityExceeded;
                     const generated = try self.allocator.alloc(HostRequest, request_count);
                     host_requests_owned = true;
+                    var generated_initialized: usize = 0;
+                    errdefer {
+                        for (generated[0..generated_initialized]) |*request| freeHostRequest(self.allocator, request);
+                        self.allocator.free(generated);
+                    }
                     for (generated, 0..) |*request, index| {
                         request.* = try self.hostRequestFor(command, turn_sequence_number, capsule_fingerprint, @intCast(index));
+                        generated_initialized += 1;
                     }
                     break :blk generated;
                 } else &.{};

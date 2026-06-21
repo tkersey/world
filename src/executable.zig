@@ -781,8 +781,8 @@ pub fn Executable(comptime W: type) type {
                 if (!self.root_added) return error.ExecutableSealingBlocked;
                 if (self.modules.items.len > self.options.runtime_profile.max_modules) return error.ExecutableSealingBlocked;
                 if (self.external_bindings.items.len > self.options.runtime_profile.max_external_bindings) return error.ExecutableSealingBlocked;
-                const modules = try self.allocator.dupe(Module, self.modules.items);
-                errdefer self.allocator.free(modules);
+                const modules = try cloneModuleSlice(self.allocator, self.modules.items);
+                errdefer freeModuleSlice(self.allocator, modules);
                 const supplied_external_bindings = try self.allocator.dupe(ExternalBinding, self.external_bindings.items);
                 defer self.allocator.free(supplied_external_bindings);
                 const module_set = ModuleSet.init(modules, 0);
@@ -796,7 +796,7 @@ pub fn Executable(comptime W: type) type {
                     catalog_entries[catalog_index] = catalogEntryForModule(root, module);
                     catalog_index += 1;
                 }
-                const link_result = try W.Linker.link(self.allocator, .{
+                var link_result = try W.Linker.link(self.allocator, .{
                     .root_target_ref = root.target_ref,
                     .root_module_ref = root.module_ref,
                     .root_import_set = root.import_set,
@@ -807,6 +807,7 @@ pub fn Executable(comptime W: type) type {
                     .max_provider_candidates = self.options.runtime_profile.max_modules,
                     .max_routes = self.options.runtime_profile.max_modules,
                 });
+                errdefer link_result.deinit();
                 const residual_count = link_result.plan.external_environment_requirements.len;
                 const binding_report = checkExternalBindings(self.options.strict_external_bindings, root, link_result.plan.external_environment_requirements, supplied_external_bindings);
                 const hard_blockers = link_result.plan.blockers.len + binding_report.missing + binding_report.unused + binding_report.duplicates;
@@ -892,7 +893,7 @@ pub fn Executable(comptime W: type) type {
                 self.allocator.free(self.owned_binding_fingerprints);
                 self.allocator.free(self.owned_residual_order);
                 self.owned_dispatch_routes.deinit(self.allocator);
-                self.allocator.free(self.owned_modules);
+                freeModuleSlice(self.allocator, self.owned_modules);
                 self.allocator.free(self.owned_external_bindings);
                 self.* = undefined;
             }

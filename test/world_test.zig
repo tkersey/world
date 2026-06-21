@@ -39675,6 +39675,18 @@ test "Executable Builder seals full module image with explicit residual external
         root_module.module_ref.boundary_module_fingerprint,
         image.module_set.root().?.module_ref.boundary_module_fingerprint,
     );
+    {
+        var owned_prepared_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+        try owned_prepared_builder.addRootModule(root_bytes);
+        try owned_prepared_builder.addExternalBinding(binding);
+        var owned_prepared = try owned_prepared_builder.prepare();
+        owned_prepared_builder.deinit();
+        defer owned_prepared.deinit();
+        var owned_image = try owned_prepared.seal();
+        defer owned_image.deinit(std.testing.allocator);
+        const owned_report = try owned_image.validate(world.Executable.RuntimeProfile.universal_v1);
+        try std.testing.expect(owned_report.compatible);
+    }
     var forged_profile_image = image;
     forged_profile_image.required_runtime_profile.max_modules = 1;
     try std.testing.expectError(error.InvalidFrameEncoding, forged_profile_image.validate(world.Executable.RuntimeProfile.universal_v1));
