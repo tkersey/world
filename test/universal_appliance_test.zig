@@ -31,6 +31,15 @@ test "Universal Appliance ABI v2 lifecycle keeps image and output boundaries det
     try std.testing.expectEqual(image.len, universal.world_appliance_read_manifest(manifest_ptr, 128));
     try std.testing.expectEqual(@as(u32, 3), universal.world_appliance_submit_command(command_ptr, command.len));
     try std.testing.expect(universal.world_appliance_output_len() > 0);
+    const expected_output =
+        "world.universal_appliance.output.v2\n" ++
+        "image=8cdcc3dc851ba11b\n" ++
+        "command=e792718f2026b62d\n" ++
+        "payload=test-a\n";
+    const output_ptr = universal.world_appliance_alloc(expected_output.len);
+    try std.testing.expect(output_ptr != 0);
+    try std.testing.expectEqual(expected_output.len, universal.world_appliance_read_output(output_ptr, expected_output.len));
+    try std.testing.expectEqualStrings(expected_output, guestSlice(output_ptr, expected_output.len));
 
     try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_reset());
     try std.testing.expectEqual(image.len, universal.world_appliance_manifest_len());

@@ -21,7 +21,7 @@ async function main() {
   const command = 'boot';
 
   const instanceA = await WebAssembly.instantiate(module, {});
-  const resultA = loadAndRunImage(instanceA, imageA, command);
+  const resultA = loadAndRunImage(instanceA, imageA, 'A', command);
   if (instanceA.exports.world_appliance_unload_executable() !== statusOk) {
     throw new Error('unload image A failed');
   }
@@ -30,7 +30,7 @@ async function main() {
   }
 
   const instanceB = await WebAssembly.instantiate(module, {});
-  const resultB = loadAndRunImage(instanceB, imageB, command);
+  const resultB = loadAndRunImage(instanceB, imageB, 'B', command);
   if (!resultA || !resultB) throw new Error('valid executable image was not loaded and run');
 
   console.log('actual_external_runtime_executed=true');
@@ -43,7 +43,7 @@ async function main() {
   console.log('submit_without_image_rejected=true');
 }
 
-function loadAndRunImage(instance, image, command) {
+function loadAndRunImage(instance, image, payload, command) {
   const exports = instance.exports;
   if (exports.world_appliance_abi_version() !== 2) throw new Error('unexpected ABI version');
 
@@ -58,7 +58,13 @@ function loadAndRunImage(instance, image, command) {
   if (exports.world_appliance_load_executable(imagePtr, imageBytes.length) !== statusOk) return false;
   if (exports.world_appliance_manifest_len() !== imageBytes.length) return false;
   if (exports.world_appliance_submit_command(commandPtr, commandBytes.length) !== statusCompleted) return false;
-  if (exports.world_appliance_output_len() === 0) return false;
+  const outputLen = exports.world_appliance_output_len();
+  const outputPtr = exports.world_appliance_alloc(outputLen);
+  if (outputPtr === 0) throw new Error('output allocation failed');
+  if (exports.world_appliance_read_output(outputPtr, outputLen) !== outputLen) return false;
+  const output = readGuest(instance, outputPtr, outputLen);
+  const expected = `world.universal_appliance.output.v2\nimage=${fnv64Hex(textEncoder.encode(payload))}\ncommand=${fnv64Hex(commandBytes)}\npayload=${payload}\n`;
+  if (output !== expected) return false;
   return true;
 }
 

@@ -28,6 +28,9 @@ var guest_memory: [guest_memory_bytes]u8 align(16) = [_]u8{0} ** guest_memory_by
 var bump: usize = 16;
 var image_bytes: [max_image_bytes]u8 align(16) = [_]u8{0} ** max_image_bytes;
 var image_len: usize = 0;
+var image_payload_offset: usize = 0;
+var image_payload_len: usize = 0;
+var image_fingerprint: u64 = 0;
 var output_bytes: [max_output_bytes]u8 align(16) = [_]u8{0} ** max_output_bytes;
 var output_len_value: usize = 0;
 var last_error: [max_error_bytes]u8 = [_]u8{0} ** max_error_bytes;
@@ -48,10 +51,13 @@ pub export fn world_appliance_read_runtime_manifest(ptr: usize, cap: usize) usiz
 pub export fn world_appliance_load_executable(ptr: usize, len: usize) u32 {
     if (len == 0 or len > max_image_bytes) return setError(status_capacity_exceeded, "invalid executable image length");
     const bytes = guestRange(ptr, len) orelse return setError(status_invalid_command, "executable image outside appliance memory");
-    if (!isExecutableImageEnvelope(bytes)) return setError(status_invalid_command, "malformed executable image");
+    const envelope = parseExecutableImageEnvelope(bytes) orelse return setError(status_invalid_command, "malformed executable image");
 
     @memcpy(image_bytes[0..len], bytes);
     image_len = len;
+    image_payload_offset = envelope.payload_offset;
+    image_payload_len = envelope.payload_len;
+    image_fingerprint = envelope.fingerprint;
     output_len_value = 0;
     clearError();
     return status_ok;
@@ -59,6 +65,9 @@ pub export fn world_appliance_load_executable(ptr: usize, len: usize) u32 {
 
 pub export fn world_appliance_unload_executable() u32 {
     image_len = 0;
+    image_payload_offset = 0;
+    image_payload_len = 0;
+    image_fingerprint = 0;
     output_len_value = 0;
     bump = 16;
     clearError();
@@ -82,9 +91,11 @@ pub export fn world_appliance_submit_command(ptr: usize, len: usize) u32 {
     output_len_value = 0;
     appendOutput("world.universal_appliance.output.v2\n") catch return setError(status_capacity_exceeded, "output capacity exceeded");
     appendOutput("image=") catch return setError(status_capacity_exceeded, "output capacity exceeded");
-    appendHex(fingerprintBytes(image_bytes[0..image_len])) catch return setError(status_capacity_exceeded, "output capacity exceeded");
+    appendHex(image_fingerprint) catch return setError(status_capacity_exceeded, "output capacity exceeded");
     appendOutput("\ncommand=") catch return setError(status_capacity_exceeded, "output capacity exceeded");
     appendHex(fingerprintBytes(command)) catch return setError(status_capacity_exceeded, "output capacity exceeded");
+    appendOutput("\npayload=") catch return setError(status_capacity_exceeded, "output capacity exceeded");
+    appendOutput(image_bytes[image_payload_offset .. image_payload_offset + image_payload_len]) catch return setError(status_capacity_exceeded, "output capacity exceeded");
     appendOutput("\n") catch return setError(status_capacity_exceeded, "output capacity exceeded");
     clearError();
     return status_completed;
@@ -154,21 +165,32 @@ fn copyToGuest(ptr: usize, cap: usize, bytes: []const u8) usize {
     return bytes.len;
 }
 
-fn isExecutableImageEnvelope(bytes: []const u8) bool {
+const ExecutableImageEnvelope = struct {
+    fingerprint: u64,
+    payload_offset: usize,
+    payload_len: usize,
+};
+
+fn parseExecutableImageEnvelope(bytes: []const u8) ?ExecutableImageEnvelope {
     const fingerprint_hex_len: usize = 16;
     const payload_marker_offset = executable_image_marker.len + fingerprint_hex_len;
     const payload_offset = payload_marker_offset + executable_image_payload_marker.len;
-    if (bytes.len <= payload_offset) return false;
+    if (bytes.len <= payload_offset) return null;
     var index: usize = 0;
     while (index < executable_image_marker.len) : (index += 1) {
-        if (bytes[index] != executable_image_marker[index]) return false;
+        if (bytes[index] != executable_image_marker[index]) return null;
     }
-    const expected = parseHex64(bytes[executable_image_marker.len..payload_marker_offset]) orelse return false;
+    const expected = parseHex64(bytes[executable_image_marker.len..payload_marker_offset]) orelse return null;
     index = 0;
     while (index < executable_image_payload_marker.len) : (index += 1) {
-        if (bytes[payload_marker_offset + index] != executable_image_payload_marker[index]) return false;
+        if (bytes[payload_marker_offset + index] != executable_image_payload_marker[index]) return null;
     }
-    return fingerprintBytes(bytes[payload_offset..]) == expected;
+    if (fingerprintBytes(bytes[payload_offset..]) != expected) return null;
+    return .{
+        .fingerprint = expected,
+        .payload_offset = payload_offset,
+        .payload_len = bytes.len - payload_offset,
+    };
 }
 
 fn parseHex64(bytes: []const u8) ?u64 {
