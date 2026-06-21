@@ -3323,6 +3323,9 @@ pub const Admission = struct {
             if (policy.require_executable_certificate and image.certificate.image_fingerprint != image.image_fingerprint) {
                 return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleInvalid}, "executable certificate does not match image");
             }
+            if (executableImageExceedsPolicyLimits(image, policy)) {
+                return executableAdmissionRejected(image, args.runtime_profile, &.{.PackageLimitExceeded}, "executable image exceeds admission policy byte limits");
+            }
             const compatibility = image.validateWithOptions(args.runtime_profile, .{
                 .require_certificate = policy.require_executable_certificate,
             }) catch {
@@ -3347,6 +3350,29 @@ pub const Admission = struct {
                     .bind_certificate = policy.require_executable_certificate,
                 }),
             };
+        }
+
+        fn executableImageExceedsPolicyLimits(image: Executable.Image, policy: Admission.AdmissionPolicy) bool {
+            if (image.metadata.len > policy.max_package_bytes) return true;
+            if (image.required_runtime_profile.metadata.len > policy.max_package_bytes) return true;
+            var decoded_image_bytes: usize = 0;
+            for (image.module_set.modules) |module| {
+                if (module.canonical_bytes.len > policy.max_module_bytes) return true;
+                decoded_image_bytes = decoded_image_bytes +| module.canonical_bytes.len;
+                if (module.target_ref.metadata.len > policy.max_package_bytes) return true;
+                if (module.target_ref.target_label) |label| if (label.len > policy.max_package_bytes) return true;
+                if (module.module_ref.metadata.len > policy.max_package_bytes) return true;
+                if (module.module_ref.label) |label| if (label.len > policy.max_package_bytes) return true;
+                for (module.imports) |requirement| {
+                    if (requirement.suggested_symbolic_name) |name| if (name.len > policy.max_package_bytes) return true;
+                    if (requirement.metadata.len > policy.max_package_bytes) return true;
+                }
+            }
+            for (image.external_bindings) |binding| {
+                if (binding.label.len > policy.max_package_bytes) return true;
+                if (binding.metadata.len > policy.max_package_bytes) return true;
+            }
+            return decoded_image_bytes > policy.max_package_bytes;
         }
 
         pub fn admitForTarget(self: Admitter, comptime Target: type, comptime Env: type, package: Admission.TransferPackage, args: struct {
