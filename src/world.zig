@@ -3221,7 +3221,7 @@ pub const Admission = struct {
     pub const LoadedAdmittedRun = struct {
         admitted_run_fingerprint: u64,
         executable_image_fingerprint: u64,
-        certificate_fingerprint: u64,
+        certificate_fingerprint: ?u64,
         dispatch_fingerprint: u64,
         root_module_ref_fingerprint: u64,
         root_boundary_module_fingerprint: u64,
@@ -3232,12 +3232,13 @@ pub const Admission = struct {
         pub fn init(args: struct {
             image: Executable.Image,
             report_fingerprint: u64,
+            bind_certificate: bool = true,
         }) Admission.LoadedAdmittedRun {
             const root = args.image.module_set.root() orelse unreachable;
             var result = Admission.LoadedAdmittedRun{
                 .admitted_run_fingerprint = 0,
                 .executable_image_fingerprint = args.image.image_fingerprint,
-                .certificate_fingerprint = args.image.certificate.certificate_fingerprint,
+                .certificate_fingerprint = if (args.bind_certificate) args.image.certificate.certificate_fingerprint else null,
                 .dispatch_fingerprint = args.image.dispatch_image.dispatch_fingerprint,
                 .root_module_ref_fingerprint = root.module_ref.module_ref_fingerprint,
                 .root_boundary_module_fingerprint = root.module_ref.boundary_module_fingerprint,
@@ -3269,6 +3270,7 @@ pub const Admission = struct {
             accepted: bool,
             image: Executable.Image,
             runtime_profile: Executable.RuntimeProfile,
+            bind_certificate: bool = true,
             blockers: []const AdmissionBlocker = &.{},
             warnings: []const AdmissionBlocker = &.{},
             summary: []const u8,
@@ -3278,7 +3280,7 @@ pub const Admission = struct {
                 .report_fingerprint = 0,
                 .accepted = args.accepted,
                 .executable_image_fingerprint = args.image.image_fingerprint,
-                .certificate_fingerprint = args.image.certificate.certificate_fingerprint,
+                .certificate_fingerprint = if (args.bind_certificate) args.image.certificate.certificate_fingerprint else null,
                 .dispatch_fingerprint = args.image.dispatch_image.dispatch_fingerprint,
                 .root_module_ref_fingerprint = if (root) |module| module.module_ref.module_ref_fingerprint else null,
                 .root_boundary_module_fingerprint = if (root) |module| module.module_ref.boundary_module_fingerprint else null,
@@ -3333,6 +3335,7 @@ pub const Admission = struct {
                 .accepted = true,
                 .image = image,
                 .runtime_profile = args.runtime_profile,
+                .bind_certificate = policy.require_executable_certificate,
                 .warnings = &.{},
                 .summary = "executable image admission accepted",
             });
@@ -3341,6 +3344,7 @@ pub const Admission = struct {
                 .loaded_run = Admission.LoadedAdmittedRun.init(.{
                     .image = image,
                     .report_fingerprint = report.report_fingerprint,
+                    .bind_certificate = policy.require_executable_certificate,
                 }),
             };
         }
@@ -12473,6 +12477,7 @@ pub const Runspace = struct {
         const route = try self.installedFabricRouteForPending(plan.plan_fingerprint, pending);
         try route.validate();
         if (route.kind != .loaded_module_export) return error.UnsupportedMapping;
+        if (!executableDispatchCoversFabricRoute(image.dispatch_image, plan.plan_fingerprint, route)) return error.HandoffTargetMismatch;
         const provider_module = executableProviderModuleForRoute(image, route) orelse return error.HandoffTargetMismatch;
         const next_run_id_before = self.next_run_id;
         const slot_count_before = self.slots.items.len;
@@ -14317,6 +14322,22 @@ pub const Runspace = struct {
             return module;
         }
         return null;
+    }
+
+    fn executableDispatchCoversFabricRoute(dispatch: Executable.DispatchImage, plan_fingerprint: u64, route: Fabric.Route) bool {
+        const plan_bound = for (dispatch.fabric_plan_fingerprints) |fingerprint| {
+            if (fingerprint == plan_fingerprint) break true;
+        } else false;
+        if (!plan_bound) return false;
+        const expected_provider = route.provider_module_fingerprint orelse return false;
+        for (dispatch.route_ids, 0..) |route_id, index| {
+            if (route_id != route.route_id) continue;
+            if (dispatch.route_kinds[index] != route.kind) continue;
+            if (dispatch.route_parent_world_port_ids[index] != route.parent_world_port_id) continue;
+            if (dispatch.route_provider_module_fingerprints[index] != expected_provider) continue;
+            return true;
+        }
+        return false;
     }
 
     fn fabricResponseForPending(pending: Runspace.PendingPort, status: ResponseStatus, seed: u64, reason: []const u8) !Frame.Response {
@@ -58043,7 +58064,7 @@ fn fingerprintLoadedAdmittedRun(run: Admission.LoadedAdmittedRun) u64 {
     hashBytes(&hasher, "world.loaded_admitted_run.fingerprint");
     hashU64(&hasher, world_admitted_run_fingerprint_version);
     hashU64(&hasher, run.executable_image_fingerprint);
-    hashU64(&hasher, run.certificate_fingerprint);
+    hashOptionalU64(&hasher, run.certificate_fingerprint);
     hashU64(&hasher, run.dispatch_fingerprint);
     hashU64(&hasher, run.root_module_ref_fingerprint);
     hashU64(&hasher, run.root_boundary_module_fingerprint);

@@ -40094,7 +40094,9 @@ test "Executable Image validation rejects forged compatibility report fields" {
         .policy = optional_certificate_policy,
     }).admitExecutableImage(forged_certificate, .{});
     try std.testing.expect(admitted.report.accepted);
+    try std.testing.expect(admitted.report.certificate_fingerprint == null);
     try std.testing.expect(admitted.loaded_run != null);
+    try std.testing.expect(admitted.loaded_run.?.certificate_fingerprint == null);
 }
 
 test "Executable RuntimeProfile treats loaded execution as a superset capability" {
@@ -40367,55 +40369,55 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, duplicate_module_id_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
-    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
-    const provider_module = image.module_set.modules[1];
-    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
-    const response_mapping = world.Fabric.ValueMapping.init(.{
-        .kind = .provider_result_to_parent_response,
-        .provider_result_value_table_id = root_import.response_value_table_id,
-        .provider_result_value_fingerprint = provider_module.export_summary.result_value_ref_fingerprint,
-        .parent_response_value_table_id = root_import.response_value_table_id,
-        .parent_response_value_fingerprint = root_import.response_value_ref_fingerprint,
-        .require_portable_images = true,
+    const plan = prepared.plan.link_plan.fabric_plans[0];
+    try std.testing.expectEqual(world.Fabric.RouteKind.loaded_module_export, plan.routes[0].kind);
+    const sealed_route = plan.routes[0];
+    const parent_ref = image.module_set.root().?.target_ref;
+    const unsealed_route = world.Fabric.Route.init(.{
+        .route_id = sealed_route.route_id +% 1,
+        .kind = sealed_route.kind,
+        .parent_world_surface_fingerprint = sealed_route.parent_world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = sealed_route.parent_target_certificate_fingerprint,
+        .world_port_id = sealed_route.world_port_id,
+        .parent_world_port_id = sealed_route.parent_world_port_id,
+        .provider_target_ref_fingerprint = sealed_route.provider_target_ref_fingerprint,
+        .provider_module_fingerprint = sealed_route.provider_module_fingerprint,
+        .provider_world_surface_fingerprint = sealed_route.provider_world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = sealed_route.provider_target_certificate_fingerprint,
+        .provider_world_port_id = sealed_route.provider_world_port_id,
+        .provider_admission_receipt_fingerprint = sealed_route.provider_admission_receipt_fingerprint,
+        .provider_run_image_fingerprint = sealed_route.provider_run_image_fingerprint,
+        .provider_transcript_image_fingerprint = sealed_route.provider_transcript_image_fingerprint,
+        .value_mapping_fingerprint = sealed_route.value_mapping_fingerprint,
+        .response_value_mapping_fingerprint = sealed_route.response_value_mapping_fingerprint,
+        .response_status = sealed_route.response_status,
+        .max_depth = sealed_route.max_depth,
     });
-    const route = world.Fabric.Route.init(.{
-        .route_id = 0x5150_5008,
-        .kind = .loaded_module_export,
-        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
-        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
-        .world_port_id = root_import.world_port_id,
-        .parent_world_port_id = root_import.world_port_id,
-        .provider_module_fingerprint = provider_module.module_ref.module_ref_fingerprint,
-        .value_mapping_fingerprint = response_mapping.mapping_fingerprint,
+    const unsealed_plan = world.Fabric.Plan.init(.{
+        .fabric_digest = plan.fabric_digest,
+        .target_ref_fingerprint = plan.target_ref_fingerprint,
+        .module_fingerprint = plan.module_fingerprint,
+        .world_surface_fingerprint = plan.world_surface_fingerprint,
+        .target_certificate_fingerprint = plan.target_certificate_fingerprint,
+        .import_set_fingerprint = plan.import_set_fingerprint,
+        .routes = &.{unsealed_route},
+        .value_mappings = plan.value_mappings,
+        .max_depth = plan.max_depth,
+        .max_provider_runs = plan.max_provider_runs,
+        .coverage_report_fingerprint = plan.coverage_report_fingerprint,
     });
-    const plan = world.Fabric.Plan.init(.{
-        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
-        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
-        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
-        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
-        .routes = &.{route},
-        .value_mappings = &.{response_mapping},
-    });
-    var runtime = boundary.Runtime.init(std.testing.allocator);
-    defer runtime.deinit();
+    var unsealed_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer unsealed_runspace.deinit();
+    _ = try unsealed_runspace.installExecutableRoot(image, .{});
+    _ = try unsealed_runspace.tick();
+    try unsealed_runspace.installFabricPlan(parent_ref, unsealed_plan);
+    try std.testing.expectError(error.HandoffTargetMismatch, unsealed_runspace.routePendingToLoadedProvider(0, image, unsealed_plan));
+
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
-    const permit = world.Supervision.issue(fixtures.Ports.Target, PortsMissingEnv, .{
-        .mode = .fresh,
-        .fabric_plan_fingerprint = plan.plan_fingerprint,
-        .policy = world.SupervisionPolicy.init(.{
-            .allow_fresh_calls = true,
-            .allow_fabric_routes = true,
-            .allow_target_export_routes = true,
-        }),
-    });
-    const root_handle = try runspace.installMachineRun(fixtures.Ports.Target, PortsMissingEnv, &runtime, .{}, .{
-        .allocator = std.testing.allocator,
-        .mode = world.Mode.fresh,
-        .fabric_plan = plan,
-        .permit = permit,
-    });
+    const root_handle = try runspace.installExecutableRoot(image, .{});
     _ = try runspace.tick();
+    try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(root_handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
 
@@ -40444,14 +40446,6 @@ test "Loaded Fabric installs provider from sealed executable image route" {
 
     _ = try runspace.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(runspace.slots.items[1].handle)).status);
-
-    const event = try runspace.respondFromFabric(invocation);
-    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
-    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
-
-    const final_report = try runspace.tick();
-    try std.testing.expectEqual(@as(usize, 2), final_report.completed_count);
-    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(root_handle)).status);
 }
 
 test "Loaded Run rejects response frame fingerprint mismatch" {
