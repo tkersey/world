@@ -39889,6 +39889,7 @@ test "Executable Builder seals full module image with explicit residual external
         .route_ids = image.dispatch_image.route_ids,
         .route_kinds = image.dispatch_image.route_kinds,
         .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
         .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
         .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
         .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
@@ -39917,6 +39918,7 @@ test "Executable Builder seals full module image with explicit residual external
         .route_ids = image.dispatch_image.route_ids,
         .route_kinds = image.dispatch_image.route_kinds,
         .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
         .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
         .link_plan_fingerprint = image.link_plan_fingerprint +% 1,
         .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
@@ -39946,6 +39948,7 @@ test "Executable Builder seals full module image with explicit residual external
         .route_ids = image.dispatch_image.route_ids,
         .route_kinds = image.dispatch_image.route_kinds,
         .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
         .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
         .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
         .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
@@ -39974,6 +39977,7 @@ test "Executable Builder seals full module image with explicit residual external
         .route_ids = image.dispatch_image.route_ids,
         .route_kinds = image.dispatch_image.route_kinds,
         .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
         .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
         .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
         .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
@@ -40007,6 +40011,7 @@ test "Executable Builder seals full module image with explicit residual external
         .route_ids = &mismatched_route_ids,
         .route_kinds = image.dispatch_image.route_kinds,
         .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
         .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
         .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
         .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
@@ -40096,6 +40101,7 @@ test "Executable Builder seals full module image with explicit residual external
         .route_ids = image.dispatch_image.route_ids,
         .route_kinds = image.dispatch_image.route_kinds,
         .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
         .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
         .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
         .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
@@ -40500,6 +40506,8 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     const plan = prepared.plan.link_plan.fabric_plans[0];
     try std.testing.expectEqual(world.Fabric.RouteKind.loaded_module_export, plan.routes[0].kind);
     const sealed_route = plan.routes[0];
+    try std.testing.expectEqual(@as(usize, 1), image.dispatch_image.route_requirement_fingerprints.len);
+    try std.testing.expectEqual(prepared.plan.link_plan.route_syntheses[0].import_requirement_fingerprint, image.dispatch_image.route_requirement_fingerprints[0]);
     const forged_route_ids = [_]u64{sealed_route.route_id +% 1};
     const forged_dispatch = world.Executable.DispatchImage.init(.{
         .root_module_id = image.dispatch_image.root_module_id,
@@ -40510,6 +40518,7 @@ test "Loaded Fabric installs provider from sealed executable image route" {
         .route_ids = &forged_route_ids,
         .route_kinds = image.dispatch_image.route_kinds,
         .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
         .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
         .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
         .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
@@ -40528,6 +40537,35 @@ test "Loaded Fabric installs provider from sealed executable image route" {
         .metadata = image.metadata,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_dispatch_image.validate(world.Executable.RuntimeProfile.universal_v1));
+    const forged_route_requirements = [_]u64{image.dispatch_image.route_requirement_fingerprints[0] +% 1};
+    const forged_requirement_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = &forged_route_requirements,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_requirement_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_requirement_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_requirement_image.validate(world.Executable.RuntimeProfile.universal_v1));
     const parent_ref = image.module_set.root().?.target_ref;
     const unsealed_route = world.Fabric.Route.init(.{
         .route_id = sealed_route.route_id +% 1,

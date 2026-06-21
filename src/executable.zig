@@ -318,6 +318,7 @@ pub fn Executable(comptime W: type) type {
             route_ids: []const u64 = &.{},
             route_kinds: []const W.Fabric.RouteKind = &.{},
             route_parent_world_port_ids: []const u32 = &.{},
+            route_requirement_fingerprints: []const u64 = &.{},
             route_provider_module_fingerprints: []const u64 = &.{},
             linker_policy: W.Linker.Policy = .allow_external_ports,
             link_plan_fingerprint: u64 = 0,
@@ -333,6 +334,7 @@ pub fn Executable(comptime W: type) type {
                 route_ids: []const u64 = &.{},
                 route_kinds: []const W.Fabric.RouteKind = &.{},
                 route_parent_world_port_ids: []const u32 = &.{},
+                route_requirement_fingerprints: []const u64 = &.{},
                 route_provider_module_fingerprints: []const u64 = &.{},
                 linker_policy: W.Linker.Policy = .allow_external_ports,
                 link_plan_fingerprint: u64 = 0,
@@ -349,6 +351,7 @@ pub fn Executable(comptime W: type) type {
                     .route_ids = args.route_ids,
                     .route_kinds = args.route_kinds,
                     .route_parent_world_port_ids = args.route_parent_world_port_ids,
+                    .route_requirement_fingerprints = args.route_requirement_fingerprints,
                     .route_provider_module_fingerprints = args.route_provider_module_fingerprints,
                     .linker_policy = args.linker_policy,
                     .link_plan_fingerprint = args.link_plan_fingerprint,
@@ -895,6 +898,7 @@ pub fn Executable(comptime W: type) type {
                     .route_ids = dispatch_routes.route_ids,
                     .route_kinds = dispatch_routes.route_kinds,
                     .route_parent_world_port_ids = dispatch_routes.route_parent_world_port_ids,
+                    .route_requirement_fingerprints = dispatch_routes.route_requirement_fingerprints,
                     .route_provider_module_fingerprints = dispatch_routes.route_provider_module_fingerprints,
                     .linker_policy = self.options.linker_policy,
                     .link_plan_fingerprint = link_result.plan.plan_fingerprint,
@@ -1166,6 +1170,7 @@ pub fn Executable(comptime W: type) type {
             const route_count = image.dispatch_image.route_ids.len;
             if (image.dispatch_image.route_kinds.len != route_count or
                 image.dispatch_image.route_parent_world_port_ids.len != route_count or
+                image.dispatch_image.route_requirement_fingerprints.len != route_count or
                 image.dispatch_image.route_provider_module_fingerprints.len != route_count)
             {
                 return error.InvalidFrameEncoding;
@@ -1239,6 +1244,7 @@ pub fn Executable(comptime W: type) type {
             return std.mem.eql(u64, routes.route_ids, image.dispatch_image.route_ids) and
                 std.mem.eql(W.Fabric.RouteKind, routes.route_kinds, image.dispatch_image.route_kinds) and
                 std.mem.eql(u32, routes.route_parent_world_port_ids, image.dispatch_image.route_parent_world_port_ids) and
+                std.mem.eql(u64, routes.route_requirement_fingerprints, image.dispatch_image.route_requirement_fingerprints) and
                 std.mem.eql(u64, routes.route_provider_module_fingerprints, image.dispatch_image.route_provider_module_fingerprints);
         }
 
@@ -1324,8 +1330,8 @@ pub fn Executable(comptime W: type) type {
             for (dispatch.residual_request_order) |fingerprint| {
                 if (fingerprint == requirement.requirement_fingerprint) return true;
             }
-            for (dispatch.route_parent_world_port_ids) |world_port_id| {
-                if (world_port_id == requirement.world_port_id) return true;
+            for (dispatch.route_requirement_fingerprints) |fingerprint| {
+                if (fingerprint == requirement.requirement_fingerprint) return true;
             }
             return false;
         }
@@ -1437,12 +1443,14 @@ pub fn Executable(comptime W: type) type {
             route_ids: []u64 = &.{},
             route_kinds: []W.Fabric.RouteKind = &.{},
             route_parent_world_port_ids: []u32 = &.{},
+            route_requirement_fingerprints: []u64 = &.{},
             route_provider_module_fingerprints: []u64 = &.{},
 
             fn deinit(self: @This(), allocator: std.mem.Allocator) void {
                 allocator.free(self.route_ids);
                 allocator.free(self.route_kinds);
                 allocator.free(self.route_parent_world_port_ids);
+                allocator.free(self.route_requirement_fingerprints);
                 allocator.free(self.route_provider_module_fingerprints);
             }
         };
@@ -1456,6 +1464,8 @@ pub fn Executable(comptime W: type) type {
             errdefer allocator.free(route_kinds);
             const route_parent_world_port_ids = try allocator.alloc(u32, count);
             errdefer allocator.free(route_parent_world_port_ids);
+            const route_requirement_fingerprints = try allocator.alloc(u64, count);
+            errdefer allocator.free(route_requirement_fingerprints);
             const route_provider_module_fingerprints = try allocator.alloc(u64, count);
             errdefer allocator.free(route_provider_module_fingerprints);
             var index: usize = 0;
@@ -1464,6 +1474,7 @@ pub fn Executable(comptime W: type) type {
                     route_ids[index] = route.route_id;
                     route_kinds[index] = route.kind;
                     route_parent_world_port_ids[index] = route.parent_world_port_id;
+                    route_requirement_fingerprints[index] = routeRequirementFingerprint(plan, route.route_fingerprint);
                     route_provider_module_fingerprints[index] = route.provider_module_fingerprint orelse 0;
                     index += 1;
                 }
@@ -1472,8 +1483,16 @@ pub fn Executable(comptime W: type) type {
                 .route_ids = route_ids,
                 .route_kinds = route_kinds,
                 .route_parent_world_port_ids = route_parent_world_port_ids,
+                .route_requirement_fingerprints = route_requirement_fingerprints,
                 .route_provider_module_fingerprints = route_provider_module_fingerprints,
             };
+        }
+
+        fn routeRequirementFingerprint(plan: W.Linker.Plan, route_fingerprint: u64) u64 {
+            for (plan.route_syntheses) |synthesis| {
+                if (synthesis.route_fingerprint == route_fingerprint) return synthesis.import_requirement_fingerprint;
+            }
+            return 0;
         }
 
         fn cloneDispatchImage(allocator: std.mem.Allocator, image: DispatchImage) !DispatchImage {
@@ -1492,6 +1511,8 @@ pub fn Executable(comptime W: type) type {
             errdefer allocator.free(result.route_kinds);
             result.route_parent_world_port_ids = try allocator.dupe(u32, image.route_parent_world_port_ids);
             errdefer allocator.free(result.route_parent_world_port_ids);
+            result.route_requirement_fingerprints = try allocator.dupe(u64, image.route_requirement_fingerprints);
+            errdefer allocator.free(result.route_requirement_fingerprints);
             result.route_provider_module_fingerprints = try allocator.dupe(u64, image.route_provider_module_fingerprints);
             errdefer allocator.free(result.route_provider_module_fingerprints);
             return result;
@@ -1505,6 +1526,7 @@ pub fn Executable(comptime W: type) type {
             allocator.free(image.route_ids);
             allocator.free(image.route_kinds);
             allocator.free(image.route_parent_world_port_ids);
+            allocator.free(image.route_requirement_fingerprints);
             allocator.free(image.route_provider_module_fingerprints);
         }
 
@@ -1671,6 +1693,7 @@ pub fn Executable(comptime W: type) type {
             for (image.route_kinds) |kind| hashU64(&hasher, @intFromEnum(kind));
             hashU64(&hasher, image.route_parent_world_port_ids.len);
             for (image.route_parent_world_port_ids) |value| hashU64(&hasher, value);
+            hashU64Slice(&hasher, image.route_requirement_fingerprints);
             hashU64Slice(&hasher, image.route_provider_module_fingerprints);
             hashU64(&hasher, image.linker_policy.fingerprint());
             hashU64(&hasher, image.link_plan_fingerprint);
