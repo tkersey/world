@@ -39754,6 +39754,29 @@ test "Executable Builder seals full module image with explicit residual external
         .label = "seed.fixture.wrong-shape",
     });
     try std.testing.expect(!wrong_shape_binding.matchesRequirement(root_module, root_import));
+    const missing_shape_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture.missing-shape",
+    });
+    const missing_shape_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = missing_shape_descriptor,
+        .label = "seed.fixture.missing-shape",
+    });
+    try std.testing.expect(!missing_shape_binding.matchesRequirement(root_module, root_import));
     const missing_payload_ref_binding = world.Executable.ExternalBinding.init(.{
         .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
         .world_port_id = root_import.world_port_id,
@@ -40206,6 +40229,14 @@ test "Executable Builder seals full module image with explicit residual external
         .metadata = image.metadata,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    var missing_shape_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer missing_shape_builder.deinit();
+    try missing_shape_builder.addRootModule(root_bytes);
+    try missing_shape_builder.addExternalBinding(missing_shape_binding);
+    var missing_shape_prepared = try missing_shape_builder.prepare();
+    defer missing_shape_prepared.deinit();
+    try std.testing.expect(!missing_shape_prepared.plan.compatibility_report.compatible);
 
     var non_strict_builder = world.Executable.Builder.init(std.testing.allocator, .{
         .strict_external_bindings = false,
