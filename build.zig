@@ -176,12 +176,12 @@ pub fn build(b: *std.Build) void {
     const universal_appliance_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/universal_appliance_test.zig"),
-            .target = target,
+            .target = b.graph.host,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "universal_appliance_impl", .module = b.createModule(.{
                     .root_source_file = b.path("examples/world_universal_appliance_wasm.zig"),
-                    .target = target,
+                    .target = b.graph.host,
                     .optimize = optimize,
                 }) },
             },
