@@ -39705,6 +39705,25 @@ test "Executable Builder seals full module image with explicit residual external
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_module_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
+    const contradictory_report = world.Executable.CompatibilityReport.init(.{
+        .compatible = true,
+        .hard_blockers = 1,
+        .summary = "self-contradictory",
+    });
+    const contradictory_report_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = contradictory_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, contradictory_report_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
     const wrong_port_id = root_import.world_port_id + 1;
     const wrong_descriptor = world.Actuation.Descriptor.init(.{
         .actuator_ref = actuator_ref,
@@ -40053,6 +40072,24 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     defer image.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), image.dispatch_image.fabric_plan_fingerprints.len);
     try std.testing.expectEqual(prepared.plan.linker_certificate.fabric_plan_fingerprints[0], image.dispatch_image.fabric_plan_fingerprints[0]);
+
+    var duplicate_module_id_modules = try std.testing.allocator.dupe(world.Executable.Module, image.module_set.modules);
+    defer std.testing.allocator.free(duplicate_module_id_modules);
+    duplicate_module_id_modules[1].module_id = duplicate_module_id_modules[0].module_id;
+    const duplicate_module_id_set = world.Executable.ModuleSet.init(duplicate_module_id_modules, image.module_set.root_module_id);
+    const duplicate_module_id_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = duplicate_module_id_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicate_module_id_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_module = image.module_set.modules[1];

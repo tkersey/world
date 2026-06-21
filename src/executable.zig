@@ -103,6 +103,7 @@ pub fn Executable(comptime W: type) type {
                     try module.validate();
                     if (module.role == .root) root_count += 1;
                     for (self.modules[index + 1 ..]) |other| {
+                        if (module.module_id == other.module_id) return error.InvalidFrameEncoding;
                         if (module.module_ref.boundary_module_fingerprint == other.module_ref.boundary_module_fingerprint and
                             !std.mem.eql(u8, module.canonical_bytes, other.canonical_bytes))
                         {
@@ -401,6 +402,20 @@ pub fn Executable(comptime W: type) type {
                 result.report_fingerprint = fingerprintCompatibilityReport(result);
                 return result;
             }
+
+            pub fn validate(self: @This()) !void {
+                if (self.report_fingerprint == 0 or self.report_fingerprint != fingerprintCompatibilityReport(self)) return error.InvalidFrameEncoding;
+                const all_compatible = self.image_format_compatible and
+                    self.boundary_module_compatible and
+                    self.executable_plan_compatible and
+                    self.instruction_feature_compatible and
+                    self.value_codec_compatible and
+                    self.profile_compatible and
+                    self.capacity_compatible and
+                    self.memory_compatible;
+                if (self.compatible != (all_compatible and self.hard_blockers == 0)) return error.InvalidFrameEncoding;
+                if (!self.compatible and self.hard_blockers == 0) return error.InvalidFrameEncoding;
+            }
         };
 
         pub const Certificate = struct {
@@ -626,11 +641,7 @@ pub fn Executable(comptime W: type) type {
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
                 try validateDispatchTablesForImage(self);
                 if (self.memory_plan.memory_plan_fingerprint != fingerprintMemoryPlan(self.memory_plan)) return error.InvalidFrameEncoding;
-                if (self.compatibility_report.report_fingerprint == 0 or
-                    self.compatibility_report.report_fingerprint != fingerprintCompatibilityReport(self.compatibility_report))
-                {
-                    return error.InvalidFrameEncoding;
-                }
+                try self.compatibility_report.validate();
                 if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
                 if (self.certificate.image_fingerprint != self.image_fingerprint or
                     self.certificate.certificate_fingerprint != fingerprintCertificate(self.certificate))

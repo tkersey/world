@@ -12472,9 +12472,11 @@ pub const Runspace = struct {
         const next_event_index_before = self.next_event_index;
         var routed = false;
         errdefer if (!routed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
-        const provider_handle = try self.installExecutableProvider(image, provider_module.module_id, .{
+        const loaded_options = LoadedInstallOptions{
             .parent_run_handle_fingerprint = pending.handle.handle_fingerprint,
-        });
+            .executable_image_fingerprint = image.image_fingerprint,
+        };
+        const provider_handle = try self.installLoadedModuleRun(provider_module, loaded_options);
         const invocation = try self.routePendingToProviderRun(mailbox_id, plan, provider_handle);
         routed = true;
         return invocation;

@@ -7,8 +7,10 @@ test "Universal Appliance ABI v2 lifecycle keeps image and output boundaries det
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_read_manifest(0, 0));
 
+    const malformed_image = "not-an-executable-image";
     const image = "world.Executable.Image:test-a";
     const command = "boot:canonical-args";
+    const malformed_image_ptr = try writeGuest(malformed_image);
     const image_ptr = try writeGuest(image);
     const command_ptr = try writeGuest(command);
     const manifest_ptr = universal.world_appliance_alloc(128);
@@ -17,6 +19,8 @@ test "Universal Appliance ABI v2 lifecycle keeps image and output boundaries det
     try std.testing.expectEqual(@as(u32, 12), universal.world_appliance_load_executable(image_ptr, 1024 * 1024));
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
     try std.testing.expect(universal.world_appliance_last_error_len() > 0);
+    try std.testing.expectEqual(@as(u32, 7), universal.world_appliance_load_executable(malformed_image_ptr, malformed_image.len));
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
 
     try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_load_executable(image_ptr, image.len));
     try std.testing.expectEqual(image.len, universal.world_appliance_manifest_len());

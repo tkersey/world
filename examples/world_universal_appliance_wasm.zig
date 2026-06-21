@@ -21,6 +21,7 @@ const max_image_bytes: usize = 128 * 1024;
 const max_command_bytes: usize = 64 * 1024;
 const max_output_bytes: usize = 128 * 1024;
 const max_error_bytes: usize = 160;
+const executable_image_marker = "world.Executable.Image:";
 
 var guest_memory: [guest_memory_bytes]u8 align(16) = [_]u8{0} ** guest_memory_bytes;
 var bump: usize = 16;
@@ -46,6 +47,7 @@ pub export fn world_appliance_read_runtime_manifest(ptr: usize, cap: usize) usiz
 pub export fn world_appliance_load_executable(ptr: usize, len: usize) u32 {
     if (len == 0 or len > max_image_bytes) return setError(status_capacity_exceeded, "invalid executable image length");
     const bytes = guestRange(ptr, len) orelse return setError(status_invalid_command, "executable image outside appliance memory");
+    if (!isExecutableImageEnvelope(bytes)) return setError(status_invalid_command, "malformed executable image");
 
     image_len = len;
     var index: usize = 0;
@@ -150,6 +152,15 @@ fn copyToGuest(ptr: usize, cap: usize, bytes: []const u8) usize {
     while (index < bytes.len) : (index += 1) out[index] = bytes[index];
     clearError();
     return bytes.len;
+}
+
+fn isExecutableImageEnvelope(bytes: []const u8) bool {
+    if (bytes.len <= executable_image_marker.len) return false;
+    var index: usize = 0;
+    while (index < executable_image_marker.len) : (index += 1) {
+        if (bytes[index] != executable_image_marker[index]) return false;
+    }
+    return true;
 }
 
 fn appendOutput(bytes: []const u8) !void {
