@@ -620,12 +620,6 @@ pub fn Executable(comptime W: type) type {
 
             pub fn validate(self: @This(), supported_profile: RuntimeProfile) !CompatibilityReport {
                 try self.module_set.validate();
-                if (!supported_profile.supports(self.required_runtime_profile)) return CompatibilityReport.init(.{
-                    .compatible = false,
-                    .profile_compatible = false,
-                    .hard_blockers = 1,
-                    .summary = "runtime profile unsupported",
-                });
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
                 if (self.memory_plan.memory_plan_fingerprint != fingerprintMemoryPlan(self.memory_plan)) return error.InvalidFrameEncoding;
                 if (self.compatibility_report.report_fingerprint == 0 or
@@ -654,6 +648,12 @@ pub fn Executable(comptime W: type) type {
                 {
                     return error.InvalidFrameEncoding;
                 }
+                if (!supported_profile.supports(self.required_runtime_profile)) return CompatibilityReport.init(.{
+                    .compatible = false,
+                    .profile_compatible = false,
+                    .hard_blockers = 1,
+                    .summary = "runtime profile unsupported",
+                });
                 return self.compatibility_report;
             }
         };

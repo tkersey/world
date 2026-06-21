@@ -607,8 +607,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Seed migration example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=34fe8159e836ad98
-            \\restored_output=34fe8159e836ad98
+            \\resident_output=65eb90e17b751f22
+            \\restored_output=65eb90e17b751f22
             \\
             ,
         },
@@ -635,7 +635,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=3d52b0f6764e29ac
+            \\replay_evidence=895f064ee440fe2c
             \\replay_final_result=false
             \\
             ,
@@ -1308,7 +1308,7 @@ pub fn build(b: *std.Build) void {
             \\actuation_bindings=1
             \\checkpoint_every_turn=true
             \\output_bytes=1679
-            \\turn_receipt=63b925345d2bbdfc
+            \\turn_receipt=2d69877a022111c5
             \\
             ,
         },
@@ -1335,8 +1335,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=34fe8159e836ad98
-            \\restored_output=34fe8159e836ad98
+            \\resident_output=65eb90e17b751f22
+            \\restored_output=65eb90e17b751f22
             \\
             ,
         },
@@ -1347,10 +1347,10 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance archive example.",
             .expected_stdout =
             \\archive_batches=1
-            \\output_archive_request=626b8f4a4d9e3120
+            \\output_archive_request=e635e35d34746728
             \\archive_objects=3
-            \\retention_ack=6e383dbb5f58cdde
-            \\moment=9c6d70978f4fc26a
+            \\retention_ack=d720a141976d08b7
+            \\moment=ef3b834820133ff3
             \\
             ,
         },
@@ -1363,7 +1363,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=3d52b0f6764e29ac
+            \\replay_evidence=895f064ee440fe2c
             \\replay_final_result=false
             \\
             ,

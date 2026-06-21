@@ -39882,6 +39882,25 @@ test "Loaded Admission admits executable image without local target registry" {
     try std.testing.expectEqual(image.image_fingerprint, admitted.loaded_run.?.executable_image_fingerprint);
     try std.testing.expectEqual(image.dispatch_image.dispatch_fingerprint, admitted.loaded_run.?.dispatch_fingerprint);
     try std.testing.expectEqual(image.module_set.root().?.module_ref.module_ref_fingerprint, admitted.loaded_run.?.root_module_ref_fingerprint);
+
+    var malformed_unsupported = image;
+    malformed_unsupported.required_runtime_profile = world.Executable.RuntimeProfile.init(.{ .max_modules = 1024 });
+    const relaxed_receiver = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_full_modules = true,
+            .allow_executable_image = true,
+            .allow_full_module_execution = true,
+            .require_local_target_for_execution = false,
+            .require_supported_runtime_profile = false,
+            .require_environment_preflight = false,
+            .require_supervision_permit = false,
+        }),
+    });
+    const malformed_result = relaxed_receiver.admitExecutableImage(malformed_unsupported, .{});
+    try std.testing.expect(!malformed_result.report.accepted);
+    try std.testing.expect(malformed_result.loaded_run == null);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, malformed_result.report.blockers[0]);
 }
 
 test "Loaded Fabric installs provider from sealed executable image route" {

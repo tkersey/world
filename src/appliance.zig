@@ -1645,7 +1645,7 @@ pub fn Appliance(comptime World: type) type {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
                 if (self.status == .needs_host) {
-                    if (self.finalized_actuation_receipt_fingerprints.len != 0) return error.InvalidFrameEncoding;
+                    if (self.finalized_actuation_receipt_fingerprints.len > self.turn_receipt.applied_host_reply_fingerprints.len) return error.InvalidFrameEncoding;
                 } else if (self.finalized_actuation_receipt_fingerprints.len != self.turn_receipt.applied_host_reply_fingerprints.len) {
                     return error.InvalidFrameEncoding;
                 }
@@ -2348,7 +2348,12 @@ pub fn Appliance(comptime World: type) type {
                 } else &.{};
                 const host_requests = if (status == .needs_host) blk: {
                     if (self.capacity_value.max_host_requests_per_turn == 0) return error.CapacityExceeded;
-                    if (commandHasNonTerminalHostReply(command) or command.kind == .restore) {
+                    if (commandHasNonTerminalHostReply(command)) {
+                        const retained = try nonTerminalHostReplyRequestsOwned(self.allocator, current_outstanding_host_requests, command);
+                        host_requests_owned = true;
+                        break :blk retained;
+                    }
+                    if (command.kind == .restore) {
                         if (current_outstanding_host_requests.len != 0) break :blk current_outstanding_host_requests;
                     }
                     const request_count = self.manifest_value.actuation_binding_fingerprints.len;
@@ -5754,6 +5759,37 @@ pub fn Appliance(comptime World: type) type {
                 if (!hostOutcomeStatusIsTerminal(reply.outcome.status)) return true;
             }
             return false;
+        }
+
+        fn nonTerminalHostReplyRequestsOwned(allocator: std.mem.Allocator, requests: []const HostRequest, command: Command) ![]HostRequest {
+            var retained_count: usize = 0;
+            for (requests) |request| {
+                for (command.host_replies) |reply| {
+                    if (reply.target_host_request_fingerprint == request.request_fingerprint and !hostOutcomeStatusIsTerminal(reply.outcome.status)) {
+                        retained_count += 1;
+                        break;
+                    }
+                }
+            }
+            if (retained_count == 0) return error.UnknownRequest;
+            const retained = try allocator.alloc(HostRequest, retained_count);
+            errdefer allocator.free(retained);
+            var retained_index: usize = 0;
+            for (requests) |request| {
+                for (command.host_replies) |reply| {
+                    if (reply.target_host_request_fingerprint == request.request_fingerprint and !hostOutcomeStatusIsTerminal(reply.outcome.status)) {
+                        retained[retained_index] = request;
+                        retained[retained_index].request_fingerprint = 0;
+                        retained[retained_index].request_ordinal = @intCast(retained_index);
+                        retained[retained_index].request_fingerprint = fingerprintHostRequest(retained[retained_index]);
+                        retained_index += 1;
+                        break;
+                    }
+                }
+            }
+            const cloned = try cloneHostRequestsOwned(allocator, retained);
+            allocator.free(retained);
+            return cloned;
         }
 
         fn commandHasRetentionAck(command: Command) bool {

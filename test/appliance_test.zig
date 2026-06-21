@@ -1046,7 +1046,10 @@ test "appliance static contract exposes root namespace and versions" {
     try std.testing.expectEqual(@as(u32, 2), world.world_appliance_manifest_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_memory_plan_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_command_format_version);
-    try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_output_format_version);
+    try std.testing.expectEqual(@as(u32, 4), world.world_appliance_host_request_format_version);
+    try std.testing.expectEqual(@as(u32, 4), world.world_appliance_host_request_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_format_version);
+    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_checkpoint_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_receipt_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.Appliance.Abi.version);
@@ -3739,6 +3742,88 @@ test "appliance Core continuation source state chains from prior output" {
     defer continue_output.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(boot_output.resulting_state_fingerprint, continue_output.source_state_fingerprint);
+}
+
+test "appliance Core mixed host replies retain only nonterminal requests" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.wasm_small,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.wasm_small,
+    );
+    defer core.reset();
+
+    const requests = [_]world.Appliance.HostRequest{
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 1,
+            .request_ordinal = 0,
+            .run_handle_fingerprint = 0xD5C0,
+            .pending_port_fingerprint = 0xD5C1,
+            .world_port_id = 0,
+            .intent_fingerprint = 0xD5C2,
+            .envelope_fingerprint = 0xD5C3,
+            .decision_fingerprint = 0xD5C4,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xD5C5,
+            .metadata = "terminal",
+        }),
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 1,
+            .request_ordinal = 1,
+            .run_handle_fingerprint = 0xD5C6,
+            .pending_port_fingerprint = 0xD5C7,
+            .world_port_id = 0,
+            .intent_fingerprint = 0xD5C8,
+            .envelope_fingerprint = 0xD5C9,
+            .decision_fingerprint = 0xD5CA,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xD5CB,
+            .allowed_response_statuses = world.Actuation.ResponseStatusSet.all,
+            .metadata = "pending",
+        }),
+    };
+    core.state = .waiting_host;
+    core.current_turn_sequence_number = 1;
+    core.previous_turn_receipt_fingerprint = 0xD5CC;
+    core.outstanding_host_requests = requests[0..];
+
+    const terminal_reply = applianceHostReplyFor(requests[0], 0xD5CD);
+    const pending_reply = applianceHostReplyWithStatusFor(requests[1], .pending);
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .host_replies = &.{ terminal_reply, pending_reply },
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+    try core.submit(continue_bytes);
+    try core.executeTurn();
+
+    var output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.wasm_small,
+    );
+    defer output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.needs_host, output.status);
+    try std.testing.expectEqual(@as(usize, 1), output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), output.host_requests.len);
+    try std.testing.expectEqual(@as(u32, 0), output.host_requests[0].request_ordinal);
+    try std.testing.expectEqual(requests[1].intent_fingerprint, output.host_requests[0].intent_fingerprint);
+    try std.testing.expect(output.host_requests[0].request_fingerprint != requests[1].request_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), output.checkpoint.outstanding_host_requests.len);
+    try std.testing.expectEqual(output.host_requests[0].request_fingerprint, output.checkpoint.outstanding_host_requests[0].request_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), core.outstanding_host_requests.len);
+    try std.testing.expectEqual(output.host_requests[0].request_fingerprint, core.outstanding_host_requests[0].request_fingerprint);
 }
 
 test "appliance Core emitted checkpoint carries current TurnReceipt for restore" {

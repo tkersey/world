@@ -377,14 +377,14 @@ pub const world_appliance_manifest_fingerprint_version: u32 = 2;
 pub const world_appliance_memory_plan_fingerprint_version: u32 = 1;
 pub const world_appliance_command_format_version: u32 = 1;
 pub const world_appliance_command_fingerprint_version: u32 = 1;
-pub const world_appliance_host_request_format_version: u32 = 3;
-pub const world_appliance_host_request_fingerprint_version: u32 = 3;
+pub const world_appliance_host_request_format_version: u32 = 4;
+pub const world_appliance_host_request_fingerprint_version: u32 = 4;
 pub const world_appliance_host_outcome_format_version: u32 = 1;
 pub const world_appliance_host_outcome_fingerprint_version: u32 = 1;
 pub const world_appliance_host_reply_format_version: u32 = 1;
 pub const world_appliance_host_reply_fingerprint_version: u32 = 1;
-pub const world_appliance_turn_output_format_version: u32 = 1;
-pub const world_appliance_turn_output_fingerprint_version: u32 = 1;
+pub const world_appliance_turn_output_format_version: u32 = 2;
+pub const world_appliance_turn_output_fingerprint_version: u32 = 2;
 pub const world_appliance_checkpoint_format_version: u32 = 1;
 pub const world_appliance_checkpoint_fingerprint_version: u32 = 1;
 pub const world_appliance_turn_receipt_format_version: u32 = 1;
@@ -23888,6 +23888,14 @@ pub const Capsule = struct {
         }
 
         pub fn validate(self: @This(), options: ValidateOptions) !void {
+            try validateRunSlotImageForRunspaceFormat(self, options, world_capsule_runspace_image_format_version);
+        }
+
+        pub fn validateForRunspaceFormat(self: @This(), options: ValidateOptions, runspace_image_format_version: u32) !void {
+            try validateRunSlotImageForRunspaceFormat(self, options, runspace_image_format_version);
+        }
+
+        fn validateStructural(self: @This(), options: ValidateOptions) !void {
             if (self.fingerprint_version != world_capsule_run_slot_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.checkpoint_refs.len > options.max_run_slots) return error.InvalidFrameEncoding;
             if (self.fabric_invocation_refs.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
@@ -23927,7 +23935,6 @@ pub const Capsule = struct {
                     }
                 },
             }
-            if (self.slot_image_fingerprint != fingerprintRunSlotImage(self)) return error.InvalidFrameEncoding;
         }
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -24295,7 +24302,7 @@ pub const Capsule = struct {
                 if (!capsuleRunspaceImageFormatSupportsLoadedSlots(self.format_version) and runSlotImageUsesLoadedFields(slot)) {
                     return error.InvalidFrameEncoding;
                 }
-                try slot.validate(options);
+                try slot.validateForRunspaceFormat(options, self.format_version);
             }
             if (self.run_handle_mappings.len != 0 and !runspaceImageHandleMappingsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (!runspaceImageRoleRefsMatchSlots(self)) return error.InvalidFrameEncoding;
@@ -27745,6 +27752,37 @@ pub const Capsule = struct {
         return hasher.final();
     }
 
+    fn fingerprintRunSlotImageV3(image: RunSlotImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_736c_6f74);
+        hashU64(&hasher, image.fingerprint_version);
+        hashU64(&hasher, image.original_run_handle_fingerprint);
+        hashOptionalU64(&hasher, image.parent_run_handle_fingerprint);
+        hashU64(&hasher, @intFromEnum(image.role));
+        hashU64(&hasher, image.target_ref_fingerprint);
+        hashOptionalU64(&hasher, image.module_ref_fingerprint);
+        hashOptionalU64(&hasher, image.admission_receipt_fingerprint);
+        hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
+        hashOptionalU64(&hasher, image.run_permit_fingerprint);
+        hashU64(&hasher, image.run_state_fingerprint);
+        hashOptionalU64(&hasher, image.run_image_fingerprint);
+        hashOptionalU64(&hasher, image.transcript_image_fingerprint);
+        hashOptionalU64(&hasher, image.current_pending_mailbox_id);
+        hashOptionalU64(&hasher, image.branch_id);
+        hashU64Slice(&hasher, image.checkpoint_refs);
+        hashU64Slice(&hasher, image.fabric_invocation_refs);
+        hashU64(&hasher, @intFromEnum(image.status));
+        return hasher.final();
+    }
+
+    fn validateRunSlotImageForRunspaceFormat(image: RunSlotImage, options: ValidateOptions, runspace_image_format_version: u32) !void {
+        try image.validateStructural(options);
+        const expected_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            fingerprintRunSlotImage(image)
+        else
+            fingerprintRunSlotImageV3(image);
+        if (image.slot_image_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
+    }
+
     fn fingerprintPendingPortImage(image: PendingPortImage) u64 {
         return PendingPortImage.fingerprint(image);
     }
@@ -28555,7 +28593,7 @@ pub const Capsule = struct {
         checkpoint_refs_owned = false;
         fabric_invocation_refs_owned = false;
         errdefer image.deinit(allocator);
-        try image.validate(options);
+        try image.validateForRunspaceFormat(options, runspace_image_format_version);
         return image;
     }
 
@@ -29142,7 +29180,7 @@ pub const Capsule = struct {
         try std.testing.expect(decoded_v2_pending.committed_actuation_receipt);
         try std.testing.expectEqual(@as(?u64, v2_receipt_refs[0]), decoded_v2_pending.pending_actuation_receipt_fingerprint);
 
-        const legacy_v3_slot = RunSlotImage.init(.{
+        var legacy_v3_slot = RunSlotImage.init(.{
             .original_run_handle_fingerprint = 0x5150_ad01,
             .role = .root,
             .target_ref_fingerprint = 0x5150_ad02,
@@ -29153,6 +29191,7 @@ pub const Capsule = struct {
             .run_state_fingerprint = 0x5150_ad07,
             .status = .completed,
         });
+        legacy_v3_slot.slot_image_fingerprint = fingerprintRunSlotImageV3(legacy_v3_slot);
         const legacy_v3_slots = [_]RunSlotImage{legacy_v3_slot};
         var legacy_v3 = RunspaceImage{
             .format_version = 3,
