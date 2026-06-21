@@ -40545,6 +40545,14 @@ test "Loaded Runspace installs executable roots as ordinary slots" {
     try std.testing.expect(request.payload_image != null);
     try std.testing.expect(request.payload_image.?.bytes.len != 0);
     try std.testing.expectError(error.InvalidRunspaceTransition, world.Capsule.freezeRunspace(&runspace, .{}));
+    _ = try runspace.fail(0, "loaded run terminal failure");
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    var failed_capsule = try world.Capsule.freezeRunspace(&runspace, .{});
+    defer failed_capsule.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.replay_only_run, failed_capsule.run_images[0].kind);
+    try std.testing.expectEqual(world.RunState.Status.failed, failed_capsule.run_images[0].current_state.status);
+    try std.testing.expectEqual(@as(?u64, null), failed_capsule.run_images[0].current_state.pending_request_fingerprint);
+    try std.testing.expect(failed_capsule.run_images[0].pending_request_frame == null);
 
     var supervised_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
     defer supervised_runspace.deinit();

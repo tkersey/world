@@ -10074,6 +10074,7 @@ pub const Runspace = struct {
         last_request_frame: ?Frame.Request = null,
         turn_index: usize = 0,
         failed_status: bool = false,
+        failed_turn_index: ?usize = null,
 
         fn init(allocator: std.mem.Allocator, module: Executable.Module, executable_image_fingerprint: u64, supervisor: ?Supervision.Supervisor) !@This() {
             var loaded_module = try Executable.Boundary.ModuleImage.decode(allocator, module.canonical_bytes, .{
@@ -10127,6 +10128,7 @@ pub const Runspace = struct {
                 ) },
                 .failed => {
                     self.failed_status = true;
+                    self.failed_turn_index = self.turn_index;
                     return .failed;
                 },
             };
@@ -10309,20 +10311,24 @@ pub const Runspace = struct {
         }
 
         fn snapshotRunImage(self: *@This()) !RunImage {
-            const status: RunState.Status = switch (self.session.status) {
+            const status: RunState.Status = if (self.failed_status)
+                .failed
+            else switch (self.session.status) {
                 .initial => .not_started,
                 .request => .parked_on_port,
                 .completed => .completed,
                 .failed => .failed,
             };
+            const include_pending_request = status == .parked_on_port;
+            const state_turn_index = if (status == .failed) self.failed_turn_index orelse self.turn_index else self.turn_index;
             const state = RunState.init(.{
                 .target_ref_fingerprint = self.target_ref.target_ref_fingerprint,
-                .pending_request_fingerprint = if (self.last_request_frame) |frame| frame.frame_fingerprint else null,
+                .pending_request_fingerprint = if (include_pending_request) if (self.last_request_frame) |frame| frame.frame_fingerprint else null else null,
                 .final_value_image_fingerprint = null,
-                .turn_index = self.turn_index,
+                .turn_index = state_turn_index,
                 .status = status,
             });
-            var pending_request_frame = if (self.last_request_frame) |frame| try frame.clone(self.allocator) else null;
+            var pending_request_frame = if (include_pending_request) if (self.last_request_frame) |frame| try frame.clone(self.allocator) else null else null;
             errdefer if (pending_request_frame) |*frame| frame.deinit(self.allocator);
             var final_result_image = if (self.session.result_image_bytes.len == 0)
                 null
@@ -10332,7 +10338,7 @@ pub const Runspace = struct {
             var image = RunImage.init(.{
                 .kind = switch (status) {
                     .completed => .completed_run,
-                    .failed => .parked_run,
+                    .failed => .replay_only_run,
                     else => .parked_run,
                 },
                 .target_ref = self.target_ref,
@@ -10600,6 +10606,7 @@ pub const Runspace = struct {
                     const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
                     _ = active.pending_request orelse return error.InvalidPendingPortTransition;
                     active.failed_status = true;
+                    active.failed_turn_index = if (active.last_request_frame) |frame| frame.turn_index else active.turn_index;
                     active.pending_request = null;
                     if (active.last_request_frame) |*frame| {
                         frame.deinit(active.allocator);
