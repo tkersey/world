@@ -297,11 +297,11 @@ pub fn Executable(comptime W: type) type {
                 if (!optionalU64Matches(self.descriptor.source_effect_shape_ref_fingerprint, requirement.source_effect_shape_ref_fingerprint)) return false;
                 if (!optionalU32Matches(self.descriptor.payload_value_table_id, requirement.payload_value_table_id)) return false;
                 if (!optionalU32Matches(self.descriptor.response_value_table_id, requirement.response_value_table_id)) return false;
-                if (!optionalU64Matches(self.world_port_ref_fingerprint, requirement.world_port_ref_fingerprint)) return false;
+                if (!bindingRefSatisfiesRequirement(self.world_port_ref_fingerprint, requirement.world_port_ref_fingerprint)) return false;
                 if (!optionalU32Matches(self.payload_value_table_id, requirement.payload_value_table_id)) return false;
-                if (!optionalU64Matches(self.payload_value_ref_fingerprint, requirement.payload_value_ref_fingerprint)) return false;
+                if (!bindingRefSatisfiesRequirement(self.payload_value_ref_fingerprint, requirement.payload_value_ref_fingerprint)) return false;
                 if (!optionalU32Matches(self.response_value_table_id, requirement.response_value_table_id)) return false;
-                if (!optionalU64Matches(self.response_value_ref_fingerprint, requirement.response_value_ref_fingerprint)) return false;
+                if (!bindingRefSatisfiesRequirement(self.response_value_ref_fingerprint, requirement.response_value_ref_fingerprint)) return false;
                 return true;
             }
         };
@@ -1600,6 +1600,14 @@ pub fn Executable(comptime W: type) type {
         fn optionalU64Matches(left: ?u64, right: ?u64) bool {
             if (left == null or right == null) return true;
             return left.? == right.?;
+        }
+
+        fn bindingRefSatisfiesRequirement(binding_ref: ?u64, requirement_ref: ?u64) bool {
+            if (requirement_ref) |expected| {
+                const actual = binding_ref orelse return false;
+                return actual == expected;
+            }
+            return true;
         }
 
         fn optionalU32Matches(left: ?u32, right: ?u32) bool {

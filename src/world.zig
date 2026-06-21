@@ -14104,7 +14104,7 @@ pub const Runspace = struct {
                 return error.ProviderResultMismatch;
             }
             if (mapping.provider_result_value_fingerprint) |expected| {
-                if (route.kind != .loaded_module_export and provider_result.value_image_fingerprint != expected and provider_result.boundary_value_fingerprint != expected) return error.ProviderResultMismatch;
+                if (provider_result.value_image_fingerprint != expected and provider_result.boundary_value_fingerprint != expected) return error.ProviderResultMismatch;
             }
             const parent_table_id = mapping.parent_response_value_table_id;
             if (parent_table_id != expected_response_value_table_id) return error.CrossTypeConversionRejected;

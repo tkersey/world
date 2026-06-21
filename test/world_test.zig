@@ -23134,6 +23134,68 @@ test "runspace fabric response enforces provider result value mapping" {
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
 }
 
+test "runspace loaded fabric response enforces provider result fingerprint mapping" {
+    var parent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parent_runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_00fb, null, @as(i32, 1), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_00fb,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const mapping = world.Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_result_value_table_id = 1,
+        .provider_result_value_fingerprint = provider_final_image.value_image_fingerprint +% 1,
+        .parent_response_value_table_id = 1,
+    });
+    const route = world.Fabric.Route.init(.{
+        .route_id = 423,
+        .kind = .loaded_module_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .value_mapping_fingerprint = mapping.mapping_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+
+    try runspace.installFabricPlan(parent_ref, plan);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    try std.testing.expectError(error.ProviderResultMismatch, runspace.respondFromFabric(invocation));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+}
+
 test "runspace fabric response honors pinned parent response fingerprint" {
     var trace_runtime = boundary.Runtime.init(std.testing.allocator);
     defer trace_runtime.deinit();
@@ -39692,6 +39754,30 @@ test "Executable Builder seals full module image with explicit residual external
         .label = "seed.fixture.wrong-shape",
     });
     try std.testing.expect(!wrong_shape_binding.matchesRequirement(root_module, root_import));
+    const missing_payload_ref_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "seed.fixture.missing-payload-ref",
+    });
+    try std.testing.expect(!missing_payload_ref_binding.matchesRequirement(root_module, root_import));
+    const missing_response_ref_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "seed.fixture.missing-response-ref",
+    });
+    try std.testing.expect(!missing_response_ref_binding.matchesRequirement(root_module, root_import));
     const forged_status_binding = world.Executable.ExternalBinding.init(.{
         .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
         .world_port_id = root_import.world_port_id,
