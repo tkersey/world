@@ -469,6 +469,8 @@ pub fn Appliance(comptime World: type) type {
             actuation_binding_fingerprints: []const u64 = &.{},
             actuation_actuator_ref_fingerprints: []const u64 = &.{},
             actuation_world_port_ids: []const u64 = &.{},
+            actuation_payload_value_ref_fingerprints: []const u64 = &.{},
+            actuation_response_value_ref_fingerprints: []const u64 = &.{},
             actuation_classes: []const World.Actuation.Class = &.{},
             actuation_allowed_response_statuses: []const World.Actuation.ResponseStatusSet = &.{},
             supervision_policy_fingerprint: u64 = 0,
@@ -497,6 +499,8 @@ pub fn Appliance(comptime World: type) type {
                 actuation_binding_fingerprints: []const u64 = &.{},
                 actuation_actuator_ref_fingerprints: []const u64 = &.{},
                 actuation_world_port_ids: []const u64 = &.{},
+                actuation_payload_value_ref_fingerprints: []const u64 = &.{},
+                actuation_response_value_ref_fingerprints: []const u64 = &.{},
                 actuation_classes: []const World.Actuation.Class = &.{},
                 actuation_allowed_response_statuses: []const World.Actuation.ResponseStatusSet = &.{},
                 supervision_policy_fingerprint: u64 = 0,
@@ -525,6 +529,8 @@ pub fn Appliance(comptime World: type) type {
                     .actuation_binding_fingerprints = args.actuation_binding_fingerprints,
                     .actuation_actuator_ref_fingerprints = args.actuation_actuator_ref_fingerprints,
                     .actuation_world_port_ids = args.actuation_world_port_ids,
+                    .actuation_payload_value_ref_fingerprints = args.actuation_payload_value_ref_fingerprints,
+                    .actuation_response_value_ref_fingerprints = args.actuation_response_value_ref_fingerprints,
                     .actuation_classes = args.actuation_classes,
                     .actuation_allowed_response_statuses = args.actuation_allowed_response_statuses,
                     .supervision_policy_fingerprint = args.supervision_policy_fingerprint,
@@ -554,6 +560,8 @@ pub fn Appliance(comptime World: type) type {
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_binding_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_actuator_ref_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_world_port_ids.len) return error.InvalidFrameEncoding;
+                if (self.actuation_payload_value_ref_fingerprints.len != 0 and self.actuation_descriptor_fingerprints.len != self.actuation_payload_value_ref_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.actuation_response_value_ref_fingerprints.len != 0 and self.actuation_descriptor_fingerprints.len != self.actuation_response_value_ref_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_classes.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_allowed_response_statuses.len) return error.InvalidFrameEncoding;
                 if (self.actuation_binding_fingerprints.len != 0 and (!self.enabled_features.actuation or !self.required_host_capabilities.actuation or !self.supported_execution_modes.fresh or self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
@@ -625,6 +633,8 @@ pub fn Appliance(comptime World: type) type {
                     allocator.free(self.actuation_binding_fingerprints);
                     allocator.free(self.actuation_actuator_ref_fingerprints);
                     allocator.free(self.actuation_world_port_ids);
+                    allocator.free(self.actuation_payload_value_ref_fingerprints);
+                    allocator.free(self.actuation_response_value_ref_fingerprints);
                     allocator.free(self.actuation_classes);
                     allocator.free(self.actuation_allowed_response_statuses);
                     allocator.free(self.default_permit_requirement_fingerprints);
@@ -2926,6 +2936,8 @@ pub fn Appliance(comptime World: type) type {
                 const descriptor_fingerprint = self.manifest_value.actuation_descriptor_fingerprints[binding_index];
                 const binding_fingerprint = self.manifest_value.actuation_binding_fingerprints[binding_index];
                 const world_port_id: u32 = @intCast(self.manifest_value.actuation_world_port_ids[binding_index]);
+                const payload_value_ref_fingerprint = if (self.manifest_value.actuation_payload_value_ref_fingerprints.len == 0) 0 else self.manifest_value.actuation_payload_value_ref_fingerprints[binding_index];
+                const response_value_ref_fingerprint = if (self.manifest_value.actuation_response_value_ref_fingerprints.len == 0) 0 else self.manifest_value.actuation_response_value_ref_fingerprints[binding_index];
                 const intent_fingerprint = fingerprintCoreHostIntent(self.manifest_value.manifest_fingerprint, command.command_fingerprint, binding_fingerprint, turn_sequence_number);
                 const envelope_fingerprint = fingerprintCoreHostEnvelope(intent_fingerprint, capsule_fingerprint);
                 const idempotency_key_fingerprint = fingerprintCoreHostIdempotencyKey(self.manifest_value.manifest_fingerprint, command.command_fingerprint, binding_fingerprint, turn_sequence_number);
@@ -2980,9 +2992,9 @@ pub fn Appliance(comptime World: type) type {
                     .metadata = "core-shell.host-request",
                     .frame_request_bytes = frame_request_bytes,
                     .payload_value_image_bytes = payload_value_image_bytes,
-                    .payload_value_ref_fingerprint = descriptor_fingerprint,
+                    .payload_value_ref_fingerprint = if (payload_value_ref_fingerprint == 0) null else payload_value_ref_fingerprint,
                     .payload_schema_ref_fingerprint = binding_fingerprint,
-                    .expected_response_value_ref_fingerprint = descriptor_fingerprint,
+                    .expected_response_value_ref_fingerprint = if (response_value_ref_fingerprint == 0) null else response_value_ref_fingerprint,
                     .expected_response_schema_ref_fingerprint = binding_fingerprint,
                     .prepared_actuation_evidence_bytes = prepared_actuation_evidence_bytes,
                     .idempotency_key_bytes = idempotency_key_bytes,
@@ -5264,6 +5276,8 @@ pub fn Appliance(comptime World: type) type {
             hashU64Slice(&hasher, manifest.actuation_binding_fingerprints);
             hashU64Slice(&hasher, manifest.actuation_actuator_ref_fingerprints);
             hashU64Slice(&hasher, manifest.actuation_world_port_ids);
+            hashU64Slice(&hasher, manifest.actuation_payload_value_ref_fingerprints);
+            hashU64Slice(&hasher, manifest.actuation_response_value_ref_fingerprints);
             hashActuationClassSlice(&hasher, manifest.actuation_classes);
             hashResponseStatusSetSlice(&hasher, manifest.actuation_allowed_response_statuses);
             hashU64(&hasher, manifest.supervision_policy_fingerprint);
@@ -5303,6 +5317,10 @@ pub fn Appliance(comptime World: type) type {
             errdefer allocator.free(actuation_actuator_ref_fingerprints);
             const actuation_world_port_ids = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(actuation_world_port_ids);
+            const actuation_payload_value_ref_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(actuation_payload_value_ref_fingerprints);
+            const actuation_response_value_ref_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(actuation_response_value_ref_fingerprints);
             const actuation_classes = try readActuationClassSliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(actuation_classes);
             const actuation_allowed_response_statuses = try readResponseStatusSetSliceOwned(allocator, bytes, cursor);
@@ -5337,6 +5355,8 @@ pub fn Appliance(comptime World: type) type {
                 .actuation_binding_fingerprints = actuation_binding_fingerprints,
                 .actuation_actuator_ref_fingerprints = actuation_actuator_ref_fingerprints,
                 .actuation_world_port_ids = actuation_world_port_ids,
+                .actuation_payload_value_ref_fingerprints = actuation_payload_value_ref_fingerprints,
+                .actuation_response_value_ref_fingerprints = actuation_response_value_ref_fingerprints,
                 .actuation_classes = actuation_classes,
                 .actuation_allowed_response_statuses = actuation_allowed_response_statuses,
                 .supervision_policy_fingerprint = supervision_policy_fingerprint,
@@ -5363,6 +5383,8 @@ pub fn Appliance(comptime World: type) type {
                 u64SliceEncodedLen(manifest.actuation_binding_fingerprints) +
                 u64SliceEncodedLen(manifest.actuation_actuator_ref_fingerprints) +
                 u64SliceEncodedLen(manifest.actuation_world_port_ids) +
+                u64SliceEncodedLen(manifest.actuation_payload_value_ref_fingerprints) +
+                u64SliceEncodedLen(manifest.actuation_response_value_ref_fingerprints) +
                 actuationClassSliceEncodedLen(manifest.actuation_classes) +
                 responseStatusSetSliceEncodedLen(manifest.actuation_allowed_response_statuses) +
                 @sizeOf(u64) +
@@ -5414,6 +5436,8 @@ pub fn Appliance(comptime World: type) type {
             try putU64Slice(dest, &cursor, manifest.actuation_binding_fingerprints);
             try putU64Slice(dest, &cursor, manifest.actuation_actuator_ref_fingerprints);
             try putU64Slice(dest, &cursor, manifest.actuation_world_port_ids);
+            try putU64Slice(dest, &cursor, manifest.actuation_payload_value_ref_fingerprints);
+            try putU64Slice(dest, &cursor, manifest.actuation_response_value_ref_fingerprints);
             try putActuationClassSlice(dest, &cursor, manifest.actuation_classes);
             try putResponseStatusSetSlice(dest, &cursor, manifest.actuation_allowed_response_statuses);
             try putU64(dest, &cursor, manifest.supervision_policy_fingerprint);
@@ -6814,6 +6838,10 @@ pub fn Appliance(comptime World: type) type {
             errdefer allocator.free(actuator_ref_fingerprints);
             const world_port_ids = try allocator.alloc(u64, binding_count);
             errdefer allocator.free(world_port_ids);
+            const payload_value_ref_fingerprints = try allocator.alloc(u64, binding_count);
+            errdefer allocator.free(payload_value_ref_fingerprints);
+            const response_value_ref_fingerprints = try allocator.alloc(u64, binding_count);
+            errdefer allocator.free(response_value_ref_fingerprints);
             const classes = try allocator.alloc(World.Actuation.Class, binding_count);
             errdefer allocator.free(classes);
             const statuses = try allocator.alloc(World.Actuation.ResponseStatusSet, binding_count);
@@ -6824,6 +6852,8 @@ pub fn Appliance(comptime World: type) type {
                 binding_fingerprints[index] = binding.binding_fingerprint;
                 actuator_ref_fingerprints[index] = binding.actuator_ref.ref_fingerprint;
                 world_port_ids[index] = binding.world_port_id;
+                payload_value_ref_fingerprints[index] = binding.payload_value_ref_fingerprint orelse 0;
+                response_value_ref_fingerprints[index] = binding.response_value_ref_fingerprint orelse 0;
                 classes[index] = binding.actuation_class;
                 statuses[index] = binding.allowed_response_statuses;
             }
@@ -6843,6 +6873,8 @@ pub fn Appliance(comptime World: type) type {
                 .actuation_binding_fingerprints = binding_fingerprints,
                 .actuation_actuator_ref_fingerprints = actuator_ref_fingerprints,
                 .actuation_world_port_ids = world_port_ids,
+                .actuation_payload_value_ref_fingerprints = payload_value_ref_fingerprints,
+                .actuation_response_value_ref_fingerprints = response_value_ref_fingerprints,
                 .actuation_classes = classes,
                 .actuation_allowed_response_statuses = statuses,
                 .supported_execution_modes = ExecutionModeSet.forManifest(profile, binding_count),

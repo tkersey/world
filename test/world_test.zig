@@ -39644,6 +39644,30 @@ test "Executable Builder seals full module image with explicit residual external
         .label = "seed.fixture",
     });
     try builder.addExternalBinding(binding);
+    const foreign_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint +% 1,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture.foreign",
+    });
+    const foreign_descriptor_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = foreign_descriptor,
+        .label = "seed.fixture.foreign",
+    });
+    try std.testing.expect(!foreign_descriptor_binding.matchesRequirement(root_module, root_import));
     const forged_status_binding = world.Executable.ExternalBinding.init(.{
         .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
         .world_port_id = root_import.world_port_id,

@@ -265,6 +265,10 @@ pub fn Executable(comptime W: type) type {
             pub fn matchesRequirement(self: @This(), module: Module, requirement: W.ImportRequirement) bool {
                 if (self.parent_module_fingerprint != module.module_ref.boundary_module_fingerprint) return false;
                 if (self.world_port_id != requirement.world_port_id) return false;
+                if (self.descriptor.world_surface_fingerprint != module.target_ref.world_surface_fingerprint) return false;
+                if (self.descriptor.target_ref_fingerprint) |target_ref_fingerprint| {
+                    if (target_ref_fingerprint != module.target_ref.target_ref_fingerprint) return false;
+                }
                 if (!optionalU64Matches(self.world_port_ref_fingerprint, requirement.world_port_ref_fingerprint)) return false;
                 if (!optionalU32Matches(self.payload_value_table_id, requirement.payload_value_table_id)) return false;
                 if (!optionalU64Matches(self.payload_value_ref_fingerprint, requirement.payload_value_ref_fingerprint)) return false;

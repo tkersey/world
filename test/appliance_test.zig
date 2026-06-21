@@ -1042,8 +1042,8 @@ fn buildMinimalApplianceWasmWithOptions(
 
 test "appliance static contract exposes root namespace and versions" {
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_abi_version);
-    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_manifest_format_version);
-    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_manifest_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_format_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_memory_plan_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_command_format_version);
     try std.testing.expectEqual(@as(u32, 4), world.world_appliance_host_request_format_version);
@@ -8005,6 +8005,17 @@ test "Universal Runtime initializes Appliance Core from Executable Image" {
 
     const root_module = builder.modules.items[0];
     const root_import = root_module.imports[0];
+    const executable_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ApplianceActuationBinding.actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "universal-runtime.fixture",
+    });
     try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
         .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
         .world_port_id = root_import.world_port_id,
@@ -8014,7 +8025,7 @@ test "Universal Runtime initializes Appliance Core from Executable Image" {
         .response_value_table_id = root_import.response_value_table_id,
         .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
         .actuator_ref = ApplianceActuationBinding.actuator_ref,
-        .descriptor = ApplianceActuationBinding.actuationDescriptor(),
+        .descriptor = executable_descriptor,
         .label = "universal-runtime.fixture",
     }));
 
@@ -8049,6 +8060,8 @@ test "Universal Runtime initializes Appliance Core from Executable Image" {
     );
     defer output.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), output.host_requests.len);
+    try std.testing.expectEqual(root_import.payload_value_ref_fingerprint, output.host_requests[0].payload_value_ref_fingerprint);
+    try std.testing.expectEqual(root_import.response_value_ref_fingerprint, output.host_requests[0].expected_response_value_ref_fingerprint);
     try std.testing.expect(output.host_requests[0].frame_request_bytes.len != 0);
     try std.testing.expect(output.host_requests[0].payload_value_image_bytes.len != 0);
     try std.testing.expect(output.host_requests[0].prepared_actuation_evidence_bytes.len != 0);
