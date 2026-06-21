@@ -40313,18 +40313,15 @@ test "Loaded Admission admits executable image without local target registry" {
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, malformed_result.report.blockers[0]);
 
     const unsupported_profile = world.Executable.RuntimeProfile.init(.{ .max_modules = 1024 });
-    const unsupported_image = world.Executable.Image.init(.{
-        .required_runtime_profile = unsupported_profile,
-        .module_set = image.module_set,
-        .link_plan_fingerprint = image.link_plan_fingerprint,
-        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
-        .assembly_fingerprint = image.assembly_fingerprint,
-        .dispatch_image = image.dispatch_image,
-        .external_bindings = image.external_bindings,
-        .memory_plan = world.Executable.MemoryPlan.derive(unsupported_profile, image.module_set.modules, image.external_bindings.len),
-        .compatibility_report = image.compatibility_report,
-        .metadata = image.metadata,
+    var unsupported_builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .runtime_profile = unsupported_profile,
     });
+    defer unsupported_builder.deinit();
+    try unsupported_builder.addRootModule(strict_bytes);
+    var unsupported_prepared = try unsupported_builder.prepare();
+    defer unsupported_prepared.deinit();
+    var unsupported_image = try unsupported_prepared.seal();
+    defer unsupported_image.deinit(std.testing.allocator);
     const unsupported_result = relaxed_receiver.admitExecutableImage(unsupported_image, .{});
     try std.testing.expect(unsupported_result.report.accepted);
     try std.testing.expect(unsupported_result.loaded_run != null);
@@ -40372,6 +40369,34 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     const plan = prepared.plan.link_plan.fabric_plans[0];
     try std.testing.expectEqual(world.Fabric.RouteKind.loaded_module_export, plan.routes[0].kind);
     const sealed_route = plan.routes[0];
+    const forged_route_ids = [_]u64{sealed_route.route_id +% 1};
+    const forged_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = &forged_route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_dispatch_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_dispatch_image.validate(world.Executable.RuntimeProfile.universal_v1));
     const parent_ref = image.module_set.root().?.target_ref;
     const unsealed_route = world.Fabric.Route.init(.{
         .route_id = sealed_route.route_id +% 1,

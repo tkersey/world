@@ -1184,6 +1184,62 @@ pub fn Executable(comptime W: type) type {
             for (image.dispatch_image.external_binding_fingerprints) |fingerprint| {
                 if (countExternalBindingFingerprint(image.external_bindings, fingerprint) != countU64(image.dispatch_image.external_binding_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
             }
+            try validateDispatchRouteRowsAgainstLinkWitness(image);
+        }
+
+        fn validateDispatchRouteRowsAgainstLinkWitness(image: Image) !void {
+            const allocator = std.heap.page_allocator;
+            const root = image.module_set.root() orelse return error.InvalidFrameEncoding;
+            const catalog_entries = try allocator.alloc(W.Linker.Catalog.Entry, image.module_set.modules.len);
+            defer allocator.free(catalog_entries);
+            var catalog_count: usize = 0;
+            for (image.module_set.modules) |module| {
+                if (module.role != .provider) continue;
+                catalog_entries[catalog_count] = catalogEntryForModule(root, module);
+                catalog_count += 1;
+            }
+
+            const policies = [_]W.Linker.Policy{
+                .allow_external_ports,
+                .strict_closed,
+                .world_boundary,
+                .agent_fixture,
+            };
+            for (policies) |policy| {
+                if (dispatchRouteRowsMatchPolicy(allocator, image, root, catalog_entries[0..catalog_count], policy) catch false) return;
+            }
+            return error.InvalidFrameEncoding;
+        }
+
+        fn dispatchRouteRowsMatchPolicy(
+            allocator: std.mem.Allocator,
+            image: Image,
+            root: Module,
+            catalog_entries: []const W.Linker.Catalog.Entry,
+            policy: W.Linker.Policy,
+        ) !bool {
+            var link_result = try W.Linker.link(allocator, .{
+                .root_target_ref = root.target_ref,
+                .root_module_ref = root.module_ref,
+                .root_import_set = root.import_set,
+                .root_imports = root.imports,
+                .catalog = W.Linker.Catalog.init(catalog_entries),
+                .policy = policy,
+                .max_depth = image.required_runtime_profile.max_provider_depth,
+                .max_provider_candidates = image.required_runtime_profile.max_modules,
+                .max_routes = image.required_runtime_profile.max_modules,
+            });
+            defer link_result.deinit();
+            if (link_result.plan.plan_fingerprint != image.link_plan_fingerprint) return false;
+            if (link_result.certificate.certificate_fingerprint != image.linker_certificate_fingerprint) return false;
+            if (link_result.assembly.assembly_fingerprint != image.assembly_fingerprint) return false;
+            if (!std.mem.eql(u64, link_result.certificate.fabric_plan_fingerprints, image.dispatch_image.fabric_plan_fingerprints)) return false;
+            const routes = try dispatchRouteSlices(allocator, link_result.plan);
+            defer routes.deinit(allocator);
+            return std.mem.eql(u64, routes.route_ids, image.dispatch_image.route_ids) and
+                std.mem.eql(W.Fabric.RouteKind, routes.route_kinds, image.dispatch_image.route_kinds) and
+                std.mem.eql(u32, routes.route_parent_world_port_ids, image.dispatch_image.route_parent_world_port_ids) and
+                std.mem.eql(u64, routes.route_provider_module_fingerprints, image.dispatch_image.route_provider_module_fingerprints);
         }
 
         fn countU64(values: []const u64, needle: u64) usize {

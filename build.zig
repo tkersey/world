@@ -596,9 +596,9 @@ pub fn build(b: *std.Build) void {
             \\world_seed=two_images_one_wasm
             \\abi_version=2
             \\images=2
-            \\unsupported_rejected=true
-            \\manifests_empty=true
-            \\submit_without_image_rejected=true
+            \\images_loaded=true
+            \\manifests_present=true
+            \\commands_completed=true
             \\
             ,
         },

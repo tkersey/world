@@ -26,9 +26,9 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("world_seed=two_images_one_wasm\n", .{});
     try stdout.print("abi_version={d}\n", .{universal.world_appliance_abi_version()});
     try stdout.print("images=2\n", .{});
-    try stdout.print("unsupported_rejected={}\n", .{image_a_status == 7 and image_b_status == 7});
-    try stdout.print("manifests_empty={}\n", .{image_a_manifest_len == 0 and image_b_manifest_len == 0});
-    try stdout.print("submit_without_image_rejected={}\n", .{image_a_submit_status == 7 and image_b_submit_status == 7});
+    try stdout.print("images_loaded={}\n", .{image_a_status == 0 and image_b_status == 0});
+    try stdout.print("manifests_present={}\n", .{image_a_manifest_len == image_a.len and image_b_manifest_len == image_b.len});
+    try stdout.print("commands_completed={}\n", .{image_a_submit_status == 3 and image_b_submit_status == 3});
     try stdout.flush();
 }
 
