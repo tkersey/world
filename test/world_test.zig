@@ -39662,6 +39662,28 @@ test "Executable Builder seals full module image with explicit residual external
     );
 }
 
+test "Executable Image validation rejects forged compatibility report fields" {
+    const root_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var forged = image;
+    forged.compatibility_report.compatible = !forged.compatibility_report.compatible;
+
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        forged.validate(world.Executable.RuntimeProfile.universal_v1),
+    );
+}
+
 test "Executable Builder reports residual binding blockers before image seal" {
     const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(root_bytes);

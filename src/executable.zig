@@ -619,6 +619,11 @@ pub fn Executable(comptime W: type) type {
                 });
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
                 if (self.memory_plan.memory_plan_fingerprint != fingerprintMemoryPlan(self.memory_plan)) return error.InvalidFrameEncoding;
+                if (self.compatibility_report.report_fingerprint == 0 or
+                    self.compatibility_report.report_fingerprint != fingerprintCompatibilityReport(self.compatibility_report))
+                {
+                    return error.InvalidFrameEncoding;
+                }
                 if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
                 if (self.certificate.image_fingerprint != self.image_fingerprint or
                     self.certificate.certificate_fingerprint != fingerprintCertificate(self.certificate))
