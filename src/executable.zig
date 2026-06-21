@@ -380,6 +380,10 @@ pub fn Executable(comptime W: type) type {
             max_linear_memory_pages: usize = 65,
 
             pub fn derive(profile: RuntimeProfile, modules: []const Module, residual_count: usize) @This() {
+                return deriveForDispatch(profile, modules, residual_count, 0);
+            }
+
+            pub fn deriveForDispatch(profile: RuntimeProfile, modules: []const Module, residual_count: usize, route_count: usize) @This() {
                 var module_bytes: usize = 0;
                 var schema_entries: usize = 0;
                 for (modules) |module| {
@@ -389,7 +393,7 @@ pub fn Executable(comptime W: type) type {
                 var result = @This(){
                     .memory_plan_fingerprint = 0,
                     .decoded_module_bytes = module_bytes,
-                    .dispatch_table_entries = modules.len + residual_count,
+                    .dispatch_table_entries = modules.len +| residual_count +| route_count,
                     .schema_table_entries = schema_entries,
                     .max_provider_runs = @min(profile.max_modules, profile.max_external_bindings),
                     .max_host_requests_per_turn = @min(profile.max_external_bindings, residual_count),
@@ -575,6 +579,7 @@ pub fn Executable(comptime W: type) type {
                     .compatibility_report = self.compatibility_report,
                     .metadata = "world-executable-image-v1",
                 });
+                try validateImageFitsRuntimeProfile(image);
                 const cert = Certificate.init(.{
                     .image_fingerprint = image.image_fingerprint,
                     .module_set_fingerprint = image.module_set.module_set_fingerprint,
@@ -706,7 +711,12 @@ pub fn Executable(comptime W: type) type {
                 }
                 try validateDispatchTablesForImage(self);
                 if (self.memory_plan.memory_plan_fingerprint != fingerprintMemoryPlan(self.memory_plan)) return error.InvalidFrameEncoding;
-                const expected_memory_plan = MemoryPlan.derive(self.required_runtime_profile, self.module_set.modules, self.external_bindings.len);
+                const expected_memory_plan = MemoryPlan.deriveForDispatch(
+                    self.required_runtime_profile,
+                    self.module_set.modules,
+                    self.external_bindings.len,
+                    self.dispatch_image.route_ids.len,
+                );
                 if (self.memory_plan.memory_plan_fingerprint != expected_memory_plan.memory_plan_fingerprint) return error.InvalidFrameEncoding;
                 try self.compatibility_report.validate();
                 if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
@@ -905,17 +915,23 @@ pub fn Executable(comptime W: type) type {
                     .linker_certificate_fingerprint = link_result.certificate.certificate_fingerprint,
                     .assembly_fingerprint = link_result.assembly.assembly_fingerprint,
                 });
-                const memory_plan = MemoryPlan.derive(self.options.runtime_profile, modules, residual_count);
+                const memory_plan = MemoryPlan.deriveForDispatch(
+                    self.options.runtime_profile,
+                    modules,
+                    residual_count,
+                    dispatch_routes.route_ids.len,
+                );
+                const memory_fits_profile = memory_plan.decoded_module_bytes <= self.options.runtime_profile.max_image_bytes;
                 const report = CompatibilityReport.init(.{
-                    .compatible = compatible,
+                    .compatible = compatible and memory_fits_profile,
                     .boundary_module_compatible = true,
                     .executable_plan_compatible = true,
                     .profile_compatible = true,
                     .capacity_compatible = compatible,
-                    .memory_compatible = true,
-                    .hard_blockers = hard_blockers,
+                    .memory_compatible = memory_fits_profile,
+                    .hard_blockers = hard_blockers + @intFromBool(!memory_fits_profile),
                     .warnings = link_result.plan.warnings.len,
-                    .summary = if (compatible) "executable image prepared" else "executable image blocked",
+                    .summary = if (compatible and memory_fits_profile) "executable image prepared" else "executable image blocked",
                 });
                 const plan = Plan.init(.{
                     .module_set = module_set,

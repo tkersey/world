@@ -40467,6 +40467,34 @@ test "Loaded Linker emits dense loaded module provider route evidence" {
     try std.testing.expectEqual(provider_module_ref.module_ref_fingerprint, route.provider_module_fingerprint.?);
 }
 
+test "Executable Builder blocks sealing images that exceed runtime profile image bytes" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(provider_bytes);
+
+    const max_single_module_bytes = @max(root_bytes.len, provider_bytes.len) + 1;
+    const profile = world.Executable.RuntimeProfile.init(.{
+        .max_module_bytes = max_single_module_bytes,
+        .max_image_bytes = max_single_module_bytes,
+    });
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .runtime_profile = profile,
+        .linker_policy = .strict_closed,
+    });
+    defer builder.deinit();
+
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+
+    try std.testing.expect(!prepared.plan.compatibility_report.compatible);
+    try std.testing.expect(!prepared.plan.compatibility_report.memory_compatible);
+    try std.testing.expect(prepared.plan.compatibility_report.hard_blockers != 0);
+    try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
+}
+
 test "Loaded Admission admits executable image without local target registry" {
     const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(strict_bytes);
@@ -40553,6 +40581,10 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     defer image.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), image.dispatch_image.fabric_plan_fingerprints.len);
     try std.testing.expectEqual(prepared.plan.linker_certificate.fabric_plan_fingerprints[0], image.dispatch_image.fabric_plan_fingerprints[0]);
+    try std.testing.expectEqual(
+        image.module_set.modules.len + image.external_bindings.len + image.dispatch_image.route_ids.len,
+        image.memory_plan.dispatch_table_entries,
+    );
 
     const no_internal_profile = world.Executable.RuntimeProfile.init(.{
         .supports_internal_providers = false,
