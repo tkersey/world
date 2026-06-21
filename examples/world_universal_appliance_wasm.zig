@@ -21,7 +21,7 @@ const max_image_bytes: usize = 128 * 1024;
 const max_command_bytes: usize = 64 * 1024;
 const max_output_bytes: usize = 128 * 1024;
 const max_error_bytes: usize = 160;
-const executable_image_marker = "world.Executable.Image.v1\nfingerprint=";
+const executable_image_marker = "world.Executable.TextEnvelope.v1\nfingerprint=";
 const executable_image_payload_marker = "\npayload=";
 
 var guest_memory: [guest_memory_bytes]u8 align(16) = [_]u8{0} ** guest_memory_bytes;
@@ -49,9 +49,9 @@ pub export fn world_appliance_read_runtime_manifest(ptr: usize, cap: usize) usiz
 }
 
 pub export fn world_appliance_load_executable(ptr: usize, len: usize) u32 {
-    if (len == 0 or len > max_image_bytes) return setError(status_capacity_exceeded, "invalid executable image length");
-    const bytes = guestRange(ptr, len) orelse return setError(status_invalid_command, "executable image outside appliance memory");
-    const envelope = parseExecutableImageEnvelope(bytes) orelse return setError(status_invalid_command, "malformed executable image");
+    if (len == 0 or len > max_image_bytes) return setError(status_capacity_exceeded, "invalid executable envelope length");
+    const bytes = guestRange(ptr, len) orelse return setError(status_invalid_command, "executable envelope outside appliance memory");
+    const envelope = parseExecutableImageEnvelope(bytes) orelse return setError(status_invalid_command, "malformed executable text envelope");
 
     @memcpy(image_bytes[0..len], bytes);
     image_len = len;
@@ -84,7 +84,7 @@ pub export fn world_appliance_read_manifest(ptr: usize, cap: usize) usize {
 }
 
 pub export fn world_appliance_submit_command(ptr: usize, len: usize) u32 {
-    if (image_len == 0) return setError(status_invalid_command, "no executable image loaded");
+    if (image_len == 0) return setError(status_invalid_command, "no executable envelope loaded");
     if (len == 0 or len > max_command_bytes) return setError(status_capacity_exceeded, "invalid command length");
     const command = guestRange(ptr, len) orelse return setError(status_invalid_command, "command outside appliance memory");
 

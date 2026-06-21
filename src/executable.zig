@@ -1338,14 +1338,14 @@ pub fn Executable(comptime W: type) type {
             }
             if (strict) {
                 for (bindings) |binding| {
-                    var used = false;
+                    var matched_count: usize = 0;
                     for (residuals) |requirement| {
                         if (binding.matchesRequirement(root, requirement)) {
-                            used = true;
-                            break;
+                            matched_count += 1;
                         }
                     }
-                    if (!used) report.unused += 1;
+                    if (matched_count == 0) report.unused += 1;
+                    if (matched_count > 1) report.duplicates += matched_count - 1;
                 }
             }
             return report;

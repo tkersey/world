@@ -68,7 +68,7 @@ The closeout gates are:
 
 - `zig build check-world-seed`: runs the seven killer examples: one-port host bytes, agent plus loaded-provider shape, two images through one generic WASM implementation, migration, active Fabric restore, replay, and malformed rejection.
 - `zig build check-world-universal`: runs the native universal runtime, replay, and generic universal Appliance WASM inspection lanes.
-- `zig build check-world-universal-appliance-node`: uses installed Node and the built-in ECMAScript `WebAssembly` API to compile `world_universal_appliance.wasm` once, instantiate with `{}`, run two unrelated executable images in fresh instances of the same bytes, and compare canonical output with the native projection.
+- `zig build check-world-universal-appliance-node`: uses installed Node and the built-in ECMAScript `WebAssembly` API to compile `world_universal_appliance.wasm` once, instantiate with `{}`, run two unrelated executable text envelopes in fresh instances of the same bytes, and compare exact canonical output.
 
 The normal `zig build check` lane remains free of the external Node dependency. The Node lane is a closeout proof for the generic artifact, not a runtime dependency of World.
 

@@ -77,7 +77,7 @@ const Machine = world.Machine(Target, .{
 
 The legacy `.ports` form remains available. It is sugar over the same import-binding shape used by `world.Environment`.
 
-`world.Executable` builds a sealed World Seed from explicit Boundary full-module bytes, provider modules, residual Actuation descriptors, Linker witnesses, dense dispatch tables, and memory bounds. It is the generic path for runtimes that do not possess a locally generated Boundary Target type. `world_universal_appliance.wasm` is the target-neutral ABI v2 deployment artifact, while `zig build check-world-universal-appliance-node` is the optional closeout proof that runs it under installed Node's built-in WebAssembly API. See [docs/executable.md](docs/executable.md) and [docs/appliance.md](docs/appliance.md).
+`world.Executable` builds a sealed World Seed from explicit Boundary full-module bytes, provider modules, residual Actuation descriptors, Linker witnesses, dense dispatch tables, and memory bounds. It is the generic path for runtimes that do not possess a locally generated Boundary Target type. `world_universal_appliance.wasm` is currently an ABI v2 text-envelope conformance artifact for target-neutral host integration; sealed `world.Executable.Image` byte execution remains owned by the native loaded-execution path. See [docs/executable.md](docs/executable.md) and [docs/appliance.md](docs/appliance.md).
 
 ## Certified Targets
 

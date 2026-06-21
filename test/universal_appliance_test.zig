@@ -8,8 +8,8 @@ test "Universal Appliance ABI v2 lifecycle keeps image and output boundaries det
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_read_manifest(0, 0));
 
     const malformed_image = "world.Executable.Image:test-a";
-    const marker_only_image = "world.Executable.Image.v1\nfingerprint=8cdcc3dc851ba11b\npayload=";
-    const image = "world.Executable.Image.v1\nfingerprint=8cdcc3dc851ba11b\npayload=test-a";
+    const marker_only_image = "world.Executable.TextEnvelope.v1\nfingerprint=8cdcc3dc851ba11b\npayload=";
+    const image = "world.Executable.TextEnvelope.v1\nfingerprint=8cdcc3dc851ba11b\npayload=test-a";
     const command = "boot:canonical-args";
     const malformed_image_ptr = try writeGuest(malformed_image);
     const image_ptr = try writeGuest(image);

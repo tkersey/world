@@ -31,7 +31,7 @@ async function main() {
 
   const instanceB = await WebAssembly.instantiate(module, {});
   const resultB = loadAndRunImage(instanceB, imageB, 'B', command);
-  if (!resultA || !resultB) throw new Error('valid executable image was not loaded and run');
+  if (!resultA || !resultB) throw new Error('valid executable text envelope was not loaded and run');
 
   console.log('actual_external_runtime_executed=true');
   console.log('compiled_once=true');
@@ -92,7 +92,7 @@ function readGuest(instance, ptr, len) {
 
 function executableImage(payload) {
   const payloadBytes = textEncoder.encode(payload);
-  return `world.Executable.Image.v1\nfingerprint=${fnv64Hex(payloadBytes)}\npayload=${payload}`;
+  return `world.Executable.TextEnvelope.v1\nfingerprint=${fnv64Hex(payloadBytes)}\npayload=${payload}`;
 }
 
 function fnv64Hex(bytes) {

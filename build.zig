@@ -162,16 +162,16 @@ pub fn build(b: *std.Build) void {
     universal_appliance_wasm.initial_memory = 4_194_304;
     universal_appliance_wasm.max_memory = 4_194_304;
     const install_universal_appliance_wasm = b.addInstallArtifact(universal_appliance_wasm, .{});
-    const world_universal_appliance_wasm_step = b.step("world-universal-appliance-wasm", "Build generic World universal Appliance wasm artifact.");
+    const world_universal_appliance_wasm_step = b.step("world-universal-appliance-wasm", "Build World universal Appliance ABI conformance wasm artifact.");
     world_universal_appliance_wasm_step.dependOn(&install_universal_appliance_wasm.step);
-    const check_world_universal_appliance_wasm_step = b.step("check-world-universal-appliance-wasm", "Build and inspect generic World universal Appliance wasm artifact.");
+    const check_world_universal_appliance_wasm_step = b.step("check-world-universal-appliance-wasm", "Build and inspect World universal Appliance ABI conformance wasm artifact.");
     check_world_universal_appliance_wasm_step.dependOn(&universal_appliance_wasm.step);
     const run_universal_appliance_node = b.addSystemCommand(&.{
         "node",
         "scripts/world_universal_appliance_node_conformance.js",
     });
     run_universal_appliance_node.addFileArg(universal_appliance_wasm.getEmittedBin());
-    const check_world_universal_appliance_node_step = b.step("check-world-universal-appliance-node", "Run generic World universal Appliance wasm in Node WebAssembly.");
+    const check_world_universal_appliance_node_step = b.step("check-world-universal-appliance-node", "Run World universal Appliance ABI conformance wasm in Node WebAssembly.");
     check_world_universal_appliance_node_step.dependOn(&run_universal_appliance_node.step);
     const universal_appliance_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -406,7 +406,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"World Seed Replay"},
     });
     check_world_seed_replay_step.dependOn(&addRunArtifactWithArgs(b, world_seed_replay_tests, test_args.passthrough).step);
-    const check_world_universal_step = b.step("check-world-universal", "Run generic World universal Appliance runtime and WASM checks.");
+    const check_world_universal_step = b.step("check-world-universal", "Run World universal Appliance runtime and WASM conformance checks.");
     check_world_universal_step.dependOn(check_world_universal_runtime_step);
     check_world_universal_step.dependOn(check_world_seed_replay_step);
     check_world_universal_step.dependOn(check_world_universal_appliance_wasm_step);
@@ -1673,7 +1673,7 @@ pub fn build(b: *std.Build) void {
     const universal_appliance_wasm_export_check = b.addExecutable(.{ .name = "world-universal-appliance-wasm-export-check", .root_module = universal_appliance_wasm_export_check_mod });
     const run_universal_appliance_wasm_export_check = b.addRunArtifact(universal_appliance_wasm_export_check);
     run_universal_appliance_wasm_export_check.addFileArg(universal_appliance_wasm.getEmittedBin());
-    const universal_appliance_wasm_export_check_step = b.step("run-world-universal-appliance-wasm-export-check", "Inspect generic World universal Appliance wasm exports and imports.");
+    const universal_appliance_wasm_export_check_step = b.step("run-world-universal-appliance-wasm-export-check", "Inspect World universal Appliance ABI conformance wasm exports and imports.");
     universal_appliance_wasm_export_check_step.dependOn(&run_universal_appliance_wasm_export_check.step);
     check_world_universal_appliance_wasm_step.dependOn(&run_universal_appliance_wasm_export_check.step);
     check_world_universal_step.dependOn(check_world_universal_appliance_wasm_step);
