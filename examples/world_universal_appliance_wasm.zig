@@ -50,12 +50,9 @@ pub export fn world_appliance_load_executable(ptr: usize, len: usize) u32 {
     const bytes = guestRange(ptr, len) orelse return setError(status_invalid_command, "executable image outside appliance memory");
     if (!isExecutableImageEnvelope(bytes)) return setError(status_invalid_command, "malformed executable image");
 
-    image_len = len;
-    var index: usize = 0;
-    while (index < len) : (index += 1) image_bytes[index] = bytes[index];
+    image_len = 0;
     output_len_value = 0;
-    clearError();
-    return status_ok;
+    return setError(status_invalid_command, "unsupported executable image");
 }
 
 pub export fn world_appliance_unload_executable() u32 {

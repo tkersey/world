@@ -3321,7 +3321,9 @@ pub const Admission = struct {
             if (policy.require_executable_certificate and image.certificate.image_fingerprint != image.image_fingerprint) {
                 return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleInvalid}, "executable certificate does not match image");
             }
-            const compatibility = image.validate(args.runtime_profile) catch {
+            const compatibility = image.validateWithOptions(args.runtime_profile, .{
+                .require_certificate = policy.require_executable_certificate,
+            }) catch {
                 return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleInvalid}, "executable image validation failed");
             };
             if (policy.require_supported_runtime_profile and !compatibility.compatible) {
@@ -10589,8 +10591,16 @@ pub const Runspace = struct {
                 fn loadedFabricPlanFingerprint(_: *anyopaque) ?u64 {
                     return null;
                 }
-                fn loadedResumeTerminalFrame(_: *anyopaque, _: Frame.Response) anyerror!void {
-                    return error.InvalidPendingPortTransition;
+                fn loadedResumeTerminalFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
+                    if (response.status != .rejected and response.status != .failed) return error.InvalidPendingPortTransition;
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    _ = active.pending_request orelse return error.InvalidPendingPortTransition;
+                    active.failed_status = true;
+                    active.pending_request = null;
+                    if (active.last_request_frame) |*frame| {
+                        frame.deinit(active.allocator);
+                        active.last_request_frame = null;
+                    }
                 }
                 fn loadedDispatch(_: *anyopaque) anyerror!?ResponseEvidence {
                     return null;
@@ -14300,11 +14310,7 @@ pub const Runspace = struct {
         const expected_module = route.provider_module_fingerprint orelse return null;
         for (image.module_set.modules) |module| {
             if (module.role != .provider) continue;
-            if (module.module_ref.module_ref_fingerprint != expected_module and
-                module.module_ref.boundary_module_fingerprint != expected_module)
-            {
-                continue;
-            }
+            if (module.module_ref.module_ref_fingerprint != expected_module) continue;
             if (route.provider_target_ref_fingerprint) |expected_target| {
                 if (module.target_ref.target_ref_fingerprint != expected_target) continue;
             }
@@ -15052,7 +15058,7 @@ pub const Runspace = struct {
 
     fn pendingRequiresFabricRoute(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
         if (slot.driver) |driver| {
-            return driver.fabricPlanCoversWorldPort(pending.world_port_id);
+            if (driver.fabricPlanCoversWorldPort(pending.world_port_id)) return true;
         }
         const plan_fingerprint = fabricPlanFingerprintForSlot(slot) orelse return false;
         return self.installedFabricRouteCoversPending(plan_fingerprint, pending);
@@ -15078,6 +15084,26 @@ pub const Runspace = struct {
             if (fabricRouteCoversPending(route, pending)) return true;
         }
         return false;
+    }
+
+    fn installedFabricRouteCoversWorldPort(self: *const @This(), plan_fingerprint: u64, world_port_id: u32) bool {
+        for (self.fabric_routes.items, self.fabric_route_plan_fingerprints.items) |route, route_plan_fingerprint| {
+            if (route_plan_fingerprint != plan_fingerprint) continue;
+            if (route.parent_world_port_id != world_port_id) continue;
+            return switch (route.kind) {
+                .adapter => false,
+                .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+            };
+        }
+        return false;
+    }
+
+    fn slotFabricPlanCoversWorldPort(self: *const @This(), slot: Runspace.RunSlot, world_port_id: u32) bool {
+        if (slot.driver) |driver| {
+            if (driver.fabricPlanCoversWorldPort(world_port_id)) return true;
+        }
+        const plan_fingerprint = fabricPlanFingerprintForSlot(slot) orelse return false;
+        return self.installedFabricRouteCoversWorldPort(plan_fingerprint, world_port_id);
     }
 
     fn fabricRouteCoversPending(route: Fabric.Route, pending: Runspace.PendingPort) bool {
@@ -16120,7 +16146,7 @@ pub const Runspace = struct {
                 defer owned_request.deinit(self.allocator);
                 const environment_actuation_binding = driver.actuationBindingForWorldPort(owned_request.world_port_id);
                 const fabric_actuation_binding = self.fabricActuationBindingForSlotPort(slot.*, owned_request.world_port_id, environment_actuation_binding);
-                const fabric_suppresses_auto_dispatch = driver.fabricPlanCoversWorldPort(owned_request.world_port_id);
+                const fabric_suppresses_auto_dispatch = self.slotFabricPlanCoversWorldPort(slot.*, owned_request.world_port_id);
                 const actuation_suppresses_auto_dispatch = fabric_actuation_binding != null or
                     (!fabric_suppresses_auto_dispatch and driver.actuationBindingCoversHandlerlessWorldPort(owned_request.world_port_id));
                 const suppress_auto_dispatch = self.config.auto_dispatch and (fabric_suppresses_auto_dispatch or actuation_suppresses_auto_dispatch);
@@ -28184,6 +28210,8 @@ pub const Capsule = struct {
         const fabric_slice = try fabric_refs.toOwnedSlice(allocator);
         errdefer allocator.free(fabric_slice);
 
+        if (loadedSlotNeedsSessionImage(slot)) return error.InvalidRunspaceTransition;
+
         var image = RunSlotImage.init(.{
             .original_run_handle_fingerprint = slot.handle.handle_fingerprint,
             .parent_run_handle_fingerprint = slot.parent_run_handle_fingerprint,
@@ -28209,6 +28237,14 @@ pub const Capsule = struct {
         });
         image.owns_memory = true;
         return image;
+    }
+
+    fn loadedSlotNeedsSessionImage(slot: Runspace.RunSlot) bool {
+        if (slot.backend_kind != .loaded_module) return false;
+        return switch (slot.status) {
+            .admitted, .runnable, .running, .parked_on_port, .parked_on_supervision => true,
+            .completed, .failed, .exported, .rejected => false,
+        };
     }
 
     fn runSlotRoleForFreeze(slot: Runspace.RunSlot) RunRole {

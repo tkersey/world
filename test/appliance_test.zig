@@ -129,6 +129,9 @@ fn applianceManifestVariant(base: world.Appliance.Manifest, args: anytype) world
         .actuation_descriptor_fingerprints = if (@hasField(@TypeOf(args), "actuation_descriptor_fingerprints")) args.actuation_descriptor_fingerprints else base.actuation_descriptor_fingerprints,
         .actuation_binding_fingerprints = if (@hasField(@TypeOf(args), "actuation_binding_fingerprints")) args.actuation_binding_fingerprints else base.actuation_binding_fingerprints,
         .actuation_actuator_ref_fingerprints = if (@hasField(@TypeOf(args), "actuation_actuator_ref_fingerprints")) args.actuation_actuator_ref_fingerprints else base.actuation_actuator_ref_fingerprints,
+        .actuation_world_port_ids = if (@hasField(@TypeOf(args), "actuation_world_port_ids")) args.actuation_world_port_ids else base.actuation_world_port_ids,
+        .actuation_payload_value_ref_fingerprints = if (@hasField(@TypeOf(args), "actuation_payload_value_ref_fingerprints")) args.actuation_payload_value_ref_fingerprints else base.actuation_payload_value_ref_fingerprints,
+        .actuation_response_value_ref_fingerprints = if (@hasField(@TypeOf(args), "actuation_response_value_ref_fingerprints")) args.actuation_response_value_ref_fingerprints else base.actuation_response_value_ref_fingerprints,
         .actuation_classes = if (@hasField(@TypeOf(args), "actuation_classes")) args.actuation_classes else base.actuation_classes,
         .actuation_allowed_response_statuses = if (@hasField(@TypeOf(args), "actuation_allowed_response_statuses")) args.actuation_allowed_response_statuses else base.actuation_allowed_response_statuses,
         .supervision_policy_fingerprint = base.supervision_policy_fingerprint,
@@ -7328,6 +7331,30 @@ test "appliance Define requires explicit strict actuation bindings and derives d
     try std.testing.expectEqual(binding.binding_fingerprint, manifest.actuation_binding_fingerprints[0]);
     try std.testing.expectEqual(descriptor.descriptor_fingerprint, manifest.actuation_descriptor_fingerprints[0]);
     try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint, manifest.residual_import_set_fingerprint);
+}
+
+test "appliance manifest allows distinct bindings on the same world port" {
+    const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
+        .profile = world.Appliance.Profile.wasm_agent,
+        .capacity = world.Appliance.Capacity.wasm_agent,
+        .actuation_bindings = .{
+            ApplianceAgentActuationBinding,
+            ApplianceAgentToolActuationBinding,
+        },
+    });
+    const manifest = AgentAppliance.manifest();
+    try std.testing.expectEqual(@as(usize, 2), manifest.actuation_binding_fingerprints.len);
+
+    const duplicate_world_port_ids = [_]u64{
+        manifest.actuation_world_port_ids[0],
+        manifest.actuation_world_port_ids[0],
+    };
+    const same_port_manifest = applianceManifestVariant(manifest, .{
+        .actuation_world_port_ids = &duplicate_world_port_ids,
+    });
+
+    try same_port_manifest.validate();
+    try std.testing.expect(same_port_manifest.actuation_binding_fingerprints[0] != same_port_manifest.actuation_binding_fingerprints[1]);
 }
 
 test "appliance manifest rejects multiple runtime actuation bindings" {

@@ -203,6 +203,9 @@ pub fn Executable(comptime W: type) type {
 
             pub fn validate(self: @This()) !void {
                 if (self.profile_fingerprint == 0 or self.profile_fingerprint != fingerprintRuntimeProfile(self)) return error.InvalidFrameEncoding;
+                if (self.max_modules == 0 or self.max_external_bindings == 0 or self.max_module_bytes == 0) return error.InvalidFrameEncoding;
+                if (self.max_image_bytes == 0 or self.max_command_bytes == 0 or self.max_output_bytes == 0) return error.InvalidFrameEncoding;
+                if (self.max_linear_memory_pages == 0) return error.InvalidFrameEncoding;
             }
         };
 
@@ -670,8 +673,20 @@ pub fn Executable(comptime W: type) type {
             }
 
             pub fn validate(self: @This(), supported_profile: RuntimeProfile) !CompatibilityReport {
+                return self.validateWithOptions(supported_profile, .{});
+            }
+
+            pub fn validateWithOptions(self: @This(), supported_profile: RuntimeProfile, options: struct {
+                require_certificate: bool = true,
+            }) !CompatibilityReport {
+                if (self.format_version != W.world_executable_image_format_version) return error.InvalidFrameEncoding;
+                if (self.fingerprint_version != W.world_executable_image_fingerprint_version) return error.InvalidFrameEncoding;
                 try self.required_runtime_profile.validate();
+                if (!self.required_runtime_profile.supports_loaded_execution) return error.InvalidFrameEncoding;
                 try self.module_set.validate();
+                for (self.module_set.modules) |module| try validateModuleCanonicalBytes(module, self.required_runtime_profile);
+                if (self.dispatch_image.format_version != W.world_executable_dispatch_image_format_version) return error.InvalidFrameEncoding;
+                if (self.dispatch_image.fingerprint_version != W.world_executable_dispatch_image_fingerprint_version) return error.InvalidFrameEncoding;
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
                 if (self.dispatch_image.link_plan_fingerprint != self.link_plan_fingerprint or
                     self.dispatch_image.linker_certificate_fingerprint != self.linker_certificate_fingerprint or
@@ -685,26 +700,31 @@ pub fn Executable(comptime W: type) type {
                 if (self.memory_plan.memory_plan_fingerprint != expected_memory_plan.memory_plan_fingerprint) return error.InvalidFrameEncoding;
                 try self.compatibility_report.validate();
                 if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
-                if (self.certificate.image_fingerprint != self.image_fingerprint or
-                    self.certificate.certificate_fingerprint != fingerprintCertificate(self.certificate))
-                {
-                    return error.InvalidFrameEncoding;
+                if (options.require_certificate) {
+                    if (self.certificate.format_version != W.world_executable_certificate_format_version) return error.InvalidFrameEncoding;
+                    if (self.certificate.fingerprint_version != W.world_executable_certificate_fingerprint_version) return error.InvalidFrameEncoding;
+                    if (self.certificate.image_fingerprint != self.image_fingerprint or
+                        self.certificate.certificate_fingerprint != fingerprintCertificate(self.certificate))
+                    {
+                        return error.InvalidFrameEncoding;
+                    }
+                    if (self.certificate.module_set_fingerprint != self.module_set.module_set_fingerprint or
+                        self.certificate.runtime_profile_fingerprint != self.required_runtime_profile.profile_fingerprint or
+                        self.certificate.dispatch_fingerprint != self.dispatch_image.dispatch_fingerprint or
+                        self.certificate.memory_plan_fingerprint != self.memory_plan.memory_plan_fingerprint or
+                        self.certificate.compatibility_report_fingerprint != self.compatibility_report.report_fingerprint or
+                        self.certificate.link_plan_fingerprint != self.link_plan_fingerprint or
+                        self.certificate.linker_certificate_fingerprint != self.linker_certificate_fingerprint or
+                        self.certificate.assembly_fingerprint != self.assembly_fingerprint or
+                        self.certificate.module_count != self.module_set.modules.len or
+                        self.certificate.residual_external_binding_count != self.external_bindings.len or
+                        self.certificate.blocker_count != self.compatibility_report.hard_blockers or
+                        self.certificate.warning_count != self.compatibility_report.warnings)
+                    {
+                        return error.InvalidFrameEncoding;
+                    }
                 }
-                if (self.certificate.module_set_fingerprint != self.module_set.module_set_fingerprint or
-                    self.certificate.runtime_profile_fingerprint != self.required_runtime_profile.profile_fingerprint or
-                    self.certificate.dispatch_fingerprint != self.dispatch_image.dispatch_fingerprint or
-                    self.certificate.memory_plan_fingerprint != self.memory_plan.memory_plan_fingerprint or
-                    self.certificate.compatibility_report_fingerprint != self.compatibility_report.report_fingerprint or
-                    self.certificate.link_plan_fingerprint != self.link_plan_fingerprint or
-                    self.certificate.linker_certificate_fingerprint != self.linker_certificate_fingerprint or
-                    self.certificate.assembly_fingerprint != self.assembly_fingerprint or
-                    self.certificate.module_count != self.module_set.modules.len or
-                    self.certificate.residual_external_binding_count != self.external_bindings.len or
-                    self.certificate.blocker_count != self.compatibility_report.hard_blockers or
-                    self.certificate.warning_count != self.compatibility_report.warnings)
-                {
-                    return error.InvalidFrameEncoding;
-                }
+                try validateImageFitsRuntimeProfile(self);
                 try validateExternalBindingsForImage(self);
                 if (!supported_profile.supports(self.required_runtime_profile)) return CompatibilityReport.init(.{
                     .compatible = false,
@@ -959,7 +979,7 @@ pub fn Executable(comptime W: type) type {
             const import_set = W.ImportSet.init(.{
                 .target_ref_fingerprint = target_ref.target_ref_fingerprint,
                 .required_count = imports.len,
-                .world_port_count = loaded.importCount(),
+                .world_port_count = loadedWorldPortCount(loaded),
                 .value_table_entry_count = loaded.importCount() * 3,
             });
             return .{
@@ -1005,6 +1025,35 @@ pub fn Executable(comptime W: type) type {
                 });
             }
             return imports;
+        }
+
+        fn loadedWorldPortCount(loaded: BoundaryModule.LoadedModule) usize {
+            var count: usize = 0;
+            for (loaded.imports()) |import| {
+                count = @max(count, @as(usize, import.world_port_id) + 1);
+            }
+            return count;
+        }
+
+        fn validateModuleCanonicalBytes(module: Module, profile: RuntimeProfile) !void {
+            const decoded = moduleFromBytes(std.heap.page_allocator, module.canonical_bytes, module.role, module.module_id, profile) catch
+                return error.InvalidFrameEncoding;
+            defer {
+                std.heap.page_allocator.free(decoded.imports);
+                std.heap.page_allocator.free(decoded.canonical_bytes);
+            }
+            if (decoded.module_ref.module_ref_fingerprint != module.module_ref.module_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (decoded.module_ref.boundary_module_fingerprint != module.module_ref.boundary_module_fingerprint) return error.InvalidFrameEncoding;
+            if (decoded.target_ref.target_ref_fingerprint != module.target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
+            if (decoded.import_set.import_set_fingerprint != module.import_set.import_set_fingerprint) return error.InvalidFrameEncoding;
+            if (decoded.imports.len != module.imports.len) return error.InvalidFrameEncoding;
+            for (decoded.imports, module.imports) |decoded_import, declared_import| {
+                if (decoded_import.requirement_fingerprint != declared_import.requirement_fingerprint) return error.InvalidFrameEncoding;
+            }
+            if (decoded.export_summary.export_summary_fingerprint != module.export_summary.export_summary_fingerprint) return error.InvalidFrameEncoding;
+            if (decoded.executable_plan_fingerprint != module.executable_plan_fingerprint) return error.InvalidFrameEncoding;
+            if (decoded.validation_report_fingerprint != module.validation_report_fingerprint) return error.InvalidFrameEncoding;
+            if (decoded.compatibility_report_fingerprint != module.compatibility_report_fingerprint) return error.InvalidFrameEncoding;
         }
 
         fn moduleRefFromLoaded(loaded: BoundaryModule.LoadedModule) W.Admission.ModuleRef {
@@ -1164,6 +1213,10 @@ pub fn Executable(comptime W: type) type {
         fn validateExternalBindingsForImage(image: Image) !void {
             for (image.external_bindings) |binding| try binding.validate();
             const root = image.module_set.root() orelse return error.InvalidFrameEncoding;
+            for (root.imports) |requirement| {
+                if (!requirement.required) continue;
+                if (!dispatchCoversRequirement(image.dispatch_image, requirement)) return error.InvalidFrameEncoding;
+            }
             for (image.dispatch_image.residual_request_order, 0..) |requirement_fingerprint, index| {
                 for (image.dispatch_image.residual_request_order[0..index]) |prior_requirement_fingerprint| {
                     if (prior_requirement_fingerprint == requirement_fingerprint) return error.InvalidFrameEncoding;
@@ -1176,16 +1229,38 @@ pub fn Executable(comptime W: type) type {
                 if (count != 1) return error.InvalidFrameEncoding;
             }
             for (image.external_bindings) |binding| {
-                var used = false;
+                var matched_count: usize = 0;
                 for (image.dispatch_image.residual_request_order) |requirement_fingerprint| {
                     const requirement = importRequirementForFingerprint(root, requirement_fingerprint) orelse return error.InvalidFrameEncoding;
-                    if (binding.matchesRequirement(root, requirement)) {
-                        used = true;
-                        break;
-                    }
+                    if (binding.matchesRequirement(root, requirement)) matched_count += 1;
                 }
-                if (!used) return error.InvalidFrameEncoding;
+                if (matched_count != 1) return error.InvalidFrameEncoding;
             }
+        }
+
+        fn validateImageFitsRuntimeProfile(image: Image) !void {
+            const profile = image.required_runtime_profile;
+            if (image.module_set.modules.len > profile.max_modules) return error.InvalidFrameEncoding;
+            if (image.external_bindings.len > profile.max_external_bindings) return error.InvalidFrameEncoding;
+            var total_module_bytes: usize = 0;
+            for (image.module_set.modules) |module| {
+                if (module.canonical_bytes.len > profile.max_module_bytes) return error.InvalidFrameEncoding;
+                total_module_bytes = total_module_bytes +| module.canonical_bytes.len;
+            }
+            if (total_module_bytes > profile.max_image_bytes) return error.InvalidFrameEncoding;
+            if (image.memory_plan.max_command_bytes > profile.max_command_bytes) return error.InvalidFrameEncoding;
+            if (image.memory_plan.max_output_bytes > profile.max_output_bytes) return error.InvalidFrameEncoding;
+            if (image.memory_plan.max_linear_memory_pages > profile.max_linear_memory_pages) return error.InvalidFrameEncoding;
+        }
+
+        fn dispatchCoversRequirement(dispatch: DispatchImage, requirement: W.ImportRequirement) bool {
+            for (dispatch.residual_request_order) |fingerprint| {
+                if (fingerprint == requirement.requirement_fingerprint) return true;
+            }
+            for (dispatch.route_parent_world_port_ids) |world_port_id| {
+                if (world_port_id == requirement.world_port_id) return true;
+            }
+            return false;
         }
 
         fn importRequirementForFingerprint(root: Module, requirement_fingerprint: u64) ?W.ImportRequirement {

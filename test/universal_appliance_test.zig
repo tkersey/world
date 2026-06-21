@@ -26,21 +26,13 @@ test "Universal Appliance ABI v2 lifecycle keeps image and output boundaries det
     try std.testing.expectEqual(@as(u32, 7), universal.world_appliance_load_executable(marker_only_image_ptr, marker_only_image.len));
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
 
-    try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_load_executable(image_ptr, image.len));
-    try std.testing.expectEqual(image.len, universal.world_appliance_manifest_len());
-    try std.testing.expectEqual(image.len, universal.world_appliance_read_manifest(manifest_ptr, 128));
-    try std.testing.expectEqualStrings(image, guestSlice(manifest_ptr, image.len));
-
-    try std.testing.expectEqual(@as(u32, 3), universal.world_appliance_submit_command(command_ptr, command.len));
-    const first_output_len = universal.world_appliance_output_len();
-    try std.testing.expect(first_output_len > 0);
-    const output_ptr = universal.world_appliance_alloc(first_output_len);
-    try std.testing.expect(output_ptr != 0);
-    try std.testing.expectEqual(first_output_len, universal.world_appliance_read_output(output_ptr, first_output_len));
-    try std.testing.expectEqual(first_output_len, universal.world_appliance_output_len());
+    try std.testing.expectEqual(@as(u32, 7), universal.world_appliance_load_executable(image_ptr, image.len));
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
+    try std.testing.expectEqual(@as(u32, 7), universal.world_appliance_submit_command(command_ptr, command.len));
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
 
     try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_reset());
-    try std.testing.expectEqual(image.len, universal.world_appliance_manifest_len());
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
 
     try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_unload_executable());

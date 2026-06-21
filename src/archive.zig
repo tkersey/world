@@ -637,9 +637,9 @@ pub fn Archive(comptime World: type) type {
             }
         };
 
-        pub fn appendBatchSerializedByteLen(allocator: std.mem.Allocator, batch: AppendBatch) !usize {
+        pub fn encodeAppendBatchOwned(allocator: std.mem.Allocator, batch: AppendBatch) ![]const u8 {
             var out: std.ArrayList(u8) = .empty;
-            defer out.deinit(allocator);
+            errdefer out.deinit(allocator);
             try writeU32(&out, allocator, batch.append_batch_format_version);
             try writeU32(&out, allocator, batch.append_batch_fingerprint_version);
             try writeU64(&out, allocator, batch.append_batch_fingerprint);
@@ -650,7 +650,13 @@ pub fn Archive(comptime World: type) type {
             try writeU64(&out, allocator, batch.objects.len);
             for (batch.objects) |object| try encodeEnvelope(&out, allocator, object);
             try writeBytes(&out, allocator, batch.diagnostic_metadata_bytes);
-            return out.items.len;
+            return out.toOwnedSlice(allocator);
+        }
+
+        pub fn appendBatchSerializedByteLen(allocator: std.mem.Allocator, batch: AppendBatch) !usize {
+            const encoded = try encodeAppendBatchOwned(allocator, batch);
+            defer allocator.free(encoded);
+            return encoded.len;
         }
 
         pub const ScanReport = struct {

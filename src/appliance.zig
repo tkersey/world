@@ -195,7 +195,7 @@ pub fn Appliance(comptime World: type) type {
                 .max_capsule_bytes = 4096,
                 .max_archive_append_bytes = 4096,
                 .max_command_bytes = 2048,
-                .max_output_bytes = 4096,
+                .max_output_bytes = 16 * 1024,
                 .max_error_bytes = 1024,
                 .max_metadata_bytes = 512,
             });
@@ -580,11 +580,8 @@ pub fn Appliance(comptime World: type) type {
                 for (self.actuation_actuator_ref_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
-                for (self.actuation_world_port_ids, 0..) |world_port_id, index| {
+                for (self.actuation_world_port_ids) |world_port_id| {
                     if (world_port_id > std.math.maxInt(u32)) return error.InvalidFrameEncoding;
-                    for (self.actuation_world_port_ids[index + 1 ..]) |other| {
-                        if (world_port_id == other) return error.InvalidFrameEncoding;
-                    }
                 }
                 for (self.actuation_classes) |class| {
                     if (class == .unknown_effect) return error.InvalidFrameEncoding;
@@ -1703,6 +1700,8 @@ pub fn Appliance(comptime World: type) type {
                 if (self.run_receipt_bytes.len > capacity.max_output_bytes) return error.CapacityExceeded;
                 if (self.checkpoint_bytes.len > capacity.max_output_bytes) return error.CapacityExceeded;
                 if (self.archive_append_batch_bytes.len > capacity.max_archive_append_bytes) return error.CapacityExceeded;
+                try validateRootResultValueImageBytes(self.root_result_value_image_bytes, self.root_result_fingerprint);
+                try validateCheckpointBytes(expected_manifest_fingerprint, capacity, self.checkpoint_bytes, self.checkpoint);
                 if (self.blocker_count != self.turn_receipt.blocker_count or self.blocker_count != self.quiescence.blocker_count) return error.InvalidFrameEncoding;
                 if (self.warning_count != self.turn_receipt.warning_count or self.warning_count != self.quiescence.warning_count) return error.InvalidFrameEncoding;
                 if (self.status == .blocked and self.blocker_count == 0) return error.InvalidFrameEncoding;
@@ -2369,6 +2368,9 @@ pub fn Appliance(comptime World: type) type {
                         host_requests_owned = true;
                         break :blk retained;
                     }
+                    if (command.kind == .@"continue" and current_outstanding_host_requests.len != 0) {
+                        break :blk current_outstanding_host_requests;
+                    }
                     if (command.kind == .restore) {
                         if (current_outstanding_host_requests.len != 0) break :blk current_outstanding_host_requests;
                     }
@@ -2566,7 +2568,7 @@ pub fn Appliance(comptime World: type) type {
                     const updated_checkpoint_bytes = try encodeCheckpointOwned(self.allocator, checkpoint);
                     self.allocator.free(checkpoint_bytes);
                     checkpoint_bytes = updated_checkpoint_bytes;
-                    archive_append_batch_bytes = try encodeArchiveAppendBatchFingerprintOwned(self.allocator, output_archive_append_batch_fingerprint.?);
+                    archive_append_batch_bytes = try World.Archive.encodeAppendBatchOwned(self.allocator, archive_plan.append_batch);
                     output = TurnOutput.init(.{
                         .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
                         .turn_sequence_number = turn_sequence_number,
@@ -6734,6 +6736,14 @@ pub fn Appliance(comptime World: type) type {
             return out.toOwnedSlice(allocator);
         }
 
+        fn validateCheckpointBytes(expected_manifest_fingerprint: u64, capacity: Capacity, bytes: []const u8, checkpoint: Checkpoint) !void {
+            if (bytes.len == 0) return;
+            var decoded = Checkpoint.decode(std.heap.page_allocator, bytes, expected_manifest_fingerprint, capacity) catch
+                return error.InvalidFrameEncoding;
+            defer decoded.deinit(std.heap.page_allocator);
+            if (decoded.checkpoint_fingerprint != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
+        }
+
         fn encodeTurnReceiptOwned(allocator: std.mem.Allocator, receipt: TurnReceipt) ![]const u8 {
             var out: std.ArrayList(u8) = .empty;
             errdefer out.deinit(allocator);
@@ -6747,6 +6757,19 @@ pub fn Appliance(comptime World: type) type {
             try writeBytes(&out, allocator, label);
             try writeU64(&out, allocator, fingerprint);
             return out.toOwnedSlice(allocator);
+        }
+
+        fn validateRootResultValueImageBytes(bytes: []const u8, expected_fingerprint: ?u64) !void {
+            const fingerprint = expected_fingerprint orelse {
+                if (bytes.len != 0) return error.InvalidFrameEncoding;
+                return;
+            };
+            if (bytes.len == 0) return;
+            var cursor: usize = 0;
+            try expectInlineBytes(bytes, &cursor, "world.appliance.root_result.value_image");
+            const actual = try readU64(bytes, &cursor);
+            if (actual != fingerprint) return error.InvalidFrameEncoding;
+            if (cursor != bytes.len) return error.InvalidFrameEncoding;
         }
 
         fn encodeHostFrameRequestOwned(allocator: std.mem.Allocator, args: anytype) ![]const u8 {
@@ -6800,16 +6823,13 @@ pub fn Appliance(comptime World: type) type {
             return out.toOwnedSlice(allocator);
         }
 
-        fn encodeArchiveAppendBatchFingerprintOwned(allocator: std.mem.Allocator, append_batch_fingerprint: u64) ![]const u8 {
-            return encodeFingerprintImageOwned(allocator, "world.appliance.archive_append_batch.ref", append_batch_fingerprint);
-        }
-
         fn capacityFromExecutableMemoryPlan(plan: World.Executable.MemoryPlan, profile: Profile) Capacity {
             var capacity = switch (profile.kind) {
                 .minimal, .wasm_small => Capacity.wasm_small,
                 .wasm_agent, .native_debug, .replay_only, .full_evidence => Capacity.wasm_agent,
             };
             capacity.max_provider_runs = @max(capacity.max_provider_runs, plan.max_provider_runs);
+            capacity.max_runs = @max(capacity.max_runs, capacity.max_provider_runs);
             capacity.max_pending_ports = @max(capacity.max_pending_ports, plan.max_mailbox_entries);
             capacity.max_host_requests_per_turn = @max(capacity.max_host_requests_per_turn, plan.max_host_requests_per_turn);
             capacity.max_host_replies_per_turn = @max(capacity.max_host_replies_per_turn, plan.max_host_requests_per_turn);
@@ -6979,6 +6999,8 @@ pub fn Appliance(comptime World: type) type {
                 .host_requests = output.host_requests,
                 .finalized_actuation_receipt_fingerprints = output.finalized_actuation_receipt_fingerprints,
                 .root_result_fingerprint = output.root_result_fingerprint,
+                .root_result_value_image_bytes = output.root_result_value_image_bytes,
+                .root_result_value_ref_fingerprint = output.root_result_value_ref_fingerprint,
                 .run_receipt_fingerprint = output.run_receipt_fingerprint,
                 .archive_append_batch_fingerprint = null,
                 .checkpoint = neutral_checkpoint,
@@ -7296,6 +7318,14 @@ pub fn Appliance(comptime World: type) type {
             const result = try allocator.dupe(u8, bytes[cursor.* .. cursor.* + len]);
             cursor.* += len;
             return result;
+        }
+
+        fn expectInlineBytes(bytes: []const u8, cursor: *usize, expected: []const u8) !void {
+            const len = try readU32(bytes, cursor);
+            if (len != expected.len) return error.InvalidFrameEncoding;
+            if (cursor.* > bytes.len or len > bytes.len - cursor.*) return error.InvalidFrameEncoding;
+            if (!std.mem.eql(u8, bytes[cursor.* .. cursor.* + len], expected)) return error.InvalidFrameEncoding;
+            cursor.* += len;
         }
 
         fn enumFromByte(comptime T: type, value: u8) !T {

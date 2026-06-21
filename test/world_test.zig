@@ -39762,6 +39762,23 @@ test "Executable Builder seals full module image with explicit residual external
     forged_profile_image.required_runtime_profile.max_modules = 1;
     try std.testing.expectError(error.InvalidFrameEncoding, forged_profile_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
+    const too_small_module_profile = world.Executable.RuntimeProfile.init(.{
+        .max_module_bytes = image.module_set.modules[0].canonical_bytes.len - 1,
+    });
+    const undersized_profile_image = world.Executable.Image.init(.{
+        .required_runtime_profile = too_small_module_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = world.Executable.MemoryPlan.derive(too_small_module_profile, image.module_set.modules, image.external_bindings.len),
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, undersized_profile_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
     const wrong_module_fingerprints = [_]u64{root_module.module_ref.boundary_module_fingerprint + 1};
     const forged_module_dispatch = world.Executable.DispatchImage.init(.{
         .root_module_id = image.dispatch_image.root_module_id,
@@ -39847,6 +39864,38 @@ test "Executable Builder seals full module image with explicit residual external
         .metadata = image.metadata,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_residual_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const omitted_residual_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = &.{},
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const omitted_residual_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = omitted_residual_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, omitted_residual_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    var future_version_image = image;
+    future_version_image.format_version = world.world_executable_image_format_version + 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, future_version_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
     const mismatched_route_ids = [_]u64{0x5150_7001};
     const mismatched_route_dispatch = world.Executable.DispatchImage.init(.{
@@ -40026,6 +40075,26 @@ test "Executable Image validation rejects forged compatibility report fields" {
         error.InvalidFrameEncoding,
         forged_certificate.validate(world.Executable.RuntimeProfile.universal_v1),
     );
+    const uncertified_report = try forged_certificate.validateWithOptions(world.Executable.RuntimeProfile.universal_v1, .{
+        .require_certificate = false,
+    });
+    try std.testing.expect(uncertified_report.compatible);
+
+    const registry = world.Admission.TargetRegistry.init(&.{});
+    const optional_certificate_policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_executable_image = true,
+        .allow_full_module_execution = true,
+        .require_executable_certificate = false,
+        .require_local_target_for_execution = false,
+        .require_environment_preflight = false,
+        .require_supervision_permit = false,
+    });
+    const admitted = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = optional_certificate_policy,
+    }).admitExecutableImage(forged_certificate, .{});
+    try std.testing.expect(admitted.report.accepted);
+    try std.testing.expect(admitted.loaded_run != null);
 }
 
 test "Executable RuntimeProfile treats loaded execution as a superset capability" {
@@ -40147,6 +40216,7 @@ test "Loaded Runspace installs executable roots as ordinary slots" {
     try std.testing.expectEqual(root_import.world_port_id, request.world_port_id);
     try std.testing.expect(request.payload_image != null);
     try std.testing.expect(request.payload_image.?.bytes.len != 0);
+    try std.testing.expectError(error.InvalidRunspaceTransition, world.Capsule.freezeRunspace(&runspace, .{}));
 
     var supervised_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
     defer supervised_runspace.deinit();

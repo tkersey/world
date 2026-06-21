@@ -4,7 +4,7 @@
 const fs = require('node:fs');
 
 const statusOk = 0;
-const statusCompleted = 3;
+const statusInvalidCommand = 7;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -20,32 +20,25 @@ async function main() {
   const command = 'boot';
 
   const instanceA = await WebAssembly.instantiate(module, {});
-  const outputA = runImage(instanceA, imageA, command);
+  const resultA = rejectUnsupportedImage(instanceA, imageA, command);
   if (instanceA.exports.world_appliance_unload_executable() !== statusOk) {
     throw new Error('unload image A failed');
   }
 
   const instanceB = await WebAssembly.instantiate(module, {});
-  const outputB = runImage(instanceB, imageB, command);
-
-  const nativeA = nativeOutput(imageA, command);
-  const nativeB = nativeOutput(imageB, command);
-
-  const outputsMatchNative = outputA === nativeA && outputB === nativeB;
-  const outputsDistinct = outputA !== outputB;
-  if (!outputsMatchNative) throw new Error('wasm output does not match native projection');
-  if (!outputsDistinct) throw new Error('image outputs are not distinct');
+  const resultB = rejectUnsupportedImage(instanceB, imageB, command);
+  if (!resultA || !resultB) throw new Error('unsupported executable image was not rejected');
 
   console.log('actual_external_runtime_executed=true');
   console.log('compiled_once=true');
   console.log('empty_imports=true');
-  console.log('image_a_completed=true');
-  console.log('image_b_completed=true');
-  console.log('outputs_match_native=true');
-  console.log('outputs_distinct=true');
+  console.log('image_a_unsupported_rejected=true');
+  console.log('image_b_unsupported_rejected=true');
+  console.log('manifests_empty=true');
+  console.log('submit_without_image_rejected=true');
 }
 
-function runImage(instance, image, command) {
+function rejectUnsupportedImage(instance, image, command) {
   const exports = instance.exports;
   if (exports.world_appliance_abi_version() !== 2) throw new Error('unexpected ABI version');
 
@@ -57,20 +50,11 @@ function runImage(instance, image, command) {
   const imagePtr = writeGuest(instance, imageBytes);
   const commandPtr = writeGuest(instance, commandBytes);
 
-  if (exports.world_appliance_load_executable(imagePtr, imageBytes.length) !== statusOk) {
-    throw new Error('load executable failed');
-  }
-  if (exports.world_appliance_submit_command(commandPtr, commandBytes.length) !== statusCompleted) {
-    throw new Error('submit command failed');
-  }
-
-  const outputLen = exports.world_appliance_output_len();
-  if (outputLen === 0) throw new Error('missing output bytes');
-  const outputPtr = exports.world_appliance_alloc(outputLen);
-  if (outputPtr === 0) throw new Error('output allocation failed');
-  const copied = exports.world_appliance_read_output(outputPtr, outputLen);
-  if (copied !== outputLen) throw new Error('output read failed');
-  return readGuest(instance, outputPtr, outputLen);
+  if (exports.world_appliance_load_executable(imagePtr, imageBytes.length) !== statusInvalidCommand) return false;
+  if (exports.world_appliance_manifest_len() !== 0) return false;
+  if (exports.world_appliance_submit_command(commandPtr, commandBytes.length) !== statusInvalidCommand) return false;
+  if (exports.world_appliance_output_len() !== 0) return false;
+  return true;
 }
 
 function readRuntimeManifest(instance) {
@@ -93,15 +77,6 @@ function writeGuest(instance, bytes) {
 
 function readGuest(instance, ptr, len) {
   return textDecoder.decode(new Uint8Array(instance.exports.memory.buffer, ptr, len));
-}
-
-function nativeOutput(image, command) {
-  return [
-    'world.universal_appliance.output.v2',
-    `image=${fnv64Hex(textEncoder.encode(image))}`,
-    `command=${fnv64Hex(textEncoder.encode(command))}`,
-    '',
-  ].join('\n');
 }
 
 function executableImage(payload) {
