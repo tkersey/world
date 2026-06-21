@@ -7,8 +7,9 @@ test "Universal Appliance ABI v2 lifecycle keeps image and output boundaries det
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_read_manifest(0, 0));
 
-    const malformed_image = "not-an-executable-image";
-    const image = "world.Executable.Image:test-a";
+    const malformed_image = "world.Executable.Image:test-a";
+    const marker_only_image = "world.Executable.Image.v1\nfingerprint=8cdcc3dc851ba11b\npayload=";
+    const image = "world.Executable.Image.v1\nfingerprint=8cdcc3dc851ba11b\npayload=test-a";
     const command = "boot:canonical-args";
     const malformed_image_ptr = try writeGuest(malformed_image);
     const image_ptr = try writeGuest(image);
@@ -20,6 +21,9 @@ test "Universal Appliance ABI v2 lifecycle keeps image and output boundaries det
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
     try std.testing.expect(universal.world_appliance_last_error_len() > 0);
     try std.testing.expectEqual(@as(u32, 7), universal.world_appliance_load_executable(malformed_image_ptr, malformed_image.len));
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
+    const marker_only_image_ptr = try writeGuest(marker_only_image);
+    try std.testing.expectEqual(@as(u32, 7), universal.world_appliance_load_executable(marker_only_image_ptr, marker_only_image.len));
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
 
     try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_load_executable(image_ptr, image.len));

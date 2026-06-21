@@ -6,8 +6,8 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    const image_a = "world.Executable.Image:A";
-    const image_b = "world.Executable.Image:B";
+    const image_a = "world.Executable.Image.v1\nfingerprint=af63fc4c860222ec\npayload=A";
+    const image_b = "world.Executable.Image.v1\nfingerprint=af63ff4c86022805\npayload=B";
     const command = "boot";
     _ = universal.world_appliance_unload_executable();
     const image_a_ptr = try writeGuest(image_a);

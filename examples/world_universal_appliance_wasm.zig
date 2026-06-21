@@ -21,7 +21,8 @@ const max_image_bytes: usize = 128 * 1024;
 const max_command_bytes: usize = 64 * 1024;
 const max_output_bytes: usize = 128 * 1024;
 const max_error_bytes: usize = 160;
-const executable_image_marker = "world.Executable.Image:";
+const executable_image_marker = "world.Executable.Image.v1\nfingerprint=";
+const executable_image_payload_marker = "\npayload=";
 
 var guest_memory: [guest_memory_bytes]u8 align(16) = [_]u8{0} ** guest_memory_bytes;
 var bump: usize = 16;
@@ -155,12 +156,35 @@ fn copyToGuest(ptr: usize, cap: usize, bytes: []const u8) usize {
 }
 
 fn isExecutableImageEnvelope(bytes: []const u8) bool {
-    if (bytes.len <= executable_image_marker.len) return false;
+    const fingerprint_hex_len: usize = 16;
+    const payload_marker_offset = executable_image_marker.len + fingerprint_hex_len;
+    const payload_offset = payload_marker_offset + executable_image_payload_marker.len;
+    if (bytes.len <= payload_offset) return false;
     var index: usize = 0;
     while (index < executable_image_marker.len) : (index += 1) {
         if (bytes[index] != executable_image_marker[index]) return false;
     }
-    return true;
+    const expected = parseHex64(bytes[executable_image_marker.len..payload_marker_offset]) orelse return false;
+    index = 0;
+    while (index < executable_image_payload_marker.len) : (index += 1) {
+        if (bytes[payload_marker_offset + index] != executable_image_payload_marker[index]) return false;
+    }
+    return fingerprintBytes(bytes[payload_offset..]) == expected;
+}
+
+fn parseHex64(bytes: []const u8) ?u64 {
+    if (bytes.len != 16) return null;
+    var value: u64 = 0;
+    for (bytes) |byte| {
+        const nibble: u64 = switch (byte) {
+            '0'...'9' => byte - '0',
+            'a'...'f' => byte - 'a' + 10,
+            'A'...'F' => byte - 'A' + 10,
+            else => return null,
+        };
+        value = (value << 4) | nibble;
+    }
+    return value;
 }
 
 fn appendOutput(bytes: []const u8) !void {

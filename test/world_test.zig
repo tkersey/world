@@ -39739,6 +39739,23 @@ test "Executable Builder seals full module image with explicit residual external
     });
     try std.testing.expectError(error.InvalidFrameEncoding, contradictory_report_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
+    const inflated_memory_profile = world.Executable.RuntimeProfile.init(.{
+        .max_command_bytes = world.Executable.RuntimeProfile.universal_v1.max_command_bytes + 1,
+    });
+    const inflated_memory_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = world.Executable.MemoryPlan.derive(inflated_memory_profile, image.module_set.modules, image.external_bindings.len),
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, inflated_memory_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
     const wrong_port_id = root_import.world_port_id + 1;
     const wrong_descriptor = world.Actuation.Descriptor.init(.{
         .actuator_ref = actuator_ref,

@@ -646,6 +646,8 @@ pub fn Executable(comptime W: type) type {
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
                 try validateDispatchTablesForImage(self);
                 if (self.memory_plan.memory_plan_fingerprint != fingerprintMemoryPlan(self.memory_plan)) return error.InvalidFrameEncoding;
+                const expected_memory_plan = MemoryPlan.derive(self.required_runtime_profile, self.module_set.modules, self.external_bindings.len);
+                if (self.memory_plan.memory_plan_fingerprint != expected_memory_plan.memory_plan_fingerprint) return error.InvalidFrameEncoding;
                 try self.compatibility_report.validate();
                 if (self.image_fingerprint != fingerprintImage(self)) return error.InvalidFrameEncoding;
                 if (self.certificate.image_fingerprint != self.image_fingerprint or

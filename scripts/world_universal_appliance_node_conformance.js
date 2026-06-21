@@ -15,8 +15,8 @@ async function main() {
   const wasmBytes = fs.readFileSync(wasmPath);
   const module = await WebAssembly.compile(wasmBytes);
 
-  const imageA = 'world.Executable.Image:A';
-  const imageB = 'world.Executable.Image:B';
+  const imageA = executableImage('A');
+  const imageB = executableImage('B');
   const command = 'boot';
 
   const instanceA = await WebAssembly.instantiate(module, {});
@@ -102,6 +102,11 @@ function nativeOutput(image, command) {
     `command=${fnv64Hex(textEncoder.encode(command))}`,
     '',
   ].join('\n');
+}
+
+function executableImage(payload) {
+  const payloadBytes = textEncoder.encode(payload);
+  return `world.Executable.Image.v1\nfingerprint=${fnv64Hex(payloadBytes)}\npayload=${payload}`;
 }
 
 function fnv64Hex(bytes) {
