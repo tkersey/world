@@ -39668,6 +39668,30 @@ test "Executable Builder seals full module image with explicit residual external
         .label = "seed.fixture.foreign",
     });
     try std.testing.expect(!foreign_descriptor_binding.matchesRequirement(root_module, root_import));
+    const wrong_shape_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = (root_import.source_effect_shape_ref_fingerprint orelse 0) +% 1,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture.wrong-shape",
+    });
+    const wrong_shape_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = wrong_shape_descriptor,
+        .label = "seed.fixture.wrong-shape",
+    });
+    try std.testing.expect(!wrong_shape_binding.matchesRequirement(root_module, root_import));
     const forged_status_binding = world.Executable.ExternalBinding.init(.{
         .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
         .world_port_id = root_import.world_port_id,
@@ -39823,6 +39847,35 @@ test "Executable Builder seals full module image with explicit residual external
         .metadata = image.metadata,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_residual_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const mismatched_route_ids = [_]u64{0x5150_7001};
+    const mismatched_route_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = &mismatched_route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const mismatched_route_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = mismatched_route_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_route_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
     const contradictory_report = world.Executable.CompatibilityReport.init(.{
         .compatible = true,
@@ -40201,9 +40254,8 @@ test "Loaded Admission admits executable image without local target registry" {
         .metadata = image.metadata,
     });
     const unsupported_result = relaxed_receiver.admitExecutableImage(unsupported_image, .{});
-    try std.testing.expect(!unsupported_result.report.accepted);
-    try std.testing.expect(unsupported_result.loaded_run == null);
-    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleLoadedExecutionUnsupported, unsupported_result.report.blockers[0]);
+    try std.testing.expect(unsupported_result.report.accepted);
+    try std.testing.expect(unsupported_result.loaded_run != null);
 }
 
 test "Loaded Fabric installs provider from sealed executable image route" {

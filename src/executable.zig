@@ -291,6 +291,9 @@ pub fn Executable(comptime W: type) type {
                 if (self.descriptor.target_ref_fingerprint) |target_ref_fingerprint| {
                     if (target_ref_fingerprint != module.target_ref.target_ref_fingerprint) return false;
                 }
+                if (!optionalU64Matches(self.descriptor.source_effect_shape_ref_fingerprint, requirement.source_effect_shape_ref_fingerprint)) return false;
+                if (!optionalU32Matches(self.descriptor.payload_value_table_id, requirement.payload_value_table_id)) return false;
+                if (!optionalU32Matches(self.descriptor.response_value_table_id, requirement.response_value_table_id)) return false;
                 if (!optionalU64Matches(self.world_port_ref_fingerprint, requirement.world_port_ref_fingerprint)) return false;
                 if (!optionalU32Matches(self.payload_value_table_id, requirement.payload_value_table_id)) return false;
                 if (!optionalU64Matches(self.payload_value_ref_fingerprint, requirement.payload_value_ref_fingerprint)) return false;
@@ -1103,6 +1106,13 @@ pub fn Executable(comptime W: type) type {
         fn validateDispatchTablesForImage(image: Image) !void {
             if (image.dispatch_image.root_module_id != image.module_set.root_module_id) return error.InvalidFrameEncoding;
             if (image.dispatch_image.module_fingerprints.len != image.module_set.modules.len) return error.InvalidFrameEncoding;
+            const route_count = image.dispatch_image.route_ids.len;
+            if (image.dispatch_image.route_kinds.len != route_count or
+                image.dispatch_image.route_parent_world_port_ids.len != route_count or
+                image.dispatch_image.route_provider_module_fingerprints.len != route_count)
+            {
+                return error.InvalidFrameEncoding;
+            }
             for (image.module_set.modules) |module| {
                 if (countU64(image.dispatch_image.module_fingerprints, module.module_ref.boundary_module_fingerprint) !=
                     countModuleFingerprint(image.module_set.modules, module.module_ref.boundary_module_fingerprint))

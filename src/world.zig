@@ -3324,7 +3324,7 @@ pub const Admission = struct {
             const compatibility = image.validate(args.runtime_profile) catch {
                 return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleInvalid}, "executable image validation failed");
             };
-            if (!compatibility.compatible) {
+            if (policy.require_supported_runtime_profile and !compatibility.compatible) {
                 return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleLoadedExecutionUnsupported}, "runtime profile does not support executable image");
             }
             const report = Admission.ExecutableAdmissionReport.init(.{
