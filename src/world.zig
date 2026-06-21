@@ -36852,7 +36852,7 @@ pub const Continuity = struct {
         return true;
     }
 
-    fn validRunReceiptPayload(receipt: RunReceipt) bool {
+    pub fn validRunReceiptPayload(receipt: RunReceipt) bool {
         if (receipt.format_version != world_run_receipt_format_version) return false;
         if (receipt.fingerprint_version != world_run_receipt_fingerprint_version) return false;
         if (receipt.receipt_fingerprint == 0 or receipt.receipt_fingerprint != fingerprintRunReceipt(receipt)) return false;

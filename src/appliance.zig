@@ -1701,6 +1701,8 @@ pub fn Appliance(comptime World: type) type {
                 if (self.checkpoint_bytes.len > capacity.max_output_bytes) return error.CapacityExceeded;
                 if (self.archive_append_batch_bytes.len > capacity.max_archive_append_bytes) return error.CapacityExceeded;
                 try validateRootResultValueImageBytes(self.root_result_value_image_bytes, self.root_result_fingerprint);
+                try validateRunReceiptBytes(self.run_receipt_bytes, self.run_receipt_fingerprint);
+                try validateArchiveAppendBatchBytes(self.archive_append_batch_bytes, self.archive_append_batch_fingerprint);
                 try validateCheckpointBytes(expected_manifest_fingerprint, capacity, self.checkpoint_bytes, self.checkpoint);
                 if (self.blocker_count != self.turn_receipt.blocker_count or self.blocker_count != self.quiescence.blocker_count) return error.InvalidFrameEncoding;
                 if (self.warning_count != self.turn_receipt.warning_count or self.warning_count != self.quiescence.warning_count) return error.InvalidFrameEncoding;
@@ -6770,6 +6772,28 @@ pub fn Appliance(comptime World: type) type {
             const actual = try readU64(bytes, &cursor);
             if (actual != fingerprint) return error.InvalidFrameEncoding;
             if (cursor != bytes.len) return error.InvalidFrameEncoding;
+        }
+
+        fn validateRunReceiptBytes(bytes: []const u8, expected_fingerprint: ?u64) !void {
+            const fingerprint = expected_fingerprint orelse {
+                if (bytes.len != 0) return error.InvalidFrameEncoding;
+                return;
+            };
+            if (bytes.len == 0) return;
+            const receipt = World.Continuity.decodePortableEvidence(World.RunReceipt, std.heap.page_allocator, bytes) catch return error.InvalidFrameEncoding;
+            if (!World.Continuity.validRunReceiptPayload(receipt)) return error.InvalidFrameEncoding;
+            if (receipt.receipt_fingerprint != fingerprint) return error.InvalidFrameEncoding;
+        }
+
+        fn validateArchiveAppendBatchBytes(bytes: []const u8, expected_fingerprint: ?u64) !void {
+            const fingerprint = expected_fingerprint orelse {
+                if (bytes.len != 0) return error.InvalidFrameEncoding;
+                return;
+            };
+            if (bytes.len == 0) return;
+            var batch = World.Archive.decodeAppendBatchOwned(std.heap.page_allocator, bytes, .{}) catch return error.InvalidFrameEncoding;
+            defer batch.deinit(std.heap.page_allocator);
+            if (batch.append_batch_fingerprint != fingerprint) return error.InvalidFrameEncoding;
         }
 
         fn encodeHostFrameRequestOwned(allocator: std.mem.Allocator, args: anytype) ![]const u8 {

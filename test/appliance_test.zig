@@ -6444,7 +6444,17 @@ test "appliance TurnOutput deinit does not free borrowed init slices" {
 test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
     const manifest_fingerprint: u64 = 0xD290;
     const archive_append_fingerprint: u64 = 0xD291;
-    const run_receipt_fingerprint: u64 = 0xD292;
+    const run_receipt = world.RunReceipt.init(.{
+        .run_permit_fingerprint = 0xD292,
+        .environment_certificate_fingerprint = 0xD2921,
+        .target_ref_fingerprint = 0xD2922,
+        .usage_ledger_fingerprint = 0xD2923,
+        .final_run_state_fingerprint = 0xD2924,
+        .final_status = .failed,
+    });
+    const run_receipt_fingerprint: u64 = run_receipt.receipt_fingerprint;
+    const run_receipt_bytes = try world.Continuity.encodePortableEvidence(world.RunReceipt, std.testing.allocator, run_receipt);
+    defer std.testing.allocator.free(run_receipt_bytes);
     const finalized_receipt_fingerprint: u64 = 0xD293;
     const applied_reply_fingerprint: u64 = 0xD299;
     const archive_resulting_cursor = world.Continuity.Chronicle.Cursor.initial();
@@ -6483,6 +6493,7 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
         .status = .blocked,
         .finalized_actuation_receipt_fingerprints = &.{finalized_receipt_fingerprint},
         .run_receipt_fingerprint = run_receipt_fingerprint,
+        .run_receipt_bytes = run_receipt_bytes,
         .archive_append_batch_fingerprint = archive_append_fingerprint,
         .checkpoint = checkpoint,
         .turn_receipt = receipt,
@@ -6576,6 +6587,13 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
     var mismatched_run_receipt = output;
     mismatched_run_receipt.run_receipt_fingerprint = run_receipt_fingerprint + 1;
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_receipt.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    var forged_run_receipt_bytes = try std.testing.allocator.dupe(u8, run_receipt_bytes);
+    defer std.testing.allocator.free(forged_run_receipt_bytes);
+    forged_run_receipt_bytes[forged_run_receipt_bytes.len - 1] ^= 1;
+    var mismatched_run_receipt_bytes = output;
+    mismatched_run_receipt_bytes.run_receipt_bytes = forged_run_receipt_bytes;
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_receipt_bytes.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
     var mismatched_archive = output;
     mismatched_archive.archive_append_batch_fingerprint = archive_append_fingerprint + 1;
@@ -6681,6 +6699,46 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     try plan.append_batch.validate();
     const serialized_append_batch_len = try world.Archive.appendBatchSerializedByteLen(std.testing.allocator, plan.append_batch);
     try std.testing.expect(serialized_append_batch_len <= capacity.max_archive_append_bytes);
+    const archive_append_batch_bytes = try world.Archive.encodeAppendBatchOwned(std.testing.allocator, plan.append_batch);
+    defer std.testing.allocator.free(archive_append_batch_bytes);
+    const archived_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .command_fingerprint = 0xA002,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
+        .archive_append_batch_fingerprint = plan.append_batch.append_batch_fingerprint,
+        .root_result_fingerprint = root_result_fingerprint,
+        .status = .completed,
+    });
+    const archived_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = capsule_fingerprint,
+        .pending_archive_append_batch_fingerprint = plan.append_batch.append_batch_fingerprint,
+        .pending_archive_resulting_cursor = plan.resulting_cursor,
+        .core_state = .completed,
+        .previous_turn_receipt_fingerprint = archived_receipt.receipt_fingerprint,
+    });
+    const output_with_archive_bytes = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .source_state_fingerprint = 0xA003,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 1, archived_receipt.receipt_fingerprint),
+        .quiescence = quiescence,
+        .status = .completed,
+        .root_result_fingerprint = root_result_fingerprint,
+        .archive_append_batch_fingerprint = plan.append_batch.append_batch_fingerprint,
+        .checkpoint = archived_checkpoint,
+        .archive_append_batch_bytes = archive_append_batch_bytes,
+        .turn_receipt = archived_receipt,
+    });
+    try output_with_archive_bytes.validate(manifest.manifest_fingerprint, capacity);
+    var forged_archive_append_batch_bytes = try std.testing.allocator.dupe(u8, archive_append_batch_bytes);
+    defer std.testing.allocator.free(forged_archive_append_batch_bytes);
+    forged_archive_append_batch_bytes[forged_archive_append_batch_bytes.len - 1] ^= 1;
+    var output_with_forged_archive_bytes = output_with_archive_bytes;
+    output_with_forged_archive_bytes.archive_append_batch_bytes = forged_archive_append_batch_bytes;
+    try std.testing.expectError(error.InvalidFrameEncoding, output_with_forged_archive_bytes.validate(manifest.manifest_fingerprint, capacity));
     var serialized_tight_capacity = capacity;
     serialized_tight_capacity.max_archive_append_bytes = serialized_append_batch_len - 1;
     try std.testing.expectError(

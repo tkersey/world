@@ -40032,6 +40032,20 @@ test "Executable Builder seals full module image with explicit residual external
     defer non_strict_image.deinit(std.testing.allocator);
     const non_strict_report = try non_strict_image.validate(world.Executable.RuntimeProfile.universal_v1);
     try std.testing.expect(non_strict_report.compatible);
+
+    var audit_policy_builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .linker_policy = .audit_only,
+    });
+    defer audit_policy_builder.deinit();
+    try audit_policy_builder.addRootModule(root_bytes);
+    try audit_policy_builder.addExternalBinding(binding);
+    var audit_policy_prepared = try audit_policy_builder.prepare();
+    defer audit_policy_prepared.deinit();
+    try std.testing.expect(audit_policy_prepared.plan.compatibility_report.compatible);
+    var audit_policy_image = try audit_policy_prepared.seal();
+    defer audit_policy_image.deinit(std.testing.allocator);
+    const audit_policy_report = try audit_policy_image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(audit_policy_report.compatible);
 }
 
 test "Executable Image validation rejects forged compatibility report fields" {

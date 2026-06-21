@@ -319,6 +319,7 @@ pub fn Executable(comptime W: type) type {
             route_kinds: []const W.Fabric.RouteKind = &.{},
             route_parent_world_port_ids: []const u32 = &.{},
             route_provider_module_fingerprints: []const u64 = &.{},
+            linker_policy: W.Linker.Policy = .allow_external_ports,
             link_plan_fingerprint: u64 = 0,
             linker_certificate_fingerprint: u64 = 0,
             assembly_fingerprint: u64 = 0,
@@ -333,6 +334,7 @@ pub fn Executable(comptime W: type) type {
                 route_kinds: []const W.Fabric.RouteKind = &.{},
                 route_parent_world_port_ids: []const u32 = &.{},
                 route_provider_module_fingerprints: []const u64 = &.{},
+                linker_policy: W.Linker.Policy = .allow_external_ports,
                 link_plan_fingerprint: u64 = 0,
                 linker_certificate_fingerprint: u64 = 0,
                 assembly_fingerprint: u64 = 0,
@@ -348,6 +350,7 @@ pub fn Executable(comptime W: type) type {
                     .route_kinds = args.route_kinds,
                     .route_parent_world_port_ids = args.route_parent_world_port_ids,
                     .route_provider_module_fingerprints = args.route_provider_module_fingerprints,
+                    .linker_policy = args.linker_policy,
                     .link_plan_fingerprint = args.link_plan_fingerprint,
                     .linker_certificate_fingerprint = args.linker_certificate_fingerprint,
                     .assembly_fingerprint = args.assembly_fingerprint,
@@ -889,6 +892,7 @@ pub fn Executable(comptime W: type) type {
                     .route_kinds = dispatch_routes.route_kinds,
                     .route_parent_world_port_ids = dispatch_routes.route_parent_world_port_ids,
                     .route_provider_module_fingerprints = dispatch_routes.route_provider_module_fingerprints,
+                    .linker_policy = self.options.linker_policy,
                     .link_plan_fingerprint = link_result.plan.plan_fingerprint,
                     .linker_certificate_fingerprint = link_result.certificate.certificate_fingerprint,
                     .assembly_fingerprint = link_result.assembly.assembly_fingerprint,
@@ -1199,15 +1203,7 @@ pub fn Executable(comptime W: type) type {
                 catalog_count += 1;
             }
 
-            const policies = [_]W.Linker.Policy{
-                .allow_external_ports,
-                .strict_closed,
-                .world_boundary,
-                .agent_fixture,
-            };
-            for (policies) |policy| {
-                if (dispatchRouteRowsMatchPolicy(allocator, image, root, catalog_entries[0..catalog_count], policy) catch false) return;
-            }
+            if (dispatchRouteRowsMatchPolicy(allocator, image, root, catalog_entries[0..catalog_count], image.dispatch_image.linker_policy) catch false) return;
             return error.InvalidFrameEncoding;
         }
 
@@ -1336,17 +1332,15 @@ pub fn Executable(comptime W: type) type {
                 if (count == 0) report.missing += 1;
                 if (count > 1) report.duplicates += count - 1;
             }
-            if (strict) {
-                for (bindings) |binding| {
-                    var matched_count: usize = 0;
-                    for (residuals) |requirement| {
-                        if (binding.matchesRequirement(root, requirement)) {
-                            matched_count += 1;
-                        }
+            for (bindings) |binding| {
+                var matched_count: usize = 0;
+                for (residuals) |requirement| {
+                    if (binding.matchesRequirement(root, requirement)) {
+                        matched_count += 1;
                     }
-                    if (matched_count == 0) report.unused += 1;
-                    if (matched_count > 1) report.duplicates += matched_count - 1;
                 }
+                if (strict and matched_count == 0) report.unused += 1;
+                if (matched_count > 1) report.duplicates += matched_count - 1;
             }
             return report;
         }
@@ -1620,6 +1614,7 @@ pub fn Executable(comptime W: type) type {
             hashU64(&hasher, image.route_parent_world_port_ids.len);
             for (image.route_parent_world_port_ids) |value| hashU64(&hasher, value);
             hashU64Slice(&hasher, image.route_provider_module_fingerprints);
+            hashU64(&hasher, image.linker_policy.fingerprint());
             hashU64(&hasher, image.link_plan_fingerprint);
             hashU64(&hasher, image.linker_certificate_fingerprint);
             hashU64(&hasher, image.assembly_fingerprint);
