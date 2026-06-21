@@ -6493,31 +6493,41 @@ pub fn Appliance(comptime World: type) type {
                 for (cloned[0..initialized]) |*request| freeHostRequest(allocator, request);
             }
             for (requests, 0..) |request, index| {
-                cloned[index] = request;
+                var current = request;
+                current.owns_metadata = false;
+                current.owns_byte_payloads = false;
+                errdefer freeHostRequest(allocator, &current);
                 if (request.owns_metadata) {
-                    cloned[index].metadata = try allocator.dupe(u8, request.metadata);
-                    cloned[index].owns_metadata = true;
-                } else {
-                    cloned[index].owns_metadata = false;
+                    current.metadata = try allocator.dupe(u8, request.metadata);
+                    current.owns_metadata = true;
                 }
                 if (request.owns_byte_payloads) {
-                    cloned[index].owns_byte_payloads = false;
                     const frame_request_bytes = try allocator.dupe(u8, request.frame_request_bytes);
-                    errdefer allocator.free(frame_request_bytes);
+                    var frame_request_bytes_owned = true;
+                    errdefer if (frame_request_bytes_owned) allocator.free(frame_request_bytes);
                     const payload_value_image_bytes = try allocator.dupe(u8, request.payload_value_image_bytes);
-                    errdefer allocator.free(payload_value_image_bytes);
+                    var payload_value_image_bytes_owned = true;
+                    errdefer if (payload_value_image_bytes_owned) allocator.free(payload_value_image_bytes);
                     const prepared_actuation_evidence_bytes = try allocator.dupe(u8, request.prepared_actuation_evidence_bytes);
-                    errdefer allocator.free(prepared_actuation_evidence_bytes);
+                    var prepared_actuation_evidence_bytes_owned = true;
+                    errdefer if (prepared_actuation_evidence_bytes_owned) allocator.free(prepared_actuation_evidence_bytes);
                     const idempotency_key_bytes = try allocator.dupe(u8, request.idempotency_key_bytes);
-                    cloned[index].frame_request_bytes = frame_request_bytes;
-                    cloned[index].payload_value_image_bytes = payload_value_image_bytes;
-                    cloned[index].prepared_actuation_evidence_bytes = prepared_actuation_evidence_bytes;
-                    cloned[index].idempotency_key_bytes = idempotency_key_bytes;
-                    cloned[index].owns_byte_payloads = true;
-                } else {
-                    cloned[index].owns_byte_payloads = false;
+                    var idempotency_key_bytes_owned = true;
+                    errdefer if (idempotency_key_bytes_owned) allocator.free(idempotency_key_bytes);
+                    current.frame_request_bytes = frame_request_bytes;
+                    current.payload_value_image_bytes = payload_value_image_bytes;
+                    current.prepared_actuation_evidence_bytes = prepared_actuation_evidence_bytes;
+                    current.idempotency_key_bytes = idempotency_key_bytes;
+                    current.owns_byte_payloads = true;
+                    frame_request_bytes_owned = false;
+                    payload_value_image_bytes_owned = false;
+                    prepared_actuation_evidence_bytes_owned = false;
+                    idempotency_key_bytes_owned = false;
                 }
+                cloned[index] = current;
                 initialized += 1;
+                current.owns_metadata = false;
+                current.owns_byte_payloads = false;
             }
             return cloned;
         }

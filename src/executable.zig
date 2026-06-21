@@ -644,6 +644,12 @@ pub fn Executable(comptime W: type) type {
                 try self.required_runtime_profile.validate();
                 try self.module_set.validate();
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
+                if (self.dispatch_image.link_plan_fingerprint != self.link_plan_fingerprint or
+                    self.dispatch_image.linker_certificate_fingerprint != self.linker_certificate_fingerprint or
+                    self.dispatch_image.assembly_fingerprint != self.assembly_fingerprint)
+                {
+                    return error.InvalidFrameEncoding;
+                }
                 try validateDispatchTablesForImage(self);
                 if (self.memory_plan.memory_plan_fingerprint != fingerprintMemoryPlan(self.memory_plan)) return error.InvalidFrameEncoding;
                 const expected_memory_plan = MemoryPlan.derive(self.required_runtime_profile, self.module_set.modules, self.external_bindings.len);
@@ -1212,11 +1218,19 @@ pub fn Executable(comptime W: type) type {
             var initialized: usize = 0;
             errdefer freeModuleSlice(allocator, cloned[0..initialized]);
             for (modules, 0..) |module, index| {
-                cloned[index] = module;
-                cloned[index].imports = try allocator.dupe(W.ImportRequirement, module.imports);
-                errdefer allocator.free(cloned[index].imports);
-                cloned[index].canonical_bytes = try allocator.dupe(u8, module.canonical_bytes);
+                var current = module;
+                current.imports = &.{};
+                current.canonical_bytes = &.{};
+                errdefer {
+                    allocator.free(current.imports);
+                    allocator.free(current.canonical_bytes);
+                }
+                current.imports = try allocator.dupe(W.ImportRequirement, module.imports);
+                current.canonical_bytes = try allocator.dupe(u8, module.canonical_bytes);
+                cloned[index] = current;
                 initialized += 1;
+                current.imports = &.{};
+                current.canonical_bytes = &.{};
             }
             return cloned;
         }
