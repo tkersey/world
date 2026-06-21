@@ -113,8 +113,12 @@ pub export fn world_appliance_reset() u32 {
 
 pub export fn world_appliance_alloc(len: usize) usize {
     if (len == 0) return @intFromPtr(&guest_memory[16]);
+    if (len > ~@as(usize, 0) - 15) {
+        _ = setError(status_buffer_too_small, "allocation exceeds appliance memory");
+        return 0;
+    }
     const aligned = (len + 15) & ~@as(usize, 15);
-    if (aligned > guest_memory.len - bump) {
+    if (bump > guest_memory.len or aligned > guest_memory.len - bump) {
         _ = setError(status_buffer_too_small, "allocation exceeds appliance memory");
         return 0;
     }

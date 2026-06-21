@@ -10063,17 +10063,22 @@ pub const Runspace = struct {
         executable_image_fingerprint: u64,
         loaded_module: Executable.Boundary.LoadedModule,
         session: Executable.Boundary.LoadedModule.Session,
+        supervisor: ?Supervision.Supervisor = null,
         pending_request: ?Executable.Boundary.LoadedModule.Session.Request = null,
         last_request_frame: ?Frame.Request = null,
         turn_index: usize = 0,
         failed_status: bool = false,
 
-        fn init(allocator: std.mem.Allocator, module: Executable.Module, executable_image_fingerprint: u64) !@This() {
+        fn init(allocator: std.mem.Allocator, module: Executable.Module, executable_image_fingerprint: u64, supervisor: ?Supervision.Supervisor) !@This() {
             var loaded_module = try Executable.Boundary.ModuleImage.decode(allocator, module.canonical_bytes, .{
                 .require_full_module = true,
                 .allow_reference_only = false,
             });
             errdefer loaded_module.deinit();
+            errdefer if (supervisor) |owned| {
+                var mutable = owned;
+                mutable.deinit();
+            };
             var session = try Executable.Boundary.LoadedModule.Session.startExecutable(
                 allocator,
                 &loaded_module,
@@ -10091,11 +10096,13 @@ pub const Runspace = struct {
                 .executable_image_fingerprint = executable_image_fingerprint,
                 .loaded_module = loaded_module,
                 .session = session,
+                .supervisor = supervisor,
             };
         }
 
         fn deinit(self: *@This()) void {
             if (self.last_request_frame) |*frame| frame.deinit(self.allocator);
+            if (self.supervisor) |*supervisor| supervisor.deinit();
             self.session.deinit();
             self.loaded_module.deinit();
             self.allocator.free(self.imports);
@@ -10523,13 +10530,47 @@ pub const Runspace = struct {
                     return active.resumeFrame(response);
                 }
 
-                fn loadedBeforeResponse(_: *anyopaque, _: u32, _: ResponseStatus, _: usize, _: usize) anyerror!void {}
-                fn loadedBeforeTerminalResponse(_: *anyopaque, _: u32, _: ResponseStatus, _: usize, _: usize) anyerror!void {}
-                fn loadedBeforeFabricInvocation(_: *anyopaque, _: u32, _: Fabric.RouteKind, _: usize, _: usize) anyerror!void {}
-                fn loadedBeforeActuationCommit(_: *anyopaque, _: Actuation.Intent, _: bool, _: ?PortAuthority.Kind) anyerror!void {}
-                fn loadedAfterActuationReceipt(_: *anyopaque, _: Actuation.Receipt, _: usize, _: usize) anyerror!void {}
-                fn loadedAfterActuationResolution(_: *anyopaque, _: Actuation.Receipt, _: usize, _: usize) anyerror!void {}
-                fn loadedValidateFabricResponseValue(_: *anyopaque, _: u32, _: Frame.ValueImage) anyerror!void {}
+                fn loadedBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| {
+                        return supervisor.afterAdapterResponse(.{
+                            .world_port_id = world_port_id,
+                            .status = status,
+                            .response_bytes = response_bytes,
+                            .value_image_bytes = value_image_bytes,
+                        });
+                    }
+                }
+                fn loadedBeforeTerminalResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    return loadedBeforeResponse(ptr, world_port_id, status, response_bytes, value_image_bytes);
+                }
+                fn loadedBeforeFabricInvocation(ptr: *anyopaque, world_port_id: u32, route_kind: Fabric.RouteKind, depth: usize, provider_runs: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| {
+                        return supervisor.beforeFabricInvocation(.{
+                            .world_port_id = world_port_id,
+                            .route_kind = route_kind,
+                            .depth = depth,
+                            .provider_runs = provider_runs,
+                        });
+                    }
+                }
+                fn loadedBeforeActuationCommit(ptr: *anyopaque, intent: Actuation.Intent, key_present: bool, authority_kind: ?PortAuthority.Kind) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.beforeActuationCommitWithAuthority(intent, key_present, authority_kind);
+                }
+                fn loadedAfterActuationReceipt(ptr: *anyopaque, receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.afterActuationReceiptAccounting(receipt, .{ .response_bytes = response_bytes, .value_image_bytes = value_image_bytes });
+                }
+                fn loadedAfterActuationResolution(ptr: *anyopaque, receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.afterActuationResolutionAccounting(receipt, .{ .response_bytes = response_bytes, .value_image_bytes = value_image_bytes });
+                }
+                fn loadedValidateFabricResponseValue(ptr: *anyopaque, world_port_id: u32, image: Frame.ValueImage) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |supervisor| return validateFabricParentResponseValuePolicy(image, supervisor.permit, world_port_id);
+                }
                 fn loadedFabricPlanCoversWorldPort(_: *anyopaque, _: u32) bool {
                     return false;
                 }
@@ -10558,29 +10599,48 @@ pub const Runspace = struct {
                     const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
                     return active.snapshotRunImage();
                 }
-                fn loadedBeforeHandoffExport(_: *anyopaque) anyerror!void {}
-                fn loadedBeforeInterruptedHandoffExport(_: *anyopaque) anyerror!void {}
-                fn loadedBeforeCheckpoint(_: *anyopaque, _: usize) anyerror!void {}
-                fn loadedBeforeBranch(_: *anyopaque, _: usize) anyerror!void {}
-                fn loadedCloneSupervisor(_: *anyopaque, _: std.mem.Allocator) anyerror!?Supervision.Supervisor {
+                fn loadedBeforeHandoffExport(ptr: *anyopaque) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.beforeHandoffExport();
+                }
+                fn loadedBeforeInterruptedHandoffExport(ptr: *anyopaque) anyerror!void {
+                    return loadedBeforeHandoffExport(ptr);
+                }
+                fn loadedBeforeCheckpoint(ptr: *anyopaque, value_image_bytes: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.beforeCheckpoint(value_image_bytes);
+                }
+                fn loadedBeforeBranch(ptr: *anyopaque, depth: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.beforeBranch(depth);
+                }
+                fn loadedCloneSupervisor(ptr: *anyopaque, allocator: std.mem.Allocator) anyerror!?Supervision.Supervisor {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |supervisor| return try supervisor.clone(allocator);
                     return null;
                 }
-                fn loadedRestoreSupervisor(_: *anyopaque, _: std.mem.Allocator, supervisor: ?Supervision.Supervisor) void {
-                    if (supervisor) |owned| {
-                        var mutable = owned;
-                        mutable.deinit();
-                    }
+                fn loadedRestoreSupervisor(ptr: *anyopaque, _: std.mem.Allocator, supervisor: ?Supervision.Supervisor) void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*current| current.deinit();
+                    active.supervisor = supervisor;
                 }
-                fn loadedHasSupervisor(_: *anyopaque) bool {
-                    return false;
+                fn loadedHasSupervisor(ptr: *anyopaque) bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.supervisor != null;
                 }
-                fn loadedSupervisorWarningCount(_: *anyopaque) usize {
+                fn loadedSupervisorWarningCount(ptr: *anyopaque) usize {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |supervisor| return supervisor.warning_count;
                     return 0;
                 }
-                fn loadedSupervisorBlockerCount(_: *anyopaque) usize {
+                fn loadedSupervisorBlockerCount(ptr: *anyopaque) usize {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |supervisor| return if (supervisor.blocker == null) 0 else 1;
                     return 0;
                 }
-                fn loadedSupervisionInterrupted(_: *anyopaque) bool {
+                fn loadedSupervisionInterrupted(ptr: *anyopaque) bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.interrupted;
                     return false;
                 }
                 fn loadedFailed(ptr: *anyopaque) bool {
@@ -11820,6 +11880,14 @@ pub const Runspace = struct {
         }
     }
 
+    fn validateLoadedModulePermit(module: Executable.Module, permit: RunPermit) !void {
+        try Supervision.Supervisor.validatePermitForRun(permit, module.import_set.world_port_count);
+        if (permit.target_ref_fingerprint != module.target_ref.target_ref_fingerprint) return error.SupervisionDenied;
+        if (permit.world_surface_fingerprint != module.target_ref.world_surface_fingerprint) return error.SupervisionDenied;
+        if (permit.target_certificate_fingerprint != module.target_ref.target_certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.mode != .fresh) return error.SupervisionDenied;
+    }
+
     fn runImageFromAdmittedTranscript(allocator: std.mem.Allocator, target_ref: TargetRef, import_set_fingerprint: u64, module_ref_fingerprint: ?u64, transcript_image: TranscriptImage) !RunImage {
         var replay_validation = transcript_image;
         try replay_validation.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint);
@@ -12313,6 +12381,16 @@ pub const Runspace = struct {
         try module.validate();
         const executable_image_fingerprint = options.executable_image_fingerprint orelse module.module_ref.boundary_module_fingerprint;
         const maybe_permit = options.permit;
+        var supervisor: ?Supervision.Supervisor = null;
+        var supervisor_owned = false;
+        errdefer if (supervisor_owned) {
+            if (supervisor) |*owned| owned.deinit();
+        };
+        if (maybe_permit) |permit| {
+            try validateLoadedModulePermit(module, permit);
+            supervisor = try Supervision.Supervisor.init(self.allocator, permit, module.import_set.world_port_count);
+            supervisor_owned = true;
+        }
         const next_run_id_before = self.next_run_id;
         var installed = false;
         errdefer if (!installed) {
@@ -12329,7 +12407,10 @@ pub const Runspace = struct {
         const loaded_ptr = try self.allocator.create(LoadedSessionDriver);
         var loaded_ptr_owned = true;
         errdefer if (loaded_ptr_owned) self.allocator.destroy(loaded_ptr);
-        var loaded_driver = try LoadedSessionDriver.init(self.allocator, module, executable_image_fingerprint);
+        const supervisor_for_driver = supervisor;
+        supervisor = null;
+        supervisor_owned = false;
+        var loaded_driver = try LoadedSessionDriver.init(self.allocator, module, executable_image_fingerprint, supervisor_for_driver);
         var loaded_driver_owned = true;
         errdefer if (loaded_driver_owned) loaded_driver.deinit();
         loaded_ptr.* = loaded_driver;
@@ -23915,7 +23996,8 @@ pub const Capsule = struct {
             }
             switch (self.backend_kind) {
                 .generated_target => {
-                    if (self.executable_plan_fingerprint != null or
+                    if (self.executable_image_fingerprint != null or
+                        self.executable_plan_fingerprint != null or
                         self.loaded_session_fingerprint != null or
                         self.loaded_session_image_fingerprint != null)
                     {

@@ -39939,6 +39939,10 @@ test "Loaded Runspace installs executable roots as ordinary slots" {
     try std.testing.expectEqual(root_import.world_port_id, request.world_port_id);
     try std.testing.expect(request.payload_image != null);
     try std.testing.expect(request.payload_image.?.bytes.len != 0);
+
+    var supervised_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer supervised_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installExecutableRoot(image, .{}));
 }
 
 test "Loaded Linker emits dense loaded module provider route evidence" {
@@ -40228,6 +40232,17 @@ test "Loaded Capsule binds run slot executable and loaded session identity" {
         .status = .completed,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, malformed_loaded_slot.validate(.{}));
+
+    const generated_slot_with_executable_image = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_5010,
+        .role = .root,
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+        .backend_kind = .generated_target,
+        .run_state_fingerprint = 0x5150_5011,
+        .executable_image_fingerprint = image.image_fingerprint,
+        .status = .completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, generated_slot_with_executable_image.validate(.{}));
 }
 
 test "World Seed Migration restores loaded executable slot identity into new runspace" {
