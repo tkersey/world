@@ -788,7 +788,7 @@ pub fn Executable(comptime W: type) type {
                     .max_routes = self.options.runtime_profile.max_modules,
                 });
                 const residual_count = link_result.plan.external_environment_requirements.len;
-                const binding_report = checkExternalBindings(self.options.strict_external_bindings, root, link_result.plan.external_environment_requirements, external_bindings);
+                const binding_report = checkExternalBindings(true, root, link_result.plan.external_environment_requirements, external_bindings);
                 const hard_blockers = link_result.plan.blockers.len + binding_report.missing + binding_report.unused + binding_report.duplicates;
                 const compatible = hard_blockers == 0;
                 const module_fingerprints = try moduleFingerprintSlice(self.allocator, modules);

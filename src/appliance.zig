@@ -1337,7 +1337,10 @@ pub fn Appliance(comptime World: type) type {
                 for (self.outstanding_host_requests, 0..) |request, index| {
                     try request.validate(capacity);
                     if (request.turn_sequence_number > self.turn_sequence_number) return error.InvalidFrameEncoding;
-                    if (request.request_ordinal != index) return error.InvalidFrameEncoding;
+                    for (self.outstanding_host_requests[0..index]) |prior| {
+                        if (request.request_ordinal == prior.request_ordinal) return error.InvalidFrameEncoding;
+                        if (request.request_fingerprint == prior.request_fingerprint) return error.InvalidFrameEncoding;
+                    }
                 }
                 if (self.checkpoint_fingerprint != fingerprintCheckpoint(self)) return error.InvalidFrameEncoding;
             }
@@ -1638,7 +1641,10 @@ pub fn Appliance(comptime World: type) type {
                 for (self.host_requests, 0..) |request, index| {
                     try request.validate(capacity);
                     if (request.turn_sequence_number > self.turn_sequence_number) return error.InvalidFrameEncoding;
-                    if (request.request_ordinal != index) return error.InvalidFrameEncoding;
+                    for (self.host_requests[0..index]) |prior| {
+                        if (request.request_ordinal == prior.request_ordinal) return error.InvalidFrameEncoding;
+                        if (request.request_fingerprint == prior.request_fingerprint) return error.InvalidFrameEncoding;
+                    }
                 }
                 if (self.finalized_actuation_receipt_fingerprints.len > capacity.max_actuation_records) return error.CapacityExceeded;
                 for (self.finalized_actuation_receipt_fingerprints) |fingerprint| {
@@ -5794,9 +5800,6 @@ pub fn Appliance(comptime World: type) type {
             for (requests) |request| {
                 if (commandHasTerminalHostReplyForRequest(command, request.request_fingerprint)) continue;
                 retained[retained_index] = request;
-                retained[retained_index].request_fingerprint = 0;
-                retained[retained_index].request_ordinal = @intCast(retained_index);
-                retained[retained_index].request_fingerprint = fingerprintHostRequest(retained[retained_index]);
                 retained_index += 1;
             }
             const cloned = try cloneHostRequestsOwned(allocator, retained);

@@ -39631,7 +39631,7 @@ test "Executable Builder seals full module image with explicit residual external
         .response_value_table_id = root_import.response_value_table_id,
         .label = "seed.fixture",
     });
-    try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+    const binding = world.Executable.ExternalBinding.init(.{
         .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
         .world_port_id = root_import.world_port_id,
         .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
@@ -39642,7 +39642,8 @@ test "Executable Builder seals full module image with explicit residual external
         .actuator_ref = actuator_ref,
         .descriptor = descriptor,
         .label = "seed.fixture",
-    }));
+    });
+    try builder.addExternalBinding(binding);
 
     var prepared = try builder.prepare();
     defer prepared.deinit();
@@ -39713,6 +39714,20 @@ test "Executable Builder seals full module image with explicit residual external
         .metadata = image.metadata,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    var non_strict_builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .strict_external_bindings = false,
+    });
+    defer non_strict_builder.deinit();
+    try non_strict_builder.addRootModule(root_bytes);
+    try non_strict_builder.addExternalBinding(binding);
+    try non_strict_builder.addExternalBinding(forged_bindings[0]);
+
+    var non_strict_prepared = try non_strict_builder.prepare();
+    defer non_strict_prepared.deinit();
+    try std.testing.expect(!non_strict_prepared.plan.compatibility_report.compatible);
+    try std.testing.expect(non_strict_prepared.plan.compatibility_report.hard_blockers != 0);
+    try std.testing.expectError(error.ExecutableSealingBlocked, non_strict_prepared.seal());
 }
 
 test "Executable Image validation rejects forged compatibility report fields" {

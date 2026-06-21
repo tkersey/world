@@ -3830,18 +3830,44 @@ test "appliance Core mixed host replies retain only nonterminal requests" {
     try std.testing.expectEqual(world.Appliance.TurnStatus.needs_host, output.status);
     try std.testing.expectEqual(@as(usize, 1), output.finalized_actuation_receipt_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 2), output.host_requests.len);
-    try std.testing.expectEqual(@as(u32, 0), output.host_requests[0].request_ordinal);
-    try std.testing.expectEqual(@as(u32, 1), output.host_requests[1].request_ordinal);
+    try std.testing.expectEqual(@as(u32, 1), output.host_requests[0].request_ordinal);
+    try std.testing.expectEqual(@as(u32, 2), output.host_requests[1].request_ordinal);
     try std.testing.expectEqual(requests[1].intent_fingerprint, output.host_requests[0].intent_fingerprint);
     try std.testing.expectEqual(requests[2].intent_fingerprint, output.host_requests[1].intent_fingerprint);
-    try std.testing.expect(output.host_requests[0].request_fingerprint != requests[1].request_fingerprint);
-    try std.testing.expect(output.host_requests[1].request_fingerprint != requests[2].request_fingerprint);
+    try std.testing.expectEqual(requests[1].request_fingerprint, output.host_requests[0].request_fingerprint);
+    try std.testing.expectEqual(requests[2].request_fingerprint, output.host_requests[1].request_fingerprint);
     try std.testing.expectEqual(@as(usize, 2), output.checkpoint.outstanding_host_requests.len);
     try std.testing.expectEqual(output.host_requests[0].request_fingerprint, output.checkpoint.outstanding_host_requests[0].request_fingerprint);
     try std.testing.expectEqual(output.host_requests[1].request_fingerprint, output.checkpoint.outstanding_host_requests[1].request_fingerprint);
     try std.testing.expectEqual(@as(usize, 2), core.outstanding_host_requests.len);
     try std.testing.expectEqual(output.host_requests[0].request_fingerprint, core.outstanding_host_requests[0].request_fingerprint);
     try std.testing.expectEqual(output.host_requests[1].request_fingerprint, core.outstanding_host_requests[1].request_fingerprint);
+
+    const retained_terminal_reply = applianceHostReplyFor(core.outstanding_host_requests[0], 0xD5D4);
+    const unreplied_terminal_reply = applianceHostReplyFor(core.outstanding_host_requests[1], 0xD5D5);
+    const finish_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 3,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .host_replies = &.{ retained_terminal_reply, unreplied_terminal_reply },
+    });
+    const finish_bytes = try finish_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(finish_bytes);
+    try core.submit(finish_bytes);
+    try core.executeTurn();
+
+    var finish_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.wasm_small,
+    );
+    defer finish_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, finish_output.status);
+    try std.testing.expectEqual(@as(usize, 0), finish_output.host_requests.len);
+    try std.testing.expectEqual(@as(usize, 0), finish_output.checkpoint.outstanding_host_requests.len);
+    try std.testing.expectEqual(@as(usize, 0), core.outstanding_host_requests.len);
 }
 
 test "appliance Core emitted checkpoint carries current TurnReceipt for restore" {
