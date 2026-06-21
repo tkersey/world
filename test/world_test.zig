@@ -39644,6 +39644,20 @@ test "Executable Builder seals full module image with explicit residual external
         .label = "seed.fixture",
     });
     try builder.addExternalBinding(binding);
+    const forged_status_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .allowed_response_statuses = .all,
+        .label = "seed.fixture.forged-status",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_status_binding.validate());
 
     var prepared = try builder.prepare();
     defer prepared.deinit();
@@ -39661,6 +39675,35 @@ test "Executable Builder seals full module image with explicit residual external
         root_module.module_ref.boundary_module_fingerprint,
         image.module_set.root().?.module_ref.boundary_module_fingerprint,
     );
+
+    const wrong_module_fingerprints = [_]u64{root_module.module_ref.boundary_module_fingerprint + 1};
+    const forged_module_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = &wrong_module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_module_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_module_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_module_image.validate(world.Executable.RuntimeProfile.universal_v1));
 
     const wrong_port_id = root_import.world_port_id + 1;
     const wrong_descriptor = world.Actuation.Descriptor.init(.{
@@ -39725,9 +39768,13 @@ test "Executable Builder seals full module image with explicit residual external
 
     var non_strict_prepared = try non_strict_builder.prepare();
     defer non_strict_prepared.deinit();
-    try std.testing.expect(!non_strict_prepared.plan.compatibility_report.compatible);
-    try std.testing.expect(non_strict_prepared.plan.compatibility_report.hard_blockers != 0);
-    try std.testing.expectError(error.ExecutableSealingBlocked, non_strict_prepared.seal());
+    try std.testing.expect(non_strict_prepared.plan.compatibility_report.compatible);
+    try std.testing.expectEqual(@as(usize, 1), non_strict_prepared.plan.external_bindings.len);
+    try std.testing.expectEqual(binding.binding_fingerprint, non_strict_prepared.plan.external_bindings[0].binding_fingerprint);
+    var non_strict_image = try non_strict_prepared.seal();
+    defer non_strict_image.deinit(std.testing.allocator);
+    const non_strict_report = try non_strict_image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(non_strict_report.compatible);
 }
 
 test "Executable Image validation rejects forged compatibility report fields" {
@@ -39771,6 +39818,17 @@ test "Executable Image validation rejects forged compatibility report fields" {
         error.InvalidFrameEncoding,
         forged_certificate.validate(world.Executable.RuntimeProfile.universal_v1),
     );
+}
+
+test "Executable RuntimeProfile treats loaded execution as a superset capability" {
+    const loaded_runtime = world.Executable.RuntimeProfile.init(.{
+        .supports_loaded_execution = true,
+    });
+    const unloaded_requirement = world.Executable.RuntimeProfile.init(.{
+        .supports_loaded_execution = false,
+    });
+
+    try std.testing.expect(loaded_runtime.supports(unloaded_requirement));
 }
 
 test "Executable Builder reports residual binding blockers before image seal" {

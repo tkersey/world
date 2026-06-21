@@ -220,7 +220,12 @@ fn inspectCode(section: []const u8, function_count: usize, function_import_count
     var cursor: usize = 0;
     const count = try readU32(section, &cursor);
     if (count != function_count) return error.InvalidFrameEncoding;
-    const abi_defined_index = if (abi_function_index) |idx| idx - @as(u32, @intCast(function_import_count)) else null;
+    const abi_defined_index: ?u32 = if (abi_function_index) |idx| blk: {
+        if (@as(usize, idx) < function_import_count) return error.InvalidFrameEncoding;
+        const defined_index = @as(usize, idx) - function_import_count;
+        if (defined_index > std.math.maxInt(u32)) return error.InvalidFrameEncoding;
+        break :blk @intCast(defined_index);
+    } else null;
     var index: u32 = 0;
     while (index < count) : (index += 1) {
         const body_len = try readU32(section, &cursor);

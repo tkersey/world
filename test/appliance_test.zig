@@ -3653,6 +3653,16 @@ test "appliance Core restore rehydrates outstanding HostRequest for continuation
         .outstanding_host_requests = &.{outstanding},
     });
     try checkpoint.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
+    var checkpoint_bytes: std.ArrayList(u8) = .empty;
+    defer checkpoint_bytes.deinit(std.testing.allocator);
+    try checkpoint.encode(&checkpoint_bytes, std.testing.allocator);
+    var owned_checkpoint = try world.Appliance.Checkpoint.decode(
+        std.testing.allocator,
+        checkpoint_bytes.items,
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer owned_checkpoint.deinit(std.testing.allocator);
 
     const reply = applianceHostReplyFor(outstanding, 0xD501);
     const continue_command = world.Appliance.Command.init(.{
@@ -3677,7 +3687,7 @@ test "appliance Core restore rehydrates outstanding HostRequest for continuation
         world.Appliance.Capacity.tiny_one_port,
     );
     defer restored.reset();
-    try restored.restore(checkpoint);
+    try restored.restore(owned_checkpoint);
     try std.testing.expect(restored.outstanding_host_request != null);
     try std.testing.expectEqual(outstanding.request_fingerprint, restored.outstanding_host_request.?.request_fingerprint);
     try restored.submit(continue_bytes);
@@ -8043,6 +8053,10 @@ test "Universal Runtime initializes Appliance Core from Executable Image" {
     try std.testing.expect(output.host_requests[0].payload_value_image_bytes.len != 0);
     try std.testing.expect(output.host_requests[0].prepared_actuation_evidence_bytes.len != 0);
     try std.testing.expect(output.host_requests[0].idempotency_key_bytes.len != 0);
+    try std.testing.expect(!std.mem.eql(u8, output.host_requests[0].frame_request_bytes, "world.appliance.frame_request.v1"));
+    try std.testing.expect(!std.mem.eql(u8, output.host_requests[0].payload_value_image_bytes, "world.appliance.payload_value_image.v1"));
+    try std.testing.expect(!std.mem.eql(u8, output.host_requests[0].prepared_actuation_evidence_bytes, "world.appliance.prepared_actuation.v1"));
+    try std.testing.expect(!std.mem.eql(u8, output.host_requests[0].idempotency_key_bytes, "world.appliance.idempotency_key.v1"));
     try std.testing.expect(output.checkpoint_bytes.len != 0);
 }
 

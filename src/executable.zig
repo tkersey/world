@@ -165,7 +165,7 @@ pub fn Executable(comptime W: type) type {
             }
 
             pub fn supports(self: @This(), required: @This()) bool {
-                return self.supports_loaded_execution == required.supports_loaded_execution and
+                return (!required.supports_loaded_execution or self.supports_loaded_execution) and
                     (!required.supports_internal_providers or self.supports_internal_providers) and
                     (!required.supports_external_actuation or self.supports_external_actuation) and
                     self.max_modules >= required.max_modules and
@@ -244,6 +244,9 @@ pub fn Executable(comptime W: type) type {
                 try self.actuator_ref.validate();
                 try self.descriptor.validate();
                 if (self.descriptor.actuator_ref_fingerprint != self.actuator_ref.ref_fingerprint) return error.InvalidFrameEncoding;
+                if (self.actuation_class != self.actuator_ref.class or self.actuation_class != self.descriptor.class) return error.InvalidFrameEncoding;
+                if (!responseStatusSetSubset(self.allowed_response_statuses, self.actuator_ref.supported_response_statuses)) return error.InvalidFrameEncoding;
+                if (!responseStatusSetSubset(self.allowed_response_statuses, self.descriptor.allowed_response_kinds)) return error.InvalidFrameEncoding;
                 if (self.descriptor.world_port_id != null and self.descriptor.world_port_id.? != self.world_port_id) return error.InvalidFrameEncoding;
                 if (self.descriptor.world_port_ref_fingerprint != null and self.world_port_ref_fingerprint != null and
                     self.descriptor.world_port_ref_fingerprint.? != self.world_port_ref_fingerprint.?)
@@ -621,6 +624,7 @@ pub fn Executable(comptime W: type) type {
             pub fn validate(self: @This(), supported_profile: RuntimeProfile) !CompatibilityReport {
                 try self.module_set.validate();
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
+                try validateDispatchTablesForImage(self);
                 if (self.memory_plan.memory_plan_fingerprint != fingerprintMemoryPlan(self.memory_plan)) return error.InvalidFrameEncoding;
                 if (self.compatibility_report.report_fingerprint == 0 or
                     self.compatibility_report.report_fingerprint != fingerprintCompatibilityReport(self.compatibility_report))
@@ -763,8 +767,8 @@ pub fn Executable(comptime W: type) type {
                 if (self.external_bindings.items.len > self.options.runtime_profile.max_external_bindings) return error.ExecutableSealingBlocked;
                 const modules = try self.allocator.dupe(Module, self.modules.items);
                 errdefer self.allocator.free(modules);
-                const external_bindings = try self.allocator.dupe(ExternalBinding, self.external_bindings.items);
-                errdefer self.allocator.free(external_bindings);
+                const supplied_external_bindings = try self.allocator.dupe(ExternalBinding, self.external_bindings.items);
+                defer self.allocator.free(supplied_external_bindings);
                 const module_set = ModuleSet.init(modules, 0);
                 try module_set.validate();
                 const root = module_set.root() orelse return error.ExecutableSealingBlocked;
@@ -788,9 +792,11 @@ pub fn Executable(comptime W: type) type {
                     .max_routes = self.options.runtime_profile.max_modules,
                 });
                 const residual_count = link_result.plan.external_environment_requirements.len;
-                const binding_report = checkExternalBindings(true, root, link_result.plan.external_environment_requirements, external_bindings);
+                const binding_report = checkExternalBindings(self.options.strict_external_bindings, root, link_result.plan.external_environment_requirements, supplied_external_bindings);
                 const hard_blockers = link_result.plan.blockers.len + binding_report.missing + binding_report.unused + binding_report.duplicates;
                 const compatible = hard_blockers == 0;
+                const external_bindings = try matchedExternalBindingsSlice(self.allocator, root, link_result.plan.external_environment_requirements, supplied_external_bindings);
+                errdefer self.allocator.free(external_bindings);
                 const module_fingerprints = try moduleFingerprintSlice(self.allocator, modules);
                 errdefer self.allocator.free(module_fingerprints);
                 const binding_fingerprints = try bindingFingerprintSlice(self.allocator, external_bindings);
@@ -1034,6 +1040,66 @@ pub fn Executable(comptime W: type) type {
 
         const BindingReport = struct { missing: usize = 0, unused: usize = 0, duplicates: usize = 0 };
 
+        fn responseStatusSetSubset(subset: W.Actuation.ResponseStatusSet, superset: W.Actuation.ResponseStatusSet) bool {
+            return (!subset.responded or superset.responded) and
+                (!subset.rejected or superset.rejected) and
+                (!subset.failed or superset.failed) and
+                (!subset.pending or superset.pending) and
+                (!subset.deferred or superset.deferred) and
+                (!subset.cancelled or superset.cancelled);
+        }
+
+        fn validateDispatchTablesForImage(image: Image) !void {
+            if (image.dispatch_image.root_module_id != image.module_set.root_module_id) return error.InvalidFrameEncoding;
+            if (image.dispatch_image.module_fingerprints.len != image.module_set.modules.len) return error.InvalidFrameEncoding;
+            for (image.module_set.modules) |module| {
+                if (countU64(image.dispatch_image.module_fingerprints, module.module_ref.boundary_module_fingerprint) !=
+                    countModuleFingerprint(image.module_set.modules, module.module_ref.boundary_module_fingerprint))
+                {
+                    return error.InvalidFrameEncoding;
+                }
+            }
+            for (image.dispatch_image.module_fingerprints) |fingerprint| {
+                if (countModuleFingerprint(image.module_set.modules, fingerprint) != countU64(image.dispatch_image.module_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+            }
+
+            if (image.dispatch_image.external_binding_fingerprints.len != image.external_bindings.len) return error.InvalidFrameEncoding;
+            for (image.external_bindings) |binding| {
+                if (countU64(image.dispatch_image.external_binding_fingerprints, binding.binding_fingerprint) !=
+                    countExternalBindingFingerprint(image.external_bindings, binding.binding_fingerprint))
+                {
+                    return error.InvalidFrameEncoding;
+                }
+            }
+            for (image.dispatch_image.external_binding_fingerprints) |fingerprint| {
+                if (countExternalBindingFingerprint(image.external_bindings, fingerprint) != countU64(image.dispatch_image.external_binding_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn countU64(values: []const u64, needle: u64) usize {
+            var count: usize = 0;
+            for (values) |value| {
+                if (value == needle) count += 1;
+            }
+            return count;
+        }
+
+        fn countModuleFingerprint(modules: []const Module, fingerprint: u64) usize {
+            var count: usize = 0;
+            for (modules) |module| {
+                if (module.module_ref.boundary_module_fingerprint == fingerprint) count += 1;
+            }
+            return count;
+        }
+
+        fn countExternalBindingFingerprint(bindings: []const ExternalBinding, fingerprint: u64) usize {
+            var count: usize = 0;
+            for (bindings) |binding| {
+                if (binding.binding_fingerprint == fingerprint) count += 1;
+            }
+            return count;
+        }
+
         fn validateExternalBindingsForImage(image: Image) !void {
             for (image.external_bindings) |binding| try binding.validate();
             const root = image.module_set.root() orelse return error.InvalidFrameEncoding;
@@ -1091,6 +1157,28 @@ pub fn Executable(comptime W: type) type {
                 }
             }
             return report;
+        }
+
+        fn matchedExternalBindingsSlice(allocator: std.mem.Allocator, root: Module, residuals: []const W.ImportRequirement, bindings: []const ExternalBinding) ![]ExternalBinding {
+            var count: usize = 0;
+            for (bindings) |binding| {
+                if (bindingMatchesAnyRequirement(root, residuals, binding)) count += 1;
+            }
+            const matched = try allocator.alloc(ExternalBinding, count);
+            var index: usize = 0;
+            for (bindings) |binding| {
+                if (!bindingMatchesAnyRequirement(root, residuals, binding)) continue;
+                matched[index] = binding;
+                index += 1;
+            }
+            return matched;
+        }
+
+        fn bindingMatchesAnyRequirement(root: Module, residuals: []const W.ImportRequirement, binding: ExternalBinding) bool {
+            for (residuals) |requirement| {
+                if (binding.matchesRequirement(root, requirement)) return true;
+            }
+            return false;
         }
 
         fn moduleFingerprintSlice(allocator: std.mem.Allocator, modules: []const Module) ![]u64 {

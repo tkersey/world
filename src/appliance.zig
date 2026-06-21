@@ -2924,6 +2924,36 @@ pub fn Appliance(comptime World: type) type {
                 const envelope_fingerprint = fingerprintCoreHostEnvelope(intent_fingerprint, capsule_fingerprint);
                 const idempotency_key_fingerprint = fingerprintCoreHostIdempotencyKey(self.manifest_value.manifest_fingerprint, command.command_fingerprint, binding_fingerprint, turn_sequence_number);
                 const decision_fingerprint = fingerprintCoreHostDecision(intent_fingerprint, descriptor_fingerprint);
+                const frame_request_bytes = try encodeHostFrameRequestOwned(self.allocator, .{
+                    .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
+                    .command_fingerprint = command.command_fingerprint,
+                    .turn_sequence_number = turn_sequence_number,
+                    .request_ordinal = @as(u32, @intCast(binding_index)),
+                    .world_port_id = world_port_id,
+                    .binding_fingerprint = binding_fingerprint,
+                    .descriptor_fingerprint = descriptor_fingerprint,
+                    .intent_fingerprint = intent_fingerprint,
+                    .envelope_fingerprint = envelope_fingerprint,
+                });
+                errdefer self.allocator.free(frame_request_bytes);
+                const payload_value_image_bytes = try encodeHostPayloadValueImageOwned(self.allocator, command, binding_fingerprint, world_port_id);
+                errdefer self.allocator.free(payload_value_image_bytes);
+                const prepared_actuation_evidence_bytes = try encodePreparedActuationEvidenceOwned(self.allocator, .{
+                    .descriptor_fingerprint = descriptor_fingerprint,
+                    .binding_fingerprint = binding_fingerprint,
+                    .actuator_ref_fingerprint = self.manifest_value.actuation_actuator_ref_fingerprints[binding_index],
+                    .world_port_id = world_port_id,
+                    .decision_fingerprint = decision_fingerprint,
+                });
+                errdefer self.allocator.free(prepared_actuation_evidence_bytes);
+                const idempotency_key_bytes = try encodeIdempotencyKeyImageOwned(self.allocator, .{
+                    .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
+                    .command_fingerprint = command.command_fingerprint,
+                    .binding_fingerprint = binding_fingerprint,
+                    .turn_sequence_number = turn_sequence_number,
+                    .idempotency_key_fingerprint = idempotency_key_fingerprint,
+                });
+                errdefer self.allocator.free(idempotency_key_bytes);
                 return HostRequest.init(.{
                     .turn_sequence_number = turn_sequence_number,
                     .request_ordinal = @as(u32, @intCast(binding_index)),
@@ -2942,14 +2972,15 @@ pub fn Appliance(comptime World: type) type {
                     .idempotency_key_fingerprint = idempotency_key_fingerprint,
                     .supervision_ref_fingerprint = if (self.manifest_value.supervision_policy_fingerprint == 0) null else self.manifest_value.supervision_policy_fingerprint,
                     .metadata = "core-shell.host-request",
-                    .frame_request_bytes = "world.appliance.frame_request.v1",
-                    .payload_value_image_bytes = "world.appliance.payload_value_image.v1",
+                    .frame_request_bytes = frame_request_bytes,
+                    .payload_value_image_bytes = payload_value_image_bytes,
                     .payload_value_ref_fingerprint = descriptor_fingerprint,
                     .payload_schema_ref_fingerprint = binding_fingerprint,
                     .expected_response_value_ref_fingerprint = descriptor_fingerprint,
                     .expected_response_schema_ref_fingerprint = binding_fingerprint,
-                    .prepared_actuation_evidence_bytes = "world.appliance.prepared_actuation.v1",
-                    .idempotency_key_bytes = "world.appliance.idempotency_key.v1",
+                    .prepared_actuation_evidence_bytes = prepared_actuation_evidence_bytes,
+                    .idempotency_key_bytes = idempotency_key_bytes,
+                    .owns_byte_payloads = true,
                 });
             }
 
