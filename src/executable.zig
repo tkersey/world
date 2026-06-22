@@ -576,6 +576,9 @@ pub fn Executable(comptime W: type) type {
                 var runtime_profile = self.runtime_profile;
                 runtime_profile.metadata = try allocator.dupe(u8, self.runtime_profile.metadata);
                 errdefer allocator.free(runtime_profile.metadata);
+                var compatibility_report = self.compatibility_report;
+                compatibility_report.summary = try allocator.dupe(u8, self.compatibility_report.summary);
+                errdefer allocator.free(compatibility_report.summary);
                 const image_metadata = "world-executable-image-v1";
                 var image = Image.init(.{
                     .required_runtime_profile = runtime_profile,
@@ -586,7 +589,7 @@ pub fn Executable(comptime W: type) type {
                     .dispatch_image = dispatch_image,
                     .external_bindings = bindings,
                     .memory_plan = self.memory_plan,
-                    .compatibility_report = self.compatibility_report,
+                    .compatibility_report = compatibility_report,
                     .metadata = image_metadata,
                 });
                 try validateImageFitsRuntimeProfile(image);
@@ -694,6 +697,7 @@ pub fn Executable(comptime W: type) type {
                     freeDispatchImage(allocator, self.dispatch_image);
                     freeExternalBindingSlice(allocator, self.external_bindings);
                     allocator.free(self.required_runtime_profile.metadata);
+                    allocator.free(self.compatibility_report.summary);
                 }
                 self.* = undefined;
             }

@@ -24197,6 +24197,8 @@ pub const Capsule = struct {
                     if (self.loaded_session_image_fingerprint) |image_fingerprint| {
                         if (image_fingerprint == 0) return error.InvalidFrameEncoding;
                     }
+                    if (loadedCapsuleSlotNeedsSessionImage(self.status)) return error.UnsupportedLoadedExecution;
+                    if (self.loaded_session_image_fingerprint != null) return error.UnsupportedLoadedExecution;
                 },
             }
         }
@@ -27498,6 +27500,13 @@ pub const Capsule = struct {
         return switch (status) {
             .parked_on_port, .parked_on_supervision, .completed, .failed, .exported, .rejected => true,
             .admitted, .runnable => false,
+        };
+    }
+
+    fn loadedCapsuleSlotNeedsSessionImage(status: RunSlotStatus) bool {
+        return switch (status) {
+            .admitted, .runnable, .parked_on_port, .parked_on_supervision => true,
+            .completed, .failed, .exported, .rejected => false,
         };
     }
 

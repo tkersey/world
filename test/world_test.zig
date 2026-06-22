@@ -40141,6 +40141,21 @@ test "Executable Builder seals full module image with explicit residual external
     borrowed_image_owner.deinit(std.testing.allocator);
     const still_owned_report = try image.validate(world.Executable.RuntimeProfile.universal_v1);
     try std.testing.expect(still_owned_report.compatible);
+    {
+        var dynamic_summary = try std.testing.allocator.dupe(u8, "dynamic executable summary");
+        defer std.testing.allocator.free(dynamic_summary);
+        var dynamic_plan = prepared.plan;
+        dynamic_plan.compatibility_report = world.Executable.CompatibilityReport.init(.{
+            .compatible = true,
+            .summary = dynamic_summary,
+        });
+        var dynamic_image = try dynamic_plan.seal(std.testing.allocator);
+        defer dynamic_image.deinit(std.testing.allocator);
+        dynamic_summary[0] = 'X';
+        try std.testing.expectEqualStrings("dynamic executable summary", dynamic_image.compatibility_report.summary);
+        const dynamic_report = try dynamic_image.validate(world.Executable.RuntimeProfile.universal_v1);
+        try std.testing.expect(dynamic_report.compatible);
+    }
     try std.testing.expectEqual(
         root_module.module_ref.boundary_module_fingerprint,
         image.module_set.root().?.module_ref.boundary_module_fingerprint,
@@ -41551,6 +41566,23 @@ test "Loaded Capsule binds run slot executable and loaded session identity" {
     };
     for (zero_loaded_identity_slots) |zero_identity_slot| {
         try std.testing.expectError(error.InvalidFrameEncoding, zero_identity_slot.validate(.{}));
+    }
+    const active_loaded_statuses = [_]world.Capsule.RunSlotStatus{ .admitted, .runnable, .parked_on_port, .parked_on_supervision };
+    for (active_loaded_statuses, 0..) |status, index| {
+        const active_loaded_slot = world.Capsule.RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_5020 + index,
+            .role = .root,
+            .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+            .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+            .backend_kind = .loaded_module,
+            .executable_image_fingerprint = image.image_fingerprint,
+            .executable_plan_fingerprint = image.module_set.root().?.executable_plan_fingerprint,
+            .loaded_session_fingerprint = slot.loaded_session_fingerprint,
+            .run_state_fingerprint = 0x5150_5030 + index,
+            .current_pending_mailbox_id = if (status == .parked_on_port) 0 else null,
+            .status = status,
+        });
+        try std.testing.expectError(error.UnsupportedLoadedExecution, active_loaded_slot.validate(.{}));
     }
 
     const generated_slot_with_executable_image = world.Capsule.RunSlotImage.init(.{
