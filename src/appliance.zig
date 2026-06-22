@@ -2600,18 +2600,38 @@ pub fn Appliance(comptime World: type) type {
                 }
                 try output.validate(self.manifest_value.manifest_fingerprint, self.capacity_value);
                 const output_bytes = try output.encode(self.allocator);
-                errdefer self.allocator.free(output_bytes);
+                var output_bytes_owned = true;
+                errdefer if (output_bytes_owned) self.allocator.free(output_bytes);
                 if (output_bytes.len > self.capacity_value.max_output_bytes) return error.CapacityExceeded;
+                const should_replace_outstanding_host_requests = command.kind != .reset and
+                    command.kind != .inspect and
+                    status == .needs_host and
+                    host_requests.len != 0 and
+                    !hostRequestSlicesMatch(self.outstanding_host_requests, host_requests);
+                var prepared_outstanding_host_requests: []HostRequest = &.{};
+                var prepared_outstanding_host_requests_owned = false;
+                defer if (prepared_outstanding_host_requests_owned) freeHostRequests(self.allocator, prepared_outstanding_host_requests);
+                if (should_replace_outstanding_host_requests) {
+                    prepared_outstanding_host_requests = try cloneHostRequestsOwned(self.allocator, host_requests);
+                    prepared_outstanding_host_requests_owned = true;
+                }
                 if (self.last_output_owned) self.allocator.free(self.last_output_bytes);
                 self.last_output_bytes = output_bytes;
                 self.last_output_owned = true;
+                output_bytes_owned = false;
                 if (command.kind == .reset) {
                     self.clearContinuationState();
                 } else if (command.kind != .inspect) {
                     self.current_turn_sequence_number = turn_sequence_number;
                     self.previous_turn_receipt_fingerprint = turn_receipt.receipt_fingerprint;
                     if (status == .needs_host and host_requests.len != 0) {
-                        if (!hostRequestSlicesMatch(self.outstanding_host_requests, host_requests)) try self.setOutstandingHostRequests(host_requests);
+                        if (should_replace_outstanding_host_requests) {
+                            self.clearOutstandingHostRequests();
+                            self.outstanding_host_requests = prepared_outstanding_host_requests;
+                            self.outstanding_host_requests_owned = true;
+                            self.outstanding_host_request = if (prepared_outstanding_host_requests.len == 0) null else prepared_outstanding_host_requests[0];
+                            prepared_outstanding_host_requests_owned = false;
+                        }
                     } else {
                         self.clearOutstandingHostRequests();
                     }

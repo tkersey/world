@@ -5353,6 +5353,57 @@ test "appliance Core restore rolls back allocation failure" {
     try std.testing.expectEqualStrings("old-request", core.outstanding_host_request.?.metadata);
 }
 
+test "appliance Core executeTurn preserves output on needs-host allocation failure" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+
+    var observed_induced_failure = false;
+    var observed_success = false;
+    var fail_offset: usize = 0;
+    while (fail_offset < 512 and !observed_success) : (fail_offset += 1) {
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = std.math.maxInt(usize),
+        });
+        var core = world.Appliance.Core.initWithCapacity(
+            failing_allocator.allocator(),
+            manifest,
+            PortsAppliance.memoryPlan(),
+            world.Appliance.Capacity.tiny_one_port,
+        );
+        defer core.reset();
+        core.last_output_bytes = "previous-output";
+        core.last_output_status = .completed;
+
+        try core.submit(boot_bytes);
+        failing_allocator.fail_index = failing_allocator.alloc_index + fail_offset;
+        core.executeTurn() catch |err| switch (err) {
+            error.OutOfMemory => {
+                observed_induced_failure = true;
+                try std.testing.expect(failing_allocator.has_induced_failure);
+                try std.testing.expectEqualStrings("previous-output", core.readOutput());
+                try std.testing.expectEqual(@as(?world.Appliance.TurnStatus, .completed), core.last_output_status);
+                continue;
+            },
+            else => return err,
+        };
+        observed_success = true;
+    }
+
+    try std.testing.expect(observed_induced_failure);
+    try std.testing.expect(observed_success);
+}
+
 test "appliance Core cancel produces deterministic cancelled output" {
     const StrictAppliance = world.Appliance.Define(fixtures.Strict.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
