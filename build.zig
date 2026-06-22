@@ -624,8 +624,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Seed migration example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=42c98d8a0074a5ef
-            \\restored_output=42c98d8a0074a5ef
+            \\resident_output=11d19986a89d50f3
+            \\restored_output=11d19986a89d50f3
             \\
             ,
         },
@@ -652,7 +652,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=69e6dc2a3a2f5ab5
+            \\replay_evidence=ce7303959f7ff306
             \\replay_final_result=false
             \\
             ,
@@ -1352,8 +1352,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=42c98d8a0074a5ef
-            \\restored_output=42c98d8a0074a5ef
+            \\resident_output=11d19986a89d50f3
+            \\restored_output=11d19986a89d50f3
             \\
             ,
         },
@@ -1380,7 +1380,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=69e6dc2a3a2f5ab5
+            \\replay_evidence=ce7303959f7ff306
             \\replay_final_result=false
             \\
             ,

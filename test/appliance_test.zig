@@ -88,14 +88,32 @@ fn applianceSyntheticHostRequest(args: anytype) world.Appliance.HostRequest {
 }
 
 fn applianceHostReplyFor(request: world.Appliance.HostRequest, response_fingerprint: u64) world.Appliance.HostReply {
+    const HostReplyResponse = struct {
+        bytes: []const u8,
+        fingerprint: u64,
+    };
+    const response: HostReplyResponse = if (request.expected_response_value_ref_fingerprint != null or request.expected_response_schema_ref_fingerprint != null) blk: {
+        var image = world.Frame.ValueImage.fromCanonicalBytes(
+            std.heap.page_allocator,
+            null,
+            request.expected_response_value_ref_fingerprint,
+            request.expected_response_schema_ref_fingerprint,
+            std.mem.asBytes(&response_fingerprint),
+            false,
+        ) catch unreachable;
+        defer image.deinit(std.heap.page_allocator);
+        const bytes = image.encode(std.heap.page_allocator) catch unreachable;
+        break :blk .{ .bytes = bytes, .fingerprint = image.value_image_fingerprint };
+    } else .{ .bytes = "", .fingerprint = response_fingerprint };
     const outcome = world.Appliance.HostOutcome.init(.{
         .host_request_fingerprint = request.request_fingerprint,
         .intent_fingerprint = request.intent_fingerprint,
         .envelope_fingerprint = request.envelope_fingerprint,
         .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
         .status = .responded,
-        .response_fingerprint = response_fingerprint,
+        .response_fingerprint = response.fingerprint,
         .response_kind = .frame_value_image,
+        .response_bytes = response.bytes,
         .host_evidence_fingerprint = response_fingerprint ^ 0xE11D,
         .host_evidence_bytes = "host-claim:fixture",
         .attempt_number = 1,
@@ -3094,14 +3112,26 @@ test "appliance terminal HostReply validation uses active capacity" {
     const prior_receipt = core.previous_turn_receipt_fingerprint.?;
 
     const roomy_metadata = [_]u8{'m'} ** (70 * 1024);
+    var response_image = try world.Frame.ValueImage.fromCanonicalBytes(
+        std.testing.allocator,
+        null,
+        outstanding.expected_response_value_ref_fingerprint,
+        outstanding.expected_response_schema_ref_fingerprint,
+        "roomy-response",
+        false,
+    );
+    defer response_image.deinit(std.testing.allocator);
+    const response_image_bytes = try response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_image_bytes);
     const outcome = world.Appliance.HostOutcome.init(.{
         .host_request_fingerprint = outstanding.request_fingerprint,
         .intent_fingerprint = outstanding.intent_fingerprint,
         .envelope_fingerprint = outstanding.envelope_fingerprint,
         .idempotency_key_fingerprint = outstanding.idempotency_key_fingerprint,
         .status = .responded,
-        .response_fingerprint = 0xD4F1,
+        .response_fingerprint = response_image.value_image_fingerprint,
         .response_kind = .frame_value_image,
+        .response_bytes = response_image_bytes,
         .host_evidence_fingerprint = 0xD4F2,
         .host_evidence_bytes = "host-claim:fixture",
         .attempt_number = 1,
