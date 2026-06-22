@@ -8616,6 +8616,64 @@ test "Universal Runtime initializes Appliance Core from Executable Image" {
     try std.testing.expect(output.checkpoint_bytes.len != 0);
 }
 
+test "Universal Runtime validates executable optional import counts" {
+    const root_bytes = try fixtures.Agent.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    const root_module = builder.modules.items[0];
+    try std.testing.expectEqual(@as(usize, 2), root_module.imports.len);
+
+    const required_import = root_module.imports[0];
+    const optional_source = root_module.imports[1];
+    const optional_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = optional_source.target_ref_fingerprint,
+        .world_value_table_fingerprint = optional_source.world_value_table_fingerprint,
+        .world_surface_fingerprint = optional_source.world_surface_fingerprint,
+        .world_port_id = optional_source.world_port_id,
+        .world_port_ref_fingerprint = optional_source.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = optional_source.source_effect_shape_ref_fingerprint,
+        .residual_site_index = optional_source.residual_site_index,
+        .residual_site_fingerprint = optional_source.residual_site_fingerprint,
+        .payload_value_table_id = optional_source.payload_value_table_id,
+        .payload_value_ref_fingerprint = optional_source.payload_value_ref_fingerprint,
+        .response_value_table_id = optional_source.response_value_table_id,
+        .response_value_ref_fingerprint = optional_source.response_value_ref_fingerprint,
+        .mode = optional_source.mode,
+        .allowed_response_kinds = optional_source.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = optional_source.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = optional_source.suggested_symbolic_name,
+        .required = false,
+        .tags = optional_source.tags,
+        .metadata = optional_source.metadata,
+    });
+    const imports = [_]world.ImportRequirement{ required_import, optional_import };
+
+    var optional_module = root_module;
+    optional_module.imports = imports[0..];
+    optional_module.import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_module.import_set.target_ref_fingerprint,
+        .required_count = 1,
+        .optional_count = 1,
+        .world_port_count = root_module.import_set.world_port_count,
+        .value_table_entry_count = root_module.import_set.value_table_entry_count,
+        .surface_profile_fingerprint = root_module.import_set.surface_profile_fingerprint,
+    });
+    try optional_module.validate();
+
+    var flattened_module = optional_module;
+    flattened_module.import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_module.import_set.target_ref_fingerprint,
+        .required_count = imports.len,
+        .world_port_count = root_module.import_set.world_port_count,
+        .value_table_entry_count = root_module.import_set.value_table_entry_count,
+        .surface_profile_fingerprint = root_module.import_set.surface_profile_fingerprint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, flattened_module.validate());
+}
+
 test "Universal Runtime orders executable host bindings by dispatch residuals" {
     const root_bytes = try fixtures.Agent.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(root_bytes);

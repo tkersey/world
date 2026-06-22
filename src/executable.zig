@@ -62,7 +62,10 @@ pub fn Executable(comptime W: type) type {
                     return error.InvalidFrameEncoding;
                 }
                 if (self.import_set.target_ref_fingerprint != self.target_ref.target_ref_fingerprint) return error.InvalidFrameEncoding;
-                if (self.import_set.required_count != self.imports.len) return error.InvalidFrameEncoding;
+                const import_counts = importRequirementCounts(self.imports);
+                if (self.import_set.required_count != import_counts.required) return error.InvalidFrameEncoding;
+                if (self.import_set.optional_count != import_counts.optional) return error.InvalidFrameEncoding;
+                if (self.import_set.required_count + self.import_set.optional_count != self.imports.len) return error.InvalidFrameEncoding;
                 if (self.executable_plan_fingerprint == 0) return error.InvalidFrameEncoding;
                 if (self.validation_report_fingerprint == 0 or self.compatibility_report_fingerprint == 0) return error.InvalidFrameEncoding;
                 if (self.canonical_bytes.len == 0) return error.InvalidFrameEncoding;
@@ -1038,9 +1041,11 @@ pub fn Executable(comptime W: type) type {
             errdefer allocator.free(canonical_bytes);
             const module_ref = moduleRefFromLoaded(loaded);
             const target_ref = targetRefFromModuleRef(module_ref);
+            const import_counts = importRequirementCounts(imports);
             const import_set = W.ImportSet.init(.{
                 .target_ref_fingerprint = target_ref.target_ref_fingerprint,
-                .required_count = imports.len,
+                .required_count = import_counts.required,
+                .optional_count = import_counts.optional,
                 .world_port_count = loadedWorldPortCount(loaded),
                 .value_table_entry_count = loaded.importCount() * 3,
             });
@@ -1095,6 +1100,23 @@ pub fn Executable(comptime W: type) type {
                 count = @max(count, @as(usize, import.world_port_id) + 1);
             }
             return count;
+        }
+
+        const ImportRequirementCounts = struct {
+            required: usize = 0,
+            optional: usize = 0,
+        };
+
+        fn importRequirementCounts(imports: []const W.ImportRequirement) ImportRequirementCounts {
+            var counts: ImportRequirementCounts = .{};
+            for (imports) |import| {
+                if (import.required) {
+                    counts.required += 1;
+                } else {
+                    counts.optional += 1;
+                }
+            }
+            return counts;
         }
 
         fn validateModuleCanonicalBytes(module: Module, profile: RuntimeProfile) !void {
