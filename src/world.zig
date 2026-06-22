@@ -3320,6 +3320,7 @@ pub const Admission = struct {
             if (!policy.allow_executable_image) return executableAdmissionRejected(image, args.runtime_profile, &.{.PackageUnsupportedKind}, "executable image admission is disabled");
             if (!policy.allow_full_module_execution) return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleRequiresLocalTarget}, "full module execution is disabled");
             if (policy.require_local_target_for_execution) return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleRequiresLocalTarget}, "executable image admission requires target-neutral loaded execution");
+            if (policy.require_supervision_permit) return executableAdmissionRejected(image, args.runtime_profile, &.{.PermitMissing}, "executable image admission has no supervision permit");
             if (policy.require_executable_certificate and image.certificate.image_fingerprint != image.image_fingerprint) {
                 return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleInvalid}, "executable certificate does not match image");
             }

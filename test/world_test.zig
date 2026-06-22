@@ -14045,6 +14045,48 @@ test "link rejects duplicate root import coverage before closed acceptance" {
     try std.testing.expect(linked.graph.hasBlocker(.RootImportSetMismatch));
 }
 
+test "link accepts distinct root imports sharing one world port" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const first_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const second_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = first_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = first_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = first_import.world_surface_fingerprint,
+        .world_port_id = first_import.world_port_id,
+        .world_port_ref_fingerprint = first_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = first_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = first_import.residual_site_index + 1,
+        .residual_site_fingerprint = first_import.residual_site_fingerprint +% 1,
+        .payload_value_table_id = first_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = first_import.payload_value_ref_fingerprint,
+        .response_value_table_id = first_import.response_value_table_id,
+        .response_value_ref_fingerprint = first_import.response_value_ref_fingerprint,
+        .mode = first_import.mode,
+        .allowed_response_kinds = first_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = first_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-again",
+    });
+    const root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 2,
+        .world_port_count = 1,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{ first_import, second_import },
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .allow_external_ports,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expect(!linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expectEqual(@as(usize, 2), linked.plan.external_environment_requirements.len);
+}
+
 test "link rejects forged root import set fingerprint before closed acceptance" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
@@ -40712,6 +40754,21 @@ test "Loaded Admission admits executable image without local target registry" {
     try std.testing.expectEqual(image.image_fingerprint, admitted.loaded_run.?.executable_image_fingerprint);
     try std.testing.expectEqual(image.dispatch_image.dispatch_fingerprint, admitted.loaded_run.?.dispatch_fingerprint);
     try std.testing.expectEqual(image.module_set.root().?.module_ref.module_ref_fingerprint, admitted.loaded_run.?.root_module_ref_fingerprint);
+
+    const supervised_receiver = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_executable_image = true,
+            .allow_full_module_execution = true,
+            .require_local_target_for_execution = false,
+            .require_environment_preflight = false,
+            .require_supervision_permit = true,
+        }),
+    });
+    const supervised_result = supervised_receiver.admitExecutableImage(image, .{});
+    try std.testing.expect(!supervised_result.report.accepted);
+    try std.testing.expect(supervised_result.loaded_run == null);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitMissing, supervised_result.report.blockers[0]);
 
     var invalid_supported_profile = world.Executable.RuntimeProfile.universal_v1;
     invalid_supported_profile.profile_fingerprint = 0;

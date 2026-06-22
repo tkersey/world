@@ -1476,33 +1476,34 @@ pub fn Linker(comptime W: type) type {
             var ambiguous_count: usize = 0;
             var max_depth_observed: usize = 0;
             const catalog_fingerprint = fingerprintCanonicalCatalog(input.catalog.entries);
-            var root_port_coverage = try allocator.alloc(bool, input.root_import_set.required_count);
-            defer allocator.free(root_port_coverage);
-            @memset(root_port_coverage, false);
             var root_import_set_mismatch =
                 input.root_import_set.target_ref_fingerprint != input.root_target_ref.target_ref_fingerprint or
                 input.root_import_set.import_set_fingerprint != fingerprintRootImportSet(input.root_import_set) or
-                input.root_import_set.world_port_count < input.root_import_set.required_count or
                 input.root_imports.len != input.root_import_set.required_count;
-            for (input.root_imports) |requirement| {
+            for (input.root_imports, 0..) |requirement, index| {
                 if (requirement.target_ref_fingerprint == null or
                     requirement.target_ref_fingerprint.? != input.root_target_ref.target_ref_fingerprint or
                     requirement.world_surface_fingerprint != input.root_target_ref.world_surface_fingerprint or
-                    requirement.world_port_id >= input.root_import_set.required_count)
+                    requirement.world_port_id >= input.root_import_set.world_port_count)
                 {
                     root_import_set_mismatch = true;
                     continue;
                 }
-                if (root_port_coverage[requirement.world_port_id]) {
-                    root_import_set_mismatch = true;
-                    continue;
-                }
-                root_port_coverage[requirement.world_port_id] = true;
+                for (input.root_imports[0..index]) |prior| {
+                    if (prior.requirement_fingerprint == requirement.requirement_fingerprint) {
+                        root_import_set_mismatch = true;
+                        break;
+                    }
+                } else continue;
+                break;
             }
-            for (root_port_coverage) |covered| {
-                if (!covered) {
+            if (!root_import_set_mismatch) {
+                var covered_count: usize = 0;
+                for (input.root_imports) |requirement| {
+                    if (requirement.required) covered_count += 1;
+                }
+                if (covered_count != input.root_import_set.required_count) {
                     root_import_set_mismatch = true;
-                    break;
                 }
             }
             if (root_import_set_mismatch) {

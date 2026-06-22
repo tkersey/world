@@ -6904,6 +6904,7 @@ pub fn Appliance(comptime World: type) type {
             capacity.max_pending_ports = @max(capacity.max_pending_ports, plan.max_mailbox_entries);
             capacity.max_host_requests_per_turn = @max(capacity.max_host_requests_per_turn, plan.max_host_requests_per_turn);
             capacity.max_host_replies_per_turn = @max(capacity.max_host_replies_per_turn, plan.max_host_requests_per_turn);
+            capacity.max_actuation_records = @max(capacity.max_actuation_records, plan.max_host_requests_per_turn);
             capacity.max_capsule_bytes = @max(capacity.max_capsule_bytes, plan.max_capsule_bytes);
             capacity.max_archive_append_bytes = @max(capacity.max_archive_append_bytes, plan.max_archive_append_bytes);
             capacity.max_command_bytes = @max(capacity.max_command_bytes, plan.max_command_bytes);
