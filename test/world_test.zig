@@ -14242,12 +14242,73 @@ test "link fabric coverage accepts sparse required world port ids" {
     try std.testing.expect(linked.plan.accepted());
     try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
     const fabric_plan = linked.plan.fabric_plans[0];
-    try fabric_plan.assertCoverage(root_import_set);
-    const coverage = fabric_plan.coverage(root_ref, root_import_set);
+    try std.testing.expectError(error.FabricMissingRoute, fabric_plan.assertCoverage(root_import_set));
+    try fabric_plan.assertCoverageForRequirements(root_import_set, &.{sparse_import});
+    const coverage = fabric_plan.coverageForRequirements(root_ref, root_import_set, &.{sparse_import});
     try std.testing.expect(coverage.accepted);
     try std.testing.expectEqual(@as(u32, 5), fabric_plan.routes[0].parent_world_port_id);
     try std.testing.expectEqual(@as(usize, 1), coverage.fabric_covered_port_count);
     try std.testing.expectEqual(@as(usize, 0), coverage.missing_port_count);
+
+    const optional_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = base_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = base_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = base_import.world_surface_fingerprint,
+        .world_port_id = 0,
+        .world_port_ref_fingerprint = base_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = base_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = base_import.residual_site_index + 1,
+        .residual_site_fingerprint = base_import.residual_site_fingerprint +% 1,
+        .payload_value_table_id = base_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = base_import.payload_value_ref_fingerprint,
+        .response_value_table_id = base_import.response_value_table_id,
+        .response_value_ref_fingerprint = base_import.response_value_ref_fingerprint,
+        .mode = base_import.mode,
+        .allowed_response_kinds = base_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = base_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-optional",
+        .required = false,
+    });
+    const optional_root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 1,
+        .optional_count = 1,
+        .world_port_count = 6,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    const optional_route = world.Fabric.Route.init(.{
+        .route_id = 56,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .parent_world_port_id = optional_import.world_port_id,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
+    const optional_binding = world.Fabric.Binding.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .world_port_id = optional_import.world_port_id,
+        .import_requirement_fingerprint = optional_import.requirement_fingerprint,
+        .route_fingerprint = optional_route.route_fingerprint,
+        .required = false,
+    });
+    const optional_only_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = optional_root_import_set.import_set_fingerprint,
+        .routes = &.{optional_route},
+        .bindings = &.{optional_binding},
+    });
+    try optional_only_plan.validate();
+    try std.testing.expectError(error.FabricMissingRoute, optional_only_plan.assertCoverage(optional_root_import_set));
+    try std.testing.expectError(error.FabricMissingRoute, optional_only_plan.assertCoverageForRequirements(optional_root_import_set, &.{ sparse_import, optional_import }));
+    const optional_only_coverage = optional_only_plan.coverageForRequirements(root_ref, optional_root_import_set, &.{ sparse_import, optional_import });
+    try std.testing.expect(!optional_only_coverage.accepted);
+    try std.testing.expectEqual(@as(usize, 0), optional_only_coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 1), optional_only_coverage.missing_port_count);
 }
 
 test "link rejects forged root import set fingerprint before closed acceptance" {
@@ -15936,6 +15997,25 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
         .value_table_entry_count = import_set.value_table_entry_count,
         .surface_profile_fingerprint = parent_ref.surface_profile_fingerprint,
     });
+    const base_requirement = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const sparse_requirement = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = base_requirement.target_ref_fingerprint,
+        .world_value_table_fingerprint = base_requirement.world_value_table_fingerprint,
+        .world_surface_fingerprint = base_requirement.world_surface_fingerprint,
+        .world_port_id = 5,
+        .world_port_ref_fingerprint = base_requirement.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = base_requirement.source_effect_shape_ref_fingerprint,
+        .residual_site_index = base_requirement.residual_site_index,
+        .residual_site_fingerprint = base_requirement.residual_site_fingerprint,
+        .payload_value_table_id = base_requirement.payload_value_table_id,
+        .payload_value_ref_fingerprint = base_requirement.payload_value_ref_fingerprint,
+        .response_value_table_id = base_requirement.response_value_table_id,
+        .response_value_ref_fingerprint = base_requirement.response_value_ref_fingerprint,
+        .mode = base_requirement.mode,
+        .allowed_response_kinds = base_requirement.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = base_requirement.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-sparse",
+    });
     const sparse_route = world.Fabric.Route.init(.{
         .route_id = 55,
         .kind = .target_export,
@@ -15944,15 +16024,25 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
         .parent_world_port_id = 5,
         .provider_target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
     });
+    const sparse_binding = world.Fabric.Binding.init(.{
+        .parent_target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .world_port_id = sparse_requirement.world_port_id,
+        .import_requirement_fingerprint = sparse_requirement.requirement_fingerprint,
+        .route_fingerprint = sparse_route.route_fingerprint,
+    });
     const sparse_plan = world.Fabric.Plan.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
         .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
         .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
         .import_set_fingerprint = sparse_import_set.import_set_fingerprint,
         .routes = &.{sparse_route},
+        .bindings = &.{sparse_binding},
     });
-    try sparse_plan.assertCoverage(sparse_import_set);
-    const sparse_coverage = sparse_plan.coverage(parent_ref, sparse_import_set);
+    try std.testing.expectError(error.FabricMissingRoute, sparse_plan.assertCoverage(sparse_import_set));
+    try sparse_plan.assertCoverageForRequirements(sparse_import_set, &.{sparse_requirement});
+    const sparse_coverage = sparse_plan.coverageForRequirements(parent_ref, sparse_import_set, &.{sparse_requirement});
     try std.testing.expect(sparse_coverage.accepted);
     try std.testing.expectEqual(@as(usize, 1), sparse_coverage.fabric_covered_port_count);
     try std.testing.expectEqual(@as(usize, 0), sparse_coverage.missing_port_count);

@@ -9605,7 +9605,19 @@ pub const Fabric = struct {
             if (self.import_set_fingerprint) |fingerprint| {
                 if (fingerprint != import_set.import_set_fingerprint) return error.InvalidFrameEncoding;
             }
+            if (!importSetHasDenseRequiredPorts(import_set)) return error.FabricMissingRoute;
             if (self.coveredRequiredRouteCount(import_set) < import_set.required_count) return error.FabricMissingRoute;
+        }
+
+        pub fn assertCoverageForRequirements(self: Fabric.Plan, import_set: ImportSet, requirements: []const ImportRequirement) !void {
+            if (self.import_set_fingerprint) |fingerprint| {
+                if (fingerprint != import_set.import_set_fingerprint) return error.InvalidFrameEncoding;
+            }
+            const counts = self.coverageCountsForRequirements(import_set, requirements);
+            if (!counts.requirement_set_matches) return error.InvalidFrameEncoding;
+            if (counts.covered_count < import_set.required_count) return error.FabricMissingRoute;
+            if (counts.duplicate_route_count != 0) return error.FabricMissingRoute;
+            if (counts.unsupported_route_count != 0) return error.FabricMissingRoute;
         }
 
         pub fn assertNoCycles(self: Fabric.Plan) !void {
@@ -9697,23 +9709,25 @@ pub const Fabric = struct {
             var covered_count: usize = 0;
             var duplicate_route_count: usize = 0;
             var unsupported_route_count: usize = 0;
-            for (self.routes, 0..) |route, index| {
-                if (route.parent_world_port_id >= import_set.world_port_count) continue;
-                if (!route.coversRequiredPort()) {
-                    unsupported_route_count += 1;
-                    continue;
-                }
-                var seen_before = false;
-                for (self.routes[0..index]) |prior| {
-                    if (prior.parent_world_port_id == route.parent_world_port_id) {
-                        seen_before = true;
-                        break;
+            if (importSetHasDenseRequiredPorts(import_set)) {
+                for (self.routes, 0..) |route, index| {
+                    if (route.parent_world_port_id >= import_set.world_port_count) continue;
+                    if (!route.coversRequiredPort()) {
+                        unsupported_route_count += 1;
+                        continue;
                     }
-                }
-                if (seen_before) {
-                    duplicate_route_count += 1;
-                } else {
-                    covered_count += 1;
+                    var seen_before = false;
+                    for (self.routes[0..index]) |prior| {
+                        if (prior.parent_world_port_id == route.parent_world_port_id) {
+                            seen_before = true;
+                            break;
+                        }
+                    }
+                    if (seen_before) {
+                        duplicate_route_count += 1;
+                    } else {
+                        covered_count += 1;
+                    }
                 }
             }
             const missing_count = if (covered_count >= import_set.required_count) 0 else import_set.required_count - covered_count;
@@ -9739,7 +9753,33 @@ pub const Fabric = struct {
             });
         }
 
+        pub fn coverageForRequirements(self: Fabric.Plan, target_ref: TargetRef, import_set: ImportSet, requirements: []const ImportRequirement) Fabric.CoverageReport {
+            const counts = self.coverageCountsForRequirements(import_set, requirements);
+            const missing_count = if (counts.covered_count >= import_set.required_count) 0 else import_set.required_count - counts.covered_count;
+            const target_matches = self.target_ref_fingerprint == target_ref.target_ref_fingerprint and
+                self.world_surface_fingerprint == target_ref.world_surface_fingerprint and
+                self.target_certificate_fingerprint == target_ref.target_certificate_fingerprint and
+                import_set.target_ref_fingerprint == target_ref.target_ref_fingerprint;
+            const import_set_matches = if (self.import_set_fingerprint) |fingerprint|
+                fingerprint == import_set.import_set_fingerprint
+            else
+                true;
+            return Fabric.CoverageReport.init(.{
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+                .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+                .required_port_count = import_set.required_count,
+                .route_count = self.routes.len,
+                .fabric_covered_port_count = counts.covered_count,
+                .missing_port_count = missing_count,
+                .unsupported_port_count = counts.unsupported_route_count,
+                .duplicate_route_count = counts.duplicate_route_count,
+                .accepted = target_matches and import_set_matches and counts.requirement_set_matches and missing_count == 0 and counts.duplicate_route_count == 0 and counts.unsupported_route_count == 0,
+            });
+        }
+
         fn coveredRequiredRouteCount(self: Fabric.Plan, import_set: ImportSet) usize {
+            if (!importSetHasDenseRequiredPorts(import_set)) return 0;
             var covered_count: usize = 0;
             for (self.routes, 0..) |route, index| {
                 if (route.parent_world_port_id >= import_set.world_port_count) continue;
@@ -9751,6 +9791,82 @@ pub const Fabric = struct {
                 }
             }
             return covered_count;
+        }
+
+        const RequirementCoverageCounts = struct {
+            requirement_set_matches: bool,
+            covered_count: usize,
+            unsupported_route_count: usize,
+            duplicate_route_count: usize,
+        };
+
+        fn coverageCountsForRequirements(self: Fabric.Plan, import_set: ImportSet, requirements: []const ImportRequirement) RequirementCoverageCounts {
+            var required_count: usize = 0;
+            var optional_count: usize = 0;
+            var covered_count: usize = 0;
+            var unsupported_route_count: usize = 0;
+            var duplicate_route_count: usize = 0;
+            var requirement_set_matches = true;
+            for (requirements, 0..) |requirement, requirement_index| {
+                if (requirement.target_ref_fingerprint != import_set.target_ref_fingerprint) requirement_set_matches = false;
+                if (requirement.world_port_id >= import_set.world_port_count) requirement_set_matches = false;
+                if (requirement.required) {
+                    required_count += 1;
+                } else {
+                    optional_count += 1;
+                    continue;
+                }
+                var matched_route_count: usize = 0;
+                for (self.bindings) |binding| {
+                    if (!binding.required) continue;
+                    if (binding.import_requirement_fingerprint == null or binding.import_requirement_fingerprint.? != requirement.requirement_fingerprint) continue;
+                    if (binding.parent_world_port_id != requirement.world_port_id) {
+                        requirement_set_matches = false;
+                        continue;
+                    }
+                    const route = self.findRoute(binding.route_fingerprint) orelse {
+                        requirement_set_matches = false;
+                        continue;
+                    };
+                    if (route.parent_world_port_id != requirement.world_port_id) {
+                        requirement_set_matches = false;
+                        continue;
+                    }
+                    if (!route.coversRequiredPort()) {
+                        unsupported_route_count += 1;
+                        continue;
+                    }
+                    matched_route_count += 1;
+                }
+                if (matchedRouteCountSeenBefore(requirements[0..requirement_index], requirement.requirement_fingerprint)) {
+                    duplicate_route_count += matched_route_count;
+                    continue;
+                }
+                if (matched_route_count == 1) {
+                    covered_count += 1;
+                } else if (matched_route_count > 1) {
+                    duplicate_route_count += matched_route_count - 1;
+                    covered_count += 1;
+                }
+            }
+            if (required_count != import_set.required_count or optional_count != import_set.optional_count) requirement_set_matches = false;
+            return .{
+                .requirement_set_matches = requirement_set_matches,
+                .covered_count = covered_count,
+                .unsupported_route_count = unsupported_route_count,
+                .duplicate_route_count = duplicate_route_count,
+            };
+        }
+
+        fn matchedRouteCountSeenBefore(prior_requirements: []const ImportRequirement, requirement_fingerprint: u64) bool {
+            for (prior_requirements) |prior| {
+                if (prior.required and prior.requirement_fingerprint == requirement_fingerprint) return true;
+            }
+            return false;
+        }
+
+        fn importSetHasDenseRequiredPorts(import_set: ImportSet) bool {
+            return import_set.optional_count == 0 and import_set.required_count == import_set.world_port_count;
         }
     };
 
