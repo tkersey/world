@@ -40782,6 +40782,32 @@ test "Executable RuntimeProfile treats loaded execution as a superset capability
     });
 
     try std.testing.expect(loaded_runtime.supports(unloaded_requirement));
+
+    const constrained_closed_runtime = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = false,
+        .supports_external_actuation = false,
+        .max_provider_depth = 1,
+        .max_external_bindings = 1,
+    });
+    const closed_requirement = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = false,
+        .supports_external_actuation = false,
+    });
+    try std.testing.expect(constrained_closed_runtime.supports(closed_requirement));
+
+    const provider_requirement = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = true,
+        .supports_external_actuation = false,
+        .max_provider_depth = constrained_closed_runtime.max_provider_depth + 1,
+    });
+    try std.testing.expect(!constrained_closed_runtime.supports(provider_requirement));
+
+    const actuation_requirement = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = false,
+        .supports_external_actuation = true,
+        .max_external_bindings = constrained_closed_runtime.max_external_bindings + 1,
+    });
+    try std.testing.expect(!constrained_closed_runtime.supports(actuation_requirement));
 }
 
 test "Executable Builder reports residual binding blockers before image seal" {

@@ -200,8 +200,8 @@ pub fn Executable(comptime W: type) type {
                     (!required.supports_internal_providers or self.supports_internal_providers) and
                     (!required.supports_external_actuation or self.supports_external_actuation) and
                     self.max_modules >= required.max_modules and
-                    self.max_provider_depth >= required.max_provider_depth and
-                    self.max_external_bindings >= required.max_external_bindings and
+                    (!required.supports_internal_providers or self.max_provider_depth >= required.max_provider_depth) and
+                    (!required.supports_external_actuation or self.max_external_bindings >= required.max_external_bindings) and
                     self.max_module_bytes >= required.max_module_bytes and
                     self.max_image_bytes >= required.max_image_bytes and
                     self.max_command_bytes >= required.max_command_bytes and
