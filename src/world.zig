@@ -11953,6 +11953,9 @@ pub const Runspace = struct {
         if (permit.target_ref_fingerprint != module.target_ref.target_ref_fingerprint) return error.SupervisionDenied;
         if (permit.world_surface_fingerprint != module.target_ref.world_surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != module.target_ref.target_certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.module_ref_fingerprint) |module_ref_fingerprint| {
+            if (module_ref_fingerprint != module.module_ref.module_ref_fingerprint) return error.SupervisionDenied;
+        }
         if (permit.mode != .fresh) return error.SupervisionDenied;
     }
 

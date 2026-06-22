@@ -40862,6 +40862,19 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     defer direct_runspace.deinit();
     try std.testing.expectError(error.InvalidFrameEncoding, direct_runspace.installLoadedModuleRun(forged_direct_module, .{}));
 
+    const mismatched_module_ref_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .module_ref_fingerprint = image.module_set.modules[1].module_ref.module_ref_fingerprint,
+    });
+    var supervised_loaded_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer supervised_loaded_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, supervised_loaded_runspace.installExecutableRoot(image, .{
+        .permit = mismatched_module_ref_permit,
+    }));
+
     const plan = prepared.plan.link_plan.fabric_plans[0];
     try std.testing.expectEqual(world.Fabric.RouteKind.loaded_module_export, plan.routes[0].kind);
     const sealed_route = plan.routes[0];
