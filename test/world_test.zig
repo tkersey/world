@@ -40977,7 +40977,7 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     _ = try unsealed_runspace.installExecutableRoot(image, .{});
     _ = try unsealed_runspace.tick();
     try unsealed_runspace.installFabricPlan(parent_ref, unsealed_plan);
-    try std.testing.expectError(error.HandoffTargetMismatch, unsealed_runspace.routePendingToLoadedProvider(0, image, unsealed_plan));
+    try std.testing.expectError(error.SupervisionDenied, unsealed_runspace.routePendingToLoadedProvider(0, image, unsealed_plan));
 
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
@@ -40986,6 +40986,12 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(root_handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    const pending_before_route = try runspace.mailbox.get(0);
+    const pending_request_before_route = pending_before_route.request_frame orelse return error.ExpectedPendingRequestFrame;
+    const manual_response = testRunspaceResponseFrame(pending_request_before_route);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.respond(0, manual_response));
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.reject(0, "manual loaded fabric bypass"));
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportRun(root_handle));
 
     const slot_count_before_retry = runspace.slots.items.len;
     const event_count_before_retry = runspace.events.items.len;
@@ -41040,15 +41046,43 @@ test "Loaded Fabric installs provider from sealed executable image route" {
 test "Loaded Run rejects response frame fingerprint mismatch" {
     const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(root_bytes);
-    const provider_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
-    defer std.testing.allocator.free(provider_bytes);
 
-    var builder = world.Executable.Builder.init(std.testing.allocator, .{
-        .linker_policy = .strict_closed,
-    });
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
     defer builder.deinit();
     try builder.addRootModule(root_bytes);
-    try builder.addProviderModule(provider_bytes);
+    const root_module = builder.modules.items[0];
+    const root_import = root_module.imports[0];
+    const actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "loaded-response.fixture",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "loaded-response.fixture",
+    });
+    try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "loaded-response.fixture",
+    }));
     var prepared = try builder.prepare();
     defer prepared.deinit();
     var image = try prepared.seal();

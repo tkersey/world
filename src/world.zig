@@ -10020,7 +10020,14 @@ pub const Runspace = struct {
         permit: ?RunPermit = null,
         fabric_plan: ?Fabric.Plan = null,
         executable_image_fingerprint: ?u64 = null,
+        executable_dispatch_coverage: LoadedExecutableDispatchCoverage = .{},
         parent_run_handle_fingerprint: ?u64 = null,
+    };
+
+    pub const LoadedExecutableDispatchCoverage = struct {
+        fabric_plan_fingerprint: ?u64 = null,
+        route_parent_world_port_ids: []const u32 = &.{},
+        route_kinds: []const Fabric.RouteKind = &.{},
     };
 
     pub const RunStatus = enum {
@@ -10102,6 +10109,9 @@ pub const Runspace = struct {
         import_set: ImportSet,
         imports: []ImportRequirement,
         executable_image_fingerprint: u64,
+        executable_fabric_plan_fingerprint: ?u64 = null,
+        executable_fabric_route_parent_world_port_ids: []const u32 = &.{},
+        executable_fabric_route_kinds: []const Fabric.RouteKind = &.{},
         loaded_module: Executable.Boundary.LoadedModule,
         session: Executable.Boundary.LoadedModule.Session,
         supervisor: ?Supervision.Supervisor = null,
@@ -10111,7 +10121,8 @@ pub const Runspace = struct {
         failed_status: bool = false,
         failed_turn_index: ?usize = null,
 
-        fn init(allocator: std.mem.Allocator, module: Executable.Module, executable_image_fingerprint: u64, supervisor: ?Supervision.Supervisor) !@This() {
+        fn init(allocator: std.mem.Allocator, module: Executable.Module, executable_image_fingerprint: u64, dispatch_coverage: LoadedExecutableDispatchCoverage, supervisor: ?Supervision.Supervisor) !@This() {
+            if (dispatch_coverage.route_parent_world_port_ids.len != dispatch_coverage.route_kinds.len) return error.InvalidFrameEncoding;
             var loaded_module = try Executable.Boundary.ModuleImage.decode(allocator, module.canonical_bytes, .{
                 .require_full_module = true,
                 .allow_reference_only = false,
@@ -10129,6 +10140,10 @@ pub const Runspace = struct {
             errdefer session.deinit();
             const imports = try allocator.dupe(ImportRequirement, module.imports);
             errdefer allocator.free(imports);
+            const route_parent_world_port_ids = try allocator.dupe(u32, dispatch_coverage.route_parent_world_port_ids);
+            errdefer allocator.free(route_parent_world_port_ids);
+            const route_kinds = try allocator.dupe(Fabric.RouteKind, dispatch_coverage.route_kinds);
+            errdefer allocator.free(route_kinds);
             return .{
                 .allocator = allocator,
                 .target_ref = module.target_ref,
@@ -10136,6 +10151,9 @@ pub const Runspace = struct {
                 .import_set = module.import_set,
                 .imports = imports,
                 .executable_image_fingerprint = executable_image_fingerprint,
+                .executable_fabric_plan_fingerprint = dispatch_coverage.fabric_plan_fingerprint,
+                .executable_fabric_route_parent_world_port_ids = route_parent_world_port_ids,
+                .executable_fabric_route_kinds = route_kinds,
                 .loaded_module = loaded_module,
                 .session = session,
                 .supervisor = supervisor,
@@ -10147,8 +10165,21 @@ pub const Runspace = struct {
             if (self.supervisor) |*supervisor| supervisor.deinit();
             self.session.deinit();
             self.loaded_module.deinit();
+            self.allocator.free(self.executable_fabric_route_kinds);
+            self.allocator.free(self.executable_fabric_route_parent_world_port_ids);
             self.allocator.free(self.imports);
             self.* = undefined;
+        }
+
+        fn executableDispatchCoversWorldPort(self: @This(), world_port_id: u32) bool {
+            for (self.executable_fabric_route_parent_world_port_ids, 0..) |parent_world_port_id, index| {
+                if (parent_world_port_id != world_port_id) continue;
+                return switch (self.executable_fabric_route_kinds[index]) {
+                    .adapter => false,
+                    .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+                };
+            }
+            return false;
         }
 
         fn nextFrame(self: *@This()) !DriverStep {
@@ -10630,11 +10661,13 @@ pub const Runspace = struct {
                     const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
                     if (active.supervisor) |supervisor| return validateFabricParentResponseValuePolicy(image, supervisor.permit, world_port_id);
                 }
-                fn loadedFabricPlanCoversWorldPort(_: *anyopaque, _: u32) bool {
-                    return false;
+                fn loadedFabricPlanCoversWorldPort(ptr: *anyopaque, world_port_id: u32) bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.executableDispatchCoversWorldPort(world_port_id);
                 }
-                fn loadedFabricPlanCoversHandlerlessWorldPort(_: *anyopaque, _: u32) bool {
-                    return false;
+                fn loadedFabricPlanCoversHandlerlessWorldPort(ptr: *anyopaque, world_port_id: u32) bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.executableDispatchCoversWorldPort(world_port_id);
                 }
                 fn loadedActuationBindingCoversWorldPort(_: *anyopaque, _: u32) bool {
                     return false;
@@ -10645,8 +10678,9 @@ pub const Runspace = struct {
                 fn loadedActuationBindingForWorldPort(_: *anyopaque, _: u32) ?Actuation.Binding {
                     return null;
                 }
-                fn loadedFabricPlanFingerprint(_: *anyopaque) ?u64 {
-                    return null;
+                fn loadedFabricPlanFingerprint(ptr: *anyopaque) ?u64 {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.executable_fabric_plan_fingerprint;
                 }
                 fn loadedResumeTerminalFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
                     if (response.status != .rejected and response.status != .failed) return error.InvalidPendingPortTransition;
@@ -12430,6 +12464,7 @@ pub const Runspace = struct {
         const root = image.module_set.root() orelse return error.RunspaceInstallDenied;
         var loaded_options = options;
         loaded_options.executable_image_fingerprint = image.image_fingerprint;
+        loaded_options.executable_dispatch_coverage = executableLoadedDispatchCoverage(image.dispatch_image);
         return self.installLoadedModuleRun(root, loaded_options);
     }
 
@@ -12440,6 +12475,7 @@ pub const Runspace = struct {
             if (module.module_id != module_id or module.role != .provider) continue;
             var loaded_options = options;
             loaded_options.executable_image_fingerprint = image.image_fingerprint;
+            loaded_options.executable_dispatch_coverage = executableLoadedDispatchCoverage(image.dispatch_image);
             return self.installLoadedModuleRun(module, loaded_options);
         }
         return error.RunspaceInstallDenied;
@@ -12481,7 +12517,7 @@ pub const Runspace = struct {
         const supervisor_for_driver = supervisor;
         supervisor = null;
         supervisor_owned = false;
-        var loaded_driver = try LoadedSessionDriver.init(self.allocator, module, executable_image_fingerprint, supervisor_for_driver);
+        var loaded_driver = try LoadedSessionDriver.init(self.allocator, module, executable_image_fingerprint, options.executable_dispatch_coverage, supervisor_for_driver);
         var loaded_driver_owned = true;
         errdefer if (loaded_driver_owned) loaded_driver.deinit();
         loaded_ptr.* = loaded_driver;
@@ -12501,7 +12537,7 @@ pub const Runspace = struct {
             .status = .runnable,
             .environment_certificate_fingerprint = if (maybe_permit) |permit| optionalNonZeroFingerprint(permit.environment_certificate_fingerprint) else null,
             .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
-            .fabric_plan_fingerprint = if (options.fabric_plan) |plan| plan.plan_fingerprint else null,
+            .fabric_plan_fingerprint = if (options.fabric_plan) |plan| plan.plan_fingerprint else options.executable_dispatch_coverage.fabric_plan_fingerprint,
             .parent_run_handle_fingerprint = options.parent_run_handle_fingerprint,
             .module_ref_fingerprint = module.module_ref.module_ref_fingerprint,
             .backend_kind = .loaded_module,
@@ -12548,6 +12584,7 @@ pub const Runspace = struct {
         const loaded_options = LoadedInstallOptions{
             .parent_run_handle_fingerprint = pending.handle.handle_fingerprint,
             .executable_image_fingerprint = image.image_fingerprint,
+            .executable_dispatch_coverage = executableLoadedDispatchCoverage(image.dispatch_image),
         };
         const provider_handle = try self.installLoadedModuleRun(provider_module, loaded_options);
         const invocation = try self.routePendingToProviderRun(mailbox_id, plan, provider_handle);
@@ -14380,6 +14417,14 @@ pub const Runspace = struct {
             return module;
         }
         return null;
+    }
+
+    fn executableLoadedDispatchCoverage(dispatch: Executable.DispatchImage) LoadedExecutableDispatchCoverage {
+        return .{
+            .fabric_plan_fingerprint = if (dispatch.fabric_plan_fingerprints.len == 1) dispatch.fabric_plan_fingerprints[0] else null,
+            .route_parent_world_port_ids = dispatch.route_parent_world_port_ids,
+            .route_kinds = dispatch.route_kinds,
+        };
     }
 
     fn executableDispatchCoversFabricRoute(dispatch: Executable.DispatchImage, plan_fingerprint: u64, route: Fabric.Route) bool {
