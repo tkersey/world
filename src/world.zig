@@ -3371,6 +3371,10 @@ pub const Admission = struct {
             for (image.external_bindings) |binding| {
                 if (binding.label.len > policy.max_package_bytes) return true;
                 if (binding.metadata.len > policy.max_package_bytes) return true;
+                if (binding.actuator_ref.label.len > policy.max_package_bytes) return true;
+                if (binding.actuator_ref.metadata.len > policy.max_package_bytes) return true;
+                if (binding.descriptor.label.len > policy.max_package_bytes) return true;
+                if (binding.descriptor.metadata.len > policy.max_package_bytes) return true;
             }
             return decoded_image_bytes > policy.max_package_bytes;
         }

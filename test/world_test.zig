@@ -40721,6 +40721,81 @@ test "Loaded Admission admits executable image without local target registry" {
     try std.testing.expect(unsupported_result.loaded_run != null);
 }
 
+test "Loaded Admission enforces executable external binding nested package limits" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const empty_registry = world.Admission.TargetRegistry.init(&.{});
+
+    const OversizedField = enum { actuator_metadata, descriptor_metadata };
+    inline for (.{ OversizedField.actuator_metadata, OversizedField.descriptor_metadata }) |oversized_field| {
+        const oversized_metadata = try std.testing.allocator.alloc(u8, root_bytes.len + 128);
+        defer std.testing.allocator.free(oversized_metadata);
+        @memset(oversized_metadata, 'm');
+
+        var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+        defer builder.deinit();
+        try builder.addRootModule(root_bytes);
+        const root_module = builder.modules.items[0];
+        const root_import = root_module.imports[0];
+        const actuator_ref = world.Actuation.Ref.init(.{
+            .kind = .fixture,
+            .class = .deterministic_fixture,
+            .label = "seed.fixture",
+            .supported_modes = .all,
+            .supported_response_statuses = .all,
+            .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+            .metadata = if (oversized_field == .actuator_metadata) oversized_metadata else "",
+        });
+        const descriptor = world.Actuation.Descriptor.init(.{
+            .actuator_ref = actuator_ref,
+            .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+            .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .response_value_table_id = root_import.response_value_table_id,
+            .label = "seed.fixture",
+            .metadata = if (oversized_field == .descriptor_metadata) oversized_metadata else "",
+        });
+        try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+            .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+            .response_value_table_id = root_import.response_value_table_id,
+            .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+            .actuator_ref = actuator_ref,
+            .descriptor = descriptor,
+            .label = "seed.fixture",
+        }));
+
+        var prepared = try builder.prepare();
+        defer prepared.deinit();
+        var image = try prepared.seal();
+        defer image.deinit(std.testing.allocator);
+        const max_package_bytes = image.memory_plan.decoded_module_bytes + 1;
+        try std.testing.expect(oversized_metadata.len > max_package_bytes);
+
+        const limited_receiver = world.Admission.Admitter.init(.{
+            .registry = empty_registry,
+            .policy = world.Admission.AdmissionPolicy.init(.{
+                .allow_executable_image = true,
+                .allow_full_module_execution = true,
+                .require_local_target_for_execution = false,
+                .require_environment_preflight = false,
+                .require_supervision_permit = false,
+                .max_package_bytes = max_package_bytes,
+            }),
+        });
+        const limit_result = limited_receiver.admitExecutableImage(image, .{});
+        try std.testing.expect(!limit_result.report.accepted);
+        try std.testing.expect(limit_result.loaded_run == null);
+        try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageLimitExceeded, limit_result.report.blockers[0]);
+    }
+}
+
 test "Loaded Fabric installs provider from sealed executable image route" {
     const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(root_bytes);
