@@ -53,6 +53,8 @@ fn applianceSyntheticHostRequestArgs(comptime T: type, args: T) struct {
     payload_value_image_bytes: []const u8 = "",
     prepared_actuation_evidence_bytes: []const u8 = "",
     idempotency_key_bytes: []const u8 = "",
+    expected_response_value_ref_fingerprint: ?u64 = null,
+    expected_response_schema_ref_fingerprint: ?u64 = null,
 } {
     return .{
         .turn_sequence_number = args.turn_sequence_number,
@@ -76,6 +78,8 @@ fn applianceSyntheticHostRequestArgs(comptime T: type, args: T) struct {
         .payload_value_image_bytes = if (@hasField(T, "payload_value_image_bytes")) args.payload_value_image_bytes else "",
         .prepared_actuation_evidence_bytes = if (@hasField(T, "prepared_actuation_evidence_bytes")) args.prepared_actuation_evidence_bytes else "",
         .idempotency_key_bytes = if (@hasField(T, "idempotency_key_bytes")) args.idempotency_key_bytes else "",
+        .expected_response_value_ref_fingerprint = if (@hasField(T, "expected_response_value_ref_fingerprint")) args.expected_response_value_ref_fingerprint else null,
+        .expected_response_schema_ref_fingerprint = if (@hasField(T, "expected_response_schema_ref_fingerprint")) args.expected_response_schema_ref_fingerprint else null,
     };
 }
 
@@ -5843,6 +5847,101 @@ test "appliance host reply validates against outstanding request identity" {
         .attempt_number = 1,
     });
     try embedded_response.validate(request, world.Appliance.Capacity.tiny_one_port);
+
+    const expected_response_value_ref: u64 = 0xD210;
+    const expected_response_schema_ref: u64 = 0xD211;
+    const bound_request = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 3,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD220,
+        .pending_port_fingerprint = 0xD221,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD222,
+        .envelope_fingerprint = 0xD223,
+        .decision_fingerprint = 0xD224,
+        .expected_response_descriptor_fingerprint = 0xD225,
+        .idempotency_key_fingerprint = 0xD226,
+        .expected_response_value_ref_fingerprint = expected_response_value_ref,
+        .expected_response_schema_ref_fingerprint = expected_response_schema_ref,
+    });
+    var bound_response_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        null,
+        expected_response_value_ref,
+        expected_response_schema_ref,
+        @as(i32, 7),
+        .portable,
+    );
+    defer bound_response_image.deinit(std.testing.allocator);
+    const bound_response_image_bytes = try bound_response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(bound_response_image_bytes);
+    const bound_embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = bound_request.request_fingerprint,
+        .intent_fingerprint = bound_request.intent_fingerprint,
+        .envelope_fingerprint = bound_request.envelope_fingerprint,
+        .idempotency_key_fingerprint = bound_request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = bound_response_image.value_image_fingerprint,
+        .response_kind = .frame_value_image,
+        .response_bytes = bound_response_image_bytes,
+        .host_evidence_fingerprint = 0xD227,
+        .host_evidence_bytes = "embedded-response-bound",
+        .attempt_number = 1,
+    });
+    try bound_embedded_response.validate(bound_request, world.Appliance.Capacity.tiny_one_port);
+
+    var wrong_ref_response_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        null,
+        expected_response_value_ref + 1,
+        expected_response_schema_ref,
+        @as(i32, 7),
+        .portable,
+    );
+    defer wrong_ref_response_image.deinit(std.testing.allocator);
+    const wrong_ref_response_image_bytes = try wrong_ref_response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_ref_response_image_bytes);
+    const wrong_ref_embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = bound_request.request_fingerprint,
+        .intent_fingerprint = bound_request.intent_fingerprint,
+        .envelope_fingerprint = bound_request.envelope_fingerprint,
+        .idempotency_key_fingerprint = bound_request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = wrong_ref_response_image.value_image_fingerprint,
+        .response_kind = .frame_value_image,
+        .response_bytes = wrong_ref_response_image_bytes,
+        .host_evidence_fingerprint = 0xD228,
+        .host_evidence_bytes = "embedded-response-wrong-ref",
+        .attempt_number = 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_ref_embedded_response.validate(bound_request, world.Appliance.Capacity.tiny_one_port));
+
+    var wrong_schema_response_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        null,
+        expected_response_value_ref,
+        expected_response_schema_ref + 1,
+        @as(i32, 7),
+        .portable,
+    );
+    defer wrong_schema_response_image.deinit(std.testing.allocator);
+    const wrong_schema_response_image_bytes = try wrong_schema_response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_schema_response_image_bytes);
+    const wrong_schema_embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = bound_request.request_fingerprint,
+        .intent_fingerprint = bound_request.intent_fingerprint,
+        .envelope_fingerprint = bound_request.envelope_fingerprint,
+        .idempotency_key_fingerprint = bound_request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = wrong_schema_response_image.value_image_fingerprint,
+        .response_kind = .frame_value_image,
+        .response_bytes = wrong_schema_response_image_bytes,
+        .host_evidence_fingerprint = 0xD229,
+        .host_evidence_bytes = "embedded-response-wrong-schema",
+        .attempt_number = 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_schema_embedded_response.validate(bound_request, world.Appliance.Capacity.tiny_one_port));
+
     const forged_embedded_response = world.Appliance.HostOutcome.init(.{
         .host_request_fingerprint = request.request_fingerprint,
         .intent_fingerprint = request.intent_fingerprint,

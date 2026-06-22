@@ -1081,6 +1081,14 @@ pub fn Appliance(comptime World: type) type {
                     var response_image = World.Frame.ValueImage.decode(std.heap.page_allocator, self.response_bytes) catch return error.InvalidFrameEncoding;
                     defer response_image.deinit(std.heap.page_allocator);
                     if (self.response_fingerprint == null or response_image.value_image_fingerprint != self.response_fingerprint.?) return error.InvalidFrameEncoding;
+                    if (expected_request) |request| {
+                        if (request.expected_response_value_ref_fingerprint) |expected| {
+                            if (response_image.boundary_value_fingerprint == null or response_image.boundary_value_fingerprint.? != expected) return error.InvalidFrameEncoding;
+                        }
+                        if (request.expected_response_schema_ref_fingerprint) |expected| {
+                            if (response_image.codec_schema_descriptor_fingerprint == null or response_image.codec_schema_descriptor_fingerprint.? != expected) return error.InvalidFrameEncoding;
+                        }
+                    }
                 }
                 if (self.host_evidence_bytes.len > capacity.max_metadata_bytes) return error.CapacityExceeded;
                 if (self.metadata.len > capacity.max_metadata_bytes) return error.CapacityExceeded;
