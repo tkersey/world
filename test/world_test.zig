@@ -41610,9 +41610,26 @@ test "Loaded Fabric installs provider from sealed executable image route" {
         .target_certificate_fingerprint = supervised_root.target_ref.target_certificate_fingerprint,
         .environment_certificate_fingerprint = 0x5150_7001,
         .binding_plan_fingerprint = 0x5150_7002,
+        .fabric_plan_fingerprint = plan.plan_fingerprint,
         .mode = .fresh,
         .policy = world.SupervisionPolicy.handoff_receiver,
     });
+    const mismatched_fabric_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = supervised_root.target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = supervised_root.target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = supervised_root.target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = 0x5150_7001,
+        .binding_plan_fingerprint = 0x5150_7002,
+        .fabric_plan_fingerprint = plan.plan_fingerprint +% 1,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+    });
+    var mismatched_fabric_permit_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer mismatched_fabric_permit_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, mismatched_fabric_permit_runspace.installExecutableRoot(image, .{
+        .permit = mismatched_fabric_permit,
+        .fabric_plan = plan,
+    }));
     var supervised_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
     defer supervised_runspace.deinit();
     _ = try supervised_runspace.installExecutableRoot(image, .{ .permit = supervised_permit, .fabric_plan = plan });

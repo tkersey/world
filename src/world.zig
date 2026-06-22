@@ -12123,11 +12123,12 @@ pub const Runspace = struct {
         }
     }
 
-    fn validateLoadedModulePermit(module: Executable.Module, permit: RunPermit) !void {
+    fn validateLoadedModulePermit(module: Executable.Module, permit: RunPermit, fabric_plan_fingerprint: ?u64) !void {
         try Supervision.Supervisor.validatePermitForRun(permit, module.import_set.world_port_count);
         if (permit.target_ref_fingerprint != module.target_ref.target_ref_fingerprint) return error.SupervisionDenied;
         if (permit.world_surface_fingerprint != module.target_ref.world_surface_fingerprint) return error.SupervisionDenied;
         if (permit.target_certificate_fingerprint != module.target_ref.target_certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.fabric_plan_fingerprint != fabric_plan_fingerprint) return error.SupervisionDenied;
         if (permit.module_ref_fingerprint) |module_ref_fingerprint| {
             if (module_ref_fingerprint != module.module_ref.module_ref_fingerprint) return error.SupervisionDenied;
         }
@@ -12631,6 +12632,12 @@ pub const Runspace = struct {
         if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and options.permit == null) return error.SupervisionDenied;
         if (options.executable_dispatch_coverage.route_parent_world_port_ids.len != 0 and options.fabric_plan == null) return error.RunspaceInstallDenied;
+        const selected_fabric_plan_fingerprint = if (options.fabric_plan) |plan| plan.plan_fingerprint else options.executable_dispatch_coverage.fabric_plan_fingerprint;
+        if (options.fabric_plan) |plan| {
+            if (options.executable_dispatch_coverage.fabric_plan_fingerprint) |coverage_fingerprint| {
+                if (coverage_fingerprint != plan.plan_fingerprint) return error.RunspaceInstallDenied;
+            }
+        }
         try module.validateForRuntimeProfile(Executable.RuntimeProfile.universal_v1);
         const executable_image_fingerprint = options.executable_image_fingerprint orelse module.module_ref.boundary_module_fingerprint;
         const maybe_permit = options.permit;
@@ -12640,7 +12647,7 @@ pub const Runspace = struct {
             if (supervisor) |*owned| owned.deinit();
         };
         if (maybe_permit) |permit| {
-            try validateLoadedModulePermit(module, permit);
+            try validateLoadedModulePermit(module, permit, selected_fabric_plan_fingerprint);
             supervisor = try Supervision.Supervisor.init(self.allocator, permit, module.import_set.world_port_count);
             supervisor_owned = true;
         }
@@ -12683,7 +12690,7 @@ pub const Runspace = struct {
             .status = .runnable,
             .environment_certificate_fingerprint = if (maybe_permit) |permit| optionalNonZeroFingerprint(permit.environment_certificate_fingerprint) else null,
             .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
-            .fabric_plan_fingerprint = if (options.fabric_plan) |plan| plan.plan_fingerprint else options.executable_dispatch_coverage.fabric_plan_fingerprint,
+            .fabric_plan_fingerprint = selected_fabric_plan_fingerprint,
             .parent_run_handle_fingerprint = options.parent_run_handle_fingerprint,
             .module_ref_fingerprint = module.module_ref.module_ref_fingerprint,
             .backend_kind = .loaded_module,
