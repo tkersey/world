@@ -2410,7 +2410,7 @@ pub fn Appliance(comptime World: type) type {
                 } else &.{};
                 const host_requests = if (status == .needs_host) blk: {
                     if (self.capacity_value.max_host_requests_per_turn == 0) return error.CapacityExceeded;
-                    if (command.kind == .@"continue" and command.host_replies.len != 0 and commandLeavesOutstandingHostRequests(current_outstanding_host_requests, command)) {
+                    if ((command.kind == .@"continue" or command.kind == .restore) and command.host_replies.len != 0 and commandLeavesOutstandingHostRequests(current_outstanding_host_requests, command)) {
                         const retained = try remainingHostRequestsAfterRepliesOwned(self.allocator, current_outstanding_host_requests, command);
                         host_requests_owned = true;
                         break :blk retained;

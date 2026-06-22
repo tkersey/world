@@ -3996,6 +3996,87 @@ test "appliance Core failed host reply dominates partial outstanding replies" {
     try std.testing.expectEqual(world.Appliance.CoreState.failed, core.state);
 }
 
+test "appliance Core restore with partial terminal replies keeps only unreplied requests" {
+    const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
+        .profile = world.Appliance.Profile.wasm_agent,
+        .capacity = world.Appliance.Capacity.wasm_agent,
+        .actuation_bindings = .{
+            ApplianceAgentActuationBinding,
+            ApplianceAgentToolActuationBinding,
+        },
+    });
+    const manifest = AgentAppliance.manifest();
+    var resident = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        AgentAppliance.memoryPlan(),
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer resident.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .root_argument_image = "agent:prompt",
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try resident.submit(boot_bytes);
+    try resident.executeTurn();
+
+    var boot_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        resident.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer boot_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), boot_output.checkpoint.outstanding_host_requests.len);
+
+    const first = boot_output.checkpoint.outstanding_host_requests[0];
+    const second = boot_output.checkpoint.outstanding_host_requests[1];
+    const restore_reply = applianceHostReplyFor(first, 0xD5ED);
+    const restore_command = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = boot_output.checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = boot_output.checkpoint.previous_turn_receipt_fingerprint,
+        .host_replies = &.{restore_reply},
+        .restore_checkpoint = boot_output.checkpoint,
+    });
+    const restore_bytes = try restore_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(restore_bytes);
+
+    var restored = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        AgentAppliance.memoryPlan(),
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer restored.reset();
+    try restored.submit(restore_bytes);
+    try restored.executeTurn();
+
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, restored.state);
+    try std.testing.expectEqual(@as(usize, 1), restored.outstanding_host_requests.len);
+    try std.testing.expectEqual(second.request_fingerprint, restored.outstanding_host_requests[0].request_fingerprint);
+
+    var restore_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        restored.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer restore_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.needs_host, restore_output.status);
+    try std.testing.expectEqual(@as(usize, 1), restore_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), restore_output.host_requests.len);
+    try std.testing.expectEqual(second.request_fingerprint, restore_output.host_requests[0].request_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), restore_output.checkpoint.outstanding_host_requests.len);
+    try std.testing.expectEqual(second.request_fingerprint, restore_output.checkpoint.outstanding_host_requests[0].request_fingerprint);
+}
+
 test "appliance Core emitted checkpoint carries current TurnReceipt for restore" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
