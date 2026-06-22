@@ -9605,11 +9605,7 @@ pub const Fabric = struct {
             if (self.import_set_fingerprint) |fingerprint| {
                 if (fingerprint != import_set.import_set_fingerprint) return error.InvalidFrameEncoding;
             }
-            var port_id: u32 = 0;
-            while (port_id < import_set.required_count) : (port_id += 1) {
-                const route = self.findRouteForPort(port_id) orelse return error.FabricMissingRoute;
-                if (!route.coversRequiredPort()) return error.FabricMissingRoute;
-            }
+            if (self.coveredRequiredRouteCount(import_set) < import_set.required_count) return error.FabricMissingRoute;
         }
 
         pub fn assertNoCycles(self: Fabric.Plan) !void {
@@ -9702,7 +9698,7 @@ pub const Fabric = struct {
             var duplicate_route_count: usize = 0;
             var unsupported_route_count: usize = 0;
             for (self.routes, 0..) |route, index| {
-                if (route.parent_world_port_id >= import_set.required_count) continue;
+                if (route.parent_world_port_id >= import_set.world_port_count) continue;
                 if (!route.coversRequiredPort()) {
                     unsupported_route_count += 1;
                     continue;
@@ -9741,6 +9737,20 @@ pub const Fabric = struct {
                 .duplicate_route_count = duplicate_route_count,
                 .accepted = target_matches and import_set_matches and missing_count == 0 and duplicate_route_count == 0 and unsupported_route_count == 0,
             });
+        }
+
+        fn coveredRequiredRouteCount(self: Fabric.Plan, import_set: ImportSet) usize {
+            var covered_count: usize = 0;
+            for (self.routes, 0..) |route, index| {
+                if (route.parent_world_port_id >= import_set.world_port_count) continue;
+                if (!route.coversRequiredPort()) continue;
+                for (self.routes[0..index]) |prior| {
+                    if (prior.parent_world_port_id == route.parent_world_port_id) break;
+                } else {
+                    covered_count += 1;
+                }
+            }
+            return covered_count;
         }
     };
 

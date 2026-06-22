@@ -14087,6 +14087,68 @@ test "link accepts distinct root imports sharing one world port" {
     try std.testing.expectEqual(@as(usize, 2), linked.plan.external_environment_requirements.len);
 }
 
+test "link fabric coverage accepts sparse required world port ids" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const base_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const sparse_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = base_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = base_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = base_import.world_surface_fingerprint,
+        .world_port_id = 5,
+        .world_port_ref_fingerprint = base_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = base_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = base_import.residual_site_index,
+        .residual_site_fingerprint = base_import.residual_site_fingerprint,
+        .payload_value_table_id = base_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = base_import.payload_value_ref_fingerprint,
+        .response_value_table_id = base_import.response_value_table_id,
+        .response_value_ref_fingerprint = base_import.response_value_ref_fingerprint,
+        .mode = base_import.mode,
+        .allowed_response_kinds = base_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = base_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-sparse",
+    });
+    const root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 1,
+        .world_port_count = 6,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = sparse_import.response_value_table_id, .value_ref_fingerprint = sparse_import.response_value_ref_fingerprint },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{sparse_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    const fabric_plan = linked.plan.fabric_plans[0];
+    try fabric_plan.assertCoverage(root_import_set);
+    const coverage = fabric_plan.coverage(root_ref, root_import_set);
+    try std.testing.expect(coverage.accepted);
+    try std.testing.expectEqual(@as(u32, 5), fabric_plan.routes[0].parent_world_port_id);
+    try std.testing.expectEqual(@as(usize, 1), coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 0), coverage.missing_port_count);
+}
+
 test "link rejects forged root import set fingerprint before closed acceptance" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
@@ -15765,6 +15827,34 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
         .import_set_fingerprint = import_set.import_set_fingerprint,
     });
     try std.testing.expectError(error.FabricMissingRoute, missing.assertCoverage(import_set));
+
+    const sparse_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .required_count = 1,
+        .world_port_count = 6,
+        .value_table_entry_count = import_set.value_table_entry_count,
+        .surface_profile_fingerprint = parent_ref.surface_profile_fingerprint,
+    });
+    const sparse_route = world.Fabric.Route.init(.{
+        .route_id = 55,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 5,
+        .provider_target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+    });
+    const sparse_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = sparse_import_set.import_set_fingerprint,
+        .routes = &.{sparse_route},
+    });
+    try sparse_plan.assertCoverage(sparse_import_set);
+    const sparse_coverage = sparse_plan.coverage(parent_ref, sparse_import_set);
+    try std.testing.expect(sparse_coverage.accepted);
+    try std.testing.expectEqual(@as(usize, 1), sparse_coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 0), sparse_coverage.missing_port_count);
 
     const cyclic_route = fabricTestRoute(.target_export, parent_ref.target_ref_fingerprint);
     const cyclic_routes = [_]world.Fabric.Route{cyclic_route};
