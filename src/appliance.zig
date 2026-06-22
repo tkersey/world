@@ -2295,6 +2295,7 @@ pub fn Appliance(comptime World: type) type {
                 if (!compatibility.compatible) return error.ExecutableLoadRejected;
                 const capacity = options.capacity orelse capacityFromExecutableMemoryPlan(image.memory_plan, options.profile);
                 try capacity.validateForProfile(options.profile);
+                if (!capacityCoversExecutableMemoryPlan(capacity, image.memory_plan)) return error.CapacityExceeded;
                 if (image.external_bindings.len > capacity.max_host_requests_per_turn) return error.CapacityExceeded;
                 if (image.external_bindings.len > capacity.max_host_replies_per_turn) return error.CapacityExceeded;
                 if (image.external_bindings.len > capacity.max_actuation_records) return error.CapacityExceeded;
@@ -6910,6 +6911,18 @@ pub fn Appliance(comptime World: type) type {
             capacity.max_command_bytes = @max(capacity.max_command_bytes, plan.max_command_bytes);
             capacity.max_output_bytes = @max(capacity.max_output_bytes, plan.max_output_bytes);
             return capacity;
+        }
+
+        fn capacityCoversExecutableMemoryPlan(capacity: Capacity, plan: World.Executable.MemoryPlan) bool {
+            return capacity.max_provider_runs >= plan.max_provider_runs and
+                capacity.max_pending_ports >= plan.max_mailbox_entries and
+                capacity.max_host_requests_per_turn >= plan.max_host_requests_per_turn and
+                capacity.max_host_replies_per_turn >= plan.max_host_requests_per_turn and
+                capacity.max_actuation_records >= plan.max_host_requests_per_turn and
+                capacity.max_capsule_bytes >= plan.max_capsule_bytes and
+                capacity.max_archive_append_bytes >= plan.max_archive_append_bytes and
+                capacity.max_command_bytes >= plan.max_command_bytes and
+                capacity.max_output_bytes >= plan.max_output_bytes;
         }
 
         fn manifestFromExecutableImage(

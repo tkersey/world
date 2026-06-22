@@ -8346,9 +8346,12 @@ test "Universal Runtime initializes Appliance Core from Executable Image" {
     var image = try prepared.seal();
     defer image.deinit(std.testing.allocator);
 
-    var core = try world.Appliance.Core.initExecutable(std.testing.allocator, image, .{
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Core.initExecutable(std.testing.allocator, image, .{
         .profile = .wasm_small,
         .capacity = world.Appliance.Capacity.tiny_one_port,
+    }));
+    var core = try world.Appliance.Core.initExecutable(std.testing.allocator, image, .{
+        .profile = .wasm_small,
     });
     defer core.deinit();
     try std.testing.expectEqual(

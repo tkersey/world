@@ -702,6 +702,17 @@ pub fn Executable(comptime W: type) type {
                 return self.validateWithOptions(supported_profile, .{});
             }
 
+            pub fn ownedByteFootprint(self: @This()) usize {
+                return imageOwnedByteFootprint(.{
+                    .required_runtime_profile = self.required_runtime_profile,
+                    .modules = self.module_set.modules,
+                    .dispatch_image = self.dispatch_image,
+                    .external_bindings = self.external_bindings,
+                    .compatibility_report_summary = self.compatibility_report.summary,
+                    .image_metadata = self.metadata,
+                });
+            }
+
             pub fn validateWithOptions(self: @This(), supported_profile: RuntimeProfile, options: struct {
                 require_certificate: bool = true,
             }) !CompatibilityReport {
@@ -1366,14 +1377,7 @@ pub fn Executable(comptime W: type) type {
             for (image.module_set.modules) |module| {
                 if (module.canonical_bytes.len > profile.max_module_bytes) return error.InvalidFrameEncoding;
             }
-            if (imageOwnedByteFootprint(.{
-                .required_runtime_profile = image.required_runtime_profile,
-                .modules = image.module_set.modules,
-                .dispatch_image = image.dispatch_image,
-                .external_bindings = image.external_bindings,
-                .compatibility_report_summary = image.compatibility_report.summary,
-                .image_metadata = image.metadata,
-            }) > profile.max_image_bytes) return error.InvalidFrameEncoding;
+            if (image.ownedByteFootprint() > profile.max_image_bytes) return error.InvalidFrameEncoding;
             if (image.memory_plan.max_command_bytes > profile.max_command_bytes) return error.InvalidFrameEncoding;
             if (image.memory_plan.max_output_bytes > profile.max_output_bytes) return error.InvalidFrameEncoding;
             if (image.memory_plan.max_linear_memory_pages > profile.max_linear_memory_pages) return error.InvalidFrameEncoding;
