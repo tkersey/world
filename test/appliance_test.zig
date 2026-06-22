@@ -8300,6 +8300,11 @@ test "Universal Runtime initializes Appliance Core from Executable Image" {
         .capacity = world.Appliance.Capacity.tiny_one_port,
     });
     defer core.deinit();
+    try std.testing.expectEqual(
+        prepared.link_result.plan.externalImportSet().residual_import_set_fingerprint,
+        core.manifest_value.residual_import_set_fingerprint,
+    );
+    try std.testing.expect(core.manifest_value.residual_import_set_fingerprint != image.dispatch_image.dispatch_fingerprint);
 
     const boot = world.Appliance.Command.init(.{
         .kind = .boot,

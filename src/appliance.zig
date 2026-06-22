@@ -6947,6 +6947,7 @@ pub fn Appliance(comptime World: type) type {
             }
             const metadata_owned = try allocator.dupe(u8, metadata);
             errdefer allocator.free(metadata_owned);
+            const residual_import_set_fingerprint = try executableResidualImportSetFingerprint(allocator, root, image.dispatch_image);
             var manifest = Manifest.init(.{
                 .root_target_ref_fingerprint = root.target_ref.target_ref_fingerprint,
                 .root_world_surface_fingerprint = root.target_ref.world_surface_fingerprint,
@@ -6956,7 +6957,7 @@ pub fn Appliance(comptime World: type) type {
                 .assembly_fingerprint = image.assembly_fingerprint,
                 .provider_target_ref_fingerprints = provider_target_ref_fingerprints,
                 .fabric_plan_fingerprints = fabric_plan_fingerprints,
-                .residual_import_set_fingerprint = image.dispatch_image.dispatch_fingerprint,
+                .residual_import_set_fingerprint = residual_import_set_fingerprint,
                 .actuation_descriptor_fingerprints = descriptor_fingerprints,
                 .actuation_binding_fingerprints = binding_fingerprints,
                 .actuation_actuator_ref_fingerprints = actuator_ref_fingerprints,
@@ -6975,6 +6976,54 @@ pub fn Appliance(comptime World: type) type {
             manifest.owns_payloads = true;
             try manifest.validate();
             return manifest;
+        }
+
+        fn executableResidualImportSetFingerprint(
+            allocator: std.mem.Allocator,
+            root: World.Executable.Module,
+            dispatch_image: World.Executable.DispatchImage,
+        ) !u64 {
+            const sorted_imports = try allocator.dupe(World.ImportRequirement, root.imports);
+            defer allocator.free(sorted_imports);
+            sortResidualImportRequirements(sorted_imports);
+
+            const residuals = try allocator.alloc(World.ImportRequirement, dispatch_image.residual_request_order.len);
+            defer allocator.free(residuals);
+            var residual_count: usize = 0;
+            for (sorted_imports) |requirement| {
+                if (!residualOrderContains(dispatch_image.residual_request_order, requirement.requirement_fingerprint)) continue;
+                residuals[residual_count] = requirement;
+                residual_count += 1;
+            }
+            if (residual_count != dispatch_image.residual_request_order.len) return error.InvalidFrameEncoding;
+
+            const residual_import_set = World.Linker.ResidualImportSet.init(.{
+                .root_target_ref_fingerprint = root.target_ref.target_ref_fingerprint,
+                .requirements = residuals,
+            });
+            return residual_import_set.residual_import_set_fingerprint;
+        }
+
+        fn sortResidualImportRequirements(requirements: []World.ImportRequirement) void {
+            var index: usize = 1;
+            while (index < requirements.len) : (index += 1) {
+                var cursor = index;
+                while (cursor > 0 and residualImportRequirementLess(requirements[cursor], requirements[cursor - 1])) : (cursor -= 1) {
+                    std.mem.swap(World.ImportRequirement, &requirements[cursor], &requirements[cursor - 1]);
+                }
+            }
+        }
+
+        fn residualImportRequirementLess(lhs: World.ImportRequirement, rhs: World.ImportRequirement) bool {
+            if (lhs.world_port_id != rhs.world_port_id) return lhs.world_port_id < rhs.world_port_id;
+            return lhs.requirement_fingerprint < rhs.requirement_fingerprint;
+        }
+
+        fn residualOrderContains(order: []const u64, fingerprint: u64) bool {
+            for (order) |current| {
+                if (current == fingerprint) return true;
+            }
+            return false;
         }
 
         fn cloneEnvelope(
