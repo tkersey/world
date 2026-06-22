@@ -12606,6 +12606,10 @@ pub const Runspace = struct {
         var loaded_options = options;
         loaded_options.executable_image_fingerprint = image.image_fingerprint;
         loaded_options.executable_dispatch_coverage = executableLoadedDispatchCoverage(image.dispatch_image);
+        if (loaded_options.executable_dispatch_coverage.route_parent_world_port_ids.len != 0) {
+            const plan = loaded_options.fabric_plan orelse return error.RunspaceInstallDenied;
+            if (!executableDispatchBindsFabricPlan(image.dispatch_image, plan.plan_fingerprint)) return error.RunspaceInstallDenied;
+        }
         return self.installLoadedModuleRun(root, loaded_options);
     }
 
@@ -14570,11 +14574,15 @@ pub const Runspace = struct {
         };
     }
 
+    fn executableDispatchBindsFabricPlan(dispatch: Executable.DispatchImage, plan_fingerprint: u64) bool {
+        for (dispatch.fabric_plan_fingerprints) |fingerprint| {
+            if (fingerprint == plan_fingerprint) return true;
+        }
+        return false;
+    }
+
     fn executableDispatchCoversFabricRoute(dispatch: Executable.DispatchImage, plan_fingerprint: u64, route: Fabric.Route) bool {
-        const plan_bound = for (dispatch.fabric_plan_fingerprints) |fingerprint| {
-            if (fingerprint == plan_fingerprint) break true;
-        } else false;
-        if (!plan_bound) return false;
+        if (!executableDispatchBindsFabricPlan(dispatch, plan_fingerprint)) return false;
         const expected_provider = route.provider_module_fingerprint orelse return false;
         for (dispatch.route_ids, 0..) |route_id, index| {
             if (route_id != route.route_id) continue;
@@ -36889,6 +36897,7 @@ pub const Continuity = struct {
                     else => break :blk null,
                 };
                 defer output.deinit(allocator);
+                if (!try validApplianceTurnOutputPayload(allocator, output)) break :blk null;
                 break :blk output.output_fingerprint;
             },
             .appliance_checkpoint => blk: {
@@ -37118,6 +37127,21 @@ pub const Continuity = struct {
         return true;
     }
 
+    fn validApplianceTurnOutputPayload(allocator: std.mem.Allocator, output: Appliance.TurnOutput) !bool {
+        if (output.checkpoint_bytes.len == 0) return false;
+        var checkpoint = Appliance.Checkpoint.decode(
+            allocator,
+            output.checkpoint_bytes,
+            output.manifest_fingerprint,
+            Appliance.Capacity.archive_decode,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        defer checkpoint.deinit(allocator);
+        return checkpoint.checkpoint_fingerprint == output.checkpoint.checkpoint_fingerprint;
+    }
+
     fn validAdmissionReceiptPayload(receipt: Admission.AdmissionReceipt) bool {
         if (receipt.format_version != world_admission_receipt_format_version) return false;
         if (receipt.fingerprint_version != world_admission_receipt_fingerprint_version) return false;
@@ -37314,6 +37338,7 @@ pub const Continuity = struct {
                 };
                 defer output.deinit(allocator);
                 output.validate(output.manifest_fingerprint, Appliance.Capacity.archive_decode) catch break :blk false;
+                if (!try validApplianceTurnOutputPayload(allocator, output)) break :blk false;
                 break :blk output.output_format_version == envelope.object_format_version;
             },
             .appliance_reconstruction_report => blk: {
@@ -37582,6 +37607,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer output.deinit(allocator);
+                if (!try validApplianceTurnOutputPayload(allocator, output)) break :blk false;
                 break :blk try bundleApplianceTurnOutputDependencyPayloadsValid(allocator, envelopes, output);
             },
             .appliance_reconstruction_report => blk: {
@@ -37637,6 +37663,17 @@ pub const Continuity = struct {
         return true;
     }
 
+    fn bundleApplianceTurnOutputEnvelopePayloadValid(allocator: std.mem.Allocator, envelope: ObjectEnvelope, expected_fingerprint: u64, expected_manifest_fingerprint: u64) !bool {
+        var output = Appliance.TurnOutput.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        defer output.deinit(allocator);
+        if (output.output_fingerprint != expected_fingerprint) return false;
+        if (output.manifest_fingerprint != expected_manifest_fingerprint) return false;
+        return try validApplianceTurnOutputPayload(allocator, output);
+    }
+
     fn bundleApplianceReconstructionReportDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, report: Appliance.ReconstructionReport) !bool {
         const output_fingerprints = [_]u64{
             report.resident_turn_output_fingerprint,
@@ -37645,13 +37682,7 @@ pub const Continuity = struct {
         for (output_fingerprints) |fingerprint| {
             const ref = semanticObjectRef(.appliance_turn_output, fingerprint);
             if (try bundleEnvelopeForRef(allocator, envelopes, ref)) |output_envelope| {
-                var output = Appliance.TurnOutput.decodeArchivePayload(allocator, output_envelope.payload_bytes) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return false,
-                };
-                defer output.deinit(allocator);
-                if (output.output_fingerprint != fingerprint) return false;
-                if (output.manifest_fingerprint != report.manifest_fingerprint) return false;
+                if (!try bundleApplianceTurnOutputEnvelopePayloadValid(allocator, output_envelope, fingerprint, report.manifest_fingerprint)) return false;
             }
         }
         return true;
@@ -37680,13 +37711,7 @@ pub const Continuity = struct {
             const fingerprint = maybe_fingerprint orelse continue;
             const ref = semanticObjectRef(.appliance_turn_output, fingerprint);
             if (try bundleEnvelopeForRef(allocator, envelopes, ref)) |output_envelope| {
-                var output = Appliance.TurnOutput.decodeArchivePayload(allocator, output_envelope.payload_bytes) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return false,
-                };
-                defer output.deinit(allocator);
-                if (output.output_fingerprint != fingerprint) return false;
-                if (output.manifest_fingerprint != report.manifest_fingerprint) return false;
+                if (!try bundleApplianceTurnOutputEnvelopePayloadValid(allocator, output_envelope, fingerprint, report.manifest_fingerprint)) return false;
             }
         }
         return true;

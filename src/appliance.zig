@@ -193,7 +193,7 @@ pub fn Appliance(comptime World: type) type {
                 .max_fabric_invocations = 0,
                 .max_actuation_records = 2,
                 .max_capsule_bytes = 4096,
-                .max_archive_append_bytes = 4096,
+                .max_archive_append_bytes = 16 * 1024,
                 .max_command_bytes = 2048,
                 .max_output_bytes = 16 * 1024,
                 .max_error_bytes = 1024,
@@ -1785,6 +1785,7 @@ pub fn Appliance(comptime World: type) type {
                 errdefer output.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
                 try output.validate(expected_manifest_fingerprint, capacity);
+                try validateDecodedCheckpointBytes(expected_manifest_fingerprint, capacity, output.checkpoint_bytes, output.checkpoint);
                 return output;
             }
 
@@ -1879,7 +1880,32 @@ pub fn Appliance(comptime World: type) type {
                 defer allocator.free(checkpoint_payload);
                 const receipt_payload = try encodeTurnReceiptOwned(allocator, archive_output.turn_receipt);
                 defer allocator.free(receipt_payload);
-                const output_payload = try archive_output.encode(allocator);
+                const archived_output = TurnOutput.init(.{
+                    .manifest_fingerprint = archive_output.manifest_fingerprint,
+                    .turn_sequence_number = archive_output.turn_sequence_number,
+                    .source_state_fingerprint = archive_output.source_state_fingerprint,
+                    .resulting_state_fingerprint = archive_output.resulting_state_fingerprint,
+                    .quiescence = archive_output.quiescence,
+                    .status = archive_output.status,
+                    .host_requests = archive_output.host_requests,
+                    .finalized_actuation_receipt_fingerprints = archive_output.finalized_actuation_receipt_fingerprints,
+                    .root_result_fingerprint = archive_output.root_result_fingerprint,
+                    .root_result_value_image_bytes = archive_output.root_result_value_image_bytes,
+                    .root_result_value_ref_fingerprint = archive_output.root_result_value_ref_fingerprint,
+                    .run_receipt_fingerprint = archive_output.run_receipt_fingerprint,
+                    .run_receipt_bytes = archive_output.run_receipt_bytes,
+                    .archive_append_batch_fingerprint = archive_output.archive_append_batch_fingerprint,
+                    .archive_append_batch_ref_fingerprint = archive_output.archive_append_batch_ref_fingerprint,
+                    .checkpoint_bytes = checkpoint_payload,
+                    .archive_append_batch_bytes = archive_output.archive_append_batch_bytes,
+                    .checkpoint = archive_output.checkpoint,
+                    .turn_receipt = archive_output.turn_receipt,
+                    .blocker_count = archive_output.blocker_count,
+                    .warning_count = archive_output.warning_count,
+                    .diagnostic_metadata = archive_output.diagnostic_metadata,
+                });
+                try archived_output.validate(output.manifest_fingerprint, capacity);
+                const output_payload = try archived_output.encode(allocator);
                 defer allocator.free(output_payload);
 
                 var objects = try allocator.alloc(World.Continuity.ObjectEnvelope, 3);
@@ -1931,7 +1957,7 @@ pub fn Appliance(comptime World: type) type {
                 var event_fingerprints = try allocator.alloc(u64, 1);
                 errdefer allocator.free(event_fingerprints);
 
-                const transaction_fingerprint = fingerprintArchiveTransaction(parent_cursor, archive_output, refs);
+                const transaction_fingerprint = fingerprintArchiveTransaction(parent_cursor, archived_output, refs);
                 events[0] = World.Continuity.Chronicle.Event.init(.{
                     .kind = .object_committed,
                     .transaction_fingerprint = transaction_fingerprint,
@@ -2777,7 +2803,12 @@ pub fn Appliance(comptime World: type) type {
                     return;
                 };
                 if (command.kind == .@"continue" and command.host_replies.len == 0 and !commandHasRetentionAck(command)) return error.UnknownRequest;
-                for (command.host_replies) |reply| try reply.validate(outstanding, self.capacity_value);
+                var terminal_count: usize = 0;
+                for (command.host_replies) |reply| {
+                    try reply.validate(outstanding, self.capacity_value);
+                    if (hostOutcomeStatusIsTerminal(reply.outcome.status)) terminal_count += 1;
+                }
+                if (terminal_count != 0 and terminal_count != command.host_replies.len) return error.InvalidCommand;
             }
 
             fn validateCommandRetentionAck(self: @This(), command: Command) !void {
@@ -6838,6 +6869,11 @@ pub fn Appliance(comptime World: type) type {
                 return error.InvalidFrameEncoding;
             defer decoded.deinit(std.heap.page_allocator);
             if (decoded.checkpoint_fingerprint != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
+        }
+
+        fn validateDecodedCheckpointBytes(expected_manifest_fingerprint: u64, capacity: Capacity, bytes: []const u8, checkpoint: Checkpoint) !void {
+            if (bytes.len == 0) return error.InvalidFrameEncoding;
+            try validateCheckpointBytes(expected_manifest_fingerprint, capacity, bytes, checkpoint);
         }
 
         fn encodeTurnReceiptOwned(allocator: std.mem.Allocator, receipt: TurnReceipt) ![]const u8 {

@@ -1325,6 +1325,7 @@ pub fn Executable(comptime W: type) type {
             if (link_result.certificate.certificate_fingerprint != image.linker_certificate_fingerprint) return false;
             if (link_result.assembly.assembly_fingerprint != image.assembly_fingerprint) return false;
             if (!std.mem.eql(u64, link_result.certificate.fabric_plan_fingerprints, image.dispatch_image.fabric_plan_fingerprints)) return false;
+            if (!residualOrderMatchesRequirements(image.dispatch_image.residual_request_order, link_result.plan.external_environment_requirements)) return false;
             const routes = try dispatchRouteSlices(allocator, link_result.plan);
             defer routes.deinit(allocator);
             return std.mem.eql(u64, routes.route_ids, image.dispatch_image.route_ids) and
@@ -1454,6 +1455,22 @@ pub fn Executable(comptime W: type) type {
                 if (fingerprint == requirement.requirement_fingerprint) return true;
             }
             return false;
+        }
+
+        fn residualOrderMatchesRequirements(residual_order: []const u64, requirements: []const W.ImportRequirement) bool {
+            if (residual_order.len != requirements.len) return false;
+            for (residual_order) |fingerprint| {
+                if (countU64(residual_order, fingerprint) != countRequirementFingerprint(requirements, fingerprint)) return false;
+            }
+            return true;
+        }
+
+        fn countRequirementFingerprint(requirements: []const W.ImportRequirement, fingerprint: u64) usize {
+            var count: usize = 0;
+            for (requirements) |requirement| {
+                if (requirement.requirement_fingerprint == fingerprint) count += 1;
+            }
+            return count;
         }
 
         fn importRequirementForFingerprint(root: Module, requirement_fingerprint: u64) ?W.ImportRequirement {

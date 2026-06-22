@@ -41344,6 +41344,70 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     const sealed_route = plan.routes[0];
     try std.testing.expectEqual(@as(usize, 1), image.dispatch_image.route_requirement_fingerprints.len);
     try std.testing.expectEqual(prepared.plan.link_plan.route_syntheses[0].import_requirement_fingerprint, image.dispatch_image.route_requirement_fingerprints[0]);
+    const routed_requirement = for (image.module_set.root().?.imports) |requirement| {
+        if (requirement.requirement_fingerprint == image.dispatch_image.route_requirement_fingerprints[0]) break requirement;
+    } else return error.ExpectedImportRequirement;
+    const routed_actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "loaded-fabric.routed-residual",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const routed_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = routed_actuator_ref,
+        .world_surface_fingerprint = image.module_set.root().?.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+        .world_port_id = routed_requirement.world_port_id,
+        .world_port_ref_fingerprint = routed_requirement.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = routed_requirement.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = routed_requirement.payload_value_table_id,
+        .response_value_table_id = routed_requirement.response_value_table_id,
+        .label = "loaded-fabric.routed-residual",
+    });
+    const routed_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = image.module_set.root().?.module_ref.boundary_module_fingerprint,
+        .world_port_id = routed_requirement.world_port_id,
+        .world_port_ref_fingerprint = routed_requirement.world_port_ref_fingerprint,
+        .payload_value_table_id = routed_requirement.payload_value_table_id,
+        .payload_value_ref_fingerprint = routed_requirement.payload_value_ref_fingerprint,
+        .response_value_table_id = routed_requirement.response_value_table_id,
+        .response_value_ref_fingerprint = routed_requirement.response_value_ref_fingerprint,
+        .actuator_ref = routed_actuator_ref,
+        .descriptor = routed_descriptor,
+        .label = "loaded-fabric.routed-residual",
+    });
+    const routed_binding_fingerprints = [_]u64{routed_binding.binding_fingerprint};
+    const routed_as_residual = [_]u64{routed_requirement.requirement_fingerprint};
+    const routed_residual_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = &routed_binding_fingerprints,
+        .residual_request_order = &routed_as_residual,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const routed_residual_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = routed_residual_dispatch,
+        .external_bindings = &.{routed_binding},
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, routed_residual_image.validate(world.Executable.RuntimeProfile.universal_v1));
     const forged_route_ids = [_]u64{sealed_route.route_id +% 1};
     const forged_dispatch = world.Executable.DispatchImage.init(.{
         .root_module_id = image.dispatch_image.root_module_id,
@@ -41441,9 +41505,7 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     });
     var unsealed_runspace = world.Runspace.init(std.testing.allocator, .{});
     defer unsealed_runspace.deinit();
-    _ = try unsealed_runspace.installExecutableRoot(image, .{ .fabric_plan = unsealed_plan });
-    _ = try unsealed_runspace.tick();
-    try std.testing.expectError(error.SupervisionDenied, unsealed_runspace.routePendingToLoadedProvider(0, image, unsealed_plan));
+    try std.testing.expectError(error.RunspaceInstallDenied, unsealed_runspace.installExecutableRoot(image, .{ .fabric_plan = unsealed_plan }));
 
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
