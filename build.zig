@@ -624,8 +624,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Seed migration example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=5eedbb859fcda91b
-            \\restored_output=5eedbb859fcda91b
+            \\resident_output=42c98d8a0074a5ef
+            \\restored_output=42c98d8a0074a5ef
             \\
             ,
         },
@@ -652,7 +652,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=203d84ae0de7185a
+            \\replay_evidence=69e6dc2a3a2f5ab5
             \\replay_final_result=false
             \\
             ,
@@ -1352,8 +1352,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=5eedbb859fcda91b
-            \\restored_output=5eedbb859fcda91b
+            \\resident_output=42c98d8a0074a5ef
+            \\restored_output=42c98d8a0074a5ef
             \\
             ,
         },
@@ -1364,10 +1364,10 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance archive example.",
             .expected_stdout =
             \\archive_batches=1
-            \\output_archive_request=8f80906a14713450
+            \\output_archive_request=9771359deb7ff3ed
             \\archive_objects=3
-            \\retention_ack=39bd09841e959362
-            \\moment=21cf1483c21e8fa5
+            \\retention_ack=a94f6ff43f0c6425
+            \\moment=489b5ceb6b234c6a
             \\
             ,
         },
@@ -1380,7 +1380,7 @@ pub fn build(b: *std.Build) void {
             \\fresh_status=needs_host
             \\fresh_host_requests=1
             \\replay_supported=false
-            \\replay_evidence=203d84ae0de7185a
+            \\replay_evidence=69e6dc2a3a2f5ab5
             \\replay_final_result=false
             \\
             ,

@@ -8470,7 +8470,9 @@ test "World Seed Replay accepts batched host replies for independent requests" {
     defer output.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Appliance.TurnStatus.completed, output.status);
     try std.testing.expectEqual(@as(usize, 2), output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expect(output.root_result_fingerprint != null);
     try std.testing.expect(output.root_result_value_image_bytes.len != 0);
+    try std.testing.expectEqual(@as(?u64, null), output.root_result_value_ref_fingerprint);
     try std.testing.expect(output.checkpoint_bytes.len != 0);
 }
 
