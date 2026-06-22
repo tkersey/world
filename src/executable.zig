@@ -538,6 +538,7 @@ pub fn Executable(comptime W: type) type {
             memory_plan: MemoryPlan,
             external_bindings: []const ExternalBinding = &.{},
             compatibility_report: CompatibilityReport,
+            metadata: []const u8 = "",
 
             pub fn init(args: struct {
                 module_set: ModuleSet,
@@ -549,6 +550,7 @@ pub fn Executable(comptime W: type) type {
                 memory_plan: MemoryPlan,
                 external_bindings: []const ExternalBinding = &.{},
                 compatibility_report: CompatibilityReport,
+                metadata: []const u8 = "",
             }) @This() {
                 var result = @This(){
                     .plan_fingerprint = 0,
@@ -561,6 +563,7 @@ pub fn Executable(comptime W: type) type {
                     .memory_plan = args.memory_plan,
                     .external_bindings = args.external_bindings,
                     .compatibility_report = args.compatibility_report,
+                    .metadata = args.metadata,
                 };
                 result.plan_fingerprint = fingerprintPlan(result);
                 return result;
@@ -582,7 +585,8 @@ pub fn Executable(comptime W: type) type {
                 var compatibility_report = self.compatibility_report;
                 compatibility_report.summary = try allocator.dupe(u8, self.compatibility_report.summary);
                 errdefer allocator.free(compatibility_report.summary);
-                const image_metadata = "world-executable-image-v1";
+                const image_metadata = try allocator.dupe(u8, self.metadata);
+                errdefer allocator.free(image_metadata);
                 var image = Image.init(.{
                     .required_runtime_profile = runtime_profile,
                     .module_set = ModuleSet.init(modules, self.module_set.root_module_id),
@@ -701,6 +705,7 @@ pub fn Executable(comptime W: type) type {
                     freeExternalBindingSlice(allocator, self.external_bindings);
                     allocator.free(self.required_runtime_profile.metadata);
                     allocator.free(self.compatibility_report.summary);
+                    allocator.free(self.metadata);
                 }
                 self.* = undefined;
             }
@@ -958,7 +963,7 @@ pub fn Executable(comptime W: type) type {
                     .dispatch_image = dispatch,
                     .external_bindings = external_bindings,
                     .compatibility_report_summary = "executable image prepared",
-                    .image_metadata = "world-executable-image-v1",
+                    .image_metadata = self.options.metadata,
                 }) <= self.options.runtime_profile.max_image_bytes;
                 const report = CompatibilityReport.init(.{
                     .compatible = compatible and memory_fits_profile,
@@ -981,6 +986,7 @@ pub fn Executable(comptime W: type) type {
                     .memory_plan = memory_plan,
                     .external_bindings = external_bindings,
                     .compatibility_report = report,
+                    .metadata = self.options.metadata,
                 });
                 return .{
                     .allocator = self.allocator,

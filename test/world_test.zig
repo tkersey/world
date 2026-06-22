@@ -39990,7 +39990,10 @@ test "Executable Builder seals full module image with explicit residual external
     const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(root_bytes);
 
-    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    const image_metadata = "seed.fixture.image.metadata";
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .metadata = image_metadata,
+    });
     defer builder.deinit();
     try builder.addRootModule(root_bytes);
 
@@ -40205,6 +40208,7 @@ test "Executable Builder seals full module image with explicit residual external
     var prepared = try builder.prepare();
     defer prepared.deinit();
     try std.testing.expect(prepared.plan.compatibility_report.compatible);
+    try std.testing.expectEqualStrings(image_metadata, prepared.plan.metadata);
     try std.testing.expectEqual(@as(usize, 1), prepared.plan.external_bindings.len);
     try std.testing.expectEqual(@as(usize, 1), prepared.plan.link_plan.external_environment_requirements.len);
     try std.testing.expectEqual(@as(usize, 1), prepared.plan.dispatch_image.residual_request_order.len);
@@ -40215,6 +40219,7 @@ test "Executable Builder seals full module image with explicit residual external
     defer image.deinit(std.testing.allocator);
     const report = try image.validate(world.Executable.RuntimeProfile.universal_v1);
     try std.testing.expect(report.compatible);
+    try std.testing.expectEqualStrings(image_metadata, image.metadata);
     try std.testing.expectEqual(image.image_fingerprint, image.certificate.image_fingerprint);
     var borrowed_image_owner = world.Executable.Image.init(.{
         .required_runtime_profile = image.required_runtime_profile,
@@ -40265,11 +40270,14 @@ test "Executable Builder seals full module image with explicit residual external
         defer std.testing.allocator.free(mutable_binding_metadata);
         var mutable_runtime_profile_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.profile.metadata");
         defer std.testing.allocator.free(mutable_runtime_profile_metadata);
+        var mutable_image_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.image.metadata");
+        defer std.testing.allocator.free(mutable_image_metadata);
 
         var mutable_builder = world.Executable.Builder.init(std.testing.allocator, .{
             .runtime_profile = world.Executable.RuntimeProfile.init(.{
                 .metadata = mutable_runtime_profile_metadata,
             }),
+            .metadata = mutable_image_metadata,
         });
         defer mutable_builder.deinit();
         try mutable_builder.addRootModule(root_bytes);
@@ -40321,9 +40329,11 @@ test "Executable Builder seals full module image with explicit residual external
         mutable_binding_label[0] = 'X';
         mutable_binding_metadata[0] = 'X';
         mutable_runtime_profile_metadata[0] = 'X';
+        mutable_image_metadata[0] = 'X';
 
         const mutable_report = try mutable_image.validate(world.Executable.RuntimeProfile.universal_v1);
         try std.testing.expect(mutable_report.compatible);
+        try std.testing.expectEqualStrings("seed.fixture.mutable.image.metadata", mutable_image.metadata);
     }
     {
         var forged_import = root_import;
@@ -41030,6 +41040,37 @@ test "Executable Builder charges external binding metadata against image bytes" 
     try std.testing.expect(!prepared.plan.compatibility_report.compatible);
     try std.testing.expect(!prepared.plan.compatibility_report.memory_compatible);
     try std.testing.expect(prepared.plan.memory_plan.decoded_module_bytes <= profile.max_image_bytes);
+    try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
+}
+
+test "Executable Builder charges image metadata against image bytes" {
+    const root_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var baseline_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer baseline_builder.deinit();
+    try baseline_builder.addRootModule(root_bytes);
+    var baseline_prepared = try baseline_builder.prepare();
+    defer baseline_prepared.deinit();
+    var baseline_image = try baseline_prepared.seal();
+    defer baseline_image.deinit(std.testing.allocator);
+
+    const image_metadata = "image metadata charged to profile bytes";
+    const profile = world.Executable.RuntimeProfile.init(.{
+        .max_module_bytes = root_bytes.len + 1,
+        .max_image_bytes = baseline_image.ownedByteFootprint() + image_metadata.len - 1,
+    });
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .runtime_profile = profile,
+        .metadata = image_metadata,
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(!prepared.plan.compatibility_report.compatible);
+    try std.testing.expect(!prepared.plan.compatibility_report.memory_compatible);
     try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
 }
 
