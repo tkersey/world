@@ -592,6 +592,7 @@ pub fn Archive(comptime World: type) type {
             events: []const Chronicle.Event = &.{},
             objects: []const ObjectEnvelope = &.{},
             diagnostic_metadata_bytes: []const u8 = "",
+            owns_memory: bool = false,
 
             pub fn init(args: struct {
                 parent_cursor: Chronicle.Cursor,
@@ -635,11 +636,22 @@ pub fn Archive(comptime World: type) type {
                 try rejectConflictingObjectBytes(self.objects);
                 try validateByteField(self.diagnostic_metadata_bytes);
             }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.owns_memory) {
+                    allocator.free(self.parent_cursor.metadata_bytes);
+                    self.commit.deinit(allocator);
+                    freeEventSlice(allocator, self.events);
+                    freeEnvelopeSlice(allocator, self.objects);
+                    allocator.free(self.diagnostic_metadata_bytes);
+                }
+                self.* = undefined;
+            }
         };
 
-        pub fn appendBatchSerializedByteLen(allocator: std.mem.Allocator, batch: AppendBatch) !usize {
+        pub fn encodeAppendBatchOwned(allocator: std.mem.Allocator, batch: AppendBatch) ![]const u8 {
             var out: std.ArrayList(u8) = .empty;
-            defer out.deinit(allocator);
+            errdefer out.deinit(allocator);
             try writeU32(&out, allocator, batch.append_batch_format_version);
             try writeU32(&out, allocator, batch.append_batch_fingerprint_version);
             try writeU64(&out, allocator, batch.append_batch_fingerprint);
@@ -650,7 +662,76 @@ pub fn Archive(comptime World: type) type {
             try writeU64(&out, allocator, batch.objects.len);
             for (batch.objects) |object| try encodeEnvelope(&out, allocator, object);
             try writeBytes(&out, allocator, batch.diagnostic_metadata_bytes);
-            return out.items.len;
+            return out.toOwnedSlice(allocator);
+        }
+
+        pub fn decodeAppendBatchOwned(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) !AppendBatch {
+            var cursor: usize = 0;
+            var batch = AppendBatch{
+                .append_batch_format_version = try readU32(bytes, &cursor),
+                .append_batch_fingerprint_version = try readU32(bytes, &cursor),
+                .append_batch_fingerprint = try readU64(bytes, &cursor),
+                .parent_cursor = try decodeCursor(allocator, bytes, &cursor, limits),
+                .commit = undefined,
+                .events = &.{},
+                .objects = &.{},
+                .diagnostic_metadata_bytes = "",
+                .owns_memory = true,
+            };
+            var parent_cursor_owned = true;
+            errdefer if (parent_cursor_owned) allocator.free(batch.parent_cursor.metadata_bytes);
+            batch.commit = try decodeCommit(allocator, bytes, &cursor, limits);
+            var commit_owned = true;
+            errdefer if (commit_owned) batch.commit.deinit(allocator);
+            const event_count = try readU64AsUsize(bytes, &cursor);
+            if (event_count > limits.max_event_count_per_moment) return error.InvalidFrameEncoding;
+            var events = try allocator.alloc(Chronicle.Event, event_count);
+            var events_alloc_owned = true;
+            errdefer if (events_alloc_owned) allocator.free(events);
+            var event_init: usize = 0;
+            var event_init_owned = true;
+            errdefer if (event_init_owned) for (events[0..event_init]) |*event| event.deinit(allocator);
+            for (events) |*event| {
+                event.* = try decodeEvent(allocator, bytes, &cursor, limits);
+                event_init += 1;
+            }
+            batch.events = events;
+            events_alloc_owned = false;
+            event_init_owned = false;
+            var events_owned = true;
+            errdefer if (events_owned) freeEventSlice(allocator, batch.events);
+            const object_count = try readU64AsUsize(bytes, &cursor);
+            if (object_count > limits.max_object_count_per_moment) return error.InvalidFrameEncoding;
+            var objects = try allocator.alloc(ObjectEnvelope, object_count);
+            var objects_alloc_owned = true;
+            errdefer if (objects_alloc_owned) allocator.free(objects);
+            var object_init: usize = 0;
+            var object_init_owned = true;
+            errdefer if (object_init_owned) for (objects[0..object_init]) |*object| object.deinit(allocator);
+            for (objects) |*object| {
+                object.* = try decodeEnvelope(allocator, bytes, &cursor, limits);
+                object_init += 1;
+            }
+            batch.objects = objects;
+            objects_alloc_owned = false;
+            object_init_owned = false;
+            var objects_owned = true;
+            errdefer if (objects_owned) freeEnvelopeSlice(allocator, batch.objects);
+            batch.diagnostic_metadata_bytes = try readBytesOwned(allocator, bytes, &cursor, limits);
+            errdefer allocator.free(batch.diagnostic_metadata_bytes);
+            if (cursor != bytes.len) return error.InvalidFrameEncoding;
+            try batch.validate();
+            parent_cursor_owned = false;
+            commit_owned = false;
+            events_owned = false;
+            objects_owned = false;
+            return batch;
+        }
+
+        pub fn appendBatchSerializedByteLen(allocator: std.mem.Allocator, batch: AppendBatch) !usize {
+            const encoded = try encodeAppendBatchOwned(allocator, batch);
+            defer allocator.free(encoded);
+            return encoded.len;
         }
 
         pub const ScanReport = struct {

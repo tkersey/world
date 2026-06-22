@@ -1476,33 +1476,41 @@ pub fn Linker(comptime W: type) type {
             var ambiguous_count: usize = 0;
             var max_depth_observed: usize = 0;
             const catalog_fingerprint = fingerprintCanonicalCatalog(input.catalog.entries);
-            var root_port_coverage = try allocator.alloc(bool, input.root_import_set.required_count);
-            defer allocator.free(root_port_coverage);
-            @memset(root_port_coverage, false);
+            const root_import_bound = input.root_import_set.required_count +| input.root_import_set.optional_count;
             var root_import_set_mismatch =
                 input.root_import_set.target_ref_fingerprint != input.root_target_ref.target_ref_fingerprint or
                 input.root_import_set.import_set_fingerprint != fingerprintRootImportSet(input.root_import_set) or
-                input.root_import_set.world_port_count < input.root_import_set.required_count or
-                input.root_imports.len != input.root_import_set.required_count;
-            for (input.root_imports) |requirement| {
+                input.root_imports.len < input.root_import_set.required_count or
+                input.root_imports.len > root_import_bound;
+            for (input.root_imports, 0..) |requirement, index| {
                 if (requirement.target_ref_fingerprint == null or
                     requirement.target_ref_fingerprint.? != input.root_target_ref.target_ref_fingerprint or
                     requirement.world_surface_fingerprint != input.root_target_ref.world_surface_fingerprint or
-                    requirement.world_port_id >= input.root_import_set.required_count)
+                    requirement.world_port_id >= input.root_import_set.world_port_count)
                 {
                     root_import_set_mismatch = true;
                     continue;
                 }
-                if (root_port_coverage[requirement.world_port_id]) {
-                    root_import_set_mismatch = true;
-                    continue;
-                }
-                root_port_coverage[requirement.world_port_id] = true;
+                for (input.root_imports[0..index]) |prior| {
+                    if (prior.requirement_fingerprint == requirement.requirement_fingerprint) {
+                        root_import_set_mismatch = true;
+                        break;
+                    }
+                } else continue;
+                break;
             }
-            for (root_port_coverage) |covered| {
-                if (!covered) {
+            if (!root_import_set_mismatch) {
+                var required_count: usize = 0;
+                var optional_count: usize = 0;
+                for (input.root_imports) |requirement| {
+                    if (requirement.required) {
+                        required_count += 1;
+                    } else {
+                        optional_count += 1;
+                    }
+                }
+                if (required_count != input.root_import_set.required_count or optional_count > input.root_import_set.optional_count) {
                     root_import_set_mismatch = true;
-                    break;
                 }
             }
             if (root_import_set_mismatch) {
@@ -1636,6 +1644,12 @@ pub fn Linker(comptime W: type) type {
                 }
                 if (routes.items.len >= max_routes) {
                     try blockers.append(allocator, .ProviderRunLimitExceeded);
+                    continue;
+                }
+                if (fabricRouteExistsForPort(routes.items, requirement.world_port_id)) {
+                    try unresolved.append(allocator, requirement);
+                    _ = try appendGraphEvidenceNode(allocator, &nodes, .unresolved, input.root_target_ref.target_ref_fingerprint, requirement, "duplicate-port-fabric");
+                    try blockers.append(allocator, .FabricInvariantViolation);
                     continue;
                 }
                 if (policy.max_link_depth < 1) {
@@ -1981,7 +1995,7 @@ pub fn Linker(comptime W: type) type {
             for (plan.routes) |route| {
                 try route.validate();
                 switch (route.kind) {
-                    .target_export, .admitted_run => {
+                    .target_export, .loaded_module_export, .admitted_run => {
                         if (route.provider_target_ref_fingerprint == null and route.provider_module_fingerprint == null) return error.ProviderRunDenied;
                         if (route.response_value_mapping_fingerprint == null and route.value_mapping_fingerprint == null) return error.UnsupportedMapping;
                     },
@@ -2004,7 +2018,8 @@ pub fn Linker(comptime W: type) type {
 
         fn routeKindForEntry(entry: Catalog.Entry) W.Fabric.RouteKind {
             return switch (entry.provider_kind) {
-                .target, .module_ref => .target_export,
+                .target => .target_export,
+                .module_ref => .loaded_module_export,
                 .admitted_run => .admitted_run,
                 .guest_provider => .guest,
                 .replay_provider => .replay,
@@ -2074,6 +2089,13 @@ pub fn Linker(comptime W: type) type {
             return provider_ref.boundary_module_fingerprint;
         }
 
+        fn fabricRouteExistsForPort(routes: []const W.Fabric.Route, world_port_id: u32) bool {
+            for (routes) |route| {
+                if (route.parent_world_port_id == world_port_id) return true;
+            }
+            return false;
+        }
+
         fn linkerCanSynthesizeRouteKind(policy: Policy, entry: Catalog.Entry) bool {
             return switch (entry.provider_kind) {
                 .target, .module_ref, .admitted_run => true,
@@ -2109,14 +2131,14 @@ pub fn Linker(comptime W: type) type {
 
         fn routeKindRequiresProviderRun(kind: W.Fabric.RouteKind) bool {
             return switch (kind) {
-                .target_export, .admitted_run, .guest => true,
+                .target_export, .loaded_module_export, .admitted_run, .guest => true,
                 .adapter, .replay, .reject, .unsupported => false,
             };
         }
 
         fn routeKindUsesResponseMapping(kind: W.Fabric.RouteKind) bool {
             return switch (kind) {
-                .target_export, .admitted_run => true,
+                .target_export, .loaded_module_export, .admitted_run => true,
                 .adapter, .guest, .replay, .reject, .unsupported => false,
             };
         }

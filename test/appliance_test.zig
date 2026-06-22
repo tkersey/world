@@ -12,8 +12,13 @@ fn applianceDecide(_: *AppliancePortsCtx, _: []const u8) !fixtures.Agent.Action 
     return .{ .final = "final=actuate skeleton complete" };
 }
 
+fn applianceTool(_: *AppliancePortsCtx, _: []const u8) ![]const u8 {
+    return "tool";
+}
+
 const AppliancePortsDecl = world.port(fixtures.Ports.Target, fixtures.Ports.ApprovalRequest, applianceApprove);
 const ApplianceAgentDecideDecl = world.port(fixtures.Agent.Target, fixtures.Agent.Decide, applianceDecide);
+const ApplianceAgentToolDecl = world.port(fixtures.Agent.Target, fixtures.Agent.Tool, applianceTool);
 const ApplianceActuator = world.actuator(.{
     .kind = .fixture,
     .class = .deterministic_fixture,
@@ -23,6 +28,7 @@ const ApplianceActuator = world.actuator(.{
 });
 const ApplianceActuationBinding = world.bindActuator(AppliancePortsDecl, ApplianceActuator);
 const ApplianceAgentActuationBinding = world.bindActuator(ApplianceAgentDecideDecl, ApplianceActuator);
+const ApplianceAgentToolActuationBinding = world.bindActuator(ApplianceAgentToolDecl, ApplianceActuator);
 const ApplianceAgentToolImport = world.ImportRequirement.fromTargetPort(fixtures.Agent.Target, 1);
 
 fn applianceSyntheticHostRequestArgs(comptime T: type, args: T) struct {
@@ -43,6 +49,12 @@ fn applianceSyntheticHostRequestArgs(comptime T: type, args: T) struct {
     idempotency_key_fingerprint: u64,
     supervision_ref_fingerprint: ?u64 = null,
     metadata: []const u8 = "",
+    frame_request_bytes: []const u8 = "",
+    payload_value_image_bytes: []const u8 = "",
+    prepared_actuation_evidence_bytes: []const u8 = "",
+    idempotency_key_bytes: []const u8 = "",
+    expected_response_value_ref_fingerprint: ?u64 = null,
+    expected_response_schema_ref_fingerprint: ?u64 = null,
 } {
     return .{
         .turn_sequence_number = args.turn_sequence_number,
@@ -62,6 +74,12 @@ fn applianceSyntheticHostRequestArgs(comptime T: type, args: T) struct {
         .idempotency_key_fingerprint = args.idempotency_key_fingerprint,
         .supervision_ref_fingerprint = if (@hasField(T, "supervision_ref_fingerprint")) args.supervision_ref_fingerprint else null,
         .metadata = if (@hasField(T, "metadata")) args.metadata else "",
+        .frame_request_bytes = if (@hasField(T, "frame_request_bytes")) args.frame_request_bytes else "",
+        .payload_value_image_bytes = if (@hasField(T, "payload_value_image_bytes")) args.payload_value_image_bytes else "",
+        .prepared_actuation_evidence_bytes = if (@hasField(T, "prepared_actuation_evidence_bytes")) args.prepared_actuation_evidence_bytes else "",
+        .idempotency_key_bytes = if (@hasField(T, "idempotency_key_bytes")) args.idempotency_key_bytes else "",
+        .expected_response_value_ref_fingerprint = if (@hasField(T, "expected_response_value_ref_fingerprint")) args.expected_response_value_ref_fingerprint else null,
+        .expected_response_schema_ref_fingerprint = if (@hasField(T, "expected_response_schema_ref_fingerprint")) args.expected_response_schema_ref_fingerprint else null,
     };
 }
 
@@ -69,16 +87,72 @@ fn applianceSyntheticHostRequest(args: anytype) world.Appliance.HostRequest {
     return world.Appliance.HostRequest.init(applianceSyntheticHostRequestArgs(@TypeOf(args), args));
 }
 
+fn applianceManifestRef(fingerprints: []const u64, index: usize) ?u64 {
+    if (fingerprints.len == 0) return null;
+    const fingerprint = fingerprints[index];
+    return if (fingerprint == 0) null else fingerprint;
+}
+
+fn applianceManifestHostRequest(manifest: world.Appliance.Manifest, args: anytype) world.Appliance.HostRequest {
+    const base = applianceSyntheticHostRequestArgs(@TypeOf(args), args);
+    const binding_index: usize = base.request_ordinal;
+    const binding_fingerprint = manifest.actuation_binding_fingerprints[binding_index];
+    return world.Appliance.HostRequest.init(.{
+        .turn_sequence_number = base.turn_sequence_number,
+        .request_ordinal = base.request_ordinal,
+        .run_handle_fingerprint = base.run_handle_fingerprint,
+        .pending_port_fingerprint = base.pending_port_fingerprint,
+        .world_port_id = @as(u32, @intCast(manifest.actuation_world_port_ids[binding_index])),
+        .target_ref_fingerprint = manifest.root_target_ref_fingerprint,
+        .world_surface_fingerprint = manifest.root_world_surface_fingerprint,
+        .actuator_ref_fingerprint = manifest.actuation_actuator_ref_fingerprints[binding_index],
+        .actuation_class = manifest.actuation_classes[binding_index],
+        .allowed_response_statuses = manifest.actuation_allowed_response_statuses[binding_index],
+        .intent_fingerprint = base.intent_fingerprint,
+        .envelope_fingerprint = base.envelope_fingerprint,
+        .decision_fingerprint = base.decision_fingerprint,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[binding_index],
+        .idempotency_key_fingerprint = base.idempotency_key_fingerprint,
+        .supervision_ref_fingerprint = if (manifest.supervision_policy_fingerprint == 0) null else manifest.supervision_policy_fingerprint,
+        .metadata = base.metadata,
+        .frame_request_bytes = base.frame_request_bytes,
+        .payload_value_image_bytes = base.payload_value_image_bytes,
+        .payload_value_ref_fingerprint = applianceManifestRef(manifest.actuation_payload_value_ref_fingerprints, binding_index),
+        .payload_schema_ref_fingerprint = binding_fingerprint,
+        .expected_response_value_ref_fingerprint = applianceManifestRef(manifest.actuation_response_value_ref_fingerprints, binding_index),
+        .expected_response_schema_ref_fingerprint = binding_fingerprint,
+        .prepared_actuation_evidence_bytes = base.prepared_actuation_evidence_bytes,
+        .idempotency_key_bytes = base.idempotency_key_bytes,
+    });
+}
+
 fn applianceHostReplyFor(request: world.Appliance.HostRequest, response_fingerprint: u64) world.Appliance.HostReply {
+    const HostReplyResponse = struct {
+        bytes: []const u8,
+        fingerprint: u64,
+    };
+    const response: HostReplyResponse = if (request.expected_response_value_ref_fingerprint != null or request.expected_response_schema_ref_fingerprint != null) blk: {
+        var image = world.Frame.ValueImage.fromCanonicalBytes(
+            std.heap.page_allocator,
+            null,
+            request.expected_response_value_ref_fingerprint,
+            request.expected_response_schema_ref_fingerprint,
+            std.mem.asBytes(&response_fingerprint),
+            false,
+        ) catch unreachable;
+        defer image.deinit(std.heap.page_allocator);
+        const bytes = image.encode(std.heap.page_allocator) catch unreachable;
+        break :blk .{ .bytes = bytes, .fingerprint = image.value_image_fingerprint };
+    } else .{ .bytes = "", .fingerprint = response_fingerprint };
     const outcome = world.Appliance.HostOutcome.init(.{
         .host_request_fingerprint = request.request_fingerprint,
         .intent_fingerprint = request.intent_fingerprint,
         .envelope_fingerprint = request.envelope_fingerprint,
         .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
         .status = .responded,
-        .response_fingerprint = response_fingerprint,
+        .response_fingerprint = response.fingerprint,
         .response_kind = .frame_value_image,
-        .response_bytes = "frame-value:approved",
+        .response_bytes = response.bytes,
         .host_evidence_fingerprint = response_fingerprint ^ 0xE11D,
         .host_evidence_bytes = "host-claim:fixture",
         .attempt_number = 1,
@@ -123,6 +197,9 @@ fn applianceManifestVariant(base: world.Appliance.Manifest, args: anytype) world
         .actuation_descriptor_fingerprints = if (@hasField(@TypeOf(args), "actuation_descriptor_fingerprints")) args.actuation_descriptor_fingerprints else base.actuation_descriptor_fingerprints,
         .actuation_binding_fingerprints = if (@hasField(@TypeOf(args), "actuation_binding_fingerprints")) args.actuation_binding_fingerprints else base.actuation_binding_fingerprints,
         .actuation_actuator_ref_fingerprints = if (@hasField(@TypeOf(args), "actuation_actuator_ref_fingerprints")) args.actuation_actuator_ref_fingerprints else base.actuation_actuator_ref_fingerprints,
+        .actuation_world_port_ids = if (@hasField(@TypeOf(args), "actuation_world_port_ids")) args.actuation_world_port_ids else base.actuation_world_port_ids,
+        .actuation_payload_value_ref_fingerprints = if (@hasField(@TypeOf(args), "actuation_payload_value_ref_fingerprints")) args.actuation_payload_value_ref_fingerprints else base.actuation_payload_value_ref_fingerprints,
+        .actuation_response_value_ref_fingerprints = if (@hasField(@TypeOf(args), "actuation_response_value_ref_fingerprints")) args.actuation_response_value_ref_fingerprints else base.actuation_response_value_ref_fingerprints,
         .actuation_classes = if (@hasField(@TypeOf(args), "actuation_classes")) args.actuation_classes else base.actuation_classes,
         .actuation_allowed_response_statuses = if (@hasField(@TypeOf(args), "actuation_allowed_response_statuses")) args.actuation_allowed_response_statuses else base.actuation_allowed_response_statuses,
         .supervision_policy_fingerprint = base.supervision_policy_fingerprint,
@@ -1036,11 +1113,14 @@ fn buildMinimalApplianceWasmWithOptions(
 
 test "appliance static contract exposes root namespace and versions" {
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_abi_version);
-    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_manifest_format_version);
-    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_manifest_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_format_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_memory_plan_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_command_format_version);
-    try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_output_format_version);
+    try std.testing.expectEqual(@as(u32, 4), world.world_appliance_host_request_format_version);
+    try std.testing.expectEqual(@as(u32, 4), world.world_appliance_host_request_fingerprint_version);
+    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_format_version);
+    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_checkpoint_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_receipt_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.Appliance.Abi.version);
@@ -2239,7 +2319,7 @@ test "appliance command encodes decodes and validates host replies" {
     try std.testing.expectEqual(@as(usize, 1), decoded.host_replies.len);
     try std.testing.expectEqual(reply.reply_fingerprint, decoded.host_replies[0].reply_fingerprint);
     try std.testing.expectEqual(world.Appliance.HostResponseKind.frame_value_image, decoded.host_replies[0].outcome.response_kind);
-    try std.testing.expectEqualStrings("frame-value:approved", decoded.host_replies[0].outcome.response_bytes);
+    try std.testing.expectEqualStrings("", decoded.host_replies[0].outcome.response_bytes);
     try std.testing.expectEqualStrings("host-claim:fixture", decoded.host_replies[0].outcome.host_evidence_bytes);
     try std.testing.expect(decoded.host_replies[0].retention_ack != null);
     try std.testing.expectEqual(reply_ack.ack_fingerprint, decoded.host_replies[0].retention_ack_fingerprint.?);
@@ -2271,7 +2351,7 @@ test "appliance command encodes decodes and validates host replies" {
         .previous_turn_receipt_fingerprint = 0xD308,
         .host_replies = &.{ reply, second_reply },
     });
-    try std.testing.expectError(error.InvalidFrameEncoding, canonical_order.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
+    try canonical_order.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small);
 
     const duplicate_reply_command = world.Appliance.Command.init(.{
         .kind = .@"continue",
@@ -2870,6 +2950,11 @@ test "appliance Core validates continue host replies before completion" {
         .actuation_bindings = .{ApplianceActuationBinding},
     });
     const manifest = PortsAppliance.manifest();
+    const static_requirement = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, ApplianceActuationBinding.world_port_id);
+    try std.testing.expectEqual(@as(usize, 1), manifest.actuation_payload_value_ref_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), manifest.actuation_response_value_ref_fingerprints.len);
+    try std.testing.expectEqual(static_requirement.payload_value_ref_fingerprint.?, manifest.actuation_payload_value_ref_fingerprints[0]);
+    try std.testing.expectEqual(static_requirement.response_value_ref_fingerprint.?, manifest.actuation_response_value_ref_fingerprints[0]);
     var core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
         manifest,
@@ -2890,6 +2975,8 @@ test "appliance Core validates continue host replies before completion" {
     try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
     try std.testing.expect(core.outstanding_host_request != null);
     const outstanding = core.outstanding_host_request.?;
+    try std.testing.expectEqual(static_requirement.payload_value_ref_fingerprint, outstanding.payload_value_ref_fingerprint);
+    try std.testing.expectEqual(static_requirement.response_value_ref_fingerprint, outstanding.expected_response_value_ref_fingerprint);
     const first_output = try std.testing.allocator.dupe(u8, core.readOutput());
     defer std.testing.allocator.free(first_output);
     const prior_receipt = core.previous_turn_receipt_fingerprint.?;
@@ -3064,15 +3151,26 @@ test "appliance terminal HostReply validation uses active capacity" {
     const prior_receipt = core.previous_turn_receipt_fingerprint.?;
 
     const roomy_metadata = [_]u8{'m'} ** (70 * 1024);
+    var response_image = try world.Frame.ValueImage.fromCanonicalBytes(
+        std.testing.allocator,
+        null,
+        outstanding.expected_response_value_ref_fingerprint,
+        outstanding.expected_response_schema_ref_fingerprint,
+        "roomy-response",
+        false,
+    );
+    defer response_image.deinit(std.testing.allocator);
+    const response_image_bytes = try response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_image_bytes);
     const outcome = world.Appliance.HostOutcome.init(.{
         .host_request_fingerprint = outstanding.request_fingerprint,
         .intent_fingerprint = outstanding.intent_fingerprint,
         .envelope_fingerprint = outstanding.envelope_fingerprint,
         .idempotency_key_fingerprint = outstanding.idempotency_key_fingerprint,
         .status = .responded,
-        .response_fingerprint = 0xD4F1,
+        .response_fingerprint = response_image.value_image_fingerprint,
         .response_kind = .frame_value_image,
-        .response_bytes = "frame-value:approved",
+        .response_bytes = response_image_bytes,
         .host_evidence_fingerprint = 0xD4F2,
         .host_evidence_bytes = "host-claim:fixture",
         .attempt_number = 1,
@@ -3644,6 +3742,16 @@ test "appliance Core restore rehydrates outstanding HostRequest for continuation
         .outstanding_host_requests = &.{outstanding},
     });
     try checkpoint.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.tiny_one_port);
+    var checkpoint_bytes: std.ArrayList(u8) = .empty;
+    defer checkpoint_bytes.deinit(std.testing.allocator);
+    try checkpoint.encode(&checkpoint_bytes, std.testing.allocator);
+    var owned_checkpoint = try world.Appliance.Checkpoint.decode(
+        std.testing.allocator,
+        checkpoint_bytes.items,
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer owned_checkpoint.deinit(std.testing.allocator);
 
     const reply = applianceHostReplyFor(outstanding, 0xD501);
     const continue_command = world.Appliance.Command.init(.{
@@ -3668,7 +3776,7 @@ test "appliance Core restore rehydrates outstanding HostRequest for continuation
         world.Appliance.Capacity.tiny_one_port,
     );
     defer restored.reset();
-    try restored.restore(checkpoint);
+    try restored.restore(owned_checkpoint);
     try std.testing.expect(restored.outstanding_host_request != null);
     try std.testing.expectEqual(outstanding.request_fingerprint, restored.outstanding_host_request.?.request_fingerprint);
     try restored.submit(continue_bytes);
@@ -3733,6 +3841,240 @@ test "appliance Core continuation source state chains from prior output" {
     defer continue_output.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(boot_output.resulting_state_fingerprint, continue_output.source_state_fingerprint);
+}
+
+test "appliance Core rejects mixed terminal and nonterminal replies" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.wasm_small,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.wasm_small,
+    );
+    defer core.reset();
+
+    const requests = [_]world.Appliance.HostRequest{
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 1,
+            .request_ordinal = 0,
+            .run_handle_fingerprint = 0xD5C0,
+            .pending_port_fingerprint = 0xD5C1,
+            .world_port_id = 0,
+            .intent_fingerprint = 0xD5C2,
+            .envelope_fingerprint = 0xD5C3,
+            .decision_fingerprint = 0xD5C4,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xD5C5,
+            .metadata = "terminal",
+        }),
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 1,
+            .request_ordinal = 1,
+            .run_handle_fingerprint = 0xD5C6,
+            .pending_port_fingerprint = 0xD5C7,
+            .world_port_id = 0,
+            .intent_fingerprint = 0xD5C8,
+            .envelope_fingerprint = 0xD5C9,
+            .decision_fingerprint = 0xD5CA,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xD5CB,
+            .allowed_response_statuses = world.Actuation.ResponseStatusSet.all,
+            .metadata = "pending",
+        }),
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 1,
+            .request_ordinal = 2,
+            .run_handle_fingerprint = 0xD5CE,
+            .pending_port_fingerprint = 0xD5CF,
+            .world_port_id = 0,
+            .intent_fingerprint = 0xD5D0,
+            .envelope_fingerprint = 0xD5D1,
+            .decision_fingerprint = 0xD5D2,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xD5D3,
+            .metadata = "unreplied",
+        }),
+    };
+    core.state = .waiting_host;
+    core.current_turn_sequence_number = 1;
+    core.previous_turn_receipt_fingerprint = 0xD5CC;
+    core.outstanding_host_requests = requests[0..];
+
+    const terminal_reply = applianceHostReplyFor(requests[0], 0xD5CD);
+    const pending_reply = applianceHostReplyWithStatusFor(requests[1], .pending);
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .host_replies = &.{ terminal_reply, pending_reply },
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+    try std.testing.expectError(error.InvalidCommand, core.submit(continue_bytes));
+}
+
+test "appliance Core failed host reply dominates partial outstanding replies" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.wasm_small,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.wasm_small,
+    );
+    defer core.reset();
+
+    const requests = [_]world.Appliance.HostRequest{
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 1,
+            .request_ordinal = 0,
+            .run_handle_fingerprint = 0xD5E0,
+            .pending_port_fingerprint = 0xD5E1,
+            .world_port_id = 0,
+            .intent_fingerprint = 0xD5E2,
+            .envelope_fingerprint = 0xD5E3,
+            .decision_fingerprint = 0xD5E4,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xD5E5,
+            .allowed_response_statuses = world.Actuation.ResponseStatusSet.all,
+            .metadata = "failed",
+        }),
+        applianceSyntheticHostRequest(.{
+            .turn_sequence_number = 1,
+            .request_ordinal = 1,
+            .run_handle_fingerprint = 0xD5E6,
+            .pending_port_fingerprint = 0xD5E7,
+            .world_port_id = 0,
+            .intent_fingerprint = 0xD5E8,
+            .envelope_fingerprint = 0xD5E9,
+            .decision_fingerprint = 0xD5EA,
+            .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+            .idempotency_key_fingerprint = 0xD5EB,
+            .metadata = "unreplied",
+        }),
+    };
+    core.state = .waiting_host;
+    core.current_turn_sequence_number = 1;
+    core.previous_turn_receipt_fingerprint = 0xD5EC;
+    core.outstanding_host_requests = requests[0..];
+
+    const failed_reply = applianceHostReplyWithStatusFor(requests[0], .failed);
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 2,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .host_replies = &.{failed_reply},
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+    try core.submit(continue_bytes);
+    try core.executeTurn();
+
+    var output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.wasm_small,
+    );
+    defer output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.failed, output.status);
+    try std.testing.expectEqual(@as(usize, 1), output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 0), output.host_requests.len);
+    try std.testing.expectEqual(@as(usize, 0), output.checkpoint.outstanding_host_requests.len);
+    try std.testing.expectEqual(@as(usize, 0), core.outstanding_host_requests.len);
+    try std.testing.expectEqual(world.Appliance.CoreState.failed, core.state);
+}
+
+test "appliance Core restore with partial terminal replies keeps only unreplied requests" {
+    const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
+        .profile = world.Appliance.Profile.wasm_agent,
+        .capacity = world.Appliance.Capacity.wasm_agent,
+        .actuation_bindings = .{
+            ApplianceAgentActuationBinding,
+            ApplianceAgentToolActuationBinding,
+        },
+    });
+    const manifest = AgentAppliance.manifest();
+    var resident = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        AgentAppliance.memoryPlan(),
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer resident.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .root_argument_image = "agent:prompt",
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try resident.submit(boot_bytes);
+    try resident.executeTurn();
+
+    var boot_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        resident.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer boot_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), boot_output.checkpoint.outstanding_host_requests.len);
+
+    const first = boot_output.checkpoint.outstanding_host_requests[0];
+    const second = boot_output.checkpoint.outstanding_host_requests[1];
+    const restore_reply = applianceHostReplyFor(first, 0xD5ED);
+    const restore_command = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = boot_output.checkpoint.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = boot_output.checkpoint.previous_turn_receipt_fingerprint,
+        .host_replies = &.{restore_reply},
+        .restore_checkpoint = boot_output.checkpoint,
+    });
+    const restore_bytes = try restore_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(restore_bytes);
+
+    var restored = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        AgentAppliance.memoryPlan(),
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer restored.reset();
+    try restored.submit(restore_bytes);
+    try restored.executeTurn();
+
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, restored.state);
+    try std.testing.expectEqual(@as(usize, 1), restored.outstanding_host_requests.len);
+    try std.testing.expectEqual(second.request_fingerprint, restored.outstanding_host_requests[0].request_fingerprint);
+
+    var restore_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        restored.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer restore_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.needs_host, restore_output.status);
+    try std.testing.expectEqual(@as(usize, 1), restore_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), restore_output.host_requests.len);
+    try std.testing.expectEqual(second.request_fingerprint, restore_output.host_requests[0].request_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), restore_output.checkpoint.outstanding_host_requests.len);
+    try std.testing.expectEqual(second.request_fingerprint, restore_output.checkpoint.outstanding_host_requests[0].request_fingerprint);
 }
 
 test "appliance Core emitted checkpoint carries current TurnReceipt for restore" {
@@ -3854,6 +4196,63 @@ test "appliance Core restore command applies checkpoint and replies without side
         .previous_turn_receipt_fingerprint = prior_receipt,
         .outstanding_host_requests = &.{outstanding},
     });
+    const forged_outstanding = world.Appliance.HostRequest.init(.{
+        .turn_sequence_number = outstanding.turn_sequence_number,
+        .request_ordinal = outstanding.request_ordinal,
+        .run_handle_fingerprint = outstanding.run_handle_fingerprint,
+        .pending_port_fingerprint = outstanding.pending_port_fingerprint,
+        .world_port_id = outstanding.world_port_id,
+        .target_ref_fingerprint = outstanding.target_ref_fingerprint,
+        .world_surface_fingerprint = outstanding.world_surface_fingerprint,
+        .actuator_ref_fingerprint = outstanding.actuator_ref_fingerprint,
+        .actuation_class = outstanding.actuation_class,
+        .allowed_response_statuses = outstanding.allowed_response_statuses,
+        .intent_fingerprint = outstanding.intent_fingerprint,
+        .envelope_fingerprint = outstanding.envelope_fingerprint,
+        .decision_fingerprint = outstanding.decision_fingerprint,
+        .expected_response_descriptor_fingerprint = outstanding.expected_response_descriptor_fingerprint,
+        .idempotency_key_fingerprint = outstanding.idempotency_key_fingerprint,
+        .supervision_ref_fingerprint = outstanding.supervision_ref_fingerprint,
+        .metadata = outstanding.metadata,
+        .frame_request_bytes = outstanding.frame_request_bytes,
+        .payload_value_image_bytes = outstanding.payload_value_image_bytes,
+        .payload_value_ref_fingerprint = outstanding.payload_value_ref_fingerprint,
+        .payload_schema_ref_fingerprint = outstanding.payload_schema_ref_fingerprint,
+        .expected_response_value_ref_fingerprint = null,
+        .expected_response_schema_ref_fingerprint = null,
+        .prepared_actuation_evidence_bytes = outstanding.prepared_actuation_evidence_bytes,
+        .idempotency_key_bytes = outstanding.idempotency_key_bytes,
+    });
+    const forged_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = checkpoint.turn_sequence_number,
+        .capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .pending_archive_append_batch_fingerprint = checkpoint.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = checkpoint.pending_archive_resulting_cursor,
+        .previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint,
+        .outstanding_host_requests = &.{forged_outstanding},
+    });
+    const forged_reply = applianceHostReplyFor(forged_outstanding, 0xD513);
+    const forged_restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .host_replies = &.{forged_reply},
+        .restore_checkpoint = forged_checkpoint,
+    });
+    const forged_restore_bytes = try forged_restore.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_restore_bytes);
+    var forged_restored = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer forged_restored.reset();
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_restored.submit(forged_restore_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.uninitialized, forged_restored.state);
+
     const reply = applianceHostReplyFor(outstanding, 0xD511);
     const restore = world.Appliance.Command.init(.{
         .kind = .restore,
@@ -3985,7 +4384,7 @@ test "appliance command rejects restore checkpoint cardinalities Core cannot exe
         .previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint,
         .restore_checkpoint = checkpoint,
     });
-    try std.testing.expectError(error.InvalidFrameEncoding, restore.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
+    try restore.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small);
 }
 
 test "appliance Core rejects waiting-host restore without actuation bindings" {
@@ -5066,12 +5465,11 @@ test "appliance Core restore rolls back allocation failure" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer core.reset();
-    const old_request = applianceSyntheticHostRequest(.{
+    const old_request = applianceManifestHostRequest(manifest, .{
         .turn_sequence_number = 6,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD6A0,
         .pending_port_fingerprint = 0xD6A1,
-        .world_port_id = 0,
         .intent_fingerprint = 0xD6A2,
         .envelope_fingerprint = 0xD6A3,
         .decision_fingerprint = 0xD6A4,
@@ -5084,12 +5482,11 @@ test "appliance Core restore rolls back allocation failure" {
     core.previous_turn_receipt_fingerprint = 0xD6A6;
     core.outstanding_host_request = old_request;
 
-    const new_request = applianceSyntheticHostRequest(.{
+    const new_request = applianceManifestHostRequest(manifest, .{
         .turn_sequence_number = 7,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD6B0,
         .pending_port_fingerprint = 0xD6B1,
-        .world_port_id = 0,
         .intent_fingerprint = 0xD6B2,
         .envelope_fingerprint = 0xD6B3,
         .decision_fingerprint = 0xD6B4,
@@ -5113,6 +5510,57 @@ test "appliance Core restore rolls back allocation failure" {
     try std.testing.expect(core.outstanding_host_request != null);
     try std.testing.expectEqual(old_request.request_fingerprint, core.outstanding_host_request.?.request_fingerprint);
     try std.testing.expectEqualStrings("old-request", core.outstanding_host_request.?.metadata);
+}
+
+test "appliance Core executeTurn preserves output on needs-host allocation failure" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+
+    var observed_induced_failure = false;
+    var observed_success = false;
+    var fail_offset: usize = 0;
+    while (fail_offset < 512 and !observed_success) : (fail_offset += 1) {
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = std.math.maxInt(usize),
+        });
+        var core = world.Appliance.Core.initWithCapacity(
+            failing_allocator.allocator(),
+            manifest,
+            PortsAppliance.memoryPlan(),
+            world.Appliance.Capacity.tiny_one_port,
+        );
+        defer core.reset();
+        core.last_output_bytes = "previous-output";
+        core.last_output_status = .completed;
+
+        try core.submit(boot_bytes);
+        failing_allocator.fail_index = failing_allocator.alloc_index + fail_offset;
+        core.executeTurn() catch |err| switch (err) {
+            error.OutOfMemory => {
+                observed_induced_failure = true;
+                try std.testing.expect(failing_allocator.has_induced_failure);
+                try std.testing.expectEqualStrings("previous-output", core.readOutput());
+                try std.testing.expectEqual(@as(?world.Appliance.TurnStatus, .completed), core.last_output_status);
+                continue;
+            },
+            else => return err,
+        };
+        observed_success = true;
+    }
+
+    try std.testing.expect(observed_induced_failure);
+    try std.testing.expect(observed_success);
 }
 
 test "appliance Core cancel produces deterministic cancelled output" {
@@ -5282,6 +5730,59 @@ test "appliance host request validates and is carried by needs-host TurnOutput" 
         .metadata = "model",
     });
     try request.validate(world.Appliance.Capacity.tiny_one_port);
+    const segmented_frame_payload = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD100,
+        .pending_port_fingerprint = 0xD101,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD102,
+        .envelope_fingerprint = 0xD103,
+        .decision_fingerprint = 0xD104,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+        .idempotency_key_fingerprint = 0xD105,
+        .metadata = "model",
+        .frame_request_bytes = "ab",
+        .payload_value_image_bytes = "c",
+        .prepared_actuation_evidence_bytes = "de",
+        .idempotency_key_bytes = "f",
+    });
+    const shifted_frame_payload = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD100,
+        .pending_port_fingerprint = 0xD101,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD102,
+        .envelope_fingerprint = 0xD103,
+        .decision_fingerprint = 0xD104,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+        .idempotency_key_fingerprint = 0xD105,
+        .metadata = "model",
+        .frame_request_bytes = "a",
+        .payload_value_image_bytes = "bc",
+        .prepared_actuation_evidence_bytes = "de",
+        .idempotency_key_bytes = "f",
+    });
+    try std.testing.expect(segmented_frame_payload.request_fingerprint != shifted_frame_payload.request_fingerprint);
+    const shifted_prepared_key = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 1,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD100,
+        .pending_port_fingerprint = 0xD101,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD102,
+        .envelope_fingerprint = 0xD103,
+        .decision_fingerprint = 0xD104,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
+        .idempotency_key_fingerprint = 0xD105,
+        .metadata = "model",
+        .frame_request_bytes = "ab",
+        .payload_value_image_bytes = "c",
+        .prepared_actuation_evidence_bytes = "d",
+        .idempotency_key_bytes = "ef",
+    });
+    try std.testing.expect(segmented_frame_payload.request_fingerprint != shifted_prepared_key.request_fingerprint);
 
     const capsule_fingerprint: u64 = 0xD106;
     const receipt = world.Appliance.TurnReceipt.init(.{
@@ -5361,7 +5862,7 @@ test "appliance host request validates and is carried by needs-host TurnOutput" 
         .checkpoint = multi_checkpoint,
         .turn_receipt = multi_receipt,
     });
-    try std.testing.expectError(error.InvalidFrameEncoding, multi_request_output.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small));
+    try multi_request_output.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_small);
 
     const non_quiescent_output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
@@ -5482,6 +5983,134 @@ test "appliance host reply validates against outstanding request identity" {
     });
     try reply.validate(&.{request}, world.Appliance.Capacity.tiny_one_port);
     try std.testing.expectEqual(@as(?u64, ack.ack_fingerprint), reply.retention_ack_fingerprint);
+
+    var response_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, null, null, null, @as(i32, 42), .portable);
+    defer response_image.deinit(std.testing.allocator);
+    const response_image_bytes = try response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_image_bytes);
+    const embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = request.request_fingerprint,
+        .intent_fingerprint = request.intent_fingerprint,
+        .envelope_fingerprint = request.envelope_fingerprint,
+        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = response_image.value_image_fingerprint,
+        .response_kind = .frame_value_image,
+        .response_bytes = response_image_bytes,
+        .host_evidence_fingerprint = 0xD20D,
+        .host_evidence_bytes = "embedded-response",
+        .attempt_number = 1,
+    });
+    try embedded_response.validate(request, world.Appliance.Capacity.tiny_one_port);
+
+    const expected_response_value_ref: u64 = 0xD210;
+    const expected_response_schema_ref: u64 = 0xD211;
+    const bound_request = applianceSyntheticHostRequest(.{
+        .turn_sequence_number = 3,
+        .request_ordinal = 0,
+        .run_handle_fingerprint = 0xD220,
+        .pending_port_fingerprint = 0xD221,
+        .world_port_id = 0,
+        .intent_fingerprint = 0xD222,
+        .envelope_fingerprint = 0xD223,
+        .decision_fingerprint = 0xD224,
+        .expected_response_descriptor_fingerprint = 0xD225,
+        .idempotency_key_fingerprint = 0xD226,
+        .expected_response_value_ref_fingerprint = expected_response_value_ref,
+        .expected_response_schema_ref_fingerprint = expected_response_schema_ref,
+    });
+    var bound_response_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        null,
+        expected_response_value_ref,
+        expected_response_schema_ref,
+        @as(i32, 7),
+        .portable,
+    );
+    defer bound_response_image.deinit(std.testing.allocator);
+    const bound_response_image_bytes = try bound_response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(bound_response_image_bytes);
+    const bound_embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = bound_request.request_fingerprint,
+        .intent_fingerprint = bound_request.intent_fingerprint,
+        .envelope_fingerprint = bound_request.envelope_fingerprint,
+        .idempotency_key_fingerprint = bound_request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = bound_response_image.value_image_fingerprint,
+        .response_kind = .frame_value_image,
+        .response_bytes = bound_response_image_bytes,
+        .host_evidence_fingerprint = 0xD227,
+        .host_evidence_bytes = "embedded-response-bound",
+        .attempt_number = 1,
+    });
+    try bound_embedded_response.validate(bound_request, world.Appliance.Capacity.tiny_one_port);
+
+    var wrong_ref_response_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        null,
+        expected_response_value_ref + 1,
+        expected_response_schema_ref,
+        @as(i32, 7),
+        .portable,
+    );
+    defer wrong_ref_response_image.deinit(std.testing.allocator);
+    const wrong_ref_response_image_bytes = try wrong_ref_response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_ref_response_image_bytes);
+    const wrong_ref_embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = bound_request.request_fingerprint,
+        .intent_fingerprint = bound_request.intent_fingerprint,
+        .envelope_fingerprint = bound_request.envelope_fingerprint,
+        .idempotency_key_fingerprint = bound_request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = wrong_ref_response_image.value_image_fingerprint,
+        .response_kind = .frame_value_image,
+        .response_bytes = wrong_ref_response_image_bytes,
+        .host_evidence_fingerprint = 0xD228,
+        .host_evidence_bytes = "embedded-response-wrong-ref",
+        .attempt_number = 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_ref_embedded_response.validate(bound_request, world.Appliance.Capacity.tiny_one_port));
+
+    var wrong_schema_response_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        null,
+        expected_response_value_ref,
+        expected_response_schema_ref + 1,
+        @as(i32, 7),
+        .portable,
+    );
+    defer wrong_schema_response_image.deinit(std.testing.allocator);
+    const wrong_schema_response_image_bytes = try wrong_schema_response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wrong_schema_response_image_bytes);
+    const wrong_schema_embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = bound_request.request_fingerprint,
+        .intent_fingerprint = bound_request.intent_fingerprint,
+        .envelope_fingerprint = bound_request.envelope_fingerprint,
+        .idempotency_key_fingerprint = bound_request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = wrong_schema_response_image.value_image_fingerprint,
+        .response_kind = .frame_value_image,
+        .response_bytes = wrong_schema_response_image_bytes,
+        .host_evidence_fingerprint = 0xD229,
+        .host_evidence_bytes = "embedded-response-wrong-schema",
+        .attempt_number = 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_schema_embedded_response.validate(bound_request, world.Appliance.Capacity.tiny_one_port));
+
+    const forged_embedded_response = world.Appliance.HostOutcome.init(.{
+        .host_request_fingerprint = request.request_fingerprint,
+        .intent_fingerprint = request.intent_fingerprint,
+        .envelope_fingerprint = request.envelope_fingerprint,
+        .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+        .status = .responded,
+        .response_fingerprint = response_image.value_image_fingerprint + 1,
+        .response_kind = .frame_value_image,
+        .response_bytes = response_image_bytes,
+        .host_evidence_fingerprint = 0xD20E,
+        .host_evidence_bytes = "forged-embedded-response",
+        .attempt_number = 1,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_embedded_response.validate(request, world.Appliance.Capacity.tiny_one_port));
 
     const wrong_reply = world.Appliance.HostReply.init(.{
         .target_host_request_fingerprint = request.request_fingerprint + 1,
@@ -5746,6 +6375,9 @@ test "appliance continuity typed payload validation accepts advertised appliance
         .core_state = .completed,
         .previous_turn_receipt_fingerprint = other_receipt.receipt_fingerprint,
     });
+    var other_checkpoint_bytes: std.ArrayList(u8) = .empty;
+    defer other_checkpoint_bytes.deinit(std.testing.allocator);
+    try other_checkpoint.encode(&other_checkpoint_bytes, std.testing.allocator);
     const other_output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = other_manifest.manifest_fingerprint,
         .turn_sequence_number = 1,
@@ -5757,6 +6389,7 @@ test "appliance continuity typed payload validation accepts advertised appliance
         }),
         .status = .completed,
         .root_result_fingerprint = 0xD342,
+        .checkpoint_bytes = other_checkpoint_bytes.items,
         .checkpoint = other_checkpoint,
         .turn_receipt = other_receipt,
     });
@@ -6219,7 +6852,17 @@ test "appliance TurnOutput deinit does not free borrowed init slices" {
 test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
     const manifest_fingerprint: u64 = 0xD290;
     const archive_append_fingerprint: u64 = 0xD291;
-    const run_receipt_fingerprint: u64 = 0xD292;
+    const run_receipt = world.RunReceipt.init(.{
+        .run_permit_fingerprint = 0xD292,
+        .environment_certificate_fingerprint = 0xD2921,
+        .target_ref_fingerprint = 0xD2922,
+        .usage_ledger_fingerprint = 0xD2923,
+        .final_run_state_fingerprint = 0xD2924,
+        .final_status = .failed,
+    });
+    const run_receipt_fingerprint: u64 = run_receipt.receipt_fingerprint;
+    const run_receipt_bytes = try world.Continuity.encodePortableEvidence(world.RunReceipt, std.testing.allocator, run_receipt);
+    defer std.testing.allocator.free(run_receipt_bytes);
     const finalized_receipt_fingerprint: u64 = 0xD293;
     const applied_reply_fingerprint: u64 = 0xD299;
     const archive_resulting_cursor = world.Continuity.Chronicle.Cursor.initial();
@@ -6258,6 +6901,7 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
         .status = .blocked,
         .finalized_actuation_receipt_fingerprints = &.{finalized_receipt_fingerprint},
         .run_receipt_fingerprint = run_receipt_fingerprint,
+        .run_receipt_bytes = run_receipt_bytes,
         .archive_append_batch_fingerprint = archive_append_fingerprint,
         .checkpoint = checkpoint,
         .turn_receipt = receipt,
@@ -6351,6 +6995,13 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
     var mismatched_run_receipt = output;
     mismatched_run_receipt.run_receipt_fingerprint = run_receipt_fingerprint + 1;
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_receipt.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    var forged_run_receipt_bytes = try std.testing.allocator.dupe(u8, run_receipt_bytes);
+    defer std.testing.allocator.free(forged_run_receipt_bytes);
+    forged_run_receipt_bytes[forged_run_receipt_bytes.len - 1] ^= 1;
+    var mismatched_run_receipt_bytes = output;
+    mismatched_run_receipt_bytes.run_receipt_bytes = forged_run_receipt_bytes;
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_run_receipt_bytes.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
     var mismatched_archive = output;
     mismatched_archive.archive_append_batch_fingerprint = archive_append_fingerprint + 1;
@@ -6456,6 +7107,46 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     try plan.append_batch.validate();
     const serialized_append_batch_len = try world.Archive.appendBatchSerializedByteLen(std.testing.allocator, plan.append_batch);
     try std.testing.expect(serialized_append_batch_len <= capacity.max_archive_append_bytes);
+    const archive_append_batch_bytes = try world.Archive.encodeAppendBatchOwned(std.testing.allocator, plan.append_batch);
+    defer std.testing.allocator.free(archive_append_batch_bytes);
+    const archived_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .command_fingerprint = 0xA002,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
+        .archive_append_batch_fingerprint = plan.append_batch.append_batch_fingerprint,
+        .root_result_fingerprint = root_result_fingerprint,
+        .status = .completed,
+    });
+    const archived_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .capsule_fingerprint = capsule_fingerprint,
+        .pending_archive_append_batch_fingerprint = plan.append_batch.append_batch_fingerprint,
+        .pending_archive_resulting_cursor = plan.resulting_cursor,
+        .core_state = .completed,
+        .previous_turn_receipt_fingerprint = archived_receipt.receipt_fingerprint,
+    });
+    const output_with_archive_bytes = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .source_state_fingerprint = 0xA003,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 1, archived_receipt.receipt_fingerprint),
+        .quiescence = quiescence,
+        .status = .completed,
+        .root_result_fingerprint = root_result_fingerprint,
+        .archive_append_batch_fingerprint = plan.append_batch.append_batch_fingerprint,
+        .checkpoint = archived_checkpoint,
+        .archive_append_batch_bytes = archive_append_batch_bytes,
+        .turn_receipt = archived_receipt,
+    });
+    try output_with_archive_bytes.validate(manifest.manifest_fingerprint, capacity);
+    var forged_archive_append_batch_bytes = try std.testing.allocator.dupe(u8, archive_append_batch_bytes);
+    defer std.testing.allocator.free(forged_archive_append_batch_bytes);
+    forged_archive_append_batch_bytes[forged_archive_append_batch_bytes.len - 1] ^= 1;
+    var output_with_forged_archive_bytes = output_with_archive_bytes;
+    output_with_forged_archive_bytes.archive_append_batch_bytes = forged_archive_append_batch_bytes;
+    try std.testing.expectError(error.InvalidFrameEncoding, output_with_forged_archive_bytes.validate(manifest.manifest_fingerprint, capacity));
     var serialized_tight_capacity = capacity;
     serialized_tight_capacity.max_archive_append_bytes = serialized_append_batch_len - 1;
     try std.testing.expectError(
@@ -6474,6 +7165,11 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     try std.testing.expectEqual(@as(usize, 2), plan.objects[2].dependency_refs.len);
     try std.testing.expect(plan.objects[2].dependency_refs[0].eql(plan.object_refs[0]));
     try std.testing.expect(plan.objects[2].dependency_refs[1].eql(plan.object_refs[1]));
+    var archived_output = try world.Appliance.TurnOutput.decodeArchivePayload(
+        std.testing.allocator,
+        plan.objects[2].payload_bytes,
+    );
+    defer archived_output.deinit(std.testing.allocator);
 
     const finalized_receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
@@ -6589,14 +7285,26 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     roomy_capacity.max_metadata_bytes = 128 * 1024;
     const large_metadata_output = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest.manifest_fingerprint,
-        .turn_sequence_number = pending_output.turn_sequence_number,
-        .source_state_fingerprint = pending_output.source_state_fingerprint,
-        .resulting_state_fingerprint = pending_output.resulting_state_fingerprint,
-        .quiescence = pending_output.quiescence,
-        .status = pending_output.status,
-        .root_result_fingerprint = pending_output.root_result_fingerprint,
-        .checkpoint = pending_output.checkpoint,
-        .turn_receipt = pending_output.turn_receipt,
+        .turn_sequence_number = archived_pending_output.turn_sequence_number,
+        .source_state_fingerprint = archived_pending_output.source_state_fingerprint,
+        .resulting_state_fingerprint = archived_pending_output.resulting_state_fingerprint,
+        .quiescence = archived_pending_output.quiescence,
+        .status = archived_pending_output.status,
+        .host_requests = archived_pending_output.host_requests,
+        .finalized_actuation_receipt_fingerprints = archived_pending_output.finalized_actuation_receipt_fingerprints,
+        .root_result_fingerprint = archived_pending_output.root_result_fingerprint,
+        .root_result_value_image_bytes = archived_pending_output.root_result_value_image_bytes,
+        .root_result_value_ref_fingerprint = archived_pending_output.root_result_value_ref_fingerprint,
+        .run_receipt_fingerprint = archived_pending_output.run_receipt_fingerprint,
+        .run_receipt_bytes = archived_pending_output.run_receipt_bytes,
+        .archive_append_batch_fingerprint = archived_pending_output.archive_append_batch_fingerprint,
+        .archive_append_batch_ref_fingerprint = archived_pending_output.archive_append_batch_ref_fingerprint,
+        .checkpoint_bytes = archived_pending_output.checkpoint_bytes,
+        .archive_append_batch_bytes = archived_pending_output.archive_append_batch_bytes,
+        .checkpoint = archived_pending_output.checkpoint,
+        .turn_receipt = archived_pending_output.turn_receipt,
+        .blocker_count = archived_pending_output.blocker_count,
+        .warning_count = archived_pending_output.warning_count,
         .diagnostic_metadata = large_metadata,
     });
     try large_metadata_output.validate(manifest.manifest_fingerprint, roomy_capacity);
@@ -6662,7 +7370,7 @@ test "appliance archive plan commits turn evidence through Archive owner" {
     _ = try vault.put(plan.objects[0]);
     _ = try vault.put(plan.objects[1]);
     _ = try vault.put(plan.objects[2]);
-    const output_ref = (try vault.refByKindFingerprint(.appliance_turn_output, output.output_fingerprint)) orelse return error.TestUnexpectedResult;
+    const output_ref = (try vault.refByKindFingerprint(.appliance_turn_output, archived_output.output_fingerprint)) orelse return error.TestUnexpectedResult;
     try std.testing.expect(output_ref.eql(plan.objects[2].objectRef()));
 
     const wrong_checkpoint = world.Appliance.Checkpoint.init(.{
@@ -6679,6 +7387,7 @@ test "appliance archive plan commits turn evidence through Archive owner" {
         .quiescence = output.quiescence,
         .status = output.status,
         .root_result_fingerprint = output.root_result_fingerprint,
+        .checkpoint_bytes = plan.objects[0].payload_bytes,
         .checkpoint = wrong_checkpoint,
         .turn_receipt = output.turn_receipt,
     });
@@ -6739,7 +7448,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
     });
     const manifest = PortsAppliance.manifest();
     const capacity = world.Appliance.Capacity.tiny_one_port;
-    const checkpoint_request = applianceSyntheticHostRequest(.{
+    const checkpoint_request = applianceManifestHostRequest(manifest, .{
         .turn_sequence_number = 1,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xC0F0_0010,
@@ -6747,7 +7456,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
         .intent_fingerprint = 0xC0F0_0012,
         .envelope_fingerprint = 0xC0F0_0013,
         .decision_fingerprint = 0xC0F0_0014,
-        .expected_response_descriptor_fingerprint = 0xC0F0_0015,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
         .idempotency_key_fingerprint = 0xC0F0_0016,
     });
     const checkpoint = world.Appliance.Checkpoint.init(.{
@@ -7106,6 +7815,30 @@ test "appliance Define requires explicit strict actuation bindings and derives d
     try std.testing.expectEqual(binding.binding_fingerprint, manifest.actuation_binding_fingerprints[0]);
     try std.testing.expectEqual(descriptor.descriptor_fingerprint, manifest.actuation_descriptor_fingerprints[0]);
     try std.testing.expectEqual(world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint, manifest.residual_import_set_fingerprint);
+}
+
+test "appliance manifest allows distinct bindings on the same world port" {
+    const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
+        .profile = world.Appliance.Profile.wasm_agent,
+        .capacity = world.Appliance.Capacity.wasm_agent,
+        .actuation_bindings = .{
+            ApplianceAgentActuationBinding,
+            ApplianceAgentToolActuationBinding,
+        },
+    });
+    const manifest = AgentAppliance.manifest();
+    try std.testing.expectEqual(@as(usize, 2), manifest.actuation_binding_fingerprints.len);
+
+    const duplicate_world_port_ids = [_]u64{
+        manifest.actuation_world_port_ids[0],
+        manifest.actuation_world_port_ids[0],
+    };
+    const same_port_manifest = applianceManifestVariant(manifest, .{
+        .actuation_world_port_ids = &duplicate_world_port_ids,
+    });
+
+    try same_port_manifest.validate();
+    try std.testing.expect(same_port_manifest.actuation_binding_fingerprints[0] != same_port_manifest.actuation_binding_fingerprints[1]);
 }
 
 test "appliance manifest rejects multiple runtime actuation bindings" {
@@ -7848,6 +8581,369 @@ test "appliance actuation pending host outcome keeps parent parked" {
     try std.testing.expect(finalized.receipt.pending);
     try std.testing.expect(!finalized.response.isTerminalForParent());
     try std.testing.expect(finalized.mailbox_response == null);
+}
+
+test "Universal Runtime initializes Appliance Core from Executable Image" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    const root_module = builder.modules.items[0];
+    const root_import = root_module.imports[0];
+    const executable_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = ApplianceActuationBinding.actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "universal-runtime.fixture",
+    });
+    try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = ApplianceActuationBinding.actuator_ref,
+        .descriptor = executable_descriptor,
+        .label = "universal-runtime.fixture",
+    }));
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Core.initExecutable(std.testing.allocator, image, .{
+        .profile = .wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+    }));
+    var core = try world.Appliance.Core.initExecutable(std.testing.allocator, image, .{
+        .profile = .wasm_small,
+    });
+    defer core.deinit();
+    try std.testing.expectEqual(
+        prepared.link_result.plan.externalImportSet().residual_import_set_fingerprint,
+        core.manifest_value.residual_import_set_fingerprint,
+    );
+    try std.testing.expect(core.manifest_value.residual_import_set_fingerprint != image.dispatch_image.dispatch_fingerprint);
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = core.manifest_value.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .root_argument_image = "seed:argument",
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try core.submit(boot_bytes);
+    try core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
+
+    var output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        core.manifest_value.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), output.host_requests.len);
+    try std.testing.expectEqual(root_import.payload_value_ref_fingerprint, output.host_requests[0].payload_value_ref_fingerprint);
+    try std.testing.expectEqual(root_import.response_value_ref_fingerprint, output.host_requests[0].expected_response_value_ref_fingerprint);
+    try std.testing.expect(output.host_requests[0].frame_request_bytes.len != 0);
+    try std.testing.expect(output.host_requests[0].payload_value_image_bytes.len != 0);
+    try std.testing.expect(output.host_requests[0].prepared_actuation_evidence_bytes.len != 0);
+    try std.testing.expect(output.host_requests[0].idempotency_key_bytes.len != 0);
+    try std.testing.expect(!std.mem.eql(u8, output.host_requests[0].frame_request_bytes, "world.appliance.frame_request.v1"));
+    try std.testing.expect(!std.mem.eql(u8, output.host_requests[0].payload_value_image_bytes, "world.appliance.payload_value_image.v1"));
+    try std.testing.expect(!std.mem.eql(u8, output.host_requests[0].prepared_actuation_evidence_bytes, "world.appliance.prepared_actuation.v1"));
+    try std.testing.expect(!std.mem.eql(u8, output.host_requests[0].idempotency_key_bytes, "world.appliance.idempotency_key.v1"));
+    try std.testing.expect(output.checkpoint_bytes.len != 0);
+    const missing_checkpoint_bytes = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = output.manifest_fingerprint,
+        .turn_sequence_number = output.turn_sequence_number,
+        .source_state_fingerprint = output.source_state_fingerprint,
+        .resulting_state_fingerprint = output.resulting_state_fingerprint,
+        .quiescence = output.quiescence,
+        .status = output.status,
+        .host_requests = output.host_requests,
+        .finalized_actuation_receipt_fingerprints = output.finalized_actuation_receipt_fingerprints,
+        .root_result_fingerprint = output.root_result_fingerprint,
+        .root_result_value_image_bytes = output.root_result_value_image_bytes,
+        .root_result_value_ref_fingerprint = output.root_result_value_ref_fingerprint,
+        .run_receipt_fingerprint = output.run_receipt_fingerprint,
+        .run_receipt_bytes = output.run_receipt_bytes,
+        .archive_append_batch_fingerprint = output.archive_append_batch_fingerprint,
+        .archive_append_batch_ref_fingerprint = output.archive_append_batch_ref_fingerprint,
+        .checkpoint_bytes = "",
+        .archive_append_batch_bytes = output.archive_append_batch_bytes,
+        .checkpoint = output.checkpoint,
+        .turn_receipt = output.turn_receipt,
+        .blocker_count = output.blocker_count,
+        .warning_count = output.warning_count,
+        .diagnostic_metadata = output.diagnostic_metadata,
+    });
+    const missing_checkpoint_payload = try missing_checkpoint_bytes.encode(std.testing.allocator);
+    defer std.testing.allocator.free(missing_checkpoint_payload);
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        world.Appliance.TurnOutput.decode(
+            std.testing.allocator,
+            missing_checkpoint_payload,
+            core.manifest_value.manifest_fingerprint,
+            world.Appliance.Capacity.tiny_one_port,
+        ),
+    );
+}
+
+test "Universal Runtime validates executable optional import counts" {
+    const root_bytes = try fixtures.Agent.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    const root_module = builder.modules.items[0];
+    try std.testing.expectEqual(@as(usize, 2), root_module.imports.len);
+
+    const required_import = root_module.imports[0];
+    const optional_source = root_module.imports[1];
+    const optional_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = optional_source.target_ref_fingerprint,
+        .world_value_table_fingerprint = optional_source.world_value_table_fingerprint,
+        .world_surface_fingerprint = optional_source.world_surface_fingerprint,
+        .world_port_id = optional_source.world_port_id,
+        .world_port_ref_fingerprint = optional_source.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = optional_source.source_effect_shape_ref_fingerprint,
+        .residual_site_index = optional_source.residual_site_index,
+        .residual_site_fingerprint = optional_source.residual_site_fingerprint,
+        .payload_value_table_id = optional_source.payload_value_table_id,
+        .payload_value_ref_fingerprint = optional_source.payload_value_ref_fingerprint,
+        .response_value_table_id = optional_source.response_value_table_id,
+        .response_value_ref_fingerprint = optional_source.response_value_ref_fingerprint,
+        .mode = optional_source.mode,
+        .allowed_response_kinds = optional_source.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = optional_source.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = optional_source.suggested_symbolic_name,
+        .required = false,
+        .tags = optional_source.tags,
+        .metadata = optional_source.metadata,
+    });
+    const imports = [_]world.ImportRequirement{ required_import, optional_import };
+
+    var optional_module = root_module;
+    optional_module.imports = imports[0..];
+    optional_module.import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_module.import_set.target_ref_fingerprint,
+        .required_count = 1,
+        .optional_count = 1,
+        .world_port_count = root_module.import_set.world_port_count,
+        .value_table_entry_count = root_module.import_set.value_table_entry_count,
+        .surface_profile_fingerprint = root_module.import_set.surface_profile_fingerprint,
+    });
+    try optional_module.validate();
+
+    var flattened_module = optional_module;
+    flattened_module.import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_module.import_set.target_ref_fingerprint,
+        .required_count = imports.len,
+        .world_port_count = root_module.import_set.world_port_count,
+        .value_table_entry_count = root_module.import_set.value_table_entry_count,
+        .surface_profile_fingerprint = root_module.import_set.surface_profile_fingerprint,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, flattened_module.validate());
+}
+
+test "Universal Runtime orders executable host bindings by dispatch residuals" {
+    const root_bytes = try fixtures.Agent.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    const root_module = builder.modules.items[0];
+    try std.testing.expectEqual(@as(usize, 2), root_module.imports.len);
+
+    for (root_module.imports) |root_import| {
+        const actuator_ref = if (root_import.world_port_id == ApplianceAgentToolImport.world_port_id)
+            ApplianceAgentToolActuationBinding.actuator_ref
+        else
+            ApplianceAgentActuationBinding.actuator_ref;
+        const descriptor = world.Actuation.Descriptor.init(.{
+            .actuator_ref = actuator_ref,
+            .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+            .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .response_value_table_id = root_import.response_value_table_id,
+            .label = "universal-runtime.agent",
+        });
+        try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+            .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+            .response_value_table_id = root_import.response_value_table_id,
+            .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+            .actuator_ref = actuator_ref,
+            .descriptor = descriptor,
+            .label = "universal-runtime.agent",
+        }));
+    }
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), image.external_bindings.len);
+    try std.testing.expectEqual(@as(usize, 2), image.dispatch_image.residual_request_order.len);
+
+    const reversed_bindings = [_]world.Executable.ExternalBinding{
+        image.external_bindings[1],
+        image.external_bindings[0],
+    };
+    const reordered_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = &reversed_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    const report = try reordered_image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(report.compatible);
+
+    var core = try world.Appliance.Core.initExecutable(std.testing.allocator, reordered_image, .{
+        .profile = .wasm_agent,
+    });
+    defer core.deinit();
+    var expected_binding_fingerprints: [2]u64 = undefined;
+    var expected_world_port_ids: [2]u64 = undefined;
+    for (image.dispatch_image.residual_request_order, 0..) |requirement_fingerprint, index| {
+        const requirement = for (root_module.imports) |root_import| {
+            if (root_import.requirement_fingerprint == requirement_fingerprint) break root_import;
+        } else return error.ExpectedImportRequirement;
+        const binding = for (image.external_bindings) |candidate| {
+            if (candidate.matchesRequirement(root_module, requirement)) break candidate;
+        } else return error.ExpectedExternalBinding;
+        expected_binding_fingerprints[index] = binding.binding_fingerprint;
+        expected_world_port_ids[index] = binding.world_port_id;
+    }
+    try std.testing.expectEqualSlices(u64, &expected_binding_fingerprints, core.manifest_value.actuation_binding_fingerprints);
+    try std.testing.expectEqualSlices(u64, &expected_world_port_ids, core.manifest_value.actuation_world_port_ids);
+}
+
+test "World Seed Replay accepts batched host replies for independent requests" {
+    const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
+        .profile = world.Appliance.Profile.wasm_agent,
+        .capacity = world.Appliance.Capacity.wasm_agent,
+        .actuation_bindings = .{
+            ApplianceAgentActuationBinding,
+            ApplianceAgentToolActuationBinding,
+        },
+    });
+    const manifest = AgentAppliance.manifest();
+    var core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        AgentAppliance.memoryPlan(),
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer core.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .root_argument_image = "agent:prompt",
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try core.submit(boot_bytes);
+    try core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, core.state);
+    try std.testing.expectEqual(@as(usize, 2), core.outstanding_host_requests.len);
+    try std.testing.expectEqual(@as(u32, 0), core.outstanding_host_requests[0].request_ordinal);
+    try std.testing.expectEqual(@as(u32, 1), core.outstanding_host_requests[1].request_ordinal);
+
+    const first = core.outstanding_host_requests[0];
+    const second = core.outstanding_host_requests[1];
+    const duplicate_replies = [_]world.Appliance.HostReply{
+        applianceHostReplyFor(first, 0xD600),
+        applianceHostReplyFor(first, 0xD601),
+    };
+    const duplicate_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .host_replies = &duplicate_replies,
+    });
+    try std.testing.expectError(
+        error.DuplicateReply,
+        duplicate_command.validate(manifest.manifest_fingerprint, world.Appliance.Capacity.wasm_agent),
+    );
+
+    const mixed_replies = [_]world.Appliance.HostReply{
+        applianceHostReplyWithStatusFor(first, .failed),
+        applianceHostReplyWithStatusFor(second, .pending),
+    };
+    const mixed_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .host_replies = &mixed_replies,
+    });
+    const mixed_bytes = try mixed_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(mixed_bytes);
+    try std.testing.expectError(error.InvalidCommand, core.submit(mixed_bytes));
+
+    const replies = [_]world.Appliance.HostReply{
+        applianceHostReplyFor(second, 0xD602),
+        applianceHostReplyFor(first, 0xD603),
+    };
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = core.previous_turn_receipt_fingerprint,
+        .host_replies = &replies,
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+    try core.submit(continue_bytes);
+    try core.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.completed, core.state);
+
+    var output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.wasm_agent,
+    );
+    defer output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, output.status);
+    try std.testing.expectEqual(@as(usize, 2), output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expect(output.root_result_fingerprint != null);
+    try std.testing.expect(output.root_result_value_image_bytes.len != 0);
+    try std.testing.expectEqual(@as(?u64, null), output.root_result_value_ref_fingerprint);
+    try std.testing.expect(output.checkpoint_bytes.len != 0);
 }
 
 const ApplianceActuationFixture = struct {

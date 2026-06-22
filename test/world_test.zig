@@ -132,11 +132,11 @@ fn fabricTestRoute(kind: world.Fabric.RouteKind, provider_target_ref_fingerprint
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     const mapping = fabricTestMapping(.payload_to_provider_args);
     const provider_target_fingerprint: ?u64 = switch (kind) {
-        .target_export, .admitted_run, .guest => provider_target_ref_fingerprint orelse provider_ref.target_ref_fingerprint,
+        .target_export, .loaded_module_export, .admitted_run, .guest => provider_target_ref_fingerprint orelse provider_ref.target_ref_fingerprint,
         else => null,
     };
     return world.Fabric.Route.init(.{
-        .route_id = @intFromEnum(kind) + 1,
+        .route_id = @as(u64, @intFromEnum(kind)) + 1,
         .kind = kind,
         .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
         .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
@@ -166,7 +166,7 @@ test "fabric route fingerprint stable and route kinds represented" {
     const changed = fabricTestRoute(.target_export, world.TargetRef.fromTarget(fixtures.Ports.Target).target_ref_fingerprint);
     try std.testing.expect(route.route_fingerprint != changed.route_fingerprint);
 
-    inline for (.{ .adapter, .target_export, .admitted_run, .replay, .reject, .unsupported }) |kind| {
+    inline for (.{ .adapter, .target_export, .loaded_module_export, .admitted_run, .replay, .reject, .unsupported }) |kind| {
         const represented = fabricTestRoute(kind, provider_ref.target_ref_fingerprint);
         try represented.validate();
         try std.testing.expectEqual(kind, represented.kind);
@@ -8304,7 +8304,7 @@ test "capsule namespace exposes kernel model and stable manifest fingerprint" {
         .metadata = "capsule manifest",
     });
     try std.testing.expectEqual(@as(u32, 2), world.world_capsule_manifest_format_version);
-    try std.testing.expectEqual(@as(u32, 3), world.world_capsule_runspace_image_format_version);
+    try std.testing.expectEqual(@as(u32, 4), world.world_capsule_runspace_image_format_version);
     try std.testing.expectEqual(manifest.manifest_fingerprint, again.manifest_fingerprint);
     try std.testing.expect(manifest.manifest_fingerprint != 0);
     try std.testing.expectEqual(@as(u64, 0xaaaa), manifest.root_target_ref_fingerprint);
@@ -14045,6 +14045,272 @@ test "link rejects duplicate root import coverage before closed acceptance" {
     try std.testing.expect(linked.graph.hasBlocker(.RootImportSetMismatch));
 }
 
+test "link accepts distinct root imports sharing one world port" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const first_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const second_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = first_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = first_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = first_import.world_surface_fingerprint,
+        .world_port_id = first_import.world_port_id,
+        .world_port_ref_fingerprint = first_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = first_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = first_import.residual_site_index + 1,
+        .residual_site_fingerprint = first_import.residual_site_fingerprint +% 1,
+        .payload_value_table_id = first_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = first_import.payload_value_ref_fingerprint,
+        .response_value_table_id = first_import.response_value_table_id,
+        .response_value_ref_fingerprint = first_import.response_value_ref_fingerprint,
+        .mode = first_import.mode,
+        .allowed_response_kinds = first_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = first_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-again",
+    });
+    const root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 2,
+        .world_port_count = 1,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{ first_import, second_import },
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .allow_external_ports,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expect(!linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expectEqual(@as(usize, 2), linked.plan.external_environment_requirements.len);
+}
+
+test "link preserves optional root imports without root-set mismatch" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const required_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const optional_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = required_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = required_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = required_import.world_surface_fingerprint,
+        .world_port_id = required_import.world_port_id,
+        .world_port_ref_fingerprint = required_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = required_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = required_import.residual_site_index + 1,
+        .residual_site_fingerprint = required_import.residual_site_fingerprint +% 1,
+        .payload_value_table_id = required_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = required_import.payload_value_ref_fingerprint,
+        .response_value_table_id = required_import.response_value_table_id,
+        .response_value_ref_fingerprint = required_import.response_value_ref_fingerprint,
+        .mode = required_import.mode,
+        .allowed_response_kinds = required_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = required_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-optional",
+        .required = false,
+    });
+    const root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 1,
+        .optional_count = 1,
+        .world_port_count = 1,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{ required_import, optional_import },
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .allow_external_ports,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expect(!linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expectEqual(@as(usize, 2), linked.plan.external_environment_requirements.len);
+}
+
+test "link keeps duplicate-port imports out of fabric plans" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const first_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const second_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = first_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = first_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = first_import.world_surface_fingerprint,
+        .world_port_id = first_import.world_port_id,
+        .world_port_ref_fingerprint = first_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = first_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = first_import.residual_site_index + 1,
+        .residual_site_fingerprint = first_import.residual_site_fingerprint +% 1,
+        .payload_value_table_id = first_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = first_import.payload_value_ref_fingerprint,
+        .response_value_table_id = first_import.response_value_table_id,
+        .response_value_ref_fingerprint = first_import.response_value_ref_fingerprint,
+        .mode = first_import.mode,
+        .allowed_response_kinds = first_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = first_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-again",
+    });
+    const root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 2,
+        .world_port_count = 1,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = first_import.response_value_table_id, .value_ref_fingerprint = first_import.response_value_ref_fingerprint },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{ first_import, second_import },
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(!linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expect(linked.graph.hasBlocker(.FabricInvariantViolation));
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+}
+
+test "link fabric coverage accepts sparse required world port ids" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const base_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const sparse_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = base_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = base_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = base_import.world_surface_fingerprint,
+        .world_port_id = 5,
+        .world_port_ref_fingerprint = base_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = base_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = base_import.residual_site_index,
+        .residual_site_fingerprint = base_import.residual_site_fingerprint,
+        .payload_value_table_id = base_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = base_import.payload_value_ref_fingerprint,
+        .response_value_table_id = base_import.response_value_table_id,
+        .response_value_ref_fingerprint = base_import.response_value_ref_fingerprint,
+        .mode = base_import.mode,
+        .allowed_response_kinds = base_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = base_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-sparse",
+    });
+    const root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 1,
+        .world_port_count = 6,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = sparse_import.response_value_table_id, .value_ref_fingerprint = sparse_import.response_value_ref_fingerprint },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{sparse_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    const fabric_plan = linked.plan.fabric_plans[0];
+    try std.testing.expectError(error.FabricMissingRoute, fabric_plan.assertCoverage(root_import_set));
+    try fabric_plan.assertCoverageForRequirements(root_import_set, &.{sparse_import});
+    const coverage = fabric_plan.coverageForRequirements(root_ref, root_import_set, &.{sparse_import});
+    try std.testing.expect(coverage.accepted);
+    try std.testing.expectEqual(@as(u32, 5), fabric_plan.routes[0].parent_world_port_id);
+    try std.testing.expectEqual(@as(usize, 1), coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 0), coverage.missing_port_count);
+
+    const optional_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = base_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = base_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = base_import.world_surface_fingerprint,
+        .world_port_id = 0,
+        .world_port_ref_fingerprint = base_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = base_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = base_import.residual_site_index + 1,
+        .residual_site_fingerprint = base_import.residual_site_fingerprint +% 1,
+        .payload_value_table_id = base_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = base_import.payload_value_ref_fingerprint,
+        .response_value_table_id = base_import.response_value_table_id,
+        .response_value_ref_fingerprint = base_import.response_value_ref_fingerprint,
+        .mode = base_import.mode,
+        .allowed_response_kinds = base_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = base_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-optional",
+        .required = false,
+    });
+    const optional_root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 1,
+        .optional_count = 1,
+        .world_port_count = 6,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    const optional_route = world.Fabric.Route.init(.{
+        .route_id = 56,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .parent_world_port_id = optional_import.world_port_id,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
+    const optional_binding = world.Fabric.Binding.init(.{
+        .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .parent_world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .world_port_id = optional_import.world_port_id,
+        .import_requirement_fingerprint = optional_import.requirement_fingerprint,
+        .route_fingerprint = optional_route.route_fingerprint,
+        .required = false,
+    });
+    const optional_only_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = root_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = root_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = optional_root_import_set.import_set_fingerprint,
+        .routes = &.{optional_route},
+        .bindings = &.{optional_binding},
+    });
+    try optional_only_plan.validate();
+    try std.testing.expectError(error.FabricMissingRoute, optional_only_plan.assertCoverage(optional_root_import_set));
+    try std.testing.expectError(error.FabricMissingRoute, optional_only_plan.assertCoverageForRequirements(optional_root_import_set, &.{ sparse_import, optional_import }));
+    const optional_only_coverage = optional_only_plan.coverageForRequirements(root_ref, optional_root_import_set, &.{ sparse_import, optional_import });
+    try std.testing.expect(!optional_only_coverage.accepted);
+    try std.testing.expectEqual(@as(usize, 0), optional_only_coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 1), optional_only_coverage.missing_port_count);
+}
+
 test "link rejects forged root import set fingerprint before closed acceptance" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
@@ -14653,7 +14919,7 @@ test "link target hint selects module-ref-only provider" {
         .parent_target_ref_fingerprint = root_ref.target_ref_fingerprint,
         .parent_world_port_id = root_import.world_port_id,
         .provider_target_ref_fingerprint = strict_ref.target_ref_fingerprint,
-        .route_kind = .target_export,
+        .route_kind = .loaded_module_export,
         .label = "strict-target",
     });
     var linked = try world.Linker.link(std.testing.allocator, .{
@@ -15723,6 +15989,63 @@ test "fabric plan lookup coverage and cycle checks are deterministic" {
         .import_set_fingerprint = import_set.import_set_fingerprint,
     });
     try std.testing.expectError(error.FabricMissingRoute, missing.assertCoverage(import_set));
+
+    const sparse_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .required_count = 1,
+        .world_port_count = 6,
+        .value_table_entry_count = import_set.value_table_entry_count,
+        .surface_profile_fingerprint = parent_ref.surface_profile_fingerprint,
+    });
+    const base_requirement = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const sparse_requirement = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = base_requirement.target_ref_fingerprint,
+        .world_value_table_fingerprint = base_requirement.world_value_table_fingerprint,
+        .world_surface_fingerprint = base_requirement.world_surface_fingerprint,
+        .world_port_id = 5,
+        .world_port_ref_fingerprint = base_requirement.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = base_requirement.source_effect_shape_ref_fingerprint,
+        .residual_site_index = base_requirement.residual_site_index,
+        .residual_site_fingerprint = base_requirement.residual_site_fingerprint,
+        .payload_value_table_id = base_requirement.payload_value_table_id,
+        .payload_value_ref_fingerprint = base_requirement.payload_value_ref_fingerprint,
+        .response_value_table_id = base_requirement.response_value_table_id,
+        .response_value_ref_fingerprint = base_requirement.response_value_ref_fingerprint,
+        .mode = base_requirement.mode,
+        .allowed_response_kinds = base_requirement.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = base_requirement.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-sparse",
+    });
+    const sparse_route = world.Fabric.Route.init(.{
+        .route_id = 55,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 5,
+        .provider_target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+    });
+    const sparse_binding = world.Fabric.Binding.init(.{
+        .parent_target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .world_port_id = sparse_requirement.world_port_id,
+        .import_requirement_fingerprint = sparse_requirement.requirement_fingerprint,
+        .route_fingerprint = sparse_route.route_fingerprint,
+    });
+    const sparse_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = sparse_import_set.import_set_fingerprint,
+        .routes = &.{sparse_route},
+        .bindings = &.{sparse_binding},
+    });
+    try std.testing.expectError(error.FabricMissingRoute, sparse_plan.assertCoverage(sparse_import_set));
+    try sparse_plan.assertCoverageForRequirements(sparse_import_set, &.{sparse_requirement});
+    const sparse_coverage = sparse_plan.coverageForRequirements(parent_ref, sparse_import_set, &.{sparse_requirement});
+    try std.testing.expect(sparse_coverage.accepted);
+    try std.testing.expectEqual(@as(usize, 1), sparse_coverage.fabric_covered_port_count);
+    try std.testing.expectEqual(@as(usize, 0), sparse_coverage.missing_port_count);
 
     const cyclic_route = fabricTestRoute(.target_export, parent_ref.target_ref_fingerprint);
     const cyclic_routes = [_]world.Fabric.Route{cyclic_route};
@@ -23132,6 +23455,68 @@ test "runspace fabric response enforces provider result value mapping" {
     try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
     _ = try runspace.respondValue(0, @as(i32, 7));
     try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+}
+
+test "runspace loaded fabric response enforces provider result fingerprint mapping" {
+    var parent_runtime = boundary.Runtime.init(std.testing.allocator);
+    defer parent_runtime.deinit();
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+
+    _ = try runspace.installMachineRun(fixtures.Ports.Target, PortsEnv, &parent_runtime, .{}, .{
+        .allocator = std.testing.allocator,
+        .mode = world.Mode.fresh,
+    });
+    _ = try runspace.tick();
+
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var provider_final_image = try world.Frame.ValueImage.fromValue(std.testing.allocator, 1, 0x5150_00fb, null, @as(i32, 1), world.ValuePolicy.portable);
+    defer provider_final_image.deinit(std.testing.allocator);
+    const provider_handle = try runspace.installRunImage(world.RunImage.init(.{
+        .kind = .completed_run,
+        .target_ref = provider_ref,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Strict.Target).import_set_fingerprint,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .final_response_fingerprint = 0x5150_00fb,
+            .final_value_image_fingerprint = provider_final_image.value_image_fingerprint,
+            .status = .completed,
+        }),
+        .final_result_image = provider_final_image,
+    }));
+
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const mapping = world.Fabric.ValueMapping.init(.{
+        .kind = .provider_result_to_parent_response,
+        .provider_result_value_table_id = 1,
+        .provider_result_value_fingerprint = provider_final_image.value_image_fingerprint +% 1,
+        .parent_response_value_table_id = 1,
+    });
+    const route = world.Fabric.Route.init(.{
+        .route_id = 423,
+        .kind = .loaded_module_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .value_mapping_fingerprint = mapping.mapping_fingerprint,
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+
+    try runspace.installFabricPlan(parent_ref, plan);
+    const invocation = try runspace.routePendingToProviderRun(0, plan, provider_handle);
+    try std.testing.expectError(error.ProviderResultMismatch, runspace.respondFromFabric(invocation));
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
 }
 
 test "runspace fabric response honors pinned parent response fingerprint" {
@@ -39599,6 +39984,1939 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, overridden_mode.report.blockers[0]);
     try std.testing.expect(overridden_mode.receipt == null);
     try std.testing.expect(overridden_mode.admitted_run == null);
+}
+
+test "Executable Builder seals full module image with explicit residual external binding" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    const image_metadata = "seed.fixture.image.metadata";
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .metadata = image_metadata,
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    const root_module = builder.modules.items[0];
+    try std.testing.expectEqual(@as(usize, 1), root_module.imports.len);
+    const root_import = root_module.imports[0];
+    const actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "seed.fixture",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture",
+    });
+    const binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "seed.fixture",
+    });
+    try builder.addExternalBinding(binding);
+    const foreign_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint +% 1,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture.foreign",
+    });
+    const foreign_descriptor_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = foreign_descriptor,
+        .label = "seed.fixture.foreign",
+    });
+    try std.testing.expect(!foreign_descriptor_binding.matchesRequirement(root_module, root_import));
+    const wrong_shape_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = (root_import.source_effect_shape_ref_fingerprint orelse 0) +% 1,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture.wrong-shape",
+    });
+    const wrong_shape_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = wrong_shape_descriptor,
+        .label = "seed.fixture.wrong-shape",
+    });
+    try std.testing.expect(!wrong_shape_binding.matchesRequirement(root_module, root_import));
+    const missing_shape_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture.missing-shape",
+    });
+    const missing_shape_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = missing_shape_descriptor,
+        .label = "seed.fixture.missing-shape",
+    });
+    try std.testing.expect(!missing_shape_binding.matchesRequirement(root_module, root_import));
+    const replay_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = root_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = root_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = root_import.world_surface_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = root_import.residual_site_index,
+        .residual_site_fingerprint = root_import.residual_site_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .mode = .replay,
+        .allowed_response_kinds = root_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = root_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = root_import.suggested_symbolic_name,
+        .required = root_import.required,
+        .tags = root_import.tags,
+        .metadata = root_import.metadata,
+    });
+    const fresh_only_actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "seed.fixture.fresh-only",
+        .supported_modes = .fresh_only,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const fresh_only_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = fresh_only_actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .supported_modes = .fresh_only,
+        .label = "seed.fixture.fresh-only",
+    });
+    const fresh_only_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = fresh_only_actuator_ref,
+        .descriptor = fresh_only_descriptor,
+        .label = "seed.fixture.fresh-only",
+    });
+    try std.testing.expect(!fresh_only_binding.matchesRequirement(root_module, replay_import));
+    var mode_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer mode_builder.deinit();
+    try mode_builder.addRootModule(root_bytes);
+    std.testing.allocator.free(mode_builder.modules.items[0].imports);
+    mode_builder.modules.items[0].imports = try std.testing.allocator.dupe(world.ImportRequirement, &.{replay_import});
+    try mode_builder.addExternalBinding(fresh_only_binding);
+    var mode_prepared = try mode_builder.prepare();
+    defer mode_prepared.deinit();
+    try std.testing.expect(!mode_prepared.plan.compatibility_report.compatible);
+    const return_now_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = root_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = root_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = root_import.world_surface_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = root_import.residual_site_index,
+        .residual_site_fingerprint = root_import.residual_site_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .mode = root_import.mode,
+        .allowed_response_kinds = .return_now_only,
+        .replay_key_recipe_fingerprint = root_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = root_import.suggested_symbolic_name,
+        .required = root_import.required,
+        .tags = root_import.tags,
+        .metadata = root_import.metadata,
+    });
+    try std.testing.expect(!binding.matchesRequirement(root_module, return_now_import));
+    var return_now_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer return_now_builder.deinit();
+    try return_now_builder.addRootModule(root_bytes);
+    std.testing.allocator.free(return_now_builder.modules.items[0].imports);
+    return_now_builder.modules.items[0].imports = try std.testing.allocator.dupe(world.ImportRequirement, &.{return_now_import});
+    try return_now_builder.addExternalBinding(binding);
+    var return_now_prepared = try return_now_builder.prepare();
+    defer return_now_prepared.deinit();
+    try std.testing.expect(!return_now_prepared.plan.compatibility_report.compatible);
+    const missing_payload_ref_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "seed.fixture.missing-payload-ref",
+    });
+    try std.testing.expect(!missing_payload_ref_binding.matchesRequirement(root_module, root_import));
+    const missing_response_ref_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "seed.fixture.missing-response-ref",
+    });
+    try std.testing.expect(!missing_response_ref_binding.matchesRequirement(root_module, root_import));
+    const forged_status_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .allowed_response_statuses = .all,
+        .label = "seed.fixture.forged-status",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_status_binding.validate());
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(prepared.plan.compatibility_report.compatible);
+    try std.testing.expectEqualStrings(image_metadata, prepared.plan.metadata);
+    try std.testing.expectEqual(@as(usize, 1), prepared.plan.external_bindings.len);
+    try std.testing.expectEqual(@as(usize, 1), prepared.plan.link_plan.external_environment_requirements.len);
+    try std.testing.expectEqual(@as(usize, 1), prepared.plan.dispatch_image.residual_request_order.len);
+    try std.testing.expectEqual(root_import.requirement_fingerprint, prepared.plan.dispatch_image.residual_request_order[0]);
+    try std.testing.expect(prepared.plan.dispatch_image.dispatch_fingerprint != 0);
+
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+    const report = try image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(report.compatible);
+    try std.testing.expectEqualStrings(image_metadata, image.metadata);
+    try std.testing.expectEqual(image.image_fingerprint, image.certificate.image_fingerprint);
+    var borrowed_image_owner = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    borrowed_image_owner.deinit(std.testing.allocator);
+    const still_owned_report = try image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(still_owned_report.compatible);
+    {
+        var dynamic_summary = try std.testing.allocator.dupe(u8, "dynamic executable summary");
+        defer std.testing.allocator.free(dynamic_summary);
+        var dynamic_plan = prepared.plan;
+        dynamic_plan.compatibility_report = world.Executable.CompatibilityReport.init(.{
+            .compatible = true,
+            .summary = dynamic_summary,
+        });
+        var dynamic_image = try dynamic_plan.seal(std.testing.allocator);
+        defer dynamic_image.deinit(std.testing.allocator);
+        dynamic_summary[0] = 'X';
+        try std.testing.expectEqualStrings("dynamic executable summary", dynamic_image.compatibility_report.summary);
+        const dynamic_report = try dynamic_image.validate(world.Executable.RuntimeProfile.universal_v1);
+        try std.testing.expect(dynamic_report.compatible);
+    }
+    try std.testing.expectEqual(
+        root_module.module_ref.boundary_module_fingerprint,
+        image.module_set.root().?.module_ref.boundary_module_fingerprint,
+    );
+    {
+        var mutable_ref_label = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.ref");
+        defer std.testing.allocator.free(mutable_ref_label);
+        var mutable_ref_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.ref.metadata");
+        defer std.testing.allocator.free(mutable_ref_metadata);
+        var mutable_descriptor_label = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.descriptor");
+        defer std.testing.allocator.free(mutable_descriptor_label);
+        var mutable_descriptor_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.descriptor.metadata");
+        defer std.testing.allocator.free(mutable_descriptor_metadata);
+        var mutable_binding_label = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.binding");
+        defer std.testing.allocator.free(mutable_binding_label);
+        var mutable_binding_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.binding.metadata");
+        defer std.testing.allocator.free(mutable_binding_metadata);
+        var mutable_runtime_profile_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.profile.metadata");
+        defer std.testing.allocator.free(mutable_runtime_profile_metadata);
+        var mutable_image_metadata = try std.testing.allocator.dupe(u8, "seed.fixture.mutable.image.metadata");
+        defer std.testing.allocator.free(mutable_image_metadata);
+
+        var mutable_builder = world.Executable.Builder.init(std.testing.allocator, .{
+            .runtime_profile = world.Executable.RuntimeProfile.init(.{
+                .metadata = mutable_runtime_profile_metadata,
+            }),
+            .metadata = mutable_image_metadata,
+        });
+        defer mutable_builder.deinit();
+        try mutable_builder.addRootModule(root_bytes);
+        const mutable_root_module = mutable_builder.modules.items[0];
+        const mutable_root_import = mutable_root_module.imports[0];
+        const mutable_actuator_ref = world.Actuation.Ref.init(.{
+            .kind = .fixture,
+            .class = .deterministic_fixture,
+            .label = mutable_ref_label,
+            .supported_modes = .all,
+            .supported_response_statuses = .all,
+            .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+            .metadata = mutable_ref_metadata,
+        });
+        const mutable_descriptor = world.Actuation.Descriptor.init(.{
+            .actuator_ref = mutable_actuator_ref,
+            .world_surface_fingerprint = mutable_root_module.target_ref.world_surface_fingerprint,
+            .target_ref_fingerprint = mutable_root_module.target_ref.target_ref_fingerprint,
+            .world_port_id = mutable_root_import.world_port_id,
+            .world_port_ref_fingerprint = mutable_root_import.world_port_ref_fingerprint,
+            .source_effect_shape_ref_fingerprint = mutable_root_import.source_effect_shape_ref_fingerprint,
+            .payload_value_table_id = mutable_root_import.payload_value_table_id,
+            .response_value_table_id = mutable_root_import.response_value_table_id,
+            .label = mutable_descriptor_label,
+            .metadata = mutable_descriptor_metadata,
+        });
+        try mutable_builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+            .parent_module_fingerprint = mutable_root_module.module_ref.boundary_module_fingerprint,
+            .world_port_id = mutable_root_import.world_port_id,
+            .world_port_ref_fingerprint = mutable_root_import.world_port_ref_fingerprint,
+            .payload_value_table_id = mutable_root_import.payload_value_table_id,
+            .payload_value_ref_fingerprint = mutable_root_import.payload_value_ref_fingerprint,
+            .response_value_table_id = mutable_root_import.response_value_table_id,
+            .response_value_ref_fingerprint = mutable_root_import.response_value_ref_fingerprint,
+            .actuator_ref = mutable_actuator_ref,
+            .descriptor = mutable_descriptor,
+            .label = mutable_binding_label,
+            .metadata = mutable_binding_metadata,
+        }));
+        var mutable_prepared = try mutable_builder.prepare();
+        defer mutable_prepared.deinit();
+        var mutable_image = try mutable_prepared.seal();
+        defer mutable_image.deinit(std.testing.allocator);
+
+        mutable_ref_label[0] = 'X';
+        mutable_ref_metadata[0] = 'X';
+        mutable_descriptor_label[0] = 'X';
+        mutable_descriptor_metadata[0] = 'X';
+        mutable_binding_label[0] = 'X';
+        mutable_binding_metadata[0] = 'X';
+        mutable_runtime_profile_metadata[0] = 'X';
+        mutable_image_metadata[0] = 'X';
+
+        const mutable_report = try mutable_image.validate(world.Executable.RuntimeProfile.universal_v1);
+        try std.testing.expect(mutable_report.compatible);
+        try std.testing.expectEqualStrings("seed.fixture.mutable.image.metadata", mutable_image.metadata);
+    }
+    {
+        var forged_import = root_import;
+        forged_import.response_value_ref_fingerprint = (forged_import.response_value_ref_fingerprint orelse 0) +% 1;
+        const forged_imports = [_]world.ImportRequirement{forged_import};
+        var forged_modules = [_]world.Executable.Module{image.module_set.modules[0]};
+        forged_modules[0].imports = &forged_imports;
+        const forged_module_set = world.Executable.ModuleSet.init(&forged_modules, image.module_set.root_module_id);
+        const forged_import_image = world.Executable.Image.init(.{
+            .required_runtime_profile = image.required_runtime_profile,
+            .module_set = forged_module_set,
+            .link_plan_fingerprint = image.link_plan_fingerprint,
+            .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+            .assembly_fingerprint = image.assembly_fingerprint,
+            .dispatch_image = image.dispatch_image,
+            .external_bindings = image.external_bindings,
+            .memory_plan = image.memory_plan,
+            .compatibility_report = image.compatibility_report,
+            .metadata = image.metadata,
+        });
+        try std.testing.expectError(error.InvalidFrameEncoding, forged_import_image.validate(world.Executable.RuntimeProfile.universal_v1));
+    }
+    {
+        var forged_export_modules = [_]world.Executable.Module{image.module_set.modules[0]};
+        forged_export_modules[0].export_summary.result_value_ref_fingerprint =
+            (forged_export_modules[0].export_summary.result_value_ref_fingerprint orelse 0) +% 1;
+        const forged_export_module_set = world.Executable.ModuleSet.init(&forged_export_modules, image.module_set.root_module_id);
+        const forged_export_image = world.Executable.Image.init(.{
+            .required_runtime_profile = image.required_runtime_profile,
+            .module_set = forged_export_module_set,
+            .link_plan_fingerprint = image.link_plan_fingerprint,
+            .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+            .assembly_fingerprint = image.assembly_fingerprint,
+            .dispatch_image = image.dispatch_image,
+            .external_bindings = image.external_bindings,
+            .memory_plan = image.memory_plan,
+            .compatibility_report = image.compatibility_report,
+            .metadata = image.metadata,
+        });
+        try std.testing.expectError(error.InvalidFrameEncoding, forged_export_image.validate(world.Executable.RuntimeProfile.universal_v1));
+    }
+    {
+        var owned_prepared_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+        try owned_prepared_builder.addRootModule(root_bytes);
+        try owned_prepared_builder.addExternalBinding(binding);
+        var owned_prepared = try owned_prepared_builder.prepare();
+        owned_prepared_builder.deinit();
+        defer owned_prepared.deinit();
+        var owned_image = try owned_prepared.seal();
+        defer owned_image.deinit(std.testing.allocator);
+        const owned_report = try owned_image.validate(world.Executable.RuntimeProfile.universal_v1);
+        try std.testing.expect(owned_report.compatible);
+    }
+    var forged_profile_image = image;
+    forged_profile_image.required_runtime_profile.max_modules = 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_profile_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const too_small_module_profile = world.Executable.RuntimeProfile.init(.{
+        .max_module_bytes = image.module_set.modules[0].canonical_bytes.len - 1,
+    });
+    const undersized_profile_image = world.Executable.Image.init(.{
+        .required_runtime_profile = too_small_module_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = world.Executable.MemoryPlan.derive(too_small_module_profile, image.module_set.modules, image.external_bindings.len),
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, undersized_profile_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const no_external_profile = world.Executable.RuntimeProfile.init(.{
+        .supports_external_actuation = false,
+    });
+    const no_external_image = world.Executable.Image.init(.{
+        .required_runtime_profile = no_external_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = world.Executable.MemoryPlan.derive(no_external_profile, image.module_set.modules, image.external_bindings.len),
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, no_external_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const wrong_module_fingerprints = [_]u64{root_module.module_ref.boundary_module_fingerprint + 1};
+    const forged_module_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = &wrong_module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_module_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_module_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_module_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const forged_dispatch_proof = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.link_plan_fingerprint +% 1,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+    });
+    const forged_dispatch_proof_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_dispatch_proof,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_dispatch_proof_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const wrong_residual_order = [_]u64{root_import.requirement_fingerprint +% 1};
+    const forged_residual_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = &wrong_residual_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_residual_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_residual_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_residual_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const omitted_residual_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = &.{},
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const omitted_residual_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = omitted_residual_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, omitted_residual_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    var future_version_image = image;
+    future_version_image.format_version = world.world_executable_image_format_version + 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, future_version_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const mismatched_route_ids = [_]u64{0x5150_7001};
+    const mismatched_route_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = &mismatched_route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const mismatched_route_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = mismatched_route_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_route_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const contradictory_report = world.Executable.CompatibilityReport.init(.{
+        .compatible = true,
+        .hard_blockers = 1,
+        .summary = "self-contradictory",
+    });
+    const contradictory_report_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = contradictory_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, contradictory_report_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const inflated_memory_profile = world.Executable.RuntimeProfile.init(.{
+        .max_command_bytes = world.Executable.RuntimeProfile.universal_v1.max_command_bytes + 1,
+    });
+    const inflated_memory_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = world.Executable.MemoryPlan.derive(inflated_memory_profile, image.module_set.modules, image.external_bindings.len),
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, inflated_memory_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    const wrong_port_id = root_import.world_port_id + 1;
+    const wrong_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = wrong_port_id,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture.wrong-port",
+    });
+    const forged_bindings = [_]world.Executable.ExternalBinding{
+        world.Executable.ExternalBinding.init(.{
+            .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+            .world_port_id = wrong_port_id,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+            .response_value_table_id = root_import.response_value_table_id,
+            .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+            .actuator_ref = actuator_ref,
+            .descriptor = wrong_descriptor,
+            .label = "seed.fixture.wrong-port",
+        }),
+    };
+    const forged_binding_fingerprints = [_]u64{forged_bindings[0].binding_fingerprint};
+    const forged_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = &forged_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_dispatch,
+        .external_bindings = &forged_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    var missing_shape_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer missing_shape_builder.deinit();
+    try missing_shape_builder.addRootModule(root_bytes);
+    try missing_shape_builder.addExternalBinding(missing_shape_binding);
+    var missing_shape_prepared = try missing_shape_builder.prepare();
+    defer missing_shape_prepared.deinit();
+    try std.testing.expect(!missing_shape_prepared.plan.compatibility_report.compatible);
+
+    var non_strict_builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .strict_external_bindings = false,
+    });
+    defer non_strict_builder.deinit();
+    try non_strict_builder.addRootModule(root_bytes);
+    try non_strict_builder.addExternalBinding(binding);
+    try non_strict_builder.addExternalBinding(forged_bindings[0]);
+
+    var non_strict_prepared = try non_strict_builder.prepare();
+    defer non_strict_prepared.deinit();
+    try std.testing.expect(non_strict_prepared.plan.compatibility_report.compatible);
+    try std.testing.expectEqual(@as(usize, 1), non_strict_prepared.plan.external_bindings.len);
+    try std.testing.expectEqual(binding.binding_fingerprint, non_strict_prepared.plan.external_bindings[0].binding_fingerprint);
+    var non_strict_image = try non_strict_prepared.seal();
+    defer non_strict_image.deinit(std.testing.allocator);
+    const non_strict_report = try non_strict_image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(non_strict_report.compatible);
+
+    var audit_policy_builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .linker_policy = .audit_only,
+    });
+    defer audit_policy_builder.deinit();
+    try audit_policy_builder.addRootModule(root_bytes);
+    try audit_policy_builder.addExternalBinding(binding);
+    var audit_policy_prepared = try audit_policy_builder.prepare();
+    defer audit_policy_prepared.deinit();
+    try std.testing.expect(audit_policy_prepared.plan.compatibility_report.compatible);
+    var audit_policy_image = try audit_policy_prepared.seal();
+    defer audit_policy_image.deinit(std.testing.allocator);
+    const audit_policy_report = try audit_policy_image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(audit_policy_report.compatible);
+}
+
+test "Executable Image validation rejects forged compatibility report fields" {
+    const root_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var forged = image;
+    forged.compatibility_report.compatible = !forged.compatibility_report.compatible;
+
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        forged.validate(world.Executable.RuntimeProfile.universal_v1),
+    );
+
+    var forged_certificate = image;
+    forged_certificate.certificate = world.Executable.Certificate.init(.{
+        .image_fingerprint = image.image_fingerprint,
+        .module_set_fingerprint = image.module_set.module_set_fingerprint + 1,
+        .runtime_profile_fingerprint = image.required_runtime_profile.profile_fingerprint,
+        .dispatch_fingerprint = image.dispatch_image.dispatch_fingerprint,
+        .memory_plan_fingerprint = image.memory_plan.memory_plan_fingerprint,
+        .compatibility_report_fingerprint = image.compatibility_report.report_fingerprint,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .module_count = image.module_set.modules.len,
+        .residual_external_binding_count = image.external_bindings.len,
+        .blocker_count = image.compatibility_report.hard_blockers,
+        .warning_count = image.compatibility_report.warnings,
+    });
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        forged_certificate.validate(world.Executable.RuntimeProfile.universal_v1),
+    );
+    const uncertified_report = try forged_certificate.validateWithOptions(world.Executable.RuntimeProfile.universal_v1, .{
+        .require_certificate = false,
+    });
+    try std.testing.expect(uncertified_report.compatible);
+
+    const registry = world.Admission.TargetRegistry.init(&.{});
+    const optional_certificate_policy = world.Admission.AdmissionPolicy.init(.{
+        .allow_executable_image = true,
+        .allow_full_module_execution = true,
+        .require_executable_certificate = false,
+        .require_local_target_for_execution = false,
+        .require_environment_preflight = false,
+        .require_supervision_permit = false,
+    });
+    const admitted = world.Admission.Admitter.init(.{
+        .registry = registry,
+        .policy = optional_certificate_policy,
+    }).admitExecutableImage(forged_certificate, .{});
+    try std.testing.expect(admitted.report.accepted);
+    try std.testing.expect(admitted.report.certificate_fingerprint == null);
+    try std.testing.expect(admitted.loaded_run != null);
+    try std.testing.expect(admitted.loaded_run.?.certificate_fingerprint == null);
+}
+
+test "Executable RuntimeProfile treats loaded execution as a superset capability" {
+    const loaded_runtime = world.Executable.RuntimeProfile.init(.{
+        .supports_loaded_execution = true,
+    });
+    const unloaded_requirement = world.Executable.RuntimeProfile.init(.{
+        .supports_loaded_execution = false,
+    });
+
+    try std.testing.expect(loaded_runtime.supports(unloaded_requirement));
+
+    const constrained_closed_runtime = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = false,
+        .supports_external_actuation = false,
+        .max_provider_depth = 1,
+        .max_external_bindings = 1,
+    });
+    const closed_requirement = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = false,
+        .supports_external_actuation = false,
+    });
+    try std.testing.expect(constrained_closed_runtime.supports(closed_requirement));
+
+    const provider_requirement = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = true,
+        .supports_external_actuation = false,
+        .max_provider_depth = constrained_closed_runtime.max_provider_depth + 1,
+    });
+    try std.testing.expect(!constrained_closed_runtime.supports(provider_requirement));
+
+    const actuation_requirement = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = false,
+        .supports_external_actuation = true,
+        .max_external_bindings = constrained_closed_runtime.max_external_bindings + 1,
+    });
+    try std.testing.expect(!constrained_closed_runtime.supports(actuation_requirement));
+}
+
+test "Executable Builder reports residual binding blockers before image seal" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(!prepared.plan.compatibility_report.compatible);
+    try std.testing.expect(prepared.plan.compatibility_report.hard_blockers != 0);
+    try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
+}
+
+test "Executable Builder deduplicates identical provider module bytes" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(root_bytes);
+    try builder.addProviderModule(root_bytes);
+
+    try std.testing.expectEqual(@as(usize, 1), builder.modules.items.len);
+}
+
+test "Executable Builder rejects provider modules with residual imports" {
+    const root_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(provider_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
+
+    try std.testing.expectError(error.ExecutableSealingBlocked, builder.prepare());
+}
+
+test "Loaded Runspace installs executable roots as ordinary slots" {
+    const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(strict_bytes);
+
+    var strict_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer strict_builder.deinit();
+    try strict_builder.addRootModule(strict_bytes);
+    var strict_prepared = try strict_builder.prepare();
+    defer strict_prepared.deinit();
+    var strict_image = try strict_prepared.seal();
+    defer strict_image.deinit(std.testing.allocator);
+
+    var complete_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer complete_runspace.deinit();
+    const complete_handle = try complete_runspace.installExecutableRoot(strict_image, .{});
+    const complete_installed = try complete_runspace.getSlotSummary(complete_handle);
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, complete_installed.backend_kind);
+    const complete_report = try complete_runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), complete_report.completed_count);
+    try std.testing.expect(complete_runspace.slots.items[0].completed_result_image != null);
+
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    const root_module = builder.modules.items[0];
+    const root_import = root_module.imports[0];
+    const actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "loaded-runspace.fixture",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "loaded-runspace.fixture",
+    });
+    try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "loaded-runspace.fixture",
+    }));
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installExecutableRoot(image, .{});
+    const installed = try runspace.getSlotSummary(handle);
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, installed.backend_kind);
+    try std.testing.expectEqual(image.image_fingerprint, installed.executable_image_fingerprint.?);
+
+    const parked_report = try runspace.tick();
+    try std.testing.expectEqual(@as(usize, 1), parked_report.parked_count);
+    try std.testing.expectEqual(@as(usize, 1), parked_report.pending_port_count);
+    const pending = try runspace.mailbox.get(0);
+    const request = pending.request_frame.?;
+    try std.testing.expectEqual(root_import.world_port_id, request.world_port_id);
+    try std.testing.expect(request.payload_image != null);
+    try std.testing.expect(request.payload_image.?.bytes.len != 0);
+    try std.testing.expectError(error.InvalidRunspaceTransition, world.Capsule.freezeRunspace(&runspace, .{}));
+    _ = try runspace.fail(0, "loaded run terminal failure");
+    try std.testing.expectEqual(world.Runspace.RunStatus.failed, (try runspace.getSlotSummary(handle)).status);
+    var failed_capsule = try world.Capsule.freezeRunspace(&runspace, .{});
+    defer failed_capsule.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.RunImage.Kind.replay_only_run, failed_capsule.run_images[0].kind);
+    try std.testing.expectEqual(world.RunState.Status.failed, failed_capsule.run_images[0].current_state.status);
+    try std.testing.expectEqual(@as(?u64, null), failed_capsule.run_images[0].current_state.pending_request_fingerprint);
+    try std.testing.expect(failed_capsule.run_images[0].pending_request_frame == null);
+
+    var supervised_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer supervised_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.installExecutableRoot(image, .{}));
+}
+
+test "Loaded Linker emits dense loaded module provider route evidence" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_module_ref = world.Admission.ModuleRef.fromTarget(fixtures.Strict.Target);
+    const root_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .module_ref = provider_module_ref,
+        .result_ref = .{ .value_table_id = root_import.response_value_table_id, .value_ref_fingerprint = root_import.response_value_ref_fingerprint },
+        .label = "provider-module",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.moduleRef(.{
+            .module_ref = provider_module_ref,
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "provider-module",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = world.ImportSet.fromTarget(fixtures.Ports.Target),
+        .root_imports = &.{root_import},
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expectEqual(@as(usize, 1), linked.plan.fabric_plans.len);
+    const route = linked.plan.fabric_plans[0].routes[0];
+    try std.testing.expectEqual(world.Fabric.RouteKind.loaded_module_export, route.kind);
+    try std.testing.expectEqual(provider_module_ref.module_ref_fingerprint, route.provider_module_fingerprint.?);
+}
+
+test "Executable Builder blocks sealing images that exceed runtime profile image bytes" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(provider_bytes);
+
+    const max_single_module_bytes = @max(root_bytes.len, provider_bytes.len) + 1;
+    const profile = world.Executable.RuntimeProfile.init(.{
+        .max_module_bytes = max_single_module_bytes,
+        .max_image_bytes = max_single_module_bytes,
+    });
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .runtime_profile = profile,
+        .linker_policy = .strict_closed,
+    });
+    defer builder.deinit();
+
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+
+    try std.testing.expect(!prepared.plan.compatibility_report.compatible);
+    try std.testing.expect(!prepared.plan.compatibility_report.memory_compatible);
+    try std.testing.expect(prepared.plan.compatibility_report.hard_blockers != 0);
+    try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
+}
+
+test "Executable Builder charges external binding metadata against image bytes" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const oversized_label = try std.testing.allocator.alloc(u8, root_bytes.len);
+    defer std.testing.allocator.free(oversized_label);
+    @memset(oversized_label, 'x');
+
+    const profile = world.Executable.RuntimeProfile.init(.{
+        .max_module_bytes = root_bytes.len + 1,
+        .max_image_bytes = root_bytes.len + oversized_label.len - 1,
+    });
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .runtime_profile = profile,
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    const root_module = builder.modules.items[0];
+    const root_import = root_module.imports[0];
+    const actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "seed.fixture",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture",
+    });
+    try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = oversized_label,
+    }));
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(!prepared.plan.compatibility_report.compatible);
+    try std.testing.expect(!prepared.plan.compatibility_report.memory_compatible);
+    try std.testing.expect(prepared.plan.memory_plan.decoded_module_bytes <= profile.max_image_bytes);
+    try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
+}
+
+test "Executable Builder charges image metadata against image bytes" {
+    const root_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var baseline_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer baseline_builder.deinit();
+    try baseline_builder.addRootModule(root_bytes);
+    var baseline_prepared = try baseline_builder.prepare();
+    defer baseline_prepared.deinit();
+    var baseline_image = try baseline_prepared.seal();
+    defer baseline_image.deinit(std.testing.allocator);
+
+    const image_metadata = "image metadata charged to profile bytes";
+    const profile = world.Executable.RuntimeProfile.init(.{
+        .max_module_bytes = root_bytes.len + 1,
+        .max_image_bytes = baseline_image.ownedByteFootprint() + image_metadata.len - 1,
+    });
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .runtime_profile = profile,
+        .metadata = image_metadata,
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(!prepared.plan.compatibility_report.compatible);
+    try std.testing.expect(!prepared.plan.compatibility_report.memory_compatible);
+    try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
+}
+
+test "Loaded Admission admits executable image without local target registry" {
+    const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(strict_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(strict_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    const empty_registry = world.Admission.TargetRegistry.init(&.{});
+    const strict_admitter = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = .strict_local_execution,
+    });
+    const strict_result = strict_admitter.admitExecutableImage(image, .{});
+    try std.testing.expect(!strict_result.report.accepted);
+    try std.testing.expect(strict_result.loaded_run == null);
+
+    const receiver = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = .executable_receiver,
+    });
+    const admitted = receiver.admitExecutableImage(image, .{});
+    try std.testing.expect(admitted.report.accepted);
+    try std.testing.expect(admitted.loaded_run != null);
+    try std.testing.expectEqual(image.image_fingerprint, admitted.loaded_run.?.executable_image_fingerprint);
+    try std.testing.expectEqual(image.dispatch_image.dispatch_fingerprint, admitted.loaded_run.?.dispatch_fingerprint);
+    try std.testing.expectEqual(image.module_set.root().?.module_ref.module_ref_fingerprint, admitted.loaded_run.?.root_module_ref_fingerprint);
+
+    const supervised_receiver = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_executable_image = true,
+            .allow_full_module_execution = true,
+            .require_local_target_for_execution = false,
+            .require_environment_preflight = false,
+            .require_supervision_permit = true,
+        }),
+    });
+    const supervised_result = supervised_receiver.admitExecutableImage(image, .{});
+    try std.testing.expect(!supervised_result.report.accepted);
+    try std.testing.expect(supervised_result.loaded_run == null);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PermitMissing, supervised_result.report.blockers[0]);
+
+    var invalid_supported_profile = world.Executable.RuntimeProfile.universal_v1;
+    invalid_supported_profile.profile_fingerprint = 0;
+    const invalid_supported_profile_result = receiver.admitExecutableImage(image, .{
+        .runtime_profile = invalid_supported_profile,
+    });
+    try std.testing.expect(!invalid_supported_profile_result.report.accepted);
+    try std.testing.expect(invalid_supported_profile_result.loaded_run == null);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, invalid_supported_profile_result.report.blockers[0]);
+
+    const module_limit_receiver = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_executable_image = true,
+            .allow_full_module_execution = true,
+            .require_local_target_for_execution = false,
+            .require_environment_preflight = false,
+            .require_supervision_permit = false,
+            .max_module_bytes = image.module_set.modules[0].canonical_bytes.len - 1,
+        }),
+    });
+    const module_limit_result = module_limit_receiver.admitExecutableImage(image, .{});
+    try std.testing.expect(!module_limit_result.report.accepted);
+    try std.testing.expect(module_limit_result.loaded_run == null);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageLimitExceeded, module_limit_result.report.blockers[0]);
+
+    const package_limit_receiver = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_executable_image = true,
+            .allow_full_module_execution = true,
+            .require_local_target_for_execution = false,
+            .require_environment_preflight = false,
+            .require_supervision_permit = false,
+            .max_package_bytes = image.memory_plan.decoded_module_bytes - 1,
+        }),
+    });
+    const package_limit_result = package_limit_receiver.admitExecutableImage(image, .{});
+    try std.testing.expect(!package_limit_result.report.accepted);
+    try std.testing.expect(package_limit_result.loaded_run == null);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageLimitExceeded, package_limit_result.report.blockers[0]);
+
+    const aggregate_limit_receiver = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_executable_image = true,
+            .allow_full_module_execution = true,
+            .require_local_target_for_execution = false,
+            .require_environment_preflight = false,
+            .require_supervision_permit = false,
+            .max_package_bytes = image.ownedByteFootprint() - 1,
+        }),
+    });
+    const aggregate_limit_result = aggregate_limit_receiver.admitExecutableImage(image, .{});
+    try std.testing.expect(!aggregate_limit_result.report.accepted);
+    try std.testing.expect(aggregate_limit_result.loaded_run == null);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageLimitExceeded, aggregate_limit_result.report.blockers[0]);
+
+    var malformed_unsupported = image;
+    malformed_unsupported.required_runtime_profile = world.Executable.RuntimeProfile.init(.{ .max_modules = 1024 });
+    const relaxed_receiver = world.Admission.Admitter.init(.{
+        .registry = empty_registry,
+        .policy = world.Admission.AdmissionPolicy.init(.{
+            .allow_full_modules = true,
+            .allow_executable_image = true,
+            .allow_full_module_execution = true,
+            .require_local_target_for_execution = false,
+            .require_supported_runtime_profile = false,
+            .require_environment_preflight = false,
+            .require_supervision_permit = false,
+        }),
+    });
+    const malformed_result = relaxed_receiver.admitExecutableImage(malformed_unsupported, .{});
+    try std.testing.expect(!malformed_result.report.accepted);
+    try std.testing.expect(malformed_result.loaded_run == null);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, malformed_result.report.blockers[0]);
+
+    const unsupported_profile = world.Executable.RuntimeProfile.init(.{ .max_modules = 1024 });
+    var unsupported_builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .runtime_profile = unsupported_profile,
+    });
+    defer unsupported_builder.deinit();
+    try unsupported_builder.addRootModule(strict_bytes);
+    var unsupported_prepared = try unsupported_builder.prepare();
+    defer unsupported_prepared.deinit();
+    var unsupported_image = try unsupported_prepared.seal();
+    defer unsupported_image.deinit(std.testing.allocator);
+    const unsupported_result = relaxed_receiver.admitExecutableImage(unsupported_image, .{});
+    try std.testing.expect(unsupported_result.report.accepted);
+    try std.testing.expect(unsupported_result.loaded_run != null);
+}
+
+test "Loaded Admission enforces executable external binding nested package limits" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const empty_registry = world.Admission.TargetRegistry.init(&.{});
+
+    const OversizedField = enum { actuator_metadata, descriptor_metadata };
+    inline for (.{ OversizedField.actuator_metadata, OversizedField.descriptor_metadata }) |oversized_field| {
+        const oversized_metadata = try std.testing.allocator.alloc(u8, root_bytes.len + 128);
+        defer std.testing.allocator.free(oversized_metadata);
+        @memset(oversized_metadata, 'm');
+
+        var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+        defer builder.deinit();
+        try builder.addRootModule(root_bytes);
+        const root_module = builder.modules.items[0];
+        const root_import = root_module.imports[0];
+        const actuator_ref = world.Actuation.Ref.init(.{
+            .kind = .fixture,
+            .class = .deterministic_fixture,
+            .label = "seed.fixture",
+            .supported_modes = .all,
+            .supported_response_statuses = .all,
+            .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+            .metadata = if (oversized_field == .actuator_metadata) oversized_metadata else "",
+        });
+        const descriptor = world.Actuation.Descriptor.init(.{
+            .actuator_ref = actuator_ref,
+            .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+            .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .response_value_table_id = root_import.response_value_table_id,
+            .label = "seed.fixture",
+            .metadata = if (oversized_field == .descriptor_metadata) oversized_metadata else "",
+        });
+        try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+            .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+            .response_value_table_id = root_import.response_value_table_id,
+            .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+            .actuator_ref = actuator_ref,
+            .descriptor = descriptor,
+            .label = "seed.fixture",
+        }));
+
+        var prepared = try builder.prepare();
+        defer prepared.deinit();
+        var image = try prepared.seal();
+        defer image.deinit(std.testing.allocator);
+        const max_package_bytes = image.memory_plan.decoded_module_bytes + 1;
+        try std.testing.expect(oversized_metadata.len > max_package_bytes);
+
+        const limited_receiver = world.Admission.Admitter.init(.{
+            .registry = empty_registry,
+            .policy = world.Admission.AdmissionPolicy.init(.{
+                .allow_executable_image = true,
+                .allow_full_module_execution = true,
+                .require_local_target_for_execution = false,
+                .require_environment_preflight = false,
+                .require_supervision_permit = false,
+                .max_package_bytes = max_package_bytes,
+            }),
+        });
+        const limit_result = limited_receiver.admitExecutableImage(image, .{});
+        try std.testing.expect(!limit_result.report.accepted);
+        try std.testing.expect(limit_result.loaded_run == null);
+        try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageLimitExceeded, limit_result.report.blockers[0]);
+    }
+}
+
+test "Loaded Fabric installs provider from sealed executable image route" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(provider_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .linker_policy = .strict_closed,
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(prepared.plan.compatibility_report.compatible);
+    try std.testing.expectEqual(@as(usize, 1), prepared.plan.link_plan.fabric_plans.len);
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), image.dispatch_image.fabric_plan_fingerprints.len);
+    try std.testing.expectEqual(prepared.plan.linker_certificate.fabric_plan_fingerprints[0], image.dispatch_image.fabric_plan_fingerprints[0]);
+    try std.testing.expectEqual(
+        image.module_set.modules.len + image.external_bindings.len + image.dispatch_image.route_ids.len,
+        image.memory_plan.dispatch_table_entries,
+    );
+
+    const no_internal_profile = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = false,
+    });
+    const no_internal_image = world.Executable.Image.init(.{
+        .required_runtime_profile = no_internal_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = world.Executable.MemoryPlan.derive(no_internal_profile, image.module_set.modules, image.external_bindings.len),
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, no_internal_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    var duplicate_module_id_modules = try std.testing.allocator.dupe(world.Executable.Module, image.module_set.modules);
+    defer std.testing.allocator.free(duplicate_module_id_modules);
+    duplicate_module_id_modules[1].module_id = duplicate_module_id_modules[0].module_id;
+    const duplicate_module_id_set = world.Executable.ModuleSet.init(duplicate_module_id_modules, image.module_set.root_module_id);
+    const duplicate_module_id_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = duplicate_module_id_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicate_module_id_image.validate(world.Executable.RuntimeProfile.universal_v1));
+
+    var forged_direct_module = image.module_set.root().?;
+    forged_direct_module.canonical_bytes = image.module_set.modules[1].canonical_bytes;
+    var direct_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer direct_runspace.deinit();
+    try std.testing.expectError(error.InvalidFrameEncoding, direct_runspace.installLoadedModuleRun(forged_direct_module, .{}));
+
+    const wrong_coverage_requirements = [_]u64{image.dispatch_image.route_requirement_fingerprints[0] +% 1};
+    var wrong_coverage_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer wrong_coverage_runspace.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, wrong_coverage_runspace.installLoadedModuleRun(image.module_set.root().?, .{
+        .executable_image_fingerprint = image.image_fingerprint,
+        .executable_dispatch_coverage = .{
+            .fabric_plan_fingerprint = image.dispatch_image.fabric_plan_fingerprints[0],
+            .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+            .route_kinds = image.dispatch_image.route_kinds,
+            .route_requirement_fingerprints = &wrong_coverage_requirements,
+        },
+    }));
+
+    const plan = prepared.plan.link_plan.fabric_plans[0];
+    const mismatched_module_ref_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.strict_fresh,
+        .module_ref_fingerprint = image.module_set.modules[1].module_ref.module_ref_fingerprint,
+    });
+    var supervised_loaded_runspace = world.Runspace.init(std.testing.allocator, .{
+        .require_supervision = true,
+    });
+    defer supervised_loaded_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, supervised_loaded_runspace.installExecutableRoot(image, .{
+        .permit = mismatched_module_ref_permit,
+        .fabric_plan = plan,
+    }));
+
+    try std.testing.expectEqual(world.Fabric.RouteKind.loaded_module_export, plan.routes[0].kind);
+    const sealed_route = plan.routes[0];
+    try std.testing.expectEqual(@as(usize, 1), image.dispatch_image.route_requirement_fingerprints.len);
+    try std.testing.expectEqual(prepared.plan.link_plan.route_syntheses[0].import_requirement_fingerprint, image.dispatch_image.route_requirement_fingerprints[0]);
+    const routed_requirement = for (image.module_set.root().?.imports) |requirement| {
+        if (requirement.requirement_fingerprint == image.dispatch_image.route_requirement_fingerprints[0]) break requirement;
+    } else return error.ExpectedImportRequirement;
+    const routed_actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "loaded-fabric.routed-residual",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const routed_descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = routed_actuator_ref,
+        .world_surface_fingerprint = image.module_set.root().?.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+        .world_port_id = routed_requirement.world_port_id,
+        .world_port_ref_fingerprint = routed_requirement.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = routed_requirement.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = routed_requirement.payload_value_table_id,
+        .response_value_table_id = routed_requirement.response_value_table_id,
+        .label = "loaded-fabric.routed-residual",
+    });
+    const routed_binding = world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = image.module_set.root().?.module_ref.boundary_module_fingerprint,
+        .world_port_id = routed_requirement.world_port_id,
+        .world_port_ref_fingerprint = routed_requirement.world_port_ref_fingerprint,
+        .payload_value_table_id = routed_requirement.payload_value_table_id,
+        .payload_value_ref_fingerprint = routed_requirement.payload_value_ref_fingerprint,
+        .response_value_table_id = routed_requirement.response_value_table_id,
+        .response_value_ref_fingerprint = routed_requirement.response_value_ref_fingerprint,
+        .actuator_ref = routed_actuator_ref,
+        .descriptor = routed_descriptor,
+        .label = "loaded-fabric.routed-residual",
+    });
+    const routed_binding_fingerprints = [_]u64{routed_binding.binding_fingerprint};
+    const routed_as_residual = [_]u64{routed_requirement.requirement_fingerprint};
+    const routed_residual_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = &routed_binding_fingerprints,
+        .residual_request_order = &routed_as_residual,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const routed_residual_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = routed_residual_dispatch,
+        .external_bindings = &.{routed_binding},
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, routed_residual_image.validate(world.Executable.RuntimeProfile.universal_v1));
+    const forged_route_ids = [_]u64{sealed_route.route_id +% 1};
+    const forged_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = &forged_route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = image.dispatch_image.route_requirement_fingerprints,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_dispatch_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_dispatch_image.validate(world.Executable.RuntimeProfile.universal_v1));
+    const forged_route_requirements = [_]u64{image.dispatch_image.route_requirement_fingerprints[0] +% 1};
+    const forged_requirement_dispatch = world.Executable.DispatchImage.init(.{
+        .root_module_id = image.dispatch_image.root_module_id,
+        .module_fingerprints = image.dispatch_image.module_fingerprints,
+        .external_binding_fingerprints = image.dispatch_image.external_binding_fingerprints,
+        .residual_request_order = image.dispatch_image.residual_request_order,
+        .fabric_plan_fingerprints = image.dispatch_image.fabric_plan_fingerprints,
+        .route_ids = image.dispatch_image.route_ids,
+        .route_kinds = image.dispatch_image.route_kinds,
+        .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+        .route_requirement_fingerprints = &forged_route_requirements,
+        .route_provider_module_fingerprints = image.dispatch_image.route_provider_module_fingerprints,
+        .link_plan_fingerprint = image.dispatch_image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.dispatch_image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.dispatch_image.assembly_fingerprint,
+    });
+    const forged_requirement_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = forged_requirement_dispatch,
+        .external_bindings = image.external_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_requirement_image.validate(world.Executable.RuntimeProfile.universal_v1));
+    var no_plan_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer no_plan_runspace.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, no_plan_runspace.installExecutableRoot(image, .{}));
+
+    const unsealed_route = world.Fabric.Route.init(.{
+        .route_id = sealed_route.route_id +% 1,
+        .kind = sealed_route.kind,
+        .parent_world_surface_fingerprint = sealed_route.parent_world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = sealed_route.parent_target_certificate_fingerprint,
+        .world_port_id = sealed_route.world_port_id,
+        .parent_world_port_id = sealed_route.parent_world_port_id,
+        .provider_target_ref_fingerprint = sealed_route.provider_target_ref_fingerprint,
+        .provider_module_fingerprint = sealed_route.provider_module_fingerprint,
+        .provider_world_surface_fingerprint = sealed_route.provider_world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = sealed_route.provider_target_certificate_fingerprint,
+        .provider_world_port_id = sealed_route.provider_world_port_id,
+        .provider_admission_receipt_fingerprint = sealed_route.provider_admission_receipt_fingerprint,
+        .provider_run_image_fingerprint = sealed_route.provider_run_image_fingerprint,
+        .provider_transcript_image_fingerprint = sealed_route.provider_transcript_image_fingerprint,
+        .value_mapping_fingerprint = sealed_route.value_mapping_fingerprint,
+        .response_value_mapping_fingerprint = sealed_route.response_value_mapping_fingerprint,
+        .response_status = sealed_route.response_status,
+        .max_depth = sealed_route.max_depth,
+    });
+    const unsealed_plan = world.Fabric.Plan.init(.{
+        .fabric_digest = plan.fabric_digest,
+        .target_ref_fingerprint = plan.target_ref_fingerprint,
+        .module_fingerprint = plan.module_fingerprint,
+        .world_surface_fingerprint = plan.world_surface_fingerprint,
+        .target_certificate_fingerprint = plan.target_certificate_fingerprint,
+        .import_set_fingerprint = plan.import_set_fingerprint,
+        .routes = &.{unsealed_route},
+        .value_mappings = plan.value_mappings,
+        .max_depth = plan.max_depth,
+        .max_provider_runs = plan.max_provider_runs,
+        .coverage_report_fingerprint = plan.coverage_report_fingerprint,
+    });
+    var unsealed_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer unsealed_runspace.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, unsealed_runspace.installExecutableRoot(image, .{ .fabric_plan = unsealed_plan }));
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const root_handle = try runspace.installExecutableRoot(image, .{ .fabric_plan = plan });
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(root_handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+    const pending_before_route = try runspace.mailbox.get(0);
+    const pending_request_before_route = pending_before_route.request_frame orelse return error.ExpectedPendingRequestFrame;
+    const manual_response = testRunspaceResponseFrame(pending_request_before_route);
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.respond(0, manual_response));
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.reject(0, "manual loaded fabric bypass"));
+    try std.testing.expectError(error.ActiveFabricUnsupported, runspace.exportRun(root_handle));
+
+    const slot_count_before_retry = runspace.slots.items.len;
+    const event_count_before_retry = runspace.events.items.len;
+    const mailbox_count_before_retry = runspace.mailbox.pending.items.len;
+    const next_run_id_before_retry = runspace.next_run_id;
+    const next_mailbox_id_before_retry = runspace.next_mailbox_id;
+    const next_event_index_before_retry = runspace.next_event_index;
+    runspace.config.max_events = event_count_before_retry + 1;
+    try std.testing.expectError(error.BudgetExceeded, runspace.routePendingToLoadedProvider(0, image, plan));
+    runspace.config.max_events = null;
+    try std.testing.expectEqual(slot_count_before_retry, runspace.slots.items.len);
+    try std.testing.expectEqual(event_count_before_retry, runspace.events.items.len);
+    try std.testing.expectEqual(mailbox_count_before_retry, runspace.mailbox.pending.items.len);
+    try std.testing.expectEqual(next_run_id_before_retry, runspace.next_run_id);
+    try std.testing.expectEqual(next_mailbox_id_before_retry, runspace.next_mailbox_id);
+    try std.testing.expectEqual(next_event_index_before_retry, runspace.next_event_index);
+
+    const supervised_root = image.module_set.root().?;
+    const supervised_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = supervised_root.target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = supervised_root.target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = supervised_root.target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = 0x5150_7001,
+        .binding_plan_fingerprint = 0x5150_7002,
+        .fabric_plan_fingerprint = plan.plan_fingerprint,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+    });
+    const mismatched_fabric_permit = world.RunPermit.init(.{
+        .target_ref_fingerprint = supervised_root.target_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = supervised_root.target_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = supervised_root.target_ref.target_certificate_fingerprint,
+        .environment_certificate_fingerprint = 0x5150_7001,
+        .binding_plan_fingerprint = 0x5150_7002,
+        .fabric_plan_fingerprint = plan.plan_fingerprint +% 1,
+        .mode = .fresh,
+        .policy = world.SupervisionPolicy.handoff_receiver,
+    });
+    var mismatched_fabric_permit_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer mismatched_fabric_permit_runspace.deinit();
+    try std.testing.expectError(error.SupervisionDenied, mismatched_fabric_permit_runspace.installExecutableRoot(image, .{
+        .permit = mismatched_fabric_permit,
+        .fabric_plan = plan,
+    }));
+    var supervised_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
+    defer supervised_runspace.deinit();
+    _ = try supervised_runspace.installExecutableRoot(image, .{ .permit = supervised_permit, .fabric_plan = plan });
+    _ = try supervised_runspace.tick();
+    const supervised_slot_count_before = supervised_runspace.slots.items.len;
+    const supervised_event_count_before = supervised_runspace.events.items.len;
+    const supervised_mailbox_count_before = supervised_runspace.mailbox.pending.items.len;
+    try std.testing.expectError(error.SupervisionDenied, supervised_runspace.routePendingToLoadedProvider(0, image, plan));
+    try std.testing.expectEqual(supervised_slot_count_before, supervised_runspace.slots.items.len);
+    try std.testing.expectEqual(supervised_event_count_before, supervised_runspace.events.items.len);
+    try std.testing.expectEqual(supervised_mailbox_count_before, supervised_runspace.mailbox.pending.items.len);
+
+    const invocation = try runspace.routePendingToLoadedProvider(0, image, plan);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_running, invocation.status);
+    try std.testing.expectEqual(@as(usize, 2), runspace.slots.items.len);
+    const provider_summary = try runspace.getSlotSummary(runspace.slots.items[1].handle);
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, provider_summary.backend_kind);
+    try std.testing.expectEqual(root_handle.handle_fingerprint, provider_summary.parent_run_handle_fingerprint.?);
+
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(runspace.slots.items[1].handle)).status);
+}
+
+test "Loaded Run rejects response frame fingerprint mismatch" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    const root_module = builder.modules.items[0];
+    const root_import = root_module.imports[0];
+    const actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "loaded-response.fixture",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "loaded-response.fixture",
+    });
+    try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = "loaded-response.fixture",
+    }));
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const root_handle = try runspace.installExecutableRoot(image, .{});
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(root_handle)).status);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
+
+    const pending = try runspace.mailbox.get(0);
+    const pending_request = pending.request_frame.?;
+    const wrong_response_fingerprint: u64 = 0x5150_5bad;
+    var response_image = try world.Frame.ValueImage.fromValue(
+        std.testing.allocator,
+        pending.expected_response_value_table_id,
+        wrong_response_fingerprint,
+        null,
+        @as(i32, 7),
+        .portable,
+    );
+    var response_image_owned = true;
+    defer if (response_image_owned) response_image.deinit(std.testing.allocator);
+    var response = world.Frame.Response.init(.{
+        .world_surface_fingerprint = pending_request.world_surface_fingerprint,
+        .target_certificate_fingerprint = pending_request.target_certificate_fingerprint,
+        .world_port_id = pending_request.world_port_id,
+        .request_fingerprint = pending_request.request_fingerprint,
+        .response_kind = pending.expected_response_kind,
+        .response_value_table_id = pending.expected_response_value_table_id,
+        .response_fingerprint = wrong_response_fingerprint,
+        .response_image = response_image,
+        .replay_key = pending_request.replay_key_seed.withResponse(wrong_response_fingerprint).fingerprint(),
+        .status = .responded,
+    });
+    response_image_owned = false;
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expectError(error.InvalidFrameEncoding, runspace.respond(0, response));
+}
+
+test "Loaded Capsule binds run slot executable and loaded session identity" {
+    const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(strict_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(strict_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer runspace.deinit();
+    const handle = try runspace.installExecutableRoot(image, .{});
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(handle)).status);
+
+    var capsule = try world.Capsule.freezeRunspace(&runspace, .{});
+    defer capsule.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), capsule.runspace_image.run_slots.len);
+    const slot = capsule.runspace_image.run_slots[0];
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, slot.backend_kind);
+    try std.testing.expectEqual(image.image_fingerprint, slot.executable_image_fingerprint.?);
+    try std.testing.expectEqual(image.module_set.root().?.executable_plan_fingerprint, slot.executable_plan_fingerprint.?);
+    try std.testing.expect(slot.loaded_session_fingerprint != null);
+
+    const malformed_loaded_slot = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_5008,
+        .role = .root,
+        .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+        .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+        .backend_kind = .loaded_module,
+        .run_state_fingerprint = 0x5150_5009,
+        .status = .completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, malformed_loaded_slot.validate(.{}));
+
+    const zero_loaded_identity_slots = [_]world.Capsule.RunSlotImage{
+        world.Capsule.RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_5012,
+            .role = .root,
+            .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+            .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+            .backend_kind = .loaded_module,
+            .executable_image_fingerprint = 0,
+            .executable_plan_fingerprint = image.module_set.root().?.executable_plan_fingerprint,
+            .loaded_session_fingerprint = slot.loaded_session_fingerprint,
+            .run_state_fingerprint = 0x5150_5013,
+            .status = .completed,
+        }),
+        world.Capsule.RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_5014,
+            .role = .root,
+            .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+            .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+            .backend_kind = .loaded_module,
+            .executable_image_fingerprint = image.image_fingerprint,
+            .executable_plan_fingerprint = 0,
+            .loaded_session_fingerprint = slot.loaded_session_fingerprint,
+            .run_state_fingerprint = 0x5150_5015,
+            .status = .completed,
+        }),
+        world.Capsule.RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_5016,
+            .role = .root,
+            .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+            .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+            .backend_kind = .loaded_module,
+            .executable_image_fingerprint = image.image_fingerprint,
+            .executable_plan_fingerprint = image.module_set.root().?.executable_plan_fingerprint,
+            .loaded_session_fingerprint = 0,
+            .run_state_fingerprint = 0x5150_5017,
+            .status = .completed,
+        }),
+    };
+    for (zero_loaded_identity_slots) |zero_identity_slot| {
+        try std.testing.expectError(error.InvalidFrameEncoding, zero_identity_slot.validate(.{}));
+    }
+    const active_loaded_statuses = [_]world.Capsule.RunSlotStatus{ .admitted, .runnable, .parked_on_port, .parked_on_supervision };
+    for (active_loaded_statuses, 0..) |status, index| {
+        const active_loaded_slot = world.Capsule.RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_5020 + index,
+            .role = .root,
+            .target_ref_fingerprint = image.module_set.root().?.target_ref.target_ref_fingerprint,
+            .module_ref_fingerprint = image.module_set.root().?.module_ref.module_ref_fingerprint,
+            .backend_kind = .loaded_module,
+            .executable_image_fingerprint = image.image_fingerprint,
+            .executable_plan_fingerprint = image.module_set.root().?.executable_plan_fingerprint,
+            .loaded_session_fingerprint = slot.loaded_session_fingerprint,
+            .run_state_fingerprint = 0x5150_5030 + index,
+            .current_pending_mailbox_id = if (status == .parked_on_port) 0 else null,
+            .status = status,
+        });
+        try std.testing.expectError(error.UnsupportedLoadedExecution, active_loaded_slot.validate(.{}));
+    }
+
+    const generated_slot_with_executable_image = world.Capsule.RunSlotImage.init(.{
+        .original_run_handle_fingerprint = 0x5150_5010,
+        .role = .root,
+        .target_ref_fingerprint = world.TargetRef.fromTarget(fixtures.Strict.Target).target_ref_fingerprint,
+        .backend_kind = .generated_target,
+        .run_state_fingerprint = 0x5150_5011,
+        .executable_image_fingerprint = image.image_fingerprint,
+        .status = .completed,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, generated_slot_with_executable_image.validate(.{}));
+}
+
+test "World Seed Migration restores loaded executable slot identity into new runspace" {
+    const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(strict_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(strict_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    var source = world.Runspace.init(std.testing.allocator, .{});
+    defer source.deinit();
+    const source_handle = try source.installExecutableRoot(image, .{});
+    _ = try source.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try source.getSlotSummary(source_handle)).status);
+
+    var capsule = try world.Capsule.freezeRunspace(&source, .{});
+    defer capsule.deinit(std.testing.allocator);
+
+    var receiver = world.Runspace.init(std.testing.allocator, .{});
+    defer receiver.deinit();
+    var restored = try world.Capsule.thawIntoRunspace(
+        capsule,
+        &receiver,
+        image.module_set.root().?.target_ref.target_ref_fingerprint,
+        0,
+        null,
+        .{
+            .mode = .restore_completed,
+            .require_local_permit = false,
+            .require_link_match = false,
+        },
+    );
+    defer restored.deinit(std.testing.allocator);
+    try std.testing.expect(restored.accepted);
+    try std.testing.expectEqual(@as(usize, 1), receiver.slots.items.len);
+    const restored_summary = try receiver.getSlotSummary(receiver.slots.items[0].handle);
+    try std.testing.expectEqual(world.Runspace.BackendKind.loaded_module, restored_summary.backend_kind);
+    try std.testing.expectEqual(image.image_fingerprint, restored_summary.executable_image_fingerprint.?);
+    try std.testing.expectEqual(image.module_set.root().?.executable_plan_fingerprint, restored_summary.executable_plan_fingerprint.?);
 }
 
 test "admission rejects bare target reference when reference targets are disabled" {

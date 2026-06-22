@@ -298,10 +298,23 @@ pub const world_linker_report_fingerprint_version: u32 = 1;
 pub const world_linker_certificate_format_version: u32 = 1;
 pub const world_linker_certificate_fingerprint_version: u32 = 1;
 pub const world_assembly_fingerprint_version: u32 = 4;
+pub const world_executable_runtime_profile_fingerprint_version: u32 = 1;
+pub const world_executable_external_binding_fingerprint_version: u32 = 1;
+pub const world_executable_module_set_fingerprint_version: u32 = 2;
+pub const world_executable_dispatch_image_format_version: u32 = 1;
+pub const world_executable_dispatch_image_fingerprint_version: u32 = 3;
+pub const world_executable_memory_plan_fingerprint_version: u32 = 1;
+pub const world_executable_plan_fingerprint_version: u32 = 1;
+pub const world_executable_certificate_format_version: u32 = 1;
+pub const world_executable_certificate_fingerprint_version: u32 = 1;
+pub const world_executable_image_format_version: u32 = 1;
+pub const world_executable_image_fingerprint_version: u32 = 1;
+pub const world_executable_compatibility_report_fingerprint_version: u32 = 1;
+pub const world_executable_load_report_fingerprint_version: u32 = 1;
 pub const world_capsule_manifest_format_version: u32 = 2;
 pub const world_capsule_manifest_fingerprint_version: u32 = 1;
 pub const world_capsule_quiescence_report_fingerprint_version: u32 = 1;
-pub const world_capsule_runspace_image_format_version: u32 = 3;
+pub const world_capsule_runspace_image_format_version: u32 = 4;
 pub const world_capsule_runspace_image_fingerprint_version: u32 = 1;
 pub const world_capsule_run_slot_image_fingerprint_version: u32 = 1;
 pub const world_capsule_pending_port_image_fingerprint_version: u32 = 4;
@@ -359,19 +372,19 @@ pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 3;
 pub const world_guest_conformance_report_fingerprint_version: u32 = 1;
 pub const world_appliance_abi_version: u32 = 1;
-pub const world_appliance_manifest_format_version: u32 = 2;
-pub const world_appliance_manifest_fingerprint_version: u32 = 2;
+pub const world_appliance_manifest_format_version: u32 = 3;
+pub const world_appliance_manifest_fingerprint_version: u32 = 3;
 pub const world_appliance_memory_plan_fingerprint_version: u32 = 1;
 pub const world_appliance_command_format_version: u32 = 1;
 pub const world_appliance_command_fingerprint_version: u32 = 1;
-pub const world_appliance_host_request_format_version: u32 = 3;
-pub const world_appliance_host_request_fingerprint_version: u32 = 3;
+pub const world_appliance_host_request_format_version: u32 = 4;
+pub const world_appliance_host_request_fingerprint_version: u32 = 4;
 pub const world_appliance_host_outcome_format_version: u32 = 1;
 pub const world_appliance_host_outcome_fingerprint_version: u32 = 1;
 pub const world_appliance_host_reply_format_version: u32 = 1;
 pub const world_appliance_host_reply_fingerprint_version: u32 = 1;
-pub const world_appliance_turn_output_format_version: u32 = 1;
-pub const world_appliance_turn_output_fingerprint_version: u32 = 1;
+pub const world_appliance_turn_output_format_version: u32 = 2;
+pub const world_appliance_turn_output_fingerprint_version: u32 = 2;
 pub const world_appliance_checkpoint_format_version: u32 = 1;
 pub const world_appliance_checkpoint_fingerprint_version: u32 = 1;
 pub const world_appliance_turn_receipt_format_version: u32 = 1;
@@ -493,6 +506,39 @@ pub const TargetRef = struct {
     boundary_module_fingerprint: ?u64 = null,
     metadata: []const u8 = "",
 
+    pub fn init(args: struct {
+        target_label: ?[]const u8 = null,
+        world_surface_fingerprint: u64,
+        world_surface_replay_scope_fingerprint: ?u64 = null,
+        target_certificate_fingerprint: u64,
+        residual_program_plan_hash: ?u64 = null,
+        normal_form_kind: NormalFormKind = .unknown,
+        world_port_table_fingerprint: ?u64 = null,
+        world_value_table_fingerprint: ?u64 = null,
+        world_dispatch_table_fingerprint: ?u64 = null,
+        surface_profile_fingerprint: ?u64 = null,
+        boundary_module_fingerprint: ?u64 = null,
+        metadata: []const u8 = "",
+    }) @This() {
+        var result = @This(){
+            .target_ref_fingerprint = 0,
+            .target_label = args.target_label,
+            .world_surface_fingerprint = args.world_surface_fingerprint,
+            .world_surface_replay_scope_fingerprint = args.world_surface_replay_scope_fingerprint,
+            .target_certificate_fingerprint = args.target_certificate_fingerprint,
+            .residual_program_plan_hash = args.residual_program_plan_hash,
+            .normal_form_kind = args.normal_form_kind,
+            .world_port_table_fingerprint = args.world_port_table_fingerprint,
+            .world_value_table_fingerprint = args.world_value_table_fingerprint,
+            .world_dispatch_table_fingerprint = args.world_dispatch_table_fingerprint,
+            .surface_profile_fingerprint = args.surface_profile_fingerprint,
+            .boundary_module_fingerprint = args.boundary_module_fingerprint,
+            .metadata = args.metadata,
+        };
+        result.target_ref_fingerprint = fingerprintTargetRef(result);
+        return result;
+    }
+
     pub fn fromTarget(comptime Target: type) @This() {
         @setEvalBranchQuota(20_000);
         var result = @This(){
@@ -554,6 +600,53 @@ pub const ImportRequirement = struct {
         all,
     };
 
+    pub fn init(args: struct {
+        target_ref_fingerprint: ?u64 = null,
+        world_value_table_fingerprint: ?u64 = null,
+        world_surface_fingerprint: u64,
+        world_port_id: u32,
+        world_port_ref_fingerprint: ?u64 = null,
+        source_effect_shape_ref_fingerprint: ?u64 = null,
+        residual_site_index: usize,
+        residual_site_fingerprint: u64,
+        payload_value_table_id: ?u32 = null,
+        payload_value_ref_fingerprint: ?u64 = null,
+        response_value_table_id: ?u32 = null,
+        response_value_ref_fingerprint: ?u64 = null,
+        mode: BindingModePolicy = .all,
+        allowed_response_kinds: ResponseKindMask = .resume_only,
+        replay_key_recipe_fingerprint: ?u64 = null,
+        suggested_symbolic_name: ?[]const u8 = null,
+        required: bool = true,
+        tags: []const []const u8 = &.{},
+        metadata: []const u8 = "",
+    }) @This() {
+        var result = @This(){
+            .requirement_fingerprint = 0,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .world_value_table_fingerprint = args.world_value_table_fingerprint,
+            .world_surface_fingerprint = args.world_surface_fingerprint,
+            .world_port_id = args.world_port_id,
+            .world_port_ref_fingerprint = args.world_port_ref_fingerprint,
+            .source_effect_shape_ref_fingerprint = args.source_effect_shape_ref_fingerprint,
+            .residual_site_index = args.residual_site_index,
+            .residual_site_fingerprint = args.residual_site_fingerprint,
+            .payload_value_table_id = args.payload_value_table_id,
+            .payload_value_ref_fingerprint = args.payload_value_ref_fingerprint,
+            .response_value_table_id = args.response_value_table_id,
+            .response_value_ref_fingerprint = args.response_value_ref_fingerprint,
+            .mode = args.mode,
+            .allowed_response_kinds = args.allowed_response_kinds,
+            .replay_key_recipe_fingerprint = args.replay_key_recipe_fingerprint,
+            .suggested_symbolic_name = args.suggested_symbolic_name,
+            .required = args.required,
+            .tags = args.tags,
+            .metadata = args.metadata,
+        };
+        result.requirement_fingerprint = fingerprintImportRequirement(result);
+        return result;
+    }
+
     pub fn fromTargetPort(comptime Target: type, comptime world_port_id: u32) @This() {
         if (world_port_id >= Target.WorldPortTable.entries.len) @compileError("world_port_id out of range");
         const entry = Target.WorldPortTable.entries[world_port_id];
@@ -588,6 +681,27 @@ pub const ImportSet = struct {
     world_port_count: usize,
     value_table_entry_count: usize,
     surface_profile_fingerprint: ?u64 = null,
+
+    pub fn init(args: struct {
+        target_ref_fingerprint: u64,
+        required_count: usize,
+        optional_count: usize = 0,
+        world_port_count: usize,
+        value_table_entry_count: usize,
+        surface_profile_fingerprint: ?u64 = null,
+    }) @This() {
+        var result = @This(){
+            .import_set_fingerprint = 0,
+            .target_ref_fingerprint = args.target_ref_fingerprint,
+            .required_count = args.required_count,
+            .optional_count = args.optional_count,
+            .world_port_count = args.world_port_count,
+            .value_table_entry_count = args.value_table_entry_count,
+            .surface_profile_fingerprint = args.surface_profile_fingerprint,
+        };
+        result.import_set_fingerprint = fingerprintImportSet(result);
+        return result;
+    }
 
     pub fn fromTarget(comptime Target: type) @This() {
         const target_ref = TargetRef.fromTarget(Target);
@@ -1217,6 +1331,7 @@ pub const ConduitRoute = Fabric.Route;
 pub const Archive = @import("archive.zig").Archive(@This());
 pub const Linker = @import("linker.zig").Linker(@This());
 pub const Assembly = Linker.Assembly;
+pub const Executable = @import("executable.zig").Executable(@This());
 pub const Appliance = @import("appliance.zig").Appliance(@This());
 pub const ActuatorRef = Actuation.Ref;
 pub const ActuationKind = Actuation.Kind;
@@ -2137,6 +2252,10 @@ pub const Admission = struct {
         allow_reference_targets: bool = true,
         allow_full_modules: bool = false,
         allow_inspect_only_full_modules: bool = false,
+        allow_executable_image: bool = false,
+        allow_full_module_execution: bool = false,
+        require_executable_certificate: bool = true,
+        require_supported_runtime_profile: bool = true,
         require_local_target_for_execution: bool = true,
         require_environment_preflight: bool = true,
         require_supervision_permit: bool = true,
@@ -2161,6 +2280,10 @@ pub const Admission = struct {
             allow_reference_targets: bool = true,
             allow_full_modules: bool = false,
             allow_inspect_only_full_modules: bool = false,
+            allow_executable_image: bool = false,
+            allow_full_module_execution: bool = false,
+            require_executable_certificate: bool = true,
+            require_supported_runtime_profile: bool = true,
             require_local_target_for_execution: bool = true,
             require_environment_preflight: bool = true,
             require_supervision_permit: bool = true,
@@ -2184,6 +2307,10 @@ pub const Admission = struct {
                 .allow_reference_targets = args.allow_reference_targets,
                 .allow_full_modules = args.allow_full_modules,
                 .allow_inspect_only_full_modules = args.allow_inspect_only_full_modules,
+                .allow_executable_image = args.allow_executable_image,
+                .allow_full_module_execution = args.allow_full_module_execution,
+                .require_executable_certificate = args.require_executable_certificate,
+                .require_supported_runtime_profile = args.require_supported_runtime_profile,
                 .require_local_target_for_execution = args.require_local_target_for_execution,
                 .require_environment_preflight = args.require_environment_preflight,
                 .require_supervision_permit = args.require_supervision_permit,
@@ -2238,6 +2365,14 @@ pub const Admission = struct {
             .allow_parked_resume = false,
             .allow_branch_resume = false,
             .allow_completed_replay = false,
+        });
+        pub const executable_receiver = init(.{
+            .allow_full_modules = true,
+            .allow_executable_image = true,
+            .allow_full_module_execution = true,
+            .require_local_target_for_execution = false,
+            .require_environment_preflight = false,
+            .require_supervision_permit = false,
         });
         pub const replay_only = init(.{
             .require_environment_preflight = false,
@@ -3083,6 +3218,89 @@ pub const Admission = struct {
         }
     };
 
+    pub const LoadedAdmittedRun = struct {
+        admitted_run_fingerprint: u64,
+        executable_image_fingerprint: u64,
+        certificate_fingerprint: ?u64,
+        dispatch_fingerprint: u64,
+        root_module_ref_fingerprint: u64,
+        root_boundary_module_fingerprint: u64,
+        root_target_ref_fingerprint: u64,
+        root_import_set_fingerprint: u64,
+        admission_report_fingerprint: u64,
+
+        pub fn init(args: struct {
+            image: Executable.Image,
+            report_fingerprint: u64,
+            bind_certificate: bool = true,
+        }) Admission.LoadedAdmittedRun {
+            const root = args.image.module_set.root() orelse unreachable;
+            var result = Admission.LoadedAdmittedRun{
+                .admitted_run_fingerprint = 0,
+                .executable_image_fingerprint = args.image.image_fingerprint,
+                .certificate_fingerprint = if (args.bind_certificate) args.image.certificate.certificate_fingerprint else null,
+                .dispatch_fingerprint = args.image.dispatch_image.dispatch_fingerprint,
+                .root_module_ref_fingerprint = root.module_ref.module_ref_fingerprint,
+                .root_boundary_module_fingerprint = root.module_ref.boundary_module_fingerprint,
+                .root_target_ref_fingerprint = root.target_ref.target_ref_fingerprint,
+                .root_import_set_fingerprint = root.import_set.import_set_fingerprint,
+                .admission_report_fingerprint = args.report_fingerprint,
+            };
+            result.admitted_run_fingerprint = fingerprintLoadedAdmittedRun(result);
+            return result;
+        }
+    };
+
+    pub const ExecutableAdmissionReport = struct {
+        report_fingerprint: u64,
+        accepted: bool,
+        executable_image_fingerprint: u64,
+        certificate_fingerprint: ?u64 = null,
+        dispatch_fingerprint: ?u64 = null,
+        root_module_ref_fingerprint: ?u64 = null,
+        root_boundary_module_fingerprint: ?u64 = null,
+        runtime_profile_fingerprint: u64,
+        required_runtime_profile_fingerprint: ?u64 = null,
+        residual_external_binding_count: usize = 0,
+        blockers: []const AdmissionBlocker = &.{},
+        warnings: []const AdmissionBlocker = &.{},
+        summary: []const u8 = "",
+
+        pub fn init(args: struct {
+            accepted: bool,
+            image: Executable.Image,
+            runtime_profile: Executable.RuntimeProfile,
+            bind_certificate: bool = true,
+            blockers: []const AdmissionBlocker = &.{},
+            warnings: []const AdmissionBlocker = &.{},
+            summary: []const u8,
+        }) Admission.ExecutableAdmissionReport {
+            const root = args.image.module_set.root();
+            var result = Admission.ExecutableAdmissionReport{
+                .report_fingerprint = 0,
+                .accepted = args.accepted,
+                .executable_image_fingerprint = args.image.image_fingerprint,
+                .certificate_fingerprint = if (args.bind_certificate) args.image.certificate.certificate_fingerprint else null,
+                .dispatch_fingerprint = args.image.dispatch_image.dispatch_fingerprint,
+                .root_module_ref_fingerprint = if (root) |module| module.module_ref.module_ref_fingerprint else null,
+                .root_boundary_module_fingerprint = if (root) |module| module.module_ref.boundary_module_fingerprint else null,
+                .runtime_profile_fingerprint = args.runtime_profile.profile_fingerprint,
+                .required_runtime_profile_fingerprint = args.image.required_runtime_profile.profile_fingerprint,
+                .residual_external_binding_count = args.image.external_bindings.len,
+                .blockers = args.blockers,
+                .warnings = args.warnings,
+                .summary = args.summary,
+            };
+            result.report_fingerprint = fingerprintExecutableAdmissionReport(result);
+            return result;
+        }
+    };
+
+    pub const ExecutableAdmissionResult = struct {
+        report: Admission.ExecutableAdmissionReport,
+        loaded_run: ?Admission.LoadedAdmittedRun = null,
+    };
+
     pub const Admitter = struct {
         registry: Admission.TargetRegistry,
         policy: Admission.AdmissionPolicy = .strict_local_execution,
@@ -3092,6 +3310,72 @@ pub const Admission = struct {
             policy: Admission.AdmissionPolicy = .strict_local_execution,
         }) Admitter {
             return .{ .registry = args.registry, .policy = args.policy };
+        }
+
+        pub fn admitExecutableImage(self: Admitter, image: Executable.Image, args: struct {
+            runtime_profile: Executable.RuntimeProfile = Executable.RuntimeProfile.universal_v1,
+        }) Admission.ExecutableAdmissionResult {
+            _ = self.registry;
+            const policy = self.policy.withFingerprint();
+            if (!policy.allow_executable_image) return executableAdmissionRejected(image, args.runtime_profile, &.{.PackageUnsupportedKind}, "executable image admission is disabled");
+            if (!policy.allow_full_module_execution) return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleRequiresLocalTarget}, "full module execution is disabled");
+            if (policy.require_local_target_for_execution) return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleRequiresLocalTarget}, "executable image admission requires target-neutral loaded execution");
+            if (policy.require_supervision_permit) return executableAdmissionRejected(image, args.runtime_profile, &.{.PermitMissing}, "executable image admission has no supervision permit");
+            if (policy.require_executable_certificate and image.certificate.image_fingerprint != image.image_fingerprint) {
+                return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleInvalid}, "executable certificate does not match image");
+            }
+            if (executableImageExceedsPolicyLimits(image, policy)) {
+                return executableAdmissionRejected(image, args.runtime_profile, &.{.PackageLimitExceeded}, "executable image exceeds admission policy byte limits");
+            }
+            const compatibility = image.validateWithOptions(args.runtime_profile, .{
+                .require_certificate = policy.require_executable_certificate,
+            }) catch {
+                return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleInvalid}, "executable image validation failed");
+            };
+            if (policy.require_supported_runtime_profile and !compatibility.compatible) {
+                return executableAdmissionRejected(image, args.runtime_profile, &.{.ModuleLoadedExecutionUnsupported}, "runtime profile does not support executable image");
+            }
+            const report = Admission.ExecutableAdmissionReport.init(.{
+                .accepted = true,
+                .image = image,
+                .runtime_profile = args.runtime_profile,
+                .bind_certificate = policy.require_executable_certificate,
+                .warnings = &.{},
+                .summary = "executable image admission accepted",
+            });
+            return .{
+                .report = report,
+                .loaded_run = Admission.LoadedAdmittedRun.init(.{
+                    .image = image,
+                    .report_fingerprint = report.report_fingerprint,
+                    .bind_certificate = policy.require_executable_certificate,
+                }),
+            };
+        }
+
+        fn executableImageExceedsPolicyLimits(image: Executable.Image, policy: Admission.AdmissionPolicy) bool {
+            if (image.metadata.len > policy.max_package_bytes) return true;
+            if (image.required_runtime_profile.metadata.len > policy.max_package_bytes) return true;
+            for (image.module_set.modules) |module| {
+                if (module.canonical_bytes.len > policy.max_module_bytes) return true;
+                if (module.target_ref.metadata.len > policy.max_package_bytes) return true;
+                if (module.target_ref.target_label) |label| if (label.len > policy.max_package_bytes) return true;
+                if (module.module_ref.metadata.len > policy.max_package_bytes) return true;
+                if (module.module_ref.label) |label| if (label.len > policy.max_package_bytes) return true;
+                for (module.imports) |requirement| {
+                    if (requirement.suggested_symbolic_name) |name| if (name.len > policy.max_package_bytes) return true;
+                    if (requirement.metadata.len > policy.max_package_bytes) return true;
+                }
+            }
+            for (image.external_bindings) |binding| {
+                if (binding.label.len > policy.max_package_bytes) return true;
+                if (binding.metadata.len > policy.max_package_bytes) return true;
+                if (binding.actuator_ref.label.len > policy.max_package_bytes) return true;
+                if (binding.actuator_ref.metadata.len > policy.max_package_bytes) return true;
+                if (binding.descriptor.label.len > policy.max_package_bytes) return true;
+                if (binding.descriptor.metadata.len > policy.max_package_bytes) return true;
+            }
+            return image.ownedByteFootprint() > policy.max_package_bytes;
         }
 
         pub fn admitForTarget(self: Admitter, comptime Target: type, comptime Env: type, package: Admission.TransferPackage, args: struct {
@@ -3518,6 +3802,18 @@ pub const Admission = struct {
                 .summary = summary,
             });
             return .{ .request = request, .report = report, .target_match = match };
+        }
+
+        fn executableAdmissionRejected(image: Executable.Image, runtime_profile: Executable.RuntimeProfile, blockers: []const AdmissionBlocker, summary: []const u8) Admission.ExecutableAdmissionResult {
+            return .{
+                .report = Admission.ExecutableAdmissionReport.init(.{
+                    .accepted = false,
+                    .image = image,
+                    .runtime_profile = runtime_profile,
+                    .blockers = blockers,
+                    .summary = summary,
+                }),
+            };
         }
     };
 };
@@ -6381,6 +6677,33 @@ pub const Frame = struct {
             };
         }
 
+        pub fn fromCanonicalBytes(
+            allocator: std.mem.Allocator,
+            value_table_id: ?u32,
+            boundary_value_fingerprint: ?u64,
+            codec_schema_descriptor_fingerprint: ?u64,
+            bytes: []const u8,
+            dynamic_size: bool,
+        ) !@This() {
+            const owned_bytes = try allocator.dupe(u8, bytes);
+            errdefer allocator.free(owned_bytes);
+            return .{
+                .value_image_fingerprint = fingerprintValueImage(
+                    value_table_id,
+                    boundary_value_fingerprint,
+                    codec_schema_descriptor_fingerprint,
+                    dynamic_size,
+                    null,
+                    owned_bytes,
+                ),
+                .value_table_id = value_table_id,
+                .boundary_value_fingerprint = boundary_value_fingerprint,
+                .codec_schema_descriptor_fingerprint = codec_schema_descriptor_fingerprint,
+                .bytes = owned_bytes,
+                .dynamic_size = dynamic_size,
+            };
+        }
+
         pub fn clone(self: @This(), allocator: std.mem.Allocator) !@This() {
             const bytes = try allocator.dupe(u8, self.bytes);
             errdefer allocator.free(bytes);
@@ -8719,6 +9042,7 @@ pub const Fabric = struct {
         replay,
         reject,
         unsupported,
+        loaded_module_export,
     };
 
     pub const ValueMappingKind = enum {
@@ -9022,7 +9346,7 @@ pub const Fabric = struct {
                 if (!self.hasActuationRouteBinding()) return error.MissingBinding;
             }
             switch (self.kind) {
-                .target_export => {
+                .target_export, .loaded_module_export => {
                     if (self.response_status != .responded) return error.UnsupportedMapping;
                     if (self.provider_target_ref_fingerprint == null and self.provider_module_fingerprint == null) return error.ProviderRunDenied;
                     if (self.provider_transcript_image_fingerprint != null) return error.ProviderRunDenied;
@@ -9257,7 +9581,7 @@ pub const Fabric = struct {
                     try mapping.assertExactValueTableMatch();
                 }
                 switch (route.kind) {
-                    .target_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
+                    .target_export, .loaded_module_export, .admitted_run => if (response_mapping == null) return error.UnsupportedMapping,
                     .adapter => if (!route.hasActuationRouteBinding()) return error.UnsupportedMapping,
                     .guest, .replay, .reject, .unsupported => {
                         if (request_mapping != null or response_mapping != null) return error.UnsupportedMapping;
@@ -9281,11 +9605,19 @@ pub const Fabric = struct {
             if (self.import_set_fingerprint) |fingerprint| {
                 if (fingerprint != import_set.import_set_fingerprint) return error.InvalidFrameEncoding;
             }
-            var port_id: u32 = 0;
-            while (port_id < import_set.required_count) : (port_id += 1) {
-                const route = self.findRouteForPort(port_id) orelse return error.FabricMissingRoute;
-                if (!route.coversRequiredPort()) return error.FabricMissingRoute;
+            if (!importSetHasDenseRequiredPorts(import_set)) return error.FabricMissingRoute;
+            if (self.coveredRequiredRouteCount(import_set) < import_set.required_count) return error.FabricMissingRoute;
+        }
+
+        pub fn assertCoverageForRequirements(self: Fabric.Plan, import_set: ImportSet, requirements: []const ImportRequirement) !void {
+            if (self.import_set_fingerprint) |fingerprint| {
+                if (fingerprint != import_set.import_set_fingerprint) return error.InvalidFrameEncoding;
             }
+            const counts = self.coverageCountsForRequirements(import_set, requirements);
+            if (!counts.requirement_set_matches) return error.InvalidFrameEncoding;
+            if (counts.covered_count < import_set.required_count) return error.FabricMissingRoute;
+            if (counts.duplicate_route_count != 0) return error.FabricMissingRoute;
+            if (counts.unsupported_route_count != 0) return error.FabricMissingRoute;
         }
 
         pub fn assertNoCycles(self: Fabric.Plan) !void {
@@ -9377,23 +9709,25 @@ pub const Fabric = struct {
             var covered_count: usize = 0;
             var duplicate_route_count: usize = 0;
             var unsupported_route_count: usize = 0;
-            for (self.routes, 0..) |route, index| {
-                if (route.parent_world_port_id >= import_set.required_count) continue;
-                if (!route.coversRequiredPort()) {
-                    unsupported_route_count += 1;
-                    continue;
-                }
-                var seen_before = false;
-                for (self.routes[0..index]) |prior| {
-                    if (prior.parent_world_port_id == route.parent_world_port_id) {
-                        seen_before = true;
-                        break;
+            if (importSetHasDenseRequiredPorts(import_set)) {
+                for (self.routes, 0..) |route, index| {
+                    if (route.parent_world_port_id >= import_set.world_port_count) continue;
+                    if (!route.coversRequiredPort()) {
+                        unsupported_route_count += 1;
+                        continue;
                     }
-                }
-                if (seen_before) {
-                    duplicate_route_count += 1;
-                } else {
-                    covered_count += 1;
+                    var seen_before = false;
+                    for (self.routes[0..index]) |prior| {
+                        if (prior.parent_world_port_id == route.parent_world_port_id) {
+                            seen_before = true;
+                            break;
+                        }
+                    }
+                    if (seen_before) {
+                        duplicate_route_count += 1;
+                    } else {
+                        covered_count += 1;
+                    }
                 }
             }
             const missing_count = if (covered_count >= import_set.required_count) 0 else import_set.required_count - covered_count;
@@ -9417,6 +9751,122 @@ pub const Fabric = struct {
                 .duplicate_route_count = duplicate_route_count,
                 .accepted = target_matches and import_set_matches and missing_count == 0 and duplicate_route_count == 0 and unsupported_route_count == 0,
             });
+        }
+
+        pub fn coverageForRequirements(self: Fabric.Plan, target_ref: TargetRef, import_set: ImportSet, requirements: []const ImportRequirement) Fabric.CoverageReport {
+            const counts = self.coverageCountsForRequirements(import_set, requirements);
+            const missing_count = if (counts.covered_count >= import_set.required_count) 0 else import_set.required_count - counts.covered_count;
+            const target_matches = self.target_ref_fingerprint == target_ref.target_ref_fingerprint and
+                self.world_surface_fingerprint == target_ref.world_surface_fingerprint and
+                self.target_certificate_fingerprint == target_ref.target_certificate_fingerprint and
+                import_set.target_ref_fingerprint == target_ref.target_ref_fingerprint;
+            const import_set_matches = if (self.import_set_fingerprint) |fingerprint|
+                fingerprint == import_set.import_set_fingerprint
+            else
+                true;
+            return Fabric.CoverageReport.init(.{
+                .target_ref_fingerprint = target_ref.target_ref_fingerprint,
+                .world_surface_fingerprint = target_ref.world_surface_fingerprint,
+                .target_certificate_fingerprint = target_ref.target_certificate_fingerprint,
+                .required_port_count = import_set.required_count,
+                .route_count = self.routes.len,
+                .fabric_covered_port_count = counts.covered_count,
+                .missing_port_count = missing_count,
+                .unsupported_port_count = counts.unsupported_route_count,
+                .duplicate_route_count = counts.duplicate_route_count,
+                .accepted = target_matches and import_set_matches and counts.requirement_set_matches and missing_count == 0 and counts.duplicate_route_count == 0 and counts.unsupported_route_count == 0,
+            });
+        }
+
+        fn coveredRequiredRouteCount(self: Fabric.Plan, import_set: ImportSet) usize {
+            if (!importSetHasDenseRequiredPorts(import_set)) return 0;
+            var covered_count: usize = 0;
+            for (self.routes, 0..) |route, index| {
+                if (route.parent_world_port_id >= import_set.world_port_count) continue;
+                if (!route.coversRequiredPort()) continue;
+                for (self.routes[0..index]) |prior| {
+                    if (prior.parent_world_port_id == route.parent_world_port_id) break;
+                } else {
+                    covered_count += 1;
+                }
+            }
+            return covered_count;
+        }
+
+        const RequirementCoverageCounts = struct {
+            requirement_set_matches: bool,
+            covered_count: usize,
+            unsupported_route_count: usize,
+            duplicate_route_count: usize,
+        };
+
+        fn coverageCountsForRequirements(self: Fabric.Plan, import_set: ImportSet, requirements: []const ImportRequirement) RequirementCoverageCounts {
+            var required_count: usize = 0;
+            var optional_count: usize = 0;
+            var covered_count: usize = 0;
+            var unsupported_route_count: usize = 0;
+            var duplicate_route_count: usize = 0;
+            var requirement_set_matches = true;
+            for (requirements, 0..) |requirement, requirement_index| {
+                if (requirement.target_ref_fingerprint != import_set.target_ref_fingerprint) requirement_set_matches = false;
+                if (requirement.world_port_id >= import_set.world_port_count) requirement_set_matches = false;
+                if (requirement.required) {
+                    required_count += 1;
+                } else {
+                    optional_count += 1;
+                    continue;
+                }
+                var matched_route_count: usize = 0;
+                for (self.bindings) |binding| {
+                    if (!binding.required) continue;
+                    if (binding.import_requirement_fingerprint == null or binding.import_requirement_fingerprint.? != requirement.requirement_fingerprint) continue;
+                    if (binding.parent_world_port_id != requirement.world_port_id) {
+                        requirement_set_matches = false;
+                        continue;
+                    }
+                    const route = self.findRoute(binding.route_fingerprint) orelse {
+                        requirement_set_matches = false;
+                        continue;
+                    };
+                    if (route.parent_world_port_id != requirement.world_port_id) {
+                        requirement_set_matches = false;
+                        continue;
+                    }
+                    if (!route.coversRequiredPort()) {
+                        unsupported_route_count += 1;
+                        continue;
+                    }
+                    matched_route_count += 1;
+                }
+                if (matchedRouteCountSeenBefore(requirements[0..requirement_index], requirement.requirement_fingerprint)) {
+                    duplicate_route_count += matched_route_count;
+                    continue;
+                }
+                if (matched_route_count == 1) {
+                    covered_count += 1;
+                } else if (matched_route_count > 1) {
+                    duplicate_route_count += matched_route_count - 1;
+                    covered_count += 1;
+                }
+            }
+            if (required_count != import_set.required_count or optional_count != import_set.optional_count) requirement_set_matches = false;
+            return .{
+                .requirement_set_matches = requirement_set_matches,
+                .covered_count = covered_count,
+                .unsupported_route_count = unsupported_route_count,
+                .duplicate_route_count = duplicate_route_count,
+            };
+        }
+
+        fn matchedRouteCountSeenBefore(prior_requirements: []const ImportRequirement, requirement_fingerprint: u64) bool {
+            for (prior_requirements) |prior| {
+                if (prior.required and prior.requirement_fingerprint == requirement_fingerprint) return true;
+            }
+            return false;
+        }
+
+        fn importSetHasDenseRequiredPorts(import_set: ImportSet) bool {
+            return import_set.optional_count == 0 and import_set.required_count == import_set.world_port_count;
         }
     };
 
@@ -9691,6 +10141,21 @@ pub const Runspace = struct {
         auto_dispatch: bool = false,
     };
 
+    pub const LoadedInstallOptions = struct {
+        permit: ?RunPermit = null,
+        fabric_plan: ?Fabric.Plan = null,
+        executable_image_fingerprint: ?u64 = null,
+        executable_dispatch_coverage: LoadedExecutableDispatchCoverage = .{},
+        parent_run_handle_fingerprint: ?u64 = null,
+    };
+
+    pub const LoadedExecutableDispatchCoverage = struct {
+        fabric_plan_fingerprint: ?u64 = null,
+        route_parent_world_port_ids: []const u32 = &.{},
+        route_kinds: []const Fabric.RouteKind = &.{},
+        route_requirement_fingerprints: []const u64 = &.{},
+    };
+
     pub const RunStatus = enum {
         admitted,
         runnable,
@@ -9701,6 +10166,11 @@ pub const Runspace = struct {
         failed,
         exported,
         rejected,
+    };
+
+    pub const BackendKind = enum {
+        generated_target,
+        loaded_module,
     };
 
     pub const PendingStatus = enum {
@@ -9739,9 +10209,14 @@ pub const Runspace = struct {
         fabric_receipt_recorded,
     };
 
+    const PortRequestStep = struct {
+        request: Frame.Request,
+        expected_response_kind: ResponseKind = .@"resume",
+    };
+
     const DriverStep = union(enum) {
         done: ?Frame.ValueImage,
-        port_request: Frame.Request,
+        port_request: PortRequestStep,
         failed,
     };
 
@@ -9751,6 +10226,361 @@ pub const Runspace = struct {
         response_value_table_id: ?u32 = null,
         response_value_image_fingerprint: ?u64 = null,
         response_boundary_value_fingerprint: ?u64 = null,
+    };
+
+    const LoadedSessionDriver = struct {
+        allocator: std.mem.Allocator,
+        target_ref: TargetRef,
+        module_ref: Admission.ModuleRef,
+        import_set: ImportSet,
+        imports: []ImportRequirement,
+        executable_image_fingerprint: u64,
+        executable_fabric_plan_fingerprint: ?u64 = null,
+        executable_fabric_route_parent_world_port_ids: []const u32 = &.{},
+        executable_fabric_route_kinds: []const Fabric.RouteKind = &.{},
+        executable_fabric_route_requirement_fingerprints: []const u64 = &.{},
+        loaded_module: *Executable.Boundary.LoadedModule,
+        session: Executable.Boundary.LoadedModule.Session,
+        supervisor: ?Supervision.Supervisor = null,
+        pending_request: ?Executable.Boundary.LoadedModule.Session.Request = null,
+        last_request_frame: ?Frame.Request = null,
+        turn_index: usize = 0,
+        failed_status: bool = false,
+        failed_turn_index: ?usize = null,
+
+        fn init(allocator: std.mem.Allocator, module: Executable.Module, executable_image_fingerprint: u64, dispatch_coverage: LoadedExecutableDispatchCoverage, supervisor: ?Supervision.Supervisor) !@This() {
+            if (dispatch_coverage.route_parent_world_port_ids.len != dispatch_coverage.route_kinds.len) return error.InvalidFrameEncoding;
+            if (dispatch_coverage.route_parent_world_port_ids.len != dispatch_coverage.route_requirement_fingerprints.len) return error.InvalidFrameEncoding;
+            const loaded_module = try allocator.create(Executable.Boundary.LoadedModule);
+            errdefer allocator.destroy(loaded_module);
+            loaded_module.* = try Executable.Boundary.ModuleImage.decode(allocator, module.canonical_bytes, .{
+                .require_full_module = true,
+                .allow_reference_only = false,
+            });
+            errdefer loaded_module.deinit();
+            errdefer if (supervisor) |owned| {
+                var mutable = owned;
+                mutable.deinit();
+            };
+            var session = try Executable.Boundary.LoadedModule.Session.startExecutable(
+                allocator,
+                loaded_module,
+                Executable.Boundary.LoadedExecutionProfile.portableV1(),
+            );
+            errdefer session.deinit();
+            const imports = try allocator.dupe(ImportRequirement, module.imports);
+            errdefer allocator.free(imports);
+            const route_parent_world_port_ids = try allocator.dupe(u32, dispatch_coverage.route_parent_world_port_ids);
+            errdefer allocator.free(route_parent_world_port_ids);
+            const route_kinds = try allocator.dupe(Fabric.RouteKind, dispatch_coverage.route_kinds);
+            errdefer allocator.free(route_kinds);
+            const route_requirement_fingerprints = try allocator.dupe(u64, dispatch_coverage.route_requirement_fingerprints);
+            errdefer allocator.free(route_requirement_fingerprints);
+            return .{
+                .allocator = allocator,
+                .target_ref = module.target_ref,
+                .module_ref = module.module_ref,
+                .import_set = module.import_set,
+                .imports = imports,
+                .executable_image_fingerprint = executable_image_fingerprint,
+                .executable_fabric_plan_fingerprint = dispatch_coverage.fabric_plan_fingerprint,
+                .executable_fabric_route_parent_world_port_ids = route_parent_world_port_ids,
+                .executable_fabric_route_kinds = route_kinds,
+                .executable_fabric_route_requirement_fingerprints = route_requirement_fingerprints,
+                .loaded_module = loaded_module,
+                .session = session,
+                .supervisor = supervisor,
+            };
+        }
+
+        fn deinit(self: *@This()) void {
+            if (self.last_request_frame) |*frame| frame.deinit(self.allocator);
+            if (self.supervisor) |*supervisor| supervisor.deinit();
+            self.session.deinit();
+            self.loaded_module.deinit();
+            self.allocator.destroy(self.loaded_module);
+            self.allocator.free(self.executable_fabric_route_requirement_fingerprints);
+            self.allocator.free(self.executable_fabric_route_kinds);
+            self.allocator.free(self.executable_fabric_route_parent_world_port_ids);
+            self.allocator.free(self.imports);
+            self.* = undefined;
+        }
+
+        fn executableDispatchCoversWorldPort(self: @This(), world_port_id: u32) bool {
+            const request = self.pending_request orelse return false;
+            if (request.world_port_id != world_port_id) return false;
+            const contract = self.contractForLoadedRequest(request) orelse return false;
+            for (self.executable_fabric_route_parent_world_port_ids, 0..) |parent_world_port_id, index| {
+                if (parent_world_port_id != world_port_id) continue;
+                if (self.executable_fabric_route_requirement_fingerprints[index] != contract.requirement_fingerprint) continue;
+                return switch (self.executable_fabric_route_kinds[index]) {
+                    .adapter => false,
+                    .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+                };
+            }
+            return false;
+        }
+
+        fn nextFrame(self: *@This()) !DriverStep {
+            const next = self.session.next();
+            return switch (next) {
+                .request => |request| try self.frameFromLoadedRequest(request),
+                .done => |done| .{ .done = try self.worldValueImageFromLoadedBytes(
+                    null,
+                    if (done.result_fingerprint == 0) null else done.result_fingerprint,
+                    done.result_ref,
+                    done.canonical_result_image,
+                ) },
+                .failed => {
+                    self.failed_status = true;
+                    self.failed_turn_index = self.turn_index;
+                    return .failed;
+                },
+            };
+        }
+
+        fn resumeFrame(self: *@This(), response: Frame.Response) !ResponseEvidence {
+            if (response.status != .responded) return error.InvalidPendingPortTransition;
+            const request = self.pending_request orelse return error.InvalidPendingPortTransition;
+            const image = response.response_image orelse return error.MissingValueImage;
+            const contract = self.contractForLoadedRequest(request) orelse return error.PayloadRefMismatch;
+            if (response.response_value_table_id != contract.response_value_table_id) return error.FrameValueTableMismatch;
+            if (image.value_table_id != contract.response_value_table_id) return error.FrameValueTableMismatch;
+            const loaded_response_bytes = try self.loadedResponseImageBytesFromFrameImage(request, image);
+            defer self.allocator.free(loaded_response_bytes);
+            const loaded_fingerprint = Executable.Boundary.LoadedExecution.loadedValueImageFingerprint(loaded_response_bytes) catch return error.InvalidFrameEncoding;
+            var rebound_response: ?Frame.Response = null;
+            defer if (rebound_response) |*frame| frame.deinit(self.allocator);
+            const effective_response = if (response.responseFingerprintDeferred()) effective: {
+                const frame = self.last_request_frame orelse return error.InvalidPendingPortTransition;
+                rebound_response = try response.bindDeferredResponseFingerprint(self.allocator, frame, loaded_fingerprint);
+                break :effective rebound_response.?;
+            } else effective: {
+                if (response.response_fingerprint != loaded_fingerprint) return error.InvalidFrameEncoding;
+                if (image.boundary_value_fingerprint == null or image.boundary_value_fingerprint.? != loaded_fingerprint) return error.InvalidFrameEncoding;
+                break :effective response;
+            };
+            try validateResponseFrameImage(effective_response, false);
+            _ = effective_response.response_image orelse return error.MissingValueImage;
+            try self.session.@"resume"(request, loaded_response_bytes);
+            self.pending_request = null;
+            if (self.last_request_frame) |*frame| {
+                frame.deinit(self.allocator);
+                self.last_request_frame = null;
+            }
+            return .{
+                .response_fingerprint = loaded_fingerprint,
+                .response_frame_fingerprint = effective_response.frame_fingerprint,
+                .response_value_table_id = effective_response.response_value_table_id,
+                .response_value_image_fingerprint = effective_response.response_value_fingerprint,
+                .response_boundary_value_fingerprint = loaded_fingerprint,
+            };
+        }
+
+        fn loadedResponseImageBytesFromFrameImage(self: *@This(), request: Executable.Boundary.LoadedModule.Session.Request, image: Frame.ValueImage) ![]const u8 {
+            const expected_ref = loadedValueRefFromBoundary(request.expected_response_ref) orelse {
+                _ = Executable.Boundary.LoadedExecution.loadedValueImageFingerprint(image.bytes) catch return error.InvalidFrameEncoding;
+                return self.allocator.dupe(u8, image.bytes);
+            };
+            const executable_plan = self.session.executable_plan orelse return error.InvalidFrameEncoding;
+            const schemas = Executable.Boundary.LoadedExecution.SchemaSet{
+                .schemas = executable_plan.program_plan.value_schemas,
+                .fields = executable_plan.program_plan.value_fields,
+                .variants = executable_plan.program_plan.value_variants,
+            };
+            const LoadedValue = Executable.Boundary.LoadedExecution.LoadedValue;
+            return switch (expected_ref.codec) {
+                .unit => unit: {
+                    _ = try image.decodeValue(self.allocator, void);
+                    break :unit try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, LoadedValue.unit, .{});
+                },
+                .bool => boolean: {
+                    const value = try image.decodeValue(self.allocator, bool);
+                    break :boolean try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, .{ .boolean = value }, .{});
+                },
+                .i32 => i32_value: {
+                    const value = try image.decodeValue(self.allocator, i32);
+                    break :i32_value try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, .{ .i32 = value }, .{});
+                },
+                .usize => word_u64: {
+                    const value = try image.decodeValue(self.allocator, u64);
+                    break :word_u64 try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, .{ .word_u64 = value }, .{});
+                },
+                .string => bytes: {
+                    const value = try image.decodeValue(self.allocator, []const u8);
+                    defer self.allocator.free(value);
+                    break :bytes try Executable.Boundary.LoadedExecution.encodeLoadedValueImageBytes(self.allocator, schemas, expected_ref, .{ .bytes = value }, .{});
+                },
+                else => {
+                    _ = Executable.Boundary.LoadedExecution.loadedValueImageFingerprint(image.bytes) catch return error.InvalidFrameEncoding;
+                    return self.allocator.dupe(u8, image.bytes);
+                },
+            };
+        }
+
+        fn frameFromLoadedRequest(self: *@This(), request: Executable.Boundary.LoadedModule.Session.Request) !DriverStep {
+            const contract = self.contractForLoadedRequest(request) orelse return error.PayloadRefMismatch;
+            var payload_image = try self.valueImageFromLoadedBytes(
+                contract.payload_value_table_id,
+                null,
+                request.canonical_payload_image,
+            );
+            errdefer if (payload_image) |*image| image.deinit(self.allocator);
+            var frame = Frame.Request.init(.{
+                .world_surface_fingerprint = self.target_ref.world_surface_fingerprint,
+                .world_surface_replay_scope_fingerprint = self.target_ref.world_surface_replay_scope_fingerprint,
+                .target_certificate_fingerprint = self.target_ref.target_certificate_fingerprint,
+                .world_port_id = request.world_port_id,
+                .residual_site_index = request.residual_site_index,
+                .residual_site_fingerprint = request.residual_site_fingerprint,
+                .request_fingerprint = request.canonical_request_fingerprint,
+                .turn_index = self.turn_index,
+                .payload_value_table_id = contract.payload_value_table_id,
+                .expected_response_value_table_id = contract.response_value_table_id,
+                .payload_image = payload_image,
+            });
+            payload_image = null;
+            frame.world_port_ref_fingerprint = if (request.world_port_ref) |ref| ref.fingerprint else contract.world_port_ref_fingerprint;
+            frame.evidence_ref_fingerprint = self.executable_image_fingerprint;
+            frame.frame_fingerprint = fingerprintRequest(frame);
+            if (self.last_request_frame) |*previous| previous.deinit(self.allocator);
+            self.last_request_frame = try frame.clone(self.allocator);
+            self.pending_request = request;
+            self.turn_index += 1;
+            return .{ .port_request = .{
+                .request = frame,
+                .expected_response_kind = contract.expected_response_kind,
+            } };
+        }
+
+        const RequestContract = struct {
+            requirement_fingerprint: u64,
+            world_port_ref_fingerprint: ?u64,
+            payload_value_table_id: ?u32,
+            response_value_table_id: ?u32,
+            expected_response_kind: ResponseKind,
+        };
+
+        fn contractForLoadedRequest(self: @This(), request: Executable.Boundary.LoadedModule.Session.Request) ?RequestContract {
+            for (self.imports) |requirement| {
+                if (requirement.world_port_id != request.world_port_id) continue;
+                if (requirement.residual_site_index != request.residual_site_index) continue;
+                if (requirement.residual_site_fingerprint != request.residual_site_fingerprint) continue;
+                return .{
+                    .requirement_fingerprint = requirement.requirement_fingerprint,
+                    .world_port_ref_fingerprint = requirement.world_port_ref_fingerprint,
+                    .payload_value_table_id = requirement.payload_value_table_id,
+                    .response_value_table_id = requirement.response_value_table_id,
+                    .expected_response_kind = responseKindForLoadedRequirement(requirement.allowed_response_kinds),
+                };
+            }
+            return null;
+        }
+
+        fn responseKindForLoadedRequirement(mask: ImportRequirement.ResponseKindMask) ResponseKind {
+            return switch (mask) {
+                .resume_only, .all => .@"resume",
+                .return_now_only => .return_now,
+            };
+        }
+
+        fn valueImageFromLoadedBytes(self: *@This(), value_table_id: ?u32, boundary_value_fingerprint: ?u64, bytes: []const u8) !?Frame.ValueImage {
+            if (bytes.len == 0) return null;
+            return try Frame.ValueImage.fromCanonicalBytes(self.allocator, value_table_id, boundary_value_fingerprint, null, bytes, true);
+        }
+
+        fn worldValueImageFromLoadedBytes(self: *@This(), value_table_id: ?u32, boundary_value_fingerprint: ?u64, ref: anytype, bytes: []const u8) !?Frame.ValueImage {
+            if (bytes.len == 0) return null;
+            const expected_ref = loadedValueRefFromBoundary(ref) orelse return try self.valueImageFromLoadedBytes(value_table_id, boundary_value_fingerprint, bytes);
+            const executable_plan = self.session.executable_plan orelse return error.InvalidFrameEncoding;
+            const schemas = Executable.Boundary.LoadedExecution.SchemaSet{
+                .schemas = executable_plan.program_plan.value_schemas,
+                .fields = executable_plan.program_plan.value_fields,
+                .variants = executable_plan.program_plan.value_variants,
+            };
+            var arena = Executable.Boundary.LoadedExecution.LoadedValueArena.init(self.allocator);
+            defer arena.deinit();
+            const decoded = Executable.Boundary.LoadedExecution.decodeLoadedValueImage(
+                self.allocator,
+                &arena,
+                schemas,
+                expected_ref,
+                bytes,
+                .{},
+            ) catch return try self.valueImageFromLoadedBytes(value_table_id, boundary_value_fingerprint, bytes);
+            return switch (decoded) {
+                .unit => try Frame.ValueImage.fromValue(self.allocator, value_table_id, boundary_value_fingerprint, null, {}, .portable),
+                .boolean => |value| try Frame.ValueImage.fromValue(self.allocator, value_table_id, boundary_value_fingerprint, null, value, .portable),
+                .i32 => |value| try Frame.ValueImage.fromValue(self.allocator, value_table_id, boundary_value_fingerprint, null, value, .portable),
+                .word_u64 => |value| try Frame.ValueImage.fromValue(self.allocator, value_table_id, boundary_value_fingerprint, null, value, .portable),
+                .bytes => |value| try Frame.ValueImage.fromValue(self.allocator, value_table_id, boundary_value_fingerprint, null, value, .portable),
+                else => try self.valueImageFromLoadedBytes(value_table_id, boundary_value_fingerprint, bytes),
+            };
+        }
+
+        fn loadedValueRefFromBoundary(ref: anytype) ?Executable.Boundary.LoadedExecution.LoadedValueRef {
+            const LoadedRef = Executable.Boundary.LoadedExecution.LoadedValueRef;
+            const Codec = @TypeOf((LoadedRef{ .codec = .unit }).codec);
+            inline for (std.meta.fields(Codec)) |field| {
+                if (std.mem.eql(u8, ref.codec, field.name)) {
+                    return .{ .codec = @enumFromInt(field.value), .schema_index = ref.schema_index };
+                }
+            }
+            return null;
+        }
+
+        fn snapshotRunImage(self: *@This()) !RunImage {
+            const status: RunState.Status = if (self.failed_status)
+                .failed
+            else switch (self.session.status) {
+                .initial => .not_started,
+                .request => .parked_on_port,
+                .completed => .completed,
+                .failed => .failed,
+            };
+            const include_pending_request = status == .parked_on_port;
+            const state_turn_index = if (status == .failed) self.failed_turn_index orelse self.turn_index else self.turn_index;
+            const state = RunState.init(.{
+                .target_ref_fingerprint = self.target_ref.target_ref_fingerprint,
+                .pending_request_fingerprint = if (include_pending_request) if (self.last_request_frame) |frame| frame.frame_fingerprint else null else null,
+                .final_value_image_fingerprint = null,
+                .turn_index = state_turn_index,
+                .status = status,
+            });
+            var pending_request_frame = if (include_pending_request) if (self.last_request_frame) |frame| try frame.clone(self.allocator) else null else null;
+            errdefer if (pending_request_frame) |*frame| frame.deinit(self.allocator);
+            var final_result_image = if (self.session.result_image_bytes.len == 0)
+                null
+            else
+                try self.worldValueImageFromLoadedBytes(null, self.session.result_fingerprint, self.loaded_module.resultValueRef(), self.session.result_image_bytes);
+            errdefer if (final_result_image) |*image| image.deinit(self.allocator);
+            var image = RunImage.init(.{
+                .kind = switch (status) {
+                    .completed => .completed_run,
+                    .failed => .replay_only_run,
+                    else => .parked_run,
+                },
+                .target_ref = self.target_ref,
+                .import_set_fingerprint = self.import_set.import_set_fingerprint,
+                .current_state = state,
+                .pending_request_frame = pending_request_frame,
+                .final_result_image = final_result_image,
+                .module_ref_fingerprint = self.module_ref.module_ref_fingerprint,
+                .boundary_module_fingerprint = self.module_ref.boundary_module_fingerprint,
+                .module_image_fingerprint = self.executable_image_fingerprint,
+                .metadata = "loaded-module-run",
+            });
+            if (image.final_result_image) |result| {
+                image.current_state.final_value_image_fingerprint = result.value_image_fingerprint;
+                image.current_state.run_state_fingerprint = fingerprintRunState(image.current_state);
+            }
+            image.owns_pending_request_frame = pending_request_frame != null;
+            image.owns_final_result_image = final_result_image != null;
+            pending_request_frame = null;
+            final_result_image = null;
+            image.run_image_fingerprint = fingerprintRunImageV3(image);
+            return image;
+        }
     };
 
     const SlotDriver = struct {
@@ -9919,6 +10749,193 @@ pub const Runspace = struct {
             self.vtable.deinit(self.ptr, allocator);
         }
 
+        fn forLoadedSession(run: *LoadedSessionDriver) @This() {
+            const Impl = struct {
+                fn loadedNextFrame(ptr: *anyopaque) anyerror!DriverStep {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.nextFrame();
+                }
+
+                fn loadedResumeFrame(ptr: *anyopaque, response: Frame.Response) anyerror!ResponseEvidence {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.resumeFrame(response);
+                }
+
+                fn loadedBeforeResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| {
+                        return supervisor.afterAdapterResponse(.{
+                            .world_port_id = world_port_id,
+                            .status = status,
+                            .response_bytes = response_bytes,
+                            .value_image_bytes = value_image_bytes,
+                        });
+                    }
+                }
+                fn loadedBeforeTerminalResponse(ptr: *anyopaque, world_port_id: u32, status: ResponseStatus, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    return loadedBeforeResponse(ptr, world_port_id, status, response_bytes, value_image_bytes);
+                }
+                fn loadedBeforeFabricInvocation(ptr: *anyopaque, world_port_id: u32, route_kind: Fabric.RouteKind, depth: usize, provider_runs: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| {
+                        return supervisor.beforeFabricInvocation(.{
+                            .world_port_id = world_port_id,
+                            .route_kind = route_kind,
+                            .depth = depth,
+                            .provider_runs = provider_runs,
+                        });
+                    }
+                }
+                fn loadedBeforeActuationCommit(ptr: *anyopaque, intent: Actuation.Intent, key_present: bool, authority_kind: ?PortAuthority.Kind) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.beforeActuationCommitWithAuthority(intent, key_present, authority_kind);
+                }
+                fn loadedAfterActuationReceipt(ptr: *anyopaque, receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.afterActuationReceiptAccounting(receipt, .{ .response_bytes = response_bytes, .value_image_bytes = value_image_bytes });
+                }
+                fn loadedAfterActuationResolution(ptr: *anyopaque, receipt: Actuation.Receipt, response_bytes: usize, value_image_bytes: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.afterActuationResolutionAccounting(receipt, .{ .response_bytes = response_bytes, .value_image_bytes = value_image_bytes });
+                }
+                fn loadedValidateFabricResponseValue(ptr: *anyopaque, world_port_id: u32, image: Frame.ValueImage) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |supervisor| return validateFabricParentResponseValuePolicy(image, supervisor.permit, world_port_id);
+                }
+                fn loadedFabricPlanCoversWorldPort(ptr: *anyopaque, world_port_id: u32) bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.executableDispatchCoversWorldPort(world_port_id);
+                }
+                fn loadedFabricPlanCoversHandlerlessWorldPort(ptr: *anyopaque, world_port_id: u32) bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.executableDispatchCoversWorldPort(world_port_id);
+                }
+                fn loadedActuationBindingCoversWorldPort(_: *anyopaque, _: u32) bool {
+                    return false;
+                }
+                fn loadedActuationBindingCoversHandlerlessWorldPort(_: *anyopaque, _: u32) bool {
+                    return false;
+                }
+                fn loadedActuationBindingForWorldPort(_: *anyopaque, _: u32) ?Actuation.Binding {
+                    return null;
+                }
+                fn loadedFabricPlanFingerprint(ptr: *anyopaque) ?u64 {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.executable_fabric_plan_fingerprint;
+                }
+                fn loadedResumeTerminalFrame(ptr: *anyopaque, response: Frame.Response) anyerror!void {
+                    if (response.status != .rejected and response.status != .failed) return error.InvalidPendingPortTransition;
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    _ = active.pending_request orelse return error.InvalidPendingPortTransition;
+                    active.failed_status = true;
+                    active.failed_turn_index = if (active.last_request_frame) |frame| frame.turn_index else active.turn_index;
+                    active.pending_request = null;
+                    if (active.last_request_frame) |*frame| {
+                        frame.deinit(active.allocator);
+                        active.last_request_frame = null;
+                    }
+                }
+                fn loadedDispatch(_: *anyopaque) anyerror!?ResponseEvidence {
+                    return null;
+                }
+                fn loadedSnapshotRunImage(ptr: *anyopaque) anyerror!RunImage {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.snapshotRunImage();
+                }
+                fn loadedBeforeHandoffExport(ptr: *anyopaque) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.beforeHandoffExport();
+                }
+                fn loadedBeforeInterruptedHandoffExport(ptr: *anyopaque) anyerror!void {
+                    return loadedBeforeHandoffExport(ptr);
+                }
+                fn loadedBeforeCheckpoint(ptr: *anyopaque, value_image_bytes: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.beforeCheckpoint(value_image_bytes);
+                }
+                fn loadedBeforeBranch(ptr: *anyopaque, depth: usize) anyerror!void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.beforeBranch(depth);
+                }
+                fn loadedCloneSupervisor(ptr: *anyopaque, allocator: std.mem.Allocator) anyerror!?Supervision.Supervisor {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |supervisor| return try supervisor.clone(allocator);
+                    return null;
+                }
+                fn loadedRestoreSupervisor(ptr: *anyopaque, _: std.mem.Allocator, supervisor: ?Supervision.Supervisor) void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*current| current.deinit();
+                    active.supervisor = supervisor;
+                }
+                fn loadedHasSupervisor(ptr: *anyopaque) bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.supervisor != null;
+                }
+                fn loadedSupervisorWarningCount(ptr: *anyopaque) usize {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |supervisor| return supervisor.warning_count;
+                    return 0;
+                }
+                fn loadedSupervisorBlockerCount(ptr: *anyopaque) usize {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |supervisor| return if (supervisor.blocker == null) 0 else 1;
+                    return 0;
+                }
+                fn loadedSupervisionInterrupted(ptr: *anyopaque) bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    if (active.supervisor) |*supervisor| return supervisor.interrupted;
+                    return false;
+                }
+                fn loadedFailed(ptr: *anyopaque) bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.failed_status;
+                }
+                fn loadedDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    active.deinit();
+                    allocator.destroy(active);
+                }
+
+                const vtable = VTable{
+                    .nextFrame = loadedNextFrame,
+                    .resumeFrame = loadedResumeFrame,
+                    .resumeFabricFrame = loadedResumeFrame,
+                    .beforeResponse = loadedBeforeResponse,
+                    .beforeTerminalResponse = loadedBeforeTerminalResponse,
+                    .beforeFabricInvocation = loadedBeforeFabricInvocation,
+                    .beforeActuationCommit = loadedBeforeActuationCommit,
+                    .afterActuationReceipt = loadedAfterActuationReceipt,
+                    .afterActuationResolution = loadedAfterActuationResolution,
+                    .validateFabricResponseValue = loadedValidateFabricResponseValue,
+                    .fabricPlanCoversWorldPort = loadedFabricPlanCoversWorldPort,
+                    .fabricPlanCoversHandlerlessWorldPort = loadedFabricPlanCoversHandlerlessWorldPort,
+                    .actuationBindingCoversWorldPort = loadedActuationBindingCoversWorldPort,
+                    .actuationBindingCoversHandlerlessWorldPort = loadedActuationBindingCoversHandlerlessWorldPort,
+                    .actuationBindingForWorldPort = loadedActuationBindingForWorldPort,
+                    .fabricPlanFingerprint = loadedFabricPlanFingerprint,
+                    .resumeTerminalFrame = loadedResumeTerminalFrame,
+                    .dispatch = loadedDispatch,
+                    .snapshotRunImage = loadedSnapshotRunImage,
+                    .beforeHandoffExport = loadedBeforeHandoffExport,
+                    .beforeInterruptedHandoffExport = loadedBeforeInterruptedHandoffExport,
+                    .beforeCheckpoint = loadedBeforeCheckpoint,
+                    .beforeBranch = loadedBeforeBranch,
+                    .cloneSupervisor = loadedCloneSupervisor,
+                    .restoreSupervisor = loadedRestoreSupervisor,
+                    .hasSupervisor = loadedHasSupervisor,
+                    .supervisorWarningCount = loadedSupervisorWarningCount,
+                    .supervisorBlockerCount = loadedSupervisorBlockerCount,
+                    .supervisionInterrupted = loadedSupervisionInterrupted,
+                    .failed = loadedFailed,
+                    .deinit = loadedDeinit,
+                };
+            };
+            return .{
+                .ptr = @ptrCast(run),
+                .vtable = &Impl.vtable,
+            };
+        }
+
         fn forRun(comptime RunType: type, run: *RunType) @This() {
             const Impl = struct {
                 fn runNextFrame(ptr: *anyopaque) anyerror!DriverStep {
@@ -9935,7 +10952,7 @@ pub const Runspace = struct {
                                 discardRunspaceDoneValue(RunType, active, value);
                                 return .{ .done = result_image };
                             },
-                            .port_request => |request| .{ .port_request = request },
+                            .port_request => |request| .{ .port_request = .{ .request = request } },
                             .failed => .failed,
                         };
                     }
@@ -9947,7 +10964,7 @@ pub const Runspace = struct {
                             discardRunspaceDoneValue(RunType, active, value);
                             return .{ .done = result_image };
                         },
-                        .port_request => |request| .{ .port_request = request },
+                        .port_request => |request| .{ .port_request = .{ .request = request } },
                         .failed => .failed,
                     };
                 }
@@ -10284,6 +11301,10 @@ pub const Runspace = struct {
         checkpoint_fingerprint: ?u64 = null,
         target_match_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
+        backend_kind: BackendKind = .generated_target,
+        executable_image_fingerprint: ?u64 = null,
+        executable_plan_fingerprint: ?u64 = null,
+        loaded_session_fingerprint: ?u64 = null,
         driver: ?SlotDriver = null,
         driver_world_port_count: usize = 0,
         supervisor: ?Supervision.Supervisor = null,
@@ -10341,6 +11362,10 @@ pub const Runspace = struct {
             checkpoint_fingerprint: ?u64 = null,
             target_match_fingerprint: ?u64 = null,
             module_ref_fingerprint: ?u64 = null,
+            backend_kind: BackendKind = .generated_target,
+            executable_image_fingerprint: ?u64 = null,
+            executable_plan_fingerprint: ?u64 = null,
+            loaded_session_fingerprint: ?u64 = null,
             driver: ?SlotDriver = null,
             driver_world_port_count: usize = 0,
             supervisor: ?Supervision.Supervisor = null,
@@ -10365,6 +11390,10 @@ pub const Runspace = struct {
                 .checkpoint_fingerprint = args.checkpoint_fingerprint,
                 .target_match_fingerprint = args.target_match_fingerprint,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
+                .backend_kind = args.backend_kind,
+                .executable_image_fingerprint = args.executable_image_fingerprint,
+                .executable_plan_fingerprint = args.executable_plan_fingerprint,
+                .loaded_session_fingerprint = args.loaded_session_fingerprint,
                 .driver = args.driver,
                 .driver_world_port_count = args.driver_world_port_count,
                 .supervisor = args.supervisor,
@@ -10539,6 +11568,10 @@ pub const Runspace = struct {
                 .checkpoint_fingerprint = self.checkpoint_fingerprint,
                 .target_match_fingerprint = self.target_match_fingerprint,
                 .module_ref_fingerprint = self.module_ref_fingerprint,
+                .backend_kind = self.backend_kind,
+                .executable_image_fingerprint = self.executable_image_fingerprint,
+                .executable_plan_fingerprint = self.executable_plan_fingerprint,
+                .loaded_session_fingerprint = self.loaded_session_fingerprint,
             };
         }
     };
@@ -10558,6 +11591,10 @@ pub const Runspace = struct {
         checkpoint_fingerprint: ?u64 = null,
         target_match_fingerprint: ?u64 = null,
         module_ref_fingerprint: ?u64 = null,
+        backend_kind: BackendKind = .generated_target,
+        executable_image_fingerprint: ?u64 = null,
+        executable_plan_fingerprint: ?u64 = null,
+        loaded_session_fingerprint: ?u64 = null,
     };
 
     pub const PendingPort = struct {
@@ -11086,6 +12123,18 @@ pub const Runspace = struct {
         }
     }
 
+    fn validateLoadedModulePermit(module: Executable.Module, permit: RunPermit, fabric_plan_fingerprint: ?u64) !void {
+        try Supervision.Supervisor.validatePermitForRun(permit, module.import_set.world_port_count);
+        if (permit.target_ref_fingerprint != module.target_ref.target_ref_fingerprint) return error.SupervisionDenied;
+        if (permit.world_surface_fingerprint != module.target_ref.world_surface_fingerprint) return error.SupervisionDenied;
+        if (permit.target_certificate_fingerprint != module.target_ref.target_certificate_fingerprint) return error.SupervisionDenied;
+        if (permit.fabric_plan_fingerprint != fabric_plan_fingerprint) return error.SupervisionDenied;
+        if (permit.module_ref_fingerprint) |module_ref_fingerprint| {
+            if (module_ref_fingerprint != module.module_ref.module_ref_fingerprint) return error.SupervisionDenied;
+        }
+        if (permit.mode != .fresh) return error.SupervisionDenied;
+    }
+
     fn runImageFromAdmittedTranscript(allocator: std.mem.Allocator, target_ref: TargetRef, import_set_fingerprint: u64, module_ref_fingerprint: ?u64, transcript_image: TranscriptImage) !RunImage {
         var replay_validation = transcript_image;
         try replay_validation.validateReplayRun(target_ref.world_surface_fingerprint, target_ref.target_certificate_fingerprint);
@@ -11549,6 +12598,152 @@ pub const Runspace = struct {
         summary_owned = false;
         installed = true;
         return handle;
+    }
+
+    pub fn installExecutableRoot(self: *@This(), image: Executable.Image, options: LoadedInstallOptions) !RunHandle {
+        const compatibility = try image.validate(Executable.RuntimeProfile.universal_v1);
+        if (!compatibility.compatible) return error.RunspaceInstallDenied;
+        const root = image.module_set.root() orelse return error.RunspaceInstallDenied;
+        var loaded_options = options;
+        loaded_options.executable_image_fingerprint = image.image_fingerprint;
+        loaded_options.executable_dispatch_coverage = executableLoadedDispatchCoverage(image.dispatch_image);
+        if (loaded_options.executable_dispatch_coverage.route_parent_world_port_ids.len != 0) {
+            if (image.dispatch_image.fabric_plan_fingerprints.len != 1) return error.RunspaceInstallDenied;
+            const plan = loaded_options.fabric_plan orelse return error.RunspaceInstallDenied;
+            if (!executableDispatchBindsFabricPlan(image.dispatch_image, plan.plan_fingerprint)) return error.RunspaceInstallDenied;
+        }
+        return self.installLoadedModuleRun(root, loaded_options);
+    }
+
+    pub fn installExecutableProvider(self: *@This(), image: Executable.Image, module_id: u32, options: LoadedInstallOptions) !RunHandle {
+        const compatibility = try image.validate(Executable.RuntimeProfile.universal_v1);
+        if (!compatibility.compatible) return error.RunspaceInstallDenied;
+        for (image.module_set.modules) |module| {
+            if (module.module_id != module_id or module.role != .provider) continue;
+            var loaded_options = options;
+            loaded_options.executable_image_fingerprint = image.image_fingerprint;
+            loaded_options.executable_dispatch_coverage = .{};
+            return self.installLoadedModuleRun(module, loaded_options);
+        }
+        return error.RunspaceInstallDenied;
+    }
+
+    pub fn installLoadedModuleRun(self: *@This(), module: Executable.Module, options: LoadedInstallOptions) !RunHandle {
+        if (self.config.require_admission) return error.RunspaceAdmissionRequired;
+        if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
+        if (self.config.require_supervision and options.permit == null) return error.SupervisionDenied;
+        if (options.executable_dispatch_coverage.route_parent_world_port_ids.len != 0 and options.fabric_plan == null) return error.RunspaceInstallDenied;
+        const selected_fabric_plan_fingerprint = if (options.fabric_plan) |plan| plan.plan_fingerprint else options.executable_dispatch_coverage.fabric_plan_fingerprint;
+        if (options.fabric_plan) |plan| {
+            if (options.executable_dispatch_coverage.fabric_plan_fingerprint) |coverage_fingerprint| {
+                if (coverage_fingerprint != plan.plan_fingerprint) return error.RunspaceInstallDenied;
+            }
+        }
+        try module.validateForRuntimeProfile(Executable.RuntimeProfile.universal_v1);
+        const executable_image_fingerprint = options.executable_image_fingerprint orelse module.module_ref.boundary_module_fingerprint;
+        const maybe_permit = options.permit;
+        var supervisor: ?Supervision.Supervisor = null;
+        var supervisor_owned = false;
+        errdefer if (supervisor_owned) {
+            if (supervisor) |*owned| owned.deinit();
+        };
+        if (maybe_permit) |permit| {
+            try validateLoadedModulePermit(module, permit, selected_fabric_plan_fingerprint);
+            supervisor = try Supervision.Supervisor.init(self.allocator, permit, module.import_set.world_port_count);
+            supervisor_owned = true;
+        }
+        const next_run_id_before = self.next_run_id;
+        var installed = false;
+        errdefer if (!installed) {
+            self.next_run_id = next_run_id_before;
+        };
+        const handle = try self.nextHandle(.{
+            .target_ref_fingerprint = module.target_ref.target_ref_fingerprint,
+            .permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
+        });
+        try self.prepareInstallSlot();
+        const event_summary = try self.prepareEventSummary("loaded module run installed");
+        var summary_owned = true;
+        errdefer if (summary_owned) self.allocator.free(event_summary);
+        const loaded_ptr = try self.allocator.create(LoadedSessionDriver);
+        var loaded_ptr_owned = true;
+        errdefer if (loaded_ptr_owned) self.allocator.destroy(loaded_ptr);
+        const supervisor_for_driver = supervisor;
+        supervisor = null;
+        supervisor_owned = false;
+        var loaded_driver = try LoadedSessionDriver.init(self.allocator, module, executable_image_fingerprint, options.executable_dispatch_coverage, supervisor_for_driver);
+        var loaded_driver_owned = true;
+        errdefer if (loaded_driver_owned) loaded_driver.deinit();
+        loaded_ptr.* = loaded_driver;
+        loaded_driver_owned = false;
+        var driver = SlotDriver.forLoadedSession(loaded_ptr);
+        loaded_ptr_owned = false;
+        var driver_owned = true;
+        errdefer if (driver_owned) driver.deinit(self.allocator);
+        const state = RunState.init(.{
+            .target_ref_fingerprint = module.target_ref.target_ref_fingerprint,
+            .status = .not_started,
+        });
+        const slot = Runspace.RunSlot.fromState(.{
+            .handle = handle,
+            .target_ref = module.target_ref,
+            .current_state = state,
+            .status = .runnable,
+            .environment_certificate_fingerprint = if (maybe_permit) |permit| optionalNonZeroFingerprint(permit.environment_certificate_fingerprint) else null,
+            .run_permit_fingerprint = if (maybe_permit) |permit| permit.permit_fingerprint else null,
+            .fabric_plan_fingerprint = selected_fabric_plan_fingerprint,
+            .parent_run_handle_fingerprint = options.parent_run_handle_fingerprint,
+            .module_ref_fingerprint = module.module_ref.module_ref_fingerprint,
+            .backend_kind = .loaded_module,
+            .executable_image_fingerprint = executable_image_fingerprint,
+            .executable_plan_fingerprint = module.executable_plan_fingerprint,
+            .loaded_session_fingerprint = loaded_ptr.session.session_fingerprint,
+            .driver = driver,
+            .driver_world_port_count = module.import_set.world_port_count,
+        });
+        if (options.fabric_plan) |plan| try self.installFabricPlan(module.target_ref, plan);
+        driver_owned = false;
+        self.slots.appendAssumeCapacity(slot);
+        _ = self.appendPreparedEventAssumeCapacity(.{
+            .kind = .run_installed,
+            .run_handle = slot.handle,
+            .run_state_fingerprint = slot.current_state.run_state_fingerprint,
+            .run_permit_fingerprint = slot.run_permit_fingerprint,
+            .summary = event_summary,
+        });
+        summary_owned = false;
+        installed = true;
+        return handle;
+    }
+
+    pub fn routePendingToLoadedProvider(self: *@This(), mailbox_id: u64, image: Executable.Image, plan: Fabric.Plan) !Fabric.Invocation {
+        const compatibility = try image.validate(Executable.RuntimeProfile.universal_v1);
+        if (!compatibility.compatible) return error.RunspaceInstallDenied;
+        const pending = try self.mailbox.get(mailbox_id);
+        try self.validateFabricPlanForPending(plan, pending);
+        const route = try self.installedFabricRouteForPending(plan.plan_fingerprint, pending);
+        try route.validate();
+        if (route.kind != .loaded_module_export) return error.UnsupportedMapping;
+        if (self.config.require_supervision) return error.SupervisionDenied;
+        if (!executableDispatchCoversFabricRoute(image.dispatch_image, plan.plan_fingerprint, route)) return error.HandoffTargetMismatch;
+        const provider_module = executableProviderModuleForRoute(image, route) orelse return error.HandoffTargetMismatch;
+        const next_run_id_before = self.next_run_id;
+        const slot_count_before = self.slots.items.len;
+        const event_count_before = self.events.items.len;
+        const mailbox_count_before = self.mailbox.pending.items.len;
+        const next_mailbox_id_before = self.next_mailbox_id;
+        const next_event_index_before = self.next_event_index;
+        var routed = false;
+        errdefer if (!routed) self.rollbackRunspaceMutation(slot_count_before, event_count_before, mailbox_count_before, next_run_id_before, next_mailbox_id_before, next_event_index_before);
+        const loaded_options = LoadedInstallOptions{
+            .parent_run_handle_fingerprint = pending.handle.handle_fingerprint,
+            .executable_image_fingerprint = image.image_fingerprint,
+            .executable_dispatch_coverage = .{},
+        };
+        const provider_handle = try self.installLoadedModuleRun(provider_module, loaded_options);
+        const invocation = try self.routePendingToProviderRun(mailbox_id, plan, provider_handle);
+        routed = true;
+        return invocation;
     }
 
     pub fn installReplay(self: *@This(), comptime Target: type, transcript_image: TranscriptImage, permit: ?RunPermit) !RunHandle {
@@ -12503,7 +13698,7 @@ pub const Runspace = struct {
         switch (route.kind) {
             .reject, .unsupported => {},
             .replay => return error.ReplayRouteDenied,
-            .target_export, .admitted_run, .guest => return error.ProviderRunDenied,
+            .target_export, .loaded_module_export, .admitted_run, .guest => return error.ProviderRunDenied,
             .adapter => return error.UnsupportedMapping,
         }
         if (self.activeFabricInvocationForMailbox(mailbox_id)) |active| {
@@ -12573,7 +13768,7 @@ pub const Runspace = struct {
                 fabric_charge_committed = true;
                 return invocation;
             },
-            .target_export, .admitted_run, .guest => return error.ProviderRunDenied,
+            .target_export, .loaded_module_export, .admitted_run, .guest => return error.ProviderRunDenied,
             .adapter => return error.UnsupportedMapping,
         }
     }
@@ -12669,7 +13864,7 @@ pub const Runspace = struct {
         const route = try self.installedFabricRouteForPending(plan.plan_fingerprint, pending);
         try route.validate();
         switch (route.kind) {
-            .target_export, .admitted_run => {},
+            .target_export, .loaded_module_export, .admitted_run => {},
             .guest => return error.GuestRouteDenied,
             else => return error.UnsupportedMapping,
         }
@@ -13152,7 +14347,11 @@ pub const Runspace = struct {
             if (mapping.kind != .provider_result_to_parent_response) return error.UnsupportedMapping;
             try mapping.assertExactValueTableMatch();
             if (mapping.require_portable_images) try validateValueImagePolicy(provider_result, ValuePolicy.portable);
-            if (provider_result.value_table_id != mapping.provider_result_value_table_id) return error.ProviderResultMismatch;
+            if (provider_result.value_table_id) |provider_table_id| {
+                if (provider_table_id != mapping.provider_result_value_table_id) return error.ProviderResultMismatch;
+            } else if (route.kind != .loaded_module_export) {
+                return error.ProviderResultMismatch;
+            }
             if (mapping.provider_result_value_fingerprint) |expected| {
                 if (provider_result.value_image_fingerprint != expected and provider_result.boundary_value_fingerprint != expected) return error.ProviderResultMismatch;
             }
@@ -13358,6 +14557,49 @@ pub const Runspace = struct {
 
     fn fabricSlotModuleFingerprint(slot: Runspace.RunSlot) ?u64 {
         return slot.module_ref_fingerprint orelse slot.target_ref.boundary_module_fingerprint;
+    }
+
+    fn executableProviderModuleForRoute(image: Executable.Image, route: Fabric.Route) ?Executable.Module {
+        if (route.kind != .loaded_module_export) return null;
+        const expected_module = route.provider_module_fingerprint orelse return null;
+        for (image.module_set.modules) |module| {
+            if (module.role != .provider) continue;
+            if (module.module_ref.module_ref_fingerprint != expected_module) continue;
+            if (route.provider_target_ref_fingerprint) |expected_target| {
+                if (module.target_ref.target_ref_fingerprint != expected_target) continue;
+            }
+            return module;
+        }
+        return null;
+    }
+
+    fn executableLoadedDispatchCoverage(dispatch: Executable.DispatchImage) LoadedExecutableDispatchCoverage {
+        return .{
+            .fabric_plan_fingerprint = if (dispatch.fabric_plan_fingerprints.len == 1) dispatch.fabric_plan_fingerprints[0] else null,
+            .route_parent_world_port_ids = dispatch.route_parent_world_port_ids,
+            .route_kinds = dispatch.route_kinds,
+            .route_requirement_fingerprints = dispatch.route_requirement_fingerprints,
+        };
+    }
+
+    fn executableDispatchBindsFabricPlan(dispatch: Executable.DispatchImage, plan_fingerprint: u64) bool {
+        for (dispatch.fabric_plan_fingerprints) |fingerprint| {
+            if (fingerprint == plan_fingerprint) return true;
+        }
+        return false;
+    }
+
+    fn executableDispatchCoversFabricRoute(dispatch: Executable.DispatchImage, plan_fingerprint: u64, route: Fabric.Route) bool {
+        if (!executableDispatchBindsFabricPlan(dispatch, plan_fingerprint)) return false;
+        const expected_provider = route.provider_module_fingerprint orelse return false;
+        for (dispatch.route_ids, 0..) |route_id, index| {
+            if (route_id != route.route_id) continue;
+            if (dispatch.route_kinds[index] != route.kind) continue;
+            if (dispatch.route_parent_world_port_ids[index] != route.parent_world_port_id) continue;
+            if (dispatch.route_provider_module_fingerprints[index] != expected_provider) continue;
+            return true;
+        }
+        return false;
     }
 
     fn fabricResponseForPending(pending: Runspace.PendingPort, status: ResponseStatus, seed: u64, reason: []const u8) !Frame.Response {
@@ -14099,7 +15341,7 @@ pub const Runspace = struct {
 
     fn pendingRequiresFabricRoute(self: *@This(), slot: Runspace.RunSlot, pending: Runspace.PendingPort) bool {
         if (slot.driver) |driver| {
-            return driver.fabricPlanCoversWorldPort(pending.world_port_id);
+            if (driver.fabricPlanCoversWorldPort(pending.world_port_id)) return true;
         }
         const plan_fingerprint = fabricPlanFingerprintForSlot(slot) orelse return false;
         return self.installedFabricRouteCoversPending(plan_fingerprint, pending);
@@ -14127,13 +15369,33 @@ pub const Runspace = struct {
         return false;
     }
 
+    fn installedFabricRouteCoversWorldPort(self: *const @This(), plan_fingerprint: u64, world_port_id: u32) bool {
+        for (self.fabric_routes.items, self.fabric_route_plan_fingerprints.items) |route, route_plan_fingerprint| {
+            if (route_plan_fingerprint != plan_fingerprint) continue;
+            if (route.parent_world_port_id != world_port_id) continue;
+            return switch (route.kind) {
+                .adapter => false,
+                .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+            };
+        }
+        return false;
+    }
+
+    fn slotFabricPlanCoversWorldPort(self: *const @This(), slot: Runspace.RunSlot, world_port_id: u32) bool {
+        if (slot.driver) |driver| {
+            if (driver.fabricPlanCoversWorldPort(world_port_id)) return true;
+        }
+        const plan_fingerprint = fabricPlanFingerprintForSlot(slot) orelse return false;
+        return self.installedFabricRouteCoversWorldPort(plan_fingerprint, world_port_id);
+    }
+
     fn fabricRouteCoversPending(route: Fabric.Route, pending: Runspace.PendingPort) bool {
         if (route.parent_world_surface_fingerprint != 0 and route.parent_world_surface_fingerprint != pending.world_surface_fingerprint) return false;
         if (route.parent_target_certificate_fingerprint != 0 and route.parent_target_certificate_fingerprint != pending.target_certificate_fingerprint) return false;
         if (route.parent_world_port_id != pending.world_port_id) return false;
         return switch (route.kind) {
             .adapter => false,
-            .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+            .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
         };
     }
 
@@ -15134,6 +16396,8 @@ pub const Runspace = struct {
                     if (slot.owns_completed_result_image) {
                         if (slot.completed_result_image) |*previous| previous.deinit(self.allocator);
                     }
+                    slot.current_state.final_value_image_fingerprint = image.value_image_fingerprint;
+                    slot.current_state.run_state_fingerprint = fingerprintRunState(slot.current_state);
                     slot.completed_result_image = image;
                     slot.owns_completed_result_image = true;
                     owns_completed_result_image = false;
@@ -15160,12 +16424,12 @@ pub const Runspace = struct {
                 failed_summary_owned = false;
                 return event;
             },
-            .port_request => |request| {
-                var owned_request = request;
+            .port_request => |port_request| {
+                var owned_request = port_request.request;
                 defer owned_request.deinit(self.allocator);
                 const environment_actuation_binding = driver.actuationBindingForWorldPort(owned_request.world_port_id);
                 const fabric_actuation_binding = self.fabricActuationBindingForSlotPort(slot.*, owned_request.world_port_id, environment_actuation_binding);
-                const fabric_suppresses_auto_dispatch = driver.fabricPlanCoversWorldPort(owned_request.world_port_id);
+                const fabric_suppresses_auto_dispatch = self.slotFabricPlanCoversWorldPort(slot.*, owned_request.world_port_id);
                 const actuation_suppresses_auto_dispatch = fabric_actuation_binding != null or
                     (!fabric_suppresses_auto_dispatch and driver.actuationBindingCoversHandlerlessWorldPort(owned_request.world_port_id));
                 const suppress_auto_dispatch = self.config.auto_dispatch and (fabric_suppresses_auto_dispatch or actuation_suppresses_auto_dispatch);
@@ -15197,6 +16461,7 @@ pub const Runspace = struct {
                     .mailbox_id = mailbox_id,
                     .request = owned_request,
                     .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
+                    .expected_response_kind = port_request.expected_response_kind,
                     .environment_certificate_fingerprint = slot.environment_certificate_fingerprint,
                     .run_permit_fingerprint = slot.run_permit_fingerprint,
                     .actuation_binding = actuation_binding,
@@ -22946,6 +24211,11 @@ pub const Capsule = struct {
         role: RunRole,
         target_ref_fingerprint: u64,
         module_ref_fingerprint: ?u64 = null,
+        backend_kind: Runspace.BackendKind = .generated_target,
+        executable_image_fingerprint: ?u64 = null,
+        executable_plan_fingerprint: ?u64 = null,
+        loaded_session_fingerprint: ?u64 = null,
+        loaded_session_image_fingerprint: ?u64 = null,
         admission_receipt_fingerprint: ?u64 = null,
         environment_certificate_fingerprint: ?u64 = null,
         run_permit_fingerprint: ?u64 = null,
@@ -22965,6 +24235,11 @@ pub const Capsule = struct {
             role: RunRole,
             target_ref_fingerprint: u64,
             module_ref_fingerprint: ?u64 = null,
+            backend_kind: Runspace.BackendKind = .generated_target,
+            executable_image_fingerprint: ?u64 = null,
+            executable_plan_fingerprint: ?u64 = null,
+            loaded_session_fingerprint: ?u64 = null,
+            loaded_session_image_fingerprint: ?u64 = null,
             admission_receipt_fingerprint: ?u64 = null,
             environment_certificate_fingerprint: ?u64 = null,
             run_permit_fingerprint: ?u64 = null,
@@ -22984,6 +24259,11 @@ pub const Capsule = struct {
                 .role = args.role,
                 .target_ref_fingerprint = args.target_ref_fingerprint,
                 .module_ref_fingerprint = args.module_ref_fingerprint,
+                .backend_kind = args.backend_kind,
+                .executable_image_fingerprint = args.executable_image_fingerprint,
+                .executable_plan_fingerprint = args.executable_plan_fingerprint,
+                .loaded_session_fingerprint = args.loaded_session_fingerprint,
+                .loaded_session_image_fingerprint = args.loaded_session_image_fingerprint,
                 .admission_receipt_fingerprint = args.admission_receipt_fingerprint,
                 .environment_certificate_fingerprint = args.environment_certificate_fingerprint,
                 .run_permit_fingerprint = args.run_permit_fingerprint,
@@ -23001,6 +24281,14 @@ pub const Capsule = struct {
         }
 
         pub fn validate(self: @This(), options: ValidateOptions) !void {
+            try validateRunSlotImageForRunspaceFormat(self, options, world_capsule_runspace_image_format_version);
+        }
+
+        pub fn validateForRunspaceFormat(self: @This(), options: ValidateOptions, runspace_image_format_version: u32) !void {
+            try validateRunSlotImageForRunspaceFormat(self, options, runspace_image_format_version);
+        }
+
+        fn validateStructural(self: @This(), options: ValidateOptions) !void {
             if (self.fingerprint_version != world_capsule_run_slot_image_fingerprint_version) return error.InvalidFrameEncoding;
             if (self.checkpoint_refs.len > options.max_run_slots) return error.InvalidFrameEncoding;
             if (self.fabric_invocation_refs.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
@@ -23018,7 +24306,37 @@ pub const Capsule = struct {
                 .branch, .provider => if (self.parent_run_handle_fingerprint == null) return error.InvalidFrameEncoding,
                 .replay, .verify, .guest => {},
             }
-            if (self.slot_image_fingerprint != fingerprintRunSlotImage(self)) return error.InvalidFrameEncoding;
+            switch (self.backend_kind) {
+                .generated_target => {
+                    if (self.executable_image_fingerprint != null or
+                        self.executable_plan_fingerprint != null or
+                        self.loaded_session_fingerprint != null or
+                        self.loaded_session_image_fingerprint != null)
+                    {
+                        return error.InvalidFrameEncoding;
+                    }
+                },
+                .loaded_module => {
+                    if (self.executable_image_fingerprint == null or
+                        self.module_ref_fingerprint == null or
+                        self.executable_plan_fingerprint == null or
+                        self.loaded_session_fingerprint == null)
+                    {
+                        return error.InvalidFrameEncoding;
+                    }
+                    if (self.executable_image_fingerprint.? == 0 or
+                        self.executable_plan_fingerprint.? == 0 or
+                        self.loaded_session_fingerprint.? == 0)
+                    {
+                        return error.InvalidFrameEncoding;
+                    }
+                    if (self.loaded_session_image_fingerprint) |image_fingerprint| {
+                        if (image_fingerprint == 0) return error.InvalidFrameEncoding;
+                    }
+                    if (loadedCapsuleSlotNeedsSessionImage(self.status)) return error.UnsupportedLoadedExecution;
+                    if (self.loaded_session_image_fingerprint != null) return error.UnsupportedLoadedExecution;
+                },
+            }
         }
 
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -23382,7 +24700,12 @@ pub const Capsule = struct {
             try validateNoZeroU64(self.actuation_intent_refs);
             try validateNoZeroU64(self.actuation_receipt_refs);
             try validateNoZeroU64(self.actuation_journal_refs);
-            for (self.run_slots) |slot| try slot.validate(options);
+            for (self.run_slots) |slot| {
+                if (!capsuleRunspaceImageFormatSupportsLoadedSlots(self.format_version) and runSlotImageUsesLoadedFields(slot)) {
+                    return error.InvalidFrameEncoding;
+                }
+                try slot.validateForRunspaceFormat(options, self.format_version);
+            }
             if (self.run_handle_mappings.len != 0 and !runspaceImageHandleMappingsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (!runspaceImageRoleRefsMatchSlots(self)) return error.InvalidFrameEncoding;
             if (self.mailbox_image) |mailbox| try mailbox.validateForRunspaceImageFormat(options, self.format_version);
@@ -25304,7 +26627,7 @@ pub const Capsule = struct {
         const restored_handles = try allocator.alloc(RunHandle, image.runspace_image.run_slots.len);
         defer allocator.free(restored_handles);
         for (image.runspace_image.run_slots, 0..) |slot_image, index| {
-            try slot_image.validate(.{});
+            try slot_image.validateForRunspaceFormat(.{}, image.runspace_image.format_version);
             const new_handle = restoredSlotHandle(runspace, slot_image, permit_fingerprint);
             restored_handles[index] = new_handle;
             try handle_mappings.append(allocator, slot_image.original_run_handle_fingerprint);
@@ -25365,6 +26688,10 @@ pub const Capsule = struct {
                 .parent_run_handle_fingerprint = parent_run_handle_fingerprint,
                 .checkpoint_fingerprint = if (slot_image.checkpoint_refs.len == 0) null else slot_image.checkpoint_refs[0],
                 .module_ref_fingerprint = slot_image.module_ref_fingerprint,
+                .backend_kind = slot_image.backend_kind,
+                .executable_image_fingerprint = slot_image.executable_image_fingerprint,
+                .executable_plan_fingerprint = slot_image.executable_plan_fingerprint,
+                .loaded_session_fingerprint = slot_image.loaded_session_fingerprint,
                 .installed_run_image = installed_run_image,
                 .owns_installed_run_image = installed_run_image_owned,
             }));
@@ -26312,6 +27639,13 @@ pub const Capsule = struct {
         };
     }
 
+    fn loadedCapsuleSlotNeedsSessionImage(status: RunSlotStatus) bool {
+        return switch (status) {
+            .admitted, .runnable, .parked_on_port, .parked_on_supervision => true,
+            .completed, .failed, .exported, .rejected => false,
+        };
+    }
+
     fn cloneCapsuleRunImageByFingerprint(allocator: std.mem.Allocator, run_images: []const RunImage, fingerprint: u64) !RunImage {
         for (run_images) |run_image| {
             if (run_image.run_image_fingerprint == fingerprint) return cloneCapsuleRunImage(allocator, run_image);
@@ -26751,7 +28085,7 @@ pub const Capsule = struct {
     }
 
     fn capsuleRunspaceImageFormatVersionSupported(format_version: u32) bool {
-        return format_version == 1 or format_version == 2 or format_version == world_capsule_runspace_image_format_version;
+        return format_version == 1 or format_version == 2 or format_version == 3 or format_version == world_capsule_runspace_image_format_version;
     }
 
     fn capsuleRunspaceImageFormatSupportsActuationRefs(format_version: u32) bool {
@@ -26760,6 +28094,18 @@ pub const Capsule = struct {
 
     fn capsuleRunspaceImageFormatSupportsCommittedActuationReceipts(format_version: u32) bool {
         return format_version >= 3;
+    }
+
+    fn capsuleRunspaceImageFormatSupportsLoadedSlots(format_version: u32) bool {
+        return format_version >= 4;
+    }
+
+    fn runSlotImageUsesLoadedFields(slot: RunSlotImage) bool {
+        return slot.backend_kind != .generated_target or
+            slot.executable_image_fingerprint != null or
+            slot.executable_plan_fingerprint != null or
+            slot.loaded_session_fingerprint != null or
+            slot.loaded_session_image_fingerprint != null;
     }
 
     fn capsuleImageFormatVersionSupported(format_version: u32) bool {
@@ -26796,6 +28142,11 @@ pub const Capsule = struct {
         hashU64(&hasher, @intFromEnum(image.role));
         hashU64(&hasher, image.target_ref_fingerprint);
         hashOptionalU64(&hasher, image.module_ref_fingerprint);
+        hashU64(&hasher, @intFromEnum(image.backend_kind));
+        hashOptionalU64(&hasher, image.executable_image_fingerprint);
+        hashOptionalU64(&hasher, image.executable_plan_fingerprint);
+        hashOptionalU64(&hasher, image.loaded_session_fingerprint);
+        hashOptionalU64(&hasher, image.loaded_session_image_fingerprint);
         hashOptionalU64(&hasher, image.admission_receipt_fingerprint);
         hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
         hashOptionalU64(&hasher, image.run_permit_fingerprint);
@@ -26808,6 +28159,37 @@ pub const Capsule = struct {
         hashU64Slice(&hasher, image.fabric_invocation_refs);
         hashU64(&hasher, @intFromEnum(image.status));
         return hasher.final();
+    }
+
+    fn fingerprintRunSlotImageV3(image: RunSlotImage) u64 {
+        var hasher = std.hash.Wyhash.init(0x6361_7073_736c_6f74);
+        hashU64(&hasher, image.fingerprint_version);
+        hashU64(&hasher, image.original_run_handle_fingerprint);
+        hashOptionalU64(&hasher, image.parent_run_handle_fingerprint);
+        hashU64(&hasher, @intFromEnum(image.role));
+        hashU64(&hasher, image.target_ref_fingerprint);
+        hashOptionalU64(&hasher, image.module_ref_fingerprint);
+        hashOptionalU64(&hasher, image.admission_receipt_fingerprint);
+        hashOptionalU64(&hasher, image.environment_certificate_fingerprint);
+        hashOptionalU64(&hasher, image.run_permit_fingerprint);
+        hashU64(&hasher, image.run_state_fingerprint);
+        hashOptionalU64(&hasher, image.run_image_fingerprint);
+        hashOptionalU64(&hasher, image.transcript_image_fingerprint);
+        hashOptionalU64(&hasher, image.current_pending_mailbox_id);
+        hashOptionalU64(&hasher, image.branch_id);
+        hashU64Slice(&hasher, image.checkpoint_refs);
+        hashU64Slice(&hasher, image.fabric_invocation_refs);
+        hashU64(&hasher, @intFromEnum(image.status));
+        return hasher.final();
+    }
+
+    fn validateRunSlotImageForRunspaceFormat(image: RunSlotImage, options: ValidateOptions, runspace_image_format_version: u32) !void {
+        try image.validateStructural(options);
+        const expected_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            fingerprintRunSlotImage(image)
+        else
+            fingerprintRunSlotImageV3(image);
+        if (image.slot_image_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
     }
 
     fn fingerprintPendingPortImage(image: PendingPortImage) u64 {
@@ -27121,12 +28503,19 @@ pub const Capsule = struct {
         const fabric_slice = try fabric_refs.toOwnedSlice(allocator);
         errdefer allocator.free(fabric_slice);
 
+        if (loadedSlotNeedsSessionImage(slot)) return error.InvalidRunspaceTransition;
+
         var image = RunSlotImage.init(.{
             .original_run_handle_fingerprint = slot.handle.handle_fingerprint,
             .parent_run_handle_fingerprint = slot.parent_run_handle_fingerprint,
             .role = runSlotRoleForFreeze(slot),
             .target_ref_fingerprint = slot.target_ref.target_ref_fingerprint,
             .module_ref_fingerprint = slot.module_ref_fingerprint,
+            .backend_kind = slot.backend_kind,
+            .executable_image_fingerprint = slot.executable_image_fingerprint,
+            .executable_plan_fingerprint = slot.executable_plan_fingerprint,
+            .loaded_session_fingerprint = slot.loaded_session_fingerprint,
+            .loaded_session_image_fingerprint = null,
             .admission_receipt_fingerprint = slot.admission_receipt_fingerprint,
             .environment_certificate_fingerprint = null,
             .run_permit_fingerprint = slot.run_permit_fingerprint,
@@ -27141,6 +28530,14 @@ pub const Capsule = struct {
         });
         image.owns_memory = true;
         return image;
+    }
+
+    fn loadedSlotNeedsSessionImage(slot: Runspace.RunSlot) bool {
+        if (slot.backend_kind != .loaded_module) return false;
+        return switch (slot.status) {
+            .admitted, .runnable, .running, .parked_on_port, .parked_on_supervision => true,
+            .completed, .failed, .exported, .rejected => false,
+        };
     }
 
     fn runSlotRoleForFreeze(slot: Runspace.RunSlot) RunRole {
@@ -27513,7 +28910,7 @@ pub const Capsule = struct {
         try std.testing.expectError(error.InvalidFrameEncoding, encodeManifest(&rejected_legacy, allocator, legacy_with_actuation));
     }
 
-    fn encodeRunSlotImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: RunSlotImage) !void {
+    fn encodeRunSlotImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: RunSlotImage, runspace_image_format_version: u32) !void {
         try writeU32(out, allocator, image.fingerprint_version);
         try writeU64(out, allocator, image.slot_image_fingerprint);
         try writeU64(out, allocator, image.original_run_handle_fingerprint);
@@ -27521,6 +28918,15 @@ pub const Capsule = struct {
         try writeU8(out, allocator, @intFromEnum(image.role));
         try writeU64(out, allocator, image.target_ref_fingerprint);
         try writeOptionalU64(out, allocator, image.module_ref_fingerprint);
+        if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version)) {
+            try writeU8(out, allocator, @intFromEnum(image.backend_kind));
+            try writeOptionalU64(out, allocator, image.executable_image_fingerprint);
+            try writeOptionalU64(out, allocator, image.executable_plan_fingerprint);
+            try writeOptionalU64(out, allocator, image.loaded_session_fingerprint);
+            try writeOptionalU64(out, allocator, image.loaded_session_image_fingerprint);
+        } else if (runSlotImageUsesLoadedFields(image)) {
+            return error.InvalidFrameEncoding;
+        }
         try writeOptionalU64(out, allocator, image.admission_receipt_fingerprint);
         try writeOptionalU64(out, allocator, image.environment_certificate_fingerprint);
         try writeOptionalU64(out, allocator, image.run_permit_fingerprint);
@@ -27534,7 +28940,7 @@ pub const Capsule = struct {
         try writeU8(out, allocator, @intFromEnum(image.status));
     }
 
-    fn decodeRunSlotImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) !RunSlotImage {
+    fn decodeRunSlotImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions, runspace_image_format_version: u32) !RunSlotImage {
         const fingerprint_version = try readU32(bytes, cursor);
         const slot_image_fingerprint = try readU64(bytes, cursor);
         const original_run_handle_fingerprint = try readU64(bytes, cursor);
@@ -27542,6 +28948,26 @@ pub const Capsule = struct {
         const role = try enumFromByte(RunRole, try readU8(bytes, cursor));
         const target_ref_fingerprint = try readU64(bytes, cursor);
         const module_ref_fingerprint = try readOptionalU64(bytes, cursor);
+        const backend_kind = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try enumFromByte(Runspace.BackendKind, try readU8(bytes, cursor))
+        else
+            Runspace.BackendKind.generated_target;
+        const executable_image_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
+        const executable_plan_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
+        const loaded_session_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
+        const loaded_session_image_fingerprint = if (capsuleRunspaceImageFormatSupportsLoadedSlots(runspace_image_format_version))
+            try readOptionalU64(bytes, cursor)
+        else
+            null;
         const admission_receipt_fingerprint = try readOptionalU64(bytes, cursor);
         const environment_certificate_fingerprint = try readOptionalU64(bytes, cursor);
         const run_permit_fingerprint = try readOptionalU64(bytes, cursor);
@@ -27565,6 +28991,11 @@ pub const Capsule = struct {
             .role = role,
             .target_ref_fingerprint = target_ref_fingerprint,
             .module_ref_fingerprint = module_ref_fingerprint,
+            .backend_kind = backend_kind,
+            .executable_image_fingerprint = executable_image_fingerprint,
+            .executable_plan_fingerprint = executable_plan_fingerprint,
+            .loaded_session_fingerprint = loaded_session_fingerprint,
+            .loaded_session_image_fingerprint = loaded_session_image_fingerprint,
             .admission_receipt_fingerprint = admission_receipt_fingerprint,
             .environment_certificate_fingerprint = environment_certificate_fingerprint,
             .run_permit_fingerprint = run_permit_fingerprint,
@@ -27581,16 +29012,16 @@ pub const Capsule = struct {
         checkpoint_refs_owned = false;
         fabric_invocation_refs_owned = false;
         errdefer image.deinit(allocator);
-        try image.validate(options);
+        try image.validateForRunspaceFormat(options, runspace_image_format_version);
         return image;
     }
 
-    fn writeRunSlotImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const RunSlotImage) !void {
+    fn writeRunSlotImageSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const RunSlotImage, runspace_image_format_version: u32) !void {
         try writeU64(out, allocator, values.len);
-        for (values) |value| try encodeRunSlotImage(out, allocator, value);
+        for (values) |value| try encodeRunSlotImage(out, allocator, value, runspace_image_format_version);
     }
 
-    fn readRunSlotImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions) ![]RunSlotImage {
+    fn readRunSlotImageSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, options: ValidateOptions, runspace_image_format_version: u32) ![]RunSlotImage {
         const count = try readU64AsUsize(bytes, cursor);
         if (count > options.max_run_slots) return error.InvalidFrameEncoding;
         const values = try allocator.alloc(RunSlotImage, count);
@@ -27600,7 +29031,7 @@ pub const Capsule = struct {
             allocator.free(values);
         }
         for (values) |*value| {
-            value.* = try decodeRunSlotImage(allocator, bytes, cursor, options);
+            value.* = try decodeRunSlotImage(allocator, bytes, cursor, options, runspace_image_format_version);
             initialized += 1;
         }
         return values;
@@ -27831,7 +29262,7 @@ pub const Capsule = struct {
         try writeU64(out, allocator, image.runspace_fingerprint);
         try writeU64(out, allocator, image.runspace_report_fingerprint);
         try writeU64Slice(out, allocator, image.run_handle_mappings);
-        try writeRunSlotImageSlice(out, allocator, image.run_slots);
+        try writeRunSlotImageSlice(out, allocator, image.run_slots, image.format_version);
         try writeOptionalMailboxImage(out, allocator, image.mailbox_image, image.format_version);
         try writeU64Slice(out, allocator, image.runspace_event_fingerprints);
         try writeU64Slice(out, allocator, image.root_run_handle_fingerprints);
@@ -27863,7 +29294,8 @@ pub const Capsule = struct {
         const run_handle_mappings = try readU64SliceOwned(allocator, bytes, cursor, options.max_run_slots);
         var run_handle_mappings_owned = true;
         errdefer if (run_handle_mappings_owned) allocator.free(run_handle_mappings);
-        const run_slots = try readRunSlotImageSliceOwned(allocator, bytes, cursor, options);
+        if (!capsuleRunspaceImageFormatVersionSupported(format_version)) return error.InvalidFrameEncoding;
+        const run_slots = try readRunSlotImageSliceOwned(allocator, bytes, cursor, options, format_version);
         var run_slots_owned = true;
         errdefer if (run_slots_owned) {
             for (run_slots) |*slot| slot.deinit(allocator);
@@ -27995,7 +29427,7 @@ pub const Capsule = struct {
         try writeU64(&encoded, allocator, legacy.runspace_fingerprint);
         try writeU64(&encoded, allocator, legacy.runspace_report_fingerprint);
         try writeU64Slice(&encoded, allocator, legacy.run_handle_mappings);
-        try writeRunSlotImageSlice(&encoded, allocator, legacy.run_slots);
+        try writeRunSlotImageSlice(&encoded, allocator, legacy.run_slots, legacy.format_version);
         try writeOptionalMailboxImage(&encoded, allocator, legacy.mailbox_image, legacy.format_version);
         try writeU64Slice(&encoded, allocator, legacy.runspace_event_fingerprints);
         try writeU64Slice(&encoded, allocator, legacy.root_run_handle_fingerprints);
@@ -28071,7 +29503,7 @@ pub const Capsule = struct {
         try writeU64(&encoded_mailbox, allocator, legacy_with_mailbox.runspace_fingerprint);
         try writeU64(&encoded_mailbox, allocator, legacy_with_mailbox.runspace_report_fingerprint);
         try writeU64Slice(&encoded_mailbox, allocator, legacy_with_mailbox.run_handle_mappings);
-        try writeRunSlotImageSlice(&encoded_mailbox, allocator, legacy_with_mailbox.run_slots);
+        try writeRunSlotImageSlice(&encoded_mailbox, allocator, legacy_with_mailbox.run_slots, legacy_with_mailbox.format_version);
         try writeBool(&encoded_mailbox, allocator, true);
         try writeU32(&encoded_mailbox, allocator, legacy_mailbox.fingerprint_version);
         try writeU64(&encoded_mailbox, allocator, legacy_mailbox.mailbox_image_fingerprint);
@@ -28166,6 +29598,43 @@ pub const Capsule = struct {
         const decoded_v2_pending = decoded_v2.mailbox_image.?.pending_port_entries[0];
         try std.testing.expect(decoded_v2_pending.committed_actuation_receipt);
         try std.testing.expectEqual(@as(?u64, v2_receipt_refs[0]), decoded_v2_pending.pending_actuation_receipt_fingerprint);
+
+        var legacy_v3_slot = RunSlotImage.init(.{
+            .original_run_handle_fingerprint = 0x5150_ad01,
+            .role = .root,
+            .target_ref_fingerprint = 0x5150_ad02,
+            .module_ref_fingerprint = 0x5150_ad03,
+            .admission_receipt_fingerprint = 0x5150_ad04,
+            .environment_certificate_fingerprint = 0x5150_ad05,
+            .run_permit_fingerprint = 0x5150_ad06,
+            .run_state_fingerprint = 0x5150_ad07,
+            .status = .completed,
+        });
+        legacy_v3_slot.slot_image_fingerprint = fingerprintRunSlotImageV3(legacy_v3_slot);
+        const legacy_v3_slots = [_]RunSlotImage{legacy_v3_slot};
+        var legacy_v3 = RunspaceImage{
+            .format_version = 3,
+            .fingerprint_version = world_capsule_runspace_image_fingerprint_version,
+            .image_fingerprint = 0,
+            .runspace_fingerprint = 0x5150_ad08,
+            .runspace_report_fingerprint = 0x5150_ad09,
+            .run_slots = &legacy_v3_slots,
+            .admission_receipt_refs = &.{0x5150_ad04},
+            .metadata = "v3-runspace-slot",
+        };
+        legacy_v3.image_fingerprint = fingerprintRunspaceImage(legacy_v3);
+        var encoded_v3: std.ArrayList(u8) = .empty;
+        defer encoded_v3.deinit(allocator);
+        try encodeRunspaceImage(&encoded_v3, allocator, legacy_v3);
+        var v3_cursor: usize = 0;
+        var decoded_v3 = try decodeRunspaceImage(allocator, encoded_v3.items, &v3_cursor, .{});
+        defer decoded_v3.deinit(allocator);
+        try std.testing.expectEqual(encoded_v3.items.len, v3_cursor);
+        try std.testing.expectEqual(@as(u32, 3), decoded_v3.format_version);
+        try std.testing.expectEqual(@as(usize, 1), decoded_v3.run_slots.len);
+        try std.testing.expectEqual(Runspace.BackendKind.generated_target, decoded_v3.run_slots[0].backend_kind);
+        try std.testing.expectEqual(@as(?u64, null), decoded_v3.run_slots[0].executable_image_fingerprint);
+        try std.testing.expectEqual(@as(?u64, 0x5150_ad04), decoded_v3.run_slots[0].admission_receipt_fingerprint);
 
         const actuation_refs = [_]u64{0x5150_aa06};
         var legacy_with_actuation_refs = legacy_with_mailbox;
@@ -28549,6 +30018,12 @@ pub const Continuity = struct {
         appliance_turn_receipt = 45,
         appliance_reconstruction_report = 46,
         appliance_conformance_report = 47,
+        boundary_module_image = 48,
+        boundary_executable_plan = 49,
+        world_executable_image = 50,
+        world_executable_certificate = 51,
+        world_dispatch_image = 52,
+        loaded_session_image = 53,
 
         pub fn defaultFormatVersion(self: @This()) u32 {
             return switch (self) {
@@ -28587,6 +30062,12 @@ pub const Continuity = struct {
                 .appliance_turn_receipt => world_appliance_turn_receipt_format_version,
                 .appliance_reconstruction_report => world_appliance_reconstruction_report_fingerprint_version,
                 .appliance_conformance_report => world_appliance_conformance_report_fingerprint_version,
+                .boundary_module_image => 1,
+                .boundary_executable_plan => 1,
+                .world_executable_image => world_executable_image_format_version,
+                .world_executable_certificate => world_executable_certificate_format_version,
+                .world_dispatch_image => world_executable_dispatch_image_format_version,
+                .loaded_session_image => 1,
                 .bundle => world_continuity_object_envelope_format_version,
                 else => 1,
             };
@@ -28596,7 +30077,7 @@ pub const Continuity = struct {
             return switch (self) {
                 .capsule_image => format_version == 1 or format_version == 2 or format_version == world_capsule_image_format_version,
                 .capsule_manifest => format_version == 1 or format_version == world_capsule_manifest_format_version,
-                .capsule_runspace_image => format_version == 1 or format_version == 2 or format_version == world_capsule_runspace_image_format_version,
+                .capsule_runspace_image => format_version == 1 or format_version == 2 or format_version == 3 or format_version == world_capsule_runspace_image_format_version,
                 .run_image => format_version == 1 or format_version == 2 or format_version == world_run_image_format_version,
                 .transcript_image => format_version == 2 or format_version == world_transcript_image_format_version,
                 .actuation_receipt => format_version == world_actuation_receipt_legacy_format_version or format_version == world_actuation_receipt_format_version,
@@ -35424,6 +36905,7 @@ pub const Continuity = struct {
                     else => break :blk null,
                 };
                 defer output.deinit(allocator);
+                if (!try validApplianceTurnOutputPayload(allocator, output)) break :blk null;
                 break :blk output.output_fingerprint;
             },
             .appliance_checkpoint => blk: {
@@ -35643,7 +37125,7 @@ pub const Continuity = struct {
         return true;
     }
 
-    fn validRunReceiptPayload(receipt: RunReceipt) bool {
+    pub fn validRunReceiptPayload(receipt: RunReceipt) bool {
         if (receipt.format_version != world_run_receipt_format_version) return false;
         if (receipt.fingerprint_version != world_run_receipt_fingerprint_version) return false;
         if (receipt.receipt_fingerprint == 0 or receipt.receipt_fingerprint != fingerprintRunReceipt(receipt)) return false;
@@ -35651,6 +37133,21 @@ pub const Continuity = struct {
         if (receipt.target_ref_fingerprint == 0 or receipt.usage_ledger_fingerprint == 0) return false;
         if (receipt.final_run_state_fingerprint == 0) return false;
         return true;
+    }
+
+    fn validApplianceTurnOutputPayload(allocator: std.mem.Allocator, output: Appliance.TurnOutput) !bool {
+        if (output.checkpoint_bytes.len == 0) return false;
+        var checkpoint = Appliance.Checkpoint.decode(
+            allocator,
+            output.checkpoint_bytes,
+            output.manifest_fingerprint,
+            Appliance.Capacity.archive_decode,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        defer checkpoint.deinit(allocator);
+        return checkpoint.checkpoint_fingerprint == output.checkpoint.checkpoint_fingerprint;
     }
 
     fn validAdmissionReceiptPayload(receipt: Admission.AdmissionReceipt) bool {
@@ -35849,6 +37346,7 @@ pub const Continuity = struct {
                 };
                 defer output.deinit(allocator);
                 output.validate(output.manifest_fingerprint, Appliance.Capacity.archive_decode) catch break :blk false;
+                if (!try validApplianceTurnOutputPayload(allocator, output)) break :blk false;
                 break :blk output.output_format_version == envelope.object_format_version;
             },
             .appliance_reconstruction_report => blk: {
@@ -36117,6 +37615,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer output.deinit(allocator);
+                if (!try validApplianceTurnOutputPayload(allocator, output)) break :blk false;
                 break :blk try bundleApplianceTurnOutputDependencyPayloadsValid(allocator, envelopes, output);
             },
             .appliance_reconstruction_report => blk: {
@@ -36172,6 +37671,17 @@ pub const Continuity = struct {
         return true;
     }
 
+    fn bundleApplianceTurnOutputEnvelopePayloadValid(allocator: std.mem.Allocator, envelope: ObjectEnvelope, expected_fingerprint: u64, expected_manifest_fingerprint: u64) !bool {
+        var output = Appliance.TurnOutput.decodeArchivePayload(allocator, envelope.payload_bytes) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        defer output.deinit(allocator);
+        if (output.output_fingerprint != expected_fingerprint) return false;
+        if (output.manifest_fingerprint != expected_manifest_fingerprint) return false;
+        return try validApplianceTurnOutputPayload(allocator, output);
+    }
+
     fn bundleApplianceReconstructionReportDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, report: Appliance.ReconstructionReport) !bool {
         const output_fingerprints = [_]u64{
             report.resident_turn_output_fingerprint,
@@ -36180,13 +37690,7 @@ pub const Continuity = struct {
         for (output_fingerprints) |fingerprint| {
             const ref = semanticObjectRef(.appliance_turn_output, fingerprint);
             if (try bundleEnvelopeForRef(allocator, envelopes, ref)) |output_envelope| {
-                var output = Appliance.TurnOutput.decodeArchivePayload(allocator, output_envelope.payload_bytes) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return false,
-                };
-                defer output.deinit(allocator);
-                if (output.output_fingerprint != fingerprint) return false;
-                if (output.manifest_fingerprint != report.manifest_fingerprint) return false;
+                if (!try bundleApplianceTurnOutputEnvelopePayloadValid(allocator, output_envelope, fingerprint, report.manifest_fingerprint)) return false;
             }
         }
         return true;
@@ -36215,13 +37719,7 @@ pub const Continuity = struct {
             const fingerprint = maybe_fingerprint orelse continue;
             const ref = semanticObjectRef(.appliance_turn_output, fingerprint);
             if (try bundleEnvelopeForRef(allocator, envelopes, ref)) |output_envelope| {
-                var output = Appliance.TurnOutput.decodeArchivePayload(allocator, output_envelope.payload_bytes) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return false,
-                };
-                defer output.deinit(allocator);
-                if (output.output_fingerprint != fingerprint) return false;
-                if (output.manifest_fingerprint != report.manifest_fingerprint) return false;
+                if (!try bundleApplianceTurnOutputEnvelopePayloadValid(allocator, output_envelope, fingerprint, report.manifest_fingerprint)) return false;
             }
         }
         return true;
@@ -51613,7 +53111,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const route = plan.findRouteForPort(world_port_id) orelse return false;
                     return switch (route.kind) {
                         .adapter => false,
-                        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+                        .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
                     };
                 }
 
@@ -51928,7 +53426,7 @@ pub fn Machine(comptime Target: type, comptime Config: anytype) type {
                     const route = plan.findRouteForPort(world_port_id) orelse return Error.MissingHandler;
                     switch (route.kind) {
                         .adapter => return Error.MissingHandler,
-                        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => {},
+                        .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => {},
                     }
                     if (self.supervisor) |*supervisor| {
                         supervisor.beforeFabricInvocation(.{
@@ -52646,7 +54144,7 @@ fn supervisionModeAcceptanceBlocker(requested_mode: Mode) AcceptanceBlocker {
 fn fabricRouteSupervisionBlocker(policy: SupervisionPolicy, route_kind: Fabric.RouteKind) ?Supervision.Blocker {
     if (!policy.allow_fabric_routes) return .fabric_denied;
     return switch (route_kind) {
-        .target_export, .admitted_run => if (policy.allow_target_export_routes) null else .provider_run_denied,
+        .target_export, .loaded_module_export, .admitted_run => if (policy.allow_target_export_routes) null else .provider_run_denied,
         .guest => if (policy.allow_guest_routes) null else .guest_route_denied,
         .replay => if (policy.allow_replay_routes) null else .replay_route_denied,
         .reject => if (policy.allow_reject_routes and policy.allow_rejected_responses) null else .fabric_denied,
@@ -52688,7 +54186,7 @@ fn fabricRouteMinimumInvocationCost(cost_model: Supervision.CostModel, route_kin
 
 fn fabricRouteRequiresProviderRun(route_kind: Fabric.RouteKind) bool {
     return switch (route_kind) {
-        .target_export, .admitted_run, .guest => true,
+        .target_export, .loaded_module_export, .admitted_run, .guest => true,
         .adapter, .replay, .reject, .unsupported => false,
     };
 }
@@ -54747,7 +56245,7 @@ fn valuePolicyForHandoffRequestFrame(comptime Target: type, comptime Env: type, 
     const plan = admitted_fabric_plan orelse return error.MissingBinding;
     const route = plan.findRouteForPort(world_port_id) orelse return error.MissingBinding;
     return switch (route.kind) {
-        .target_export, .admitted_run, .guest, .replay, .reject => ValuePolicy.portable,
+        .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject => ValuePolicy.portable,
         .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, requested_mode)) |view| view.value_policy else error.MissingBinding,
         .unsupported => error.MissingBinding,
     };
@@ -54759,7 +56257,7 @@ fn replayImageValuePolicyForHandoffResponseFrame(comptime Target: type, comptime
     if (admitted_fabric_plan) |plan| {
         if (plan.findRouteForPort(world_port_id)) |route| {
             return switch (route.kind) {
-                .target_export, .admitted_run, .guest, .replay, .reject => fabricReplayResponseValuePolicy(),
+                .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject => fabricReplayResponseValuePolicy(),
                 .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, requested_mode)) |view| view.value_policy else error.MissingBinding,
                 .unsupported => error.MissingBinding,
             };
@@ -54781,7 +56279,7 @@ fn fabricPlanCoversPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id: u32) 
     const route = plan.findRouteForPort(world_port_id) orelse return false;
     return switch (route.kind) {
         .adapter => false,
-        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+        .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
     };
 }
 
@@ -54790,7 +56288,7 @@ fn fabricPlanCoversEnvironmentPort(comptime Env: type, admitted_fabric_plan: ?Fa
     const route = plan.findRouteForPort(world_port_id) orelse return false;
     return switch (route.kind) {
         .adapter => actuationRoutePolicyViewForEnvironment(Env, route, requested_mode) != null,
-        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+        .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
     };
 }
 
@@ -54802,7 +56300,7 @@ fn fabricPlanCoversEnvironmentPortWithSupervision(comptime Env: type, admitted_f
             supervisionPolicyAllowsActuationRoute(requested_mode, supervision_policy, view)
         else
             false,
-        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+        .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
     };
 }
 
@@ -54815,7 +56313,7 @@ fn fabricPlanCoversEnvironmentPortWithPermit(comptime Env: type, admitted_fabric
                 permitRuleAllowsActuationRoute(permit, world_port_id, requested_mode, view)
         else
             false,
-        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
+        .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
     };
 }
 
@@ -54824,7 +56322,7 @@ fn fabricPreflightRouteForPort(admitted_fabric_plan: ?Fabric.Plan, world_port_id
     const route = plan.findRouteForPort(world_port_id) orelse return null;
     return switch (route.kind) {
         .adapter => null,
-        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => route,
+        .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => route,
     };
 }
 
@@ -54833,7 +56331,7 @@ fn fabricPreflightRouteForEnvironmentPort(comptime Env: type, admitted_fabric_pl
     const route = plan.findRouteForPort(world_port_id) orelse return null;
     return switch (route.kind) {
         .adapter => if (actuationRoutePolicyViewForEnvironment(Env, route, requested_mode) != null) route else null,
-        .target_export, .admitted_run, .guest, .replay, .reject, .unsupported => route,
+        .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => route,
     };
 }
 
@@ -56706,6 +58204,10 @@ fn fingerprintAdmissionPolicy(policy: Admission.AdmissionPolicy) u64 {
     hashBool(&hasher, policy.allow_reference_targets);
     hashBool(&hasher, policy.allow_full_modules);
     hashBool(&hasher, policy.allow_inspect_only_full_modules);
+    hashBool(&hasher, policy.allow_executable_image);
+    hashBool(&hasher, policy.allow_full_module_execution);
+    hashBool(&hasher, policy.require_executable_certificate);
+    hashBool(&hasher, policy.require_supported_runtime_profile);
     hashBool(&hasher, policy.require_local_target_for_execution);
     hashBool(&hasher, policy.require_environment_preflight);
     hashBool(&hasher, policy.require_supervision_permit);
@@ -56843,6 +58345,43 @@ fn fingerprintAdmittedRun(run: Admission.AdmittedRun) u64 {
     hashOptionalU64(&hasher, run.selected_branch_id);
     hashOptionalU64(&hasher, run.selected_checkpoint_ref);
     hashU64(&hasher, @intFromEnum(run.mode));
+    return hasher.final();
+}
+
+fn fingerprintLoadedAdmittedRun(run: Admission.LoadedAdmittedRun) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.loaded_admitted_run.fingerprint");
+    hashU64(&hasher, world_admitted_run_fingerprint_version);
+    hashU64(&hasher, run.executable_image_fingerprint);
+    hashOptionalU64(&hasher, run.certificate_fingerprint);
+    hashU64(&hasher, run.dispatch_fingerprint);
+    hashU64(&hasher, run.root_module_ref_fingerprint);
+    hashU64(&hasher, run.root_boundary_module_fingerprint);
+    hashU64(&hasher, run.root_target_ref_fingerprint);
+    hashU64(&hasher, run.root_import_set_fingerprint);
+    hashU64(&hasher, run.admission_report_fingerprint);
+    return hasher.final();
+}
+
+fn fingerprintExecutableAdmissionReport(report: Admission.ExecutableAdmissionReport) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hashBytes(&hasher, "world.executable_admission_report.fingerprint");
+    hashU64(&hasher, world_admission_report_fingerprint_version);
+    hashBool(&hasher, report.accepted);
+    hashU64(&hasher, report.executable_image_fingerprint);
+    hashOptionalU64(&hasher, report.certificate_fingerprint);
+    hashOptionalU64(&hasher, report.dispatch_fingerprint);
+    hashOptionalU64(&hasher, report.root_module_ref_fingerprint);
+    hashOptionalU64(&hasher, report.root_boundary_module_fingerprint);
+    hashU64(&hasher, report.runtime_profile_fingerprint);
+    hashOptionalU64(&hasher, report.required_runtime_profile_fingerprint);
+    hashU64(&hasher, report.residual_external_binding_count);
+    hashU64(&hasher, report.blockers.len);
+    for (report.blockers) |blocker| hashU64(&hasher, @intFromEnum(blocker));
+    hashU64(&hasher, report.warnings.len);
+    for (report.warnings) |warning| hashU64(&hasher, @intFromEnum(warning));
+    hashU64(&hasher, report.summary.len);
+    hashBytes(&hasher, report.summary);
     return hasher.final();
 }
 

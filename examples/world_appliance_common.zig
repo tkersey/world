@@ -52,7 +52,7 @@ pub const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
     .metadata = "example-agent",
 });
 
-pub const agent_wasm_manifest_fingerprint: u64 = 0xe9c5e72a2d566095;
+pub const agent_wasm_manifest_fingerprint: u64 = 0x7f96cca39e26a407;
 pub const agent_wasm_capacity_fingerprint: u64 = AgentAppliance.capacity_value.fingerprint();
 pub const agent_wasm_memory_plan_fingerprint: u64 = AgentAppliance.memoryPlan().plan_fingerprint;
 pub const agent_wasm_required_memory_bytes: usize = AgentAppliance.requiredMemoryBytes();
@@ -126,15 +126,32 @@ pub fn submitAndDecodeWithCapacity(
 }
 
 pub fn hostReplyFor(request: world.Appliance.HostRequest, response_fingerprint: u64) world.Appliance.HostReply {
+    const HostReplyResponse = struct {
+        bytes: []const u8,
+        fingerprint: u64,
+    };
+    const response: HostReplyResponse = if (request.expected_response_value_ref_fingerprint != null or request.expected_response_schema_ref_fingerprint != null) blk: {
+        var image = world.Frame.ValueImage.fromCanonicalBytes(
+            std.heap.page_allocator,
+            null,
+            request.expected_response_value_ref_fingerprint,
+            request.expected_response_schema_ref_fingerprint,
+            std.mem.asBytes(&response_fingerprint),
+            false,
+        ) catch unreachable;
+        defer image.deinit(std.heap.page_allocator);
+        const bytes = image.encode(std.heap.page_allocator) catch unreachable;
+        break :blk .{ .bytes = bytes, .fingerprint = image.value_image_fingerprint };
+    } else .{ .bytes = "", .fingerprint = response_fingerprint };
     const outcome = world.Appliance.HostOutcome.init(.{
         .host_request_fingerprint = request.request_fingerprint,
         .intent_fingerprint = request.intent_fingerprint,
         .envelope_fingerprint = request.envelope_fingerprint,
         .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
         .status = .responded,
-        .response_fingerprint = response_fingerprint,
+        .response_fingerprint = response.fingerprint,
         .response_kind = .frame_value_image,
-        .response_bytes = "frame-value:approved",
+        .response_bytes = response.bytes,
         .host_evidence_fingerprint = response_fingerprint ^ 0xE11D,
         .host_evidence_bytes = "host-claim:example",
         .attempt_number = 1,
