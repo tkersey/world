@@ -6968,7 +6968,9 @@ pub fn Appliance(comptime World: type) type {
             errdefer allocator.free(classes);
             const statuses = try allocator.alloc(World.Actuation.ResponseStatusSet, binding_count);
             errdefer allocator.free(statuses);
-            for (image.external_bindings, 0..) |binding, index| {
+            for (image.dispatch_image.residual_request_order, 0..) |requirement_fingerprint, index| {
+                const requirement = executableImportRequirementForFingerprint(root, requirement_fingerprint) orelse return error.InvalidFrameEncoding;
+                const binding = executableExternalBindingForRequirement(root, image.external_bindings, requirement) orelse return error.InvalidFrameEncoding;
                 try binding.validate();
                 descriptor_fingerprints[index] = binding.descriptor.descriptor_fingerprint;
                 binding_fingerprints[index] = binding.binding_fingerprint;
@@ -7058,6 +7060,23 @@ pub fn Appliance(comptime World: type) type {
                 if (current == fingerprint) return true;
             }
             return false;
+        }
+
+        fn executableImportRequirementForFingerprint(root: World.Executable.Module, requirement_fingerprint: u64) ?World.ImportRequirement {
+            for (root.imports) |requirement| {
+                if (requirement.requirement_fingerprint == requirement_fingerprint) return requirement;
+            }
+            return null;
+        }
+
+        fn executableExternalBindingForRequirement(root: World.Executable.Module, bindings: []const World.Executable.ExternalBinding, requirement: World.ImportRequirement) ?World.Executable.ExternalBinding {
+            var result: ?World.Executable.ExternalBinding = null;
+            for (bindings) |binding| {
+                if (!binding.matchesRequirement(root, requirement)) continue;
+                if (result != null) return null;
+                result = binding;
+            }
+            return result;
         }
 
         fn cloneEnvelope(

@@ -8393,6 +8393,92 @@ test "Universal Runtime initializes Appliance Core from Executable Image" {
     try std.testing.expect(output.checkpoint_bytes.len != 0);
 }
 
+test "Universal Runtime orders executable host bindings by dispatch residuals" {
+    const root_bytes = try fixtures.Agent.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    const root_module = builder.modules.items[0];
+    try std.testing.expectEqual(@as(usize, 2), root_module.imports.len);
+
+    for (root_module.imports) |root_import| {
+        const actuator_ref = if (root_import.world_port_id == ApplianceAgentToolImport.world_port_id)
+            ApplianceAgentToolActuationBinding.actuator_ref
+        else
+            ApplianceAgentActuationBinding.actuator_ref;
+        const descriptor = world.Actuation.Descriptor.init(.{
+            .actuator_ref = actuator_ref,
+            .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+            .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .response_value_table_id = root_import.response_value_table_id,
+            .label = "universal-runtime.agent",
+        });
+        try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+            .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+            .response_value_table_id = root_import.response_value_table_id,
+            .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+            .actuator_ref = actuator_ref,
+            .descriptor = descriptor,
+            .label = "universal-runtime.agent",
+        }));
+    }
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), image.external_bindings.len);
+    try std.testing.expectEqual(@as(usize, 2), image.dispatch_image.residual_request_order.len);
+
+    const reversed_bindings = [_]world.Executable.ExternalBinding{
+        image.external_bindings[1],
+        image.external_bindings[0],
+    };
+    const reordered_image = world.Executable.Image.init(.{
+        .required_runtime_profile = image.required_runtime_profile,
+        .module_set = image.module_set,
+        .link_plan_fingerprint = image.link_plan_fingerprint,
+        .linker_certificate_fingerprint = image.linker_certificate_fingerprint,
+        .assembly_fingerprint = image.assembly_fingerprint,
+        .dispatch_image = image.dispatch_image,
+        .external_bindings = &reversed_bindings,
+        .memory_plan = image.memory_plan,
+        .compatibility_report = image.compatibility_report,
+        .metadata = image.metadata,
+    });
+    const report = try reordered_image.validate(world.Executable.RuntimeProfile.universal_v1);
+    try std.testing.expect(report.compatible);
+
+    var core = try world.Appliance.Core.initExecutable(std.testing.allocator, reordered_image, .{
+        .profile = .wasm_agent,
+    });
+    defer core.deinit();
+    var expected_binding_fingerprints: [2]u64 = undefined;
+    var expected_world_port_ids: [2]u64 = undefined;
+    for (image.dispatch_image.residual_request_order, 0..) |requirement_fingerprint, index| {
+        const requirement = for (root_module.imports) |root_import| {
+            if (root_import.requirement_fingerprint == requirement_fingerprint) break root_import;
+        } else return error.ExpectedImportRequirement;
+        const binding = for (image.external_bindings) |candidate| {
+            if (candidate.matchesRequirement(root_module, requirement)) break candidate;
+        } else return error.ExpectedExternalBinding;
+        expected_binding_fingerprints[index] = binding.binding_fingerprint;
+        expected_world_port_ids[index] = binding.world_port_id;
+    }
+    try std.testing.expectEqualSlices(u64, &expected_binding_fingerprints, core.manifest_value.actuation_binding_fingerprints);
+    try std.testing.expectEqualSlices(u64, &expected_world_port_ids, core.manifest_value.actuation_world_port_ids);
+}
+
 test "World Seed Replay accepts batched host replies for independent requests" {
     const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
         .profile = world.Appliance.Profile.wasm_agent,

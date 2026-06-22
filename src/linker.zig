@@ -1476,10 +1476,12 @@ pub fn Linker(comptime W: type) type {
             var ambiguous_count: usize = 0;
             var max_depth_observed: usize = 0;
             const catalog_fingerprint = fingerprintCanonicalCatalog(input.catalog.entries);
+            const root_import_bound = input.root_import_set.required_count +| input.root_import_set.optional_count;
             var root_import_set_mismatch =
                 input.root_import_set.target_ref_fingerprint != input.root_target_ref.target_ref_fingerprint or
                 input.root_import_set.import_set_fingerprint != fingerprintRootImportSet(input.root_import_set) or
-                input.root_imports.len != input.root_import_set.required_count;
+                input.root_imports.len < input.root_import_set.required_count or
+                input.root_imports.len > root_import_bound;
             for (input.root_imports, 0..) |requirement, index| {
                 if (requirement.target_ref_fingerprint == null or
                     requirement.target_ref_fingerprint.? != input.root_target_ref.target_ref_fingerprint or
@@ -1498,11 +1500,16 @@ pub fn Linker(comptime W: type) type {
                 break;
             }
             if (!root_import_set_mismatch) {
-                var covered_count: usize = 0;
+                var required_count: usize = 0;
+                var optional_count: usize = 0;
                 for (input.root_imports) |requirement| {
-                    if (requirement.required) covered_count += 1;
+                    if (requirement.required) {
+                        required_count += 1;
+                    } else {
+                        optional_count += 1;
+                    }
                 }
-                if (covered_count != input.root_import_set.required_count) {
+                if (required_count != input.root_import_set.required_count or optional_count > input.root_import_set.optional_count) {
                     root_import_set_mismatch = true;
                 }
             }

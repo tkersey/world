@@ -14087,6 +14087,50 @@ test "link accepts distinct root imports sharing one world port" {
     try std.testing.expectEqual(@as(usize, 2), linked.plan.external_environment_requirements.len);
 }
 
+test "link preserves optional root imports without root-set mismatch" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const required_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const optional_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = required_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = required_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = required_import.world_surface_fingerprint,
+        .world_port_id = required_import.world_port_id,
+        .world_port_ref_fingerprint = required_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = required_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = required_import.residual_site_index + 1,
+        .residual_site_fingerprint = required_import.residual_site_fingerprint +% 1,
+        .payload_value_table_id = required_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = required_import.payload_value_ref_fingerprint,
+        .response_value_table_id = required_import.response_value_table_id,
+        .response_value_ref_fingerprint = required_import.response_value_ref_fingerprint,
+        .mode = required_import.mode,
+        .allowed_response_kinds = required_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = required_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-optional",
+        .required = false,
+    });
+    const root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 1,
+        .optional_count = 1,
+        .world_port_count = 1,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{ required_import, optional_import },
+        .catalog = world.Linker.Catalog.init(&.{}),
+        .policy = .allow_external_ports,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(linked.plan.accepted());
+    try std.testing.expect(!linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expectEqual(@as(usize, 2), linked.plan.external_environment_requirements.len);
+}
+
 test "link keeps duplicate-port imports out of fabric plans" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const first_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
@@ -41148,6 +41192,23 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     var direct_runspace = world.Runspace.init(std.testing.allocator, .{});
     defer direct_runspace.deinit();
     try std.testing.expectError(error.InvalidFrameEncoding, direct_runspace.installLoadedModuleRun(forged_direct_module, .{}));
+
+    const wrong_coverage_requirements = [_]u64{image.dispatch_image.route_requirement_fingerprints[0] +% 1};
+    var wrong_coverage_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer wrong_coverage_runspace.deinit();
+    _ = try wrong_coverage_runspace.installLoadedModuleRun(image.module_set.root().?, .{
+        .executable_image_fingerprint = image.image_fingerprint,
+        .executable_dispatch_coverage = .{
+            .fabric_plan_fingerprint = image.dispatch_image.fabric_plan_fingerprints[0],
+            .route_parent_world_port_ids = image.dispatch_image.route_parent_world_port_ids,
+            .route_kinds = image.dispatch_image.route_kinds,
+            .route_requirement_fingerprints = &wrong_coverage_requirements,
+        },
+    });
+    _ = try wrong_coverage_runspace.tick();
+    const wrong_coverage_pending = try wrong_coverage_runspace.mailbox.get(0);
+    const wrong_coverage_request = wrong_coverage_pending.request_frame orelse return error.ExpectedPendingRequestFrame;
+    try std.testing.expectError(error.MissingValueImage, wrong_coverage_runspace.respond(0, testRunspaceResponseFrame(wrong_coverage_request)));
 
     const mismatched_module_ref_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,

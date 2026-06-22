@@ -10037,6 +10037,7 @@ pub const Runspace = struct {
         fabric_plan_fingerprint: ?u64 = null,
         route_parent_world_port_ids: []const u32 = &.{},
         route_kinds: []const Fabric.RouteKind = &.{},
+        route_requirement_fingerprints: []const u64 = &.{},
     };
 
     pub const RunStatus = enum {
@@ -10121,6 +10122,7 @@ pub const Runspace = struct {
         executable_fabric_plan_fingerprint: ?u64 = null,
         executable_fabric_route_parent_world_port_ids: []const u32 = &.{},
         executable_fabric_route_kinds: []const Fabric.RouteKind = &.{},
+        executable_fabric_route_requirement_fingerprints: []const u64 = &.{},
         loaded_module: Executable.Boundary.LoadedModule,
         session: Executable.Boundary.LoadedModule.Session,
         supervisor: ?Supervision.Supervisor = null,
@@ -10132,6 +10134,7 @@ pub const Runspace = struct {
 
         fn init(allocator: std.mem.Allocator, module: Executable.Module, executable_image_fingerprint: u64, dispatch_coverage: LoadedExecutableDispatchCoverage, supervisor: ?Supervision.Supervisor) !@This() {
             if (dispatch_coverage.route_parent_world_port_ids.len != dispatch_coverage.route_kinds.len) return error.InvalidFrameEncoding;
+            if (dispatch_coverage.route_parent_world_port_ids.len != dispatch_coverage.route_requirement_fingerprints.len) return error.InvalidFrameEncoding;
             var loaded_module = try Executable.Boundary.ModuleImage.decode(allocator, module.canonical_bytes, .{
                 .require_full_module = true,
                 .allow_reference_only = false,
@@ -10153,6 +10156,8 @@ pub const Runspace = struct {
             errdefer allocator.free(route_parent_world_port_ids);
             const route_kinds = try allocator.dupe(Fabric.RouteKind, dispatch_coverage.route_kinds);
             errdefer allocator.free(route_kinds);
+            const route_requirement_fingerprints = try allocator.dupe(u64, dispatch_coverage.route_requirement_fingerprints);
+            errdefer allocator.free(route_requirement_fingerprints);
             return .{
                 .allocator = allocator,
                 .target_ref = module.target_ref,
@@ -10163,6 +10168,7 @@ pub const Runspace = struct {
                 .executable_fabric_plan_fingerprint = dispatch_coverage.fabric_plan_fingerprint,
                 .executable_fabric_route_parent_world_port_ids = route_parent_world_port_ids,
                 .executable_fabric_route_kinds = route_kinds,
+                .executable_fabric_route_requirement_fingerprints = route_requirement_fingerprints,
                 .loaded_module = loaded_module,
                 .session = session,
                 .supervisor = supervisor,
@@ -10174,6 +10180,7 @@ pub const Runspace = struct {
             if (self.supervisor) |*supervisor| supervisor.deinit();
             self.session.deinit();
             self.loaded_module.deinit();
+            self.allocator.free(self.executable_fabric_route_requirement_fingerprints);
             self.allocator.free(self.executable_fabric_route_kinds);
             self.allocator.free(self.executable_fabric_route_parent_world_port_ids);
             self.allocator.free(self.imports);
@@ -10181,8 +10188,12 @@ pub const Runspace = struct {
         }
 
         fn executableDispatchCoversWorldPort(self: @This(), world_port_id: u32) bool {
+            const request = self.pending_request orelse return false;
+            if (request.world_port_id != world_port_id) return false;
+            const contract = self.contractForLoadedRequest(request) orelse return false;
             for (self.executable_fabric_route_parent_world_port_ids, 0..) |parent_world_port_id, index| {
                 if (parent_world_port_id != world_port_id) continue;
+                if (self.executable_fabric_route_requirement_fingerprints[index] != contract.requirement_fingerprint) continue;
                 return switch (self.executable_fabric_route_kinds[index]) {
                     .adapter => false,
                     .target_export, .loaded_module_export, .admitted_run, .guest, .replay, .reject, .unsupported => true,
@@ -10324,6 +10335,7 @@ pub const Runspace = struct {
         }
 
         const RequestContract = struct {
+            requirement_fingerprint: u64,
             world_port_ref_fingerprint: ?u64,
             payload_value_table_id: ?u32,
             response_value_table_id: ?u32,
@@ -10336,6 +10348,7 @@ pub const Runspace = struct {
                 if (requirement.residual_site_index != request.residual_site_index) continue;
                 if (requirement.residual_site_fingerprint != request.residual_site_fingerprint) continue;
                 return .{
+                    .requirement_fingerprint = requirement.requirement_fingerprint,
                     .world_port_ref_fingerprint = requirement.world_port_ref_fingerprint,
                     .payload_value_table_id = requirement.payload_value_table_id,
                     .response_value_table_id = requirement.response_value_table_id,
@@ -14433,6 +14446,7 @@ pub const Runspace = struct {
             .fabric_plan_fingerprint = if (dispatch.fabric_plan_fingerprints.len == 1) dispatch.fabric_plan_fingerprints[0] else null,
             .route_parent_world_port_ids = dispatch.route_parent_world_port_ids,
             .route_kinds = dispatch.route_kinds,
+            .route_requirement_fingerprints = dispatch.route_requirement_fingerprints,
         };
     }
 
