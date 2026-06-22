@@ -10239,7 +10239,7 @@ pub const Runspace = struct {
         executable_fabric_route_parent_world_port_ids: []const u32 = &.{},
         executable_fabric_route_kinds: []const Fabric.RouteKind = &.{},
         executable_fabric_route_requirement_fingerprints: []const u64 = &.{},
-        loaded_module: Executable.Boundary.LoadedModule,
+        loaded_module: *Executable.Boundary.LoadedModule,
         session: Executable.Boundary.LoadedModule.Session,
         supervisor: ?Supervision.Supervisor = null,
         pending_request: ?Executable.Boundary.LoadedModule.Session.Request = null,
@@ -10251,7 +10251,9 @@ pub const Runspace = struct {
         fn init(allocator: std.mem.Allocator, module: Executable.Module, executable_image_fingerprint: u64, dispatch_coverage: LoadedExecutableDispatchCoverage, supervisor: ?Supervision.Supervisor) !@This() {
             if (dispatch_coverage.route_parent_world_port_ids.len != dispatch_coverage.route_kinds.len) return error.InvalidFrameEncoding;
             if (dispatch_coverage.route_parent_world_port_ids.len != dispatch_coverage.route_requirement_fingerprints.len) return error.InvalidFrameEncoding;
-            var loaded_module = try Executable.Boundary.ModuleImage.decode(allocator, module.canonical_bytes, .{
+            const loaded_module = try allocator.create(Executable.Boundary.LoadedModule);
+            errdefer allocator.destroy(loaded_module);
+            loaded_module.* = try Executable.Boundary.ModuleImage.decode(allocator, module.canonical_bytes, .{
                 .require_full_module = true,
                 .allow_reference_only = false,
             });
@@ -10262,7 +10264,7 @@ pub const Runspace = struct {
             };
             var session = try Executable.Boundary.LoadedModule.Session.startExecutable(
                 allocator,
-                &loaded_module,
+                loaded_module,
                 Executable.Boundary.LoadedExecutionProfile.portableV1(),
             );
             errdefer session.deinit();
@@ -10296,6 +10298,7 @@ pub const Runspace = struct {
             if (self.supervisor) |*supervisor| supervisor.deinit();
             self.session.deinit();
             self.loaded_module.deinit();
+            self.allocator.destroy(self.loaded_module);
             self.allocator.free(self.executable_fabric_route_requirement_fingerprints);
             self.allocator.free(self.executable_fabric_route_kinds);
             self.allocator.free(self.executable_fabric_route_parent_world_port_ids);
