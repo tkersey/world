@@ -900,6 +900,7 @@ pub fn Executable(comptime W: type) type {
                 var catalog_index: usize = 0;
                 for (modules) |module| {
                     if (module.role != .provider) continue;
+                    if (module.imports.len != 0) return error.ExecutableSealingBlocked;
                     catalog_entries[catalog_index] = catalogEntryForModule(root, module);
                     catalog_index += 1;
                 }

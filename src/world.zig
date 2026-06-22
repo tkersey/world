@@ -12616,7 +12616,7 @@ pub const Runspace = struct {
             if (module.module_id != module_id or module.role != .provider) continue;
             var loaded_options = options;
             loaded_options.executable_image_fingerprint = image.image_fingerprint;
-            loaded_options.executable_dispatch_coverage = executableLoadedDispatchCoverage(image.dispatch_image);
+            loaded_options.executable_dispatch_coverage = .{};
             return self.installLoadedModuleRun(module, loaded_options);
         }
         return error.RunspaceInstallDenied;
@@ -12626,6 +12626,7 @@ pub const Runspace = struct {
         if (self.config.require_admission) return error.RunspaceAdmissionRequired;
         if (!self.config.allow_direct_target_install) return error.RunspaceInstallDenied;
         if (self.config.require_supervision and options.permit == null) return error.SupervisionDenied;
+        if (options.executable_dispatch_coverage.route_parent_world_port_ids.len != 0 and options.fabric_plan == null) return error.RunspaceInstallDenied;
         try module.validateForRuntimeProfile(Executable.RuntimeProfile.universal_v1);
         const executable_image_fingerprint = options.executable_image_fingerprint orelse module.module_ref.boundary_module_fingerprint;
         const maybe_permit = options.permit;
@@ -12725,7 +12726,7 @@ pub const Runspace = struct {
         const loaded_options = LoadedInstallOptions{
             .parent_run_handle_fingerprint = pending.handle.handle_fingerprint,
             .executable_image_fingerprint = image.image_fingerprint,
-            .executable_dispatch_coverage = executableLoadedDispatchCoverage(image.dispatch_image),
+            .executable_dispatch_coverage = .{},
         };
         const provider_handle = try self.installLoadedModuleRun(provider_module, loaded_options);
         const invocation = try self.routePendingToProviderRun(mailbox_id, plan, provider_handle);

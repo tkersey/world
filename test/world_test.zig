@@ -40802,6 +40802,20 @@ test "Executable Builder deduplicates identical provider module bytes" {
     try std.testing.expectEqual(@as(usize, 1), builder.modules.items.len);
 }
 
+test "Executable Builder rejects provider modules with residual imports" {
+    const root_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(provider_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
+
+    try std.testing.expectError(error.ExecutableSealingBlocked, builder.prepare());
+}
+
 test "Loaded Runspace installs executable roots as ordinary slots" {
     const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(strict_bytes);
@@ -41301,7 +41315,7 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     const wrong_coverage_requirements = [_]u64{image.dispatch_image.route_requirement_fingerprints[0] +% 1};
     var wrong_coverage_runspace = world.Runspace.init(std.testing.allocator, .{});
     defer wrong_coverage_runspace.deinit();
-    _ = try wrong_coverage_runspace.installLoadedModuleRun(image.module_set.root().?, .{
+    try std.testing.expectError(error.RunspaceInstallDenied, wrong_coverage_runspace.installLoadedModuleRun(image.module_set.root().?, .{
         .executable_image_fingerprint = image.image_fingerprint,
         .executable_dispatch_coverage = .{
             .fabric_plan_fingerprint = image.dispatch_image.fabric_plan_fingerprints[0],
@@ -41309,12 +41323,9 @@ test "Loaded Fabric installs provider from sealed executable image route" {
             .route_kinds = image.dispatch_image.route_kinds,
             .route_requirement_fingerprints = &wrong_coverage_requirements,
         },
-    });
-    _ = try wrong_coverage_runspace.tick();
-    const wrong_coverage_pending = try wrong_coverage_runspace.mailbox.get(0);
-    const wrong_coverage_request = wrong_coverage_pending.request_frame orelse return error.ExpectedPendingRequestFrame;
-    try std.testing.expectError(error.MissingValueImage, wrong_coverage_runspace.respond(0, testRunspaceResponseFrame(wrong_coverage_request)));
+    }));
 
+    const plan = prepared.plan.link_plan.fabric_plans[0];
     const mismatched_module_ref_permit = world.Supervision.issue(fixtures.Ports.Target, PortsEnv, .{
         .mode = .fresh,
         .policy = world.SupervisionPolicy.strict_fresh,
@@ -41326,9 +41337,9 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     defer supervised_loaded_runspace.deinit();
     try std.testing.expectError(error.SupervisionDenied, supervised_loaded_runspace.installExecutableRoot(image, .{
         .permit = mismatched_module_ref_permit,
+        .fabric_plan = plan,
     }));
 
-    const plan = prepared.plan.link_plan.fabric_plans[0];
     try std.testing.expectEqual(world.Fabric.RouteKind.loaded_module_export, plan.routes[0].kind);
     const sealed_route = plan.routes[0];
     try std.testing.expectEqual(@as(usize, 1), image.dispatch_image.route_requirement_fingerprints.len);
@@ -41391,7 +41402,10 @@ test "Loaded Fabric installs provider from sealed executable image route" {
         .metadata = image.metadata,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, forged_requirement_image.validate(world.Executable.RuntimeProfile.universal_v1));
-    const parent_ref = image.module_set.root().?.target_ref;
+    var no_plan_runspace = world.Runspace.init(std.testing.allocator, .{});
+    defer no_plan_runspace.deinit();
+    try std.testing.expectError(error.RunspaceInstallDenied, no_plan_runspace.installExecutableRoot(image, .{}));
+
     const unsealed_route = world.Fabric.Route.init(.{
         .route_id = sealed_route.route_id +% 1,
         .kind = sealed_route.kind,
@@ -41427,16 +41441,14 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     });
     var unsealed_runspace = world.Runspace.init(std.testing.allocator, .{});
     defer unsealed_runspace.deinit();
-    _ = try unsealed_runspace.installExecutableRoot(image, .{});
+    _ = try unsealed_runspace.installExecutableRoot(image, .{ .fabric_plan = unsealed_plan });
     _ = try unsealed_runspace.tick();
-    try unsealed_runspace.installFabricPlan(parent_ref, unsealed_plan);
     try std.testing.expectError(error.SupervisionDenied, unsealed_runspace.routePendingToLoadedProvider(0, image, unsealed_plan));
 
     var runspace = world.Runspace.init(std.testing.allocator, .{});
     defer runspace.deinit();
-    const root_handle = try runspace.installExecutableRoot(image, .{});
+    const root_handle = try runspace.installExecutableRoot(image, .{ .fabric_plan = plan });
     _ = try runspace.tick();
-    try runspace.installFabricPlan(parent_ref, plan);
     try std.testing.expectEqual(world.Runspace.RunStatus.parked_on_port, (try runspace.getSlotSummary(root_handle)).status);
     try std.testing.expectEqual(@as(usize, 1), runspace.report().pending_port_count);
     const pending_before_route = try runspace.mailbox.get(0);
@@ -41474,9 +41486,8 @@ test "Loaded Fabric installs provider from sealed executable image route" {
     });
     var supervised_runspace = world.Runspace.init(std.testing.allocator, .{ .require_supervision = true });
     defer supervised_runspace.deinit();
-    _ = try supervised_runspace.installExecutableRoot(image, .{ .permit = supervised_permit });
+    _ = try supervised_runspace.installExecutableRoot(image, .{ .permit = supervised_permit, .fabric_plan = plan });
     _ = try supervised_runspace.tick();
-    try supervised_runspace.installFabricPlan(parent_ref, plan);
     const supervised_slot_count_before = supervised_runspace.slots.items.len;
     const supervised_event_count_before = supervised_runspace.events.items.len;
     const supervised_mailbox_count_before = supervised_runspace.mailbox.pending.items.len;
