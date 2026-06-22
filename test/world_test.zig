@@ -40166,6 +40166,37 @@ test "Executable Builder seals full module image with explicit residual external
     var mode_prepared = try mode_builder.prepare();
     defer mode_prepared.deinit();
     try std.testing.expect(!mode_prepared.plan.compatibility_report.compatible);
+    const return_now_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = root_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = root_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = root_import.world_surface_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = root_import.residual_site_index,
+        .residual_site_fingerprint = root_import.residual_site_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .mode = root_import.mode,
+        .allowed_response_kinds = .return_now_only,
+        .replay_key_recipe_fingerprint = root_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = root_import.suggested_symbolic_name,
+        .required = root_import.required,
+        .tags = root_import.tags,
+        .metadata = root_import.metadata,
+    });
+    try std.testing.expect(!binding.matchesRequirement(root_module, return_now_import));
+    var return_now_builder = world.Executable.Builder.init(std.testing.allocator, .{});
+    defer return_now_builder.deinit();
+    try return_now_builder.addRootModule(root_bytes);
+    std.testing.allocator.free(return_now_builder.modules.items[0].imports);
+    return_now_builder.modules.items[0].imports = try std.testing.allocator.dupe(world.ImportRequirement, &.{return_now_import});
+    try return_now_builder.addExternalBinding(binding);
+    var return_now_prepared = try return_now_builder.prepare();
+    defer return_now_prepared.deinit();
+    try std.testing.expect(!return_now_prepared.plan.compatibility_report.compatible);
     const missing_payload_ref_binding = world.Executable.ExternalBinding.init(.{
         .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
         .world_port_id = root_import.world_port_id,

@@ -12608,6 +12608,7 @@ pub const Runspace = struct {
         loaded_options.executable_image_fingerprint = image.image_fingerprint;
         loaded_options.executable_dispatch_coverage = executableLoadedDispatchCoverage(image.dispatch_image);
         if (loaded_options.executable_dispatch_coverage.route_parent_world_port_ids.len != 0) {
+            if (image.dispatch_image.fabric_plan_fingerprints.len != 1) return error.RunspaceInstallDenied;
             const plan = loaded_options.fabric_plan orelse return error.RunspaceInstallDenied;
             if (!executableDispatchBindsFabricPlan(image.dispatch_image, plan.plan_fingerprint)) return error.RunspaceInstallDenied;
         }

@@ -302,6 +302,7 @@ pub fn Executable(comptime W: type) type {
                 if (self.descriptor.target_ref_fingerprint) |target_ref_fingerprint| {
                     if (target_ref_fingerprint != module.target_ref.target_ref_fingerprint) return false;
                 }
+                if (requirement.allowed_response_kinds == .return_now_only) return false;
                 if (!bindingRefSatisfiesRequirement(self.descriptor.source_effect_shape_ref_fingerprint, requirement.source_effect_shape_ref_fingerprint)) return false;
                 if (!descriptorSupportsRequirementMode(self.descriptor.supported_modes, requirement.mode)) return false;
                 if (!optionalU32Matches(self.descriptor.payload_value_table_id, requirement.payload_value_table_id)) return false;
