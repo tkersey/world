@@ -14087,6 +14087,63 @@ test "link accepts distinct root imports sharing one world port" {
     try std.testing.expectEqual(@as(usize, 2), linked.plan.external_environment_requirements.len);
 }
 
+test "link keeps duplicate-port imports out of fabric plans" {
+    const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const first_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);
+    const second_import = world.ImportRequirement.init(.{
+        .target_ref_fingerprint = first_import.target_ref_fingerprint,
+        .world_value_table_fingerprint = first_import.world_value_table_fingerprint,
+        .world_surface_fingerprint = first_import.world_surface_fingerprint,
+        .world_port_id = first_import.world_port_id,
+        .world_port_ref_fingerprint = first_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = first_import.source_effect_shape_ref_fingerprint,
+        .residual_site_index = first_import.residual_site_index + 1,
+        .residual_site_fingerprint = first_import.residual_site_fingerprint +% 1,
+        .payload_value_table_id = first_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = first_import.payload_value_ref_fingerprint,
+        .response_value_table_id = first_import.response_value_table_id,
+        .response_value_ref_fingerprint = first_import.response_value_ref_fingerprint,
+        .mode = first_import.mode,
+        .allowed_response_kinds = first_import.allowed_response_kinds,
+        .replay_key_recipe_fingerprint = first_import.replay_key_recipe_fingerprint,
+        .suggested_symbolic_name = "approval-again",
+    });
+    const root_import_set = world.ImportSet.init(.{
+        .target_ref_fingerprint = root_ref.target_ref_fingerprint,
+        .required_count = 2,
+        .world_port_count = 1,
+        .value_table_entry_count = world.ImportSet.fromTarget(fixtures.Ports.Target).value_table_entry_count,
+        .surface_profile_fingerprint = root_ref.surface_profile_fingerprint,
+    });
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    const provider_export = world.Linker.ExportDescriptor.init(.{
+        .target_ref = provider_ref,
+        .result_ref = .{ .value_table_id = first_import.response_value_table_id, .value_ref_fingerprint = first_import.response_value_ref_fingerprint },
+        .label = "strict",
+    });
+    const entries = [_]world.Linker.Catalog.Entry{
+        world.Linker.Catalog.Entry.generatedTarget(.{
+            .target_ref = provider_ref,
+            .export_descriptor = provider_export,
+            .import_set = world.ImportSet.fromTarget(fixtures.Strict.Target),
+            .label = "strict",
+        }),
+    };
+    var linked = try world.Linker.link(std.testing.allocator, .{
+        .root_target_ref = root_ref,
+        .root_import_set = root_import_set,
+        .root_imports = &.{ first_import, second_import },
+        .catalog = world.Linker.Catalog.init(&entries),
+        .policy = .strict_closed,
+    });
+    defer linked.deinit();
+
+    try std.testing.expect(!linked.plan.accepted());
+    try std.testing.expect(!linked.graph.hasBlocker(.RootImportSetMismatch));
+    try std.testing.expect(linked.graph.hasBlocker(.FabricInvariantViolation));
+    try std.testing.expectEqual(@as(usize, 0), linked.plan.fabric_plans.len);
+}
+
 test "link fabric coverage accepts sparse required world port ids" {
     const root_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const base_import = world.ImportRequirement.fromTargetPort(fixtures.Ports.Target, 0);

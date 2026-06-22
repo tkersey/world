@@ -1639,6 +1639,12 @@ pub fn Linker(comptime W: type) type {
                     try blockers.append(allocator, .ProviderRunLimitExceeded);
                     continue;
                 }
+                if (fabricRouteExistsForPort(routes.items, requirement.world_port_id)) {
+                    try unresolved.append(allocator, requirement);
+                    _ = try appendGraphEvidenceNode(allocator, &nodes, .unresolved, input.root_target_ref.target_ref_fingerprint, requirement, "duplicate-port-fabric");
+                    try blockers.append(allocator, .FabricInvariantViolation);
+                    continue;
+                }
                 if (policy.max_link_depth < 1) {
                     try unresolved.append(allocator, requirement);
                     _ = try appendGraphEvidenceNode(allocator, &nodes, .unresolved, input.root_target_ref.target_ref_fingerprint, requirement, "depth");
@@ -2074,6 +2080,13 @@ pub fn Linker(comptime W: type) type {
             if (entry.module_ref) |module_ref| return module_ref.module_ref_fingerprint;
             if (entry.provider_kind == .admitted_run) return null;
             return provider_ref.boundary_module_fingerprint;
+        }
+
+        fn fabricRouteExistsForPort(routes: []const W.Fabric.Route, world_port_id: u32) bool {
+            for (routes) |route| {
+                if (route.parent_world_port_id == world_port_id) return true;
+            }
+            return false;
         }
 
         fn linkerCanSynthesizeRouteKind(policy: Policy, entry: Catalog.Entry) bool {
