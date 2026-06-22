@@ -576,6 +576,7 @@ pub fn Executable(comptime W: type) type {
                 var runtime_profile = self.runtime_profile;
                 runtime_profile.metadata = try allocator.dupe(u8, self.runtime_profile.metadata);
                 errdefer allocator.free(runtime_profile.metadata);
+                const image_metadata = "world-executable-image-v1";
                 var image = Image.init(.{
                     .required_runtime_profile = runtime_profile,
                     .module_set = ModuleSet.init(modules, self.module_set.root_module_id),
@@ -586,7 +587,7 @@ pub fn Executable(comptime W: type) type {
                     .external_bindings = bindings,
                     .memory_plan = self.memory_plan,
                     .compatibility_report = self.compatibility_report,
-                    .metadata = "world-executable-image-v1",
+                    .metadata = image_metadata,
                 });
                 try validateImageFitsRuntimeProfile(image);
                 const cert = Certificate.init(.{
@@ -932,7 +933,14 @@ pub fn Executable(comptime W: type) type {
                     residual_count,
                     dispatch_routes.route_ids.len,
                 );
-                const memory_fits_profile = memory_plan.decoded_module_bytes <= self.options.runtime_profile.max_image_bytes;
+                const memory_fits_profile = imageOwnedByteFootprint(.{
+                    .required_runtime_profile = self.options.runtime_profile,
+                    .modules = modules,
+                    .dispatch_image = dispatch,
+                    .external_bindings = external_bindings,
+                    .compatibility_report_summary = "executable image prepared",
+                    .image_metadata = "world-executable-image-v1",
+                }) <= self.options.runtime_profile.max_image_bytes;
                 const report = CompatibilityReport.init(.{
                     .compatible = compatible and memory_fits_profile,
                     .boundary_module_compatible = true,
@@ -1355,15 +1363,56 @@ pub fn Executable(comptime W: type) type {
                     return error.InvalidFrameEncoding;
                 }
             }
-            var total_module_bytes: usize = 0;
             for (image.module_set.modules) |module| {
                 if (module.canonical_bytes.len > profile.max_module_bytes) return error.InvalidFrameEncoding;
-                total_module_bytes = total_module_bytes +| module.canonical_bytes.len;
             }
-            if (total_module_bytes > profile.max_image_bytes) return error.InvalidFrameEncoding;
+            if (imageOwnedByteFootprint(.{
+                .required_runtime_profile = image.required_runtime_profile,
+                .modules = image.module_set.modules,
+                .dispatch_image = image.dispatch_image,
+                .external_bindings = image.external_bindings,
+                .compatibility_report_summary = image.compatibility_report.summary,
+                .image_metadata = image.metadata,
+            }) > profile.max_image_bytes) return error.InvalidFrameEncoding;
             if (image.memory_plan.max_command_bytes > profile.max_command_bytes) return error.InvalidFrameEncoding;
             if (image.memory_plan.max_output_bytes > profile.max_output_bytes) return error.InvalidFrameEncoding;
             if (image.memory_plan.max_linear_memory_pages > profile.max_linear_memory_pages) return error.InvalidFrameEncoding;
+        }
+
+        fn imageOwnedByteFootprint(args: struct {
+            required_runtime_profile: RuntimeProfile,
+            modules: []const Module,
+            dispatch_image: DispatchImage,
+            external_bindings: []const ExternalBinding,
+            compatibility_report_summary: []const u8 = "",
+            image_metadata: []const u8 = "",
+        }) usize {
+            var total: usize = 0;
+            total = total +| args.required_runtime_profile.metadata.len;
+            total = total +| args.compatibility_report_summary.len;
+            total = total +| args.image_metadata.len;
+            for (args.modules) |module| {
+                total = total +| module.canonical_bytes.len;
+                total = total +| (module.imports.len *| @sizeOf(W.ImportRequirement));
+            }
+            total = total +| (args.dispatch_image.module_fingerprints.len *| @sizeOf(u64));
+            total = total +| (args.dispatch_image.external_binding_fingerprints.len *| @sizeOf(u64));
+            total = total +| (args.dispatch_image.residual_request_order.len *| @sizeOf(u64));
+            total = total +| (args.dispatch_image.fabric_plan_fingerprints.len *| @sizeOf(u64));
+            total = total +| (args.dispatch_image.route_ids.len *| @sizeOf(u64));
+            total = total +| (args.dispatch_image.route_kinds.len *| @sizeOf(W.Fabric.RouteKind));
+            total = total +| (args.dispatch_image.route_parent_world_port_ids.len *| @sizeOf(u32));
+            total = total +| (args.dispatch_image.route_requirement_fingerprints.len *| @sizeOf(u64));
+            total = total +| (args.dispatch_image.route_provider_module_fingerprints.len *| @sizeOf(u64));
+            for (args.external_bindings) |binding| {
+                total = total +| binding.actuator_ref.label.len;
+                total = total +| binding.actuator_ref.metadata.len;
+                total = total +| binding.descriptor.label.len;
+                total = total +| binding.descriptor.metadata.len;
+                total = total +| binding.label.len;
+                total = total +| binding.metadata.len;
+            }
+            return total;
         }
 
         fn dispatchCoversRequirement(dispatch: DispatchImage, requirement: W.ImportRequirement) bool {

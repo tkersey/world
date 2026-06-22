@@ -40623,6 +40623,64 @@ test "Executable Builder blocks sealing images that exceed runtime profile image
     try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
 }
 
+test "Executable Builder charges external binding metadata against image bytes" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const oversized_label = try std.testing.allocator.alloc(u8, root_bytes.len);
+    defer std.testing.allocator.free(oversized_label);
+    @memset(oversized_label, 'x');
+
+    const profile = world.Executable.RuntimeProfile.init(.{
+        .max_module_bytes = root_bytes.len + 1,
+        .max_image_bytes = root_bytes.len + oversized_label.len - 1,
+    });
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{
+        .runtime_profile = profile,
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    const root_module = builder.modules.items[0];
+    const root_import = root_module.imports[0];
+    const actuator_ref = world.Actuation.Ref.init(.{
+        .kind = .fixture,
+        .class = .deterministic_fixture,
+        .label = "seed.fixture",
+        .supported_modes = .all,
+        .supported_response_statuses = .all,
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+    });
+    const descriptor = world.Actuation.Descriptor.init(.{
+        .actuator_ref = actuator_ref,
+        .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+        .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .response_value_table_id = root_import.response_value_table_id,
+        .label = "seed.fixture",
+    });
+    try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+        .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+        .world_port_id = root_import.world_port_id,
+        .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+        .payload_value_table_id = root_import.payload_value_table_id,
+        .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+        .response_value_table_id = root_import.response_value_table_id,
+        .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+        .actuator_ref = actuator_ref,
+        .descriptor = descriptor,
+        .label = oversized_label,
+    }));
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    try std.testing.expect(!prepared.plan.compatibility_report.compatible);
+    try std.testing.expect(!prepared.plan.compatibility_report.memory_compatible);
+    try std.testing.expect(prepared.plan.memory_plan.decoded_module_bytes <= profile.max_image_bytes);
+    try std.testing.expectError(error.ExecutableSealingBlocked, prepared.seal());
+}
+
 test "Loaded Admission admits executable image without local target registry" {
     const strict_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
     defer std.testing.allocator.free(strict_bytes);
