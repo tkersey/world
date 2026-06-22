@@ -87,6 +87,45 @@ fn applianceSyntheticHostRequest(args: anytype) world.Appliance.HostRequest {
     return world.Appliance.HostRequest.init(applianceSyntheticHostRequestArgs(@TypeOf(args), args));
 }
 
+fn applianceManifestRef(fingerprints: []const u64, index: usize) ?u64 {
+    if (fingerprints.len == 0) return null;
+    const fingerprint = fingerprints[index];
+    return if (fingerprint == 0) null else fingerprint;
+}
+
+fn applianceManifestHostRequest(manifest: world.Appliance.Manifest, args: anytype) world.Appliance.HostRequest {
+    const base = applianceSyntheticHostRequestArgs(@TypeOf(args), args);
+    const binding_index: usize = base.request_ordinal;
+    const binding_fingerprint = manifest.actuation_binding_fingerprints[binding_index];
+    return world.Appliance.HostRequest.init(.{
+        .turn_sequence_number = base.turn_sequence_number,
+        .request_ordinal = base.request_ordinal,
+        .run_handle_fingerprint = base.run_handle_fingerprint,
+        .pending_port_fingerprint = base.pending_port_fingerprint,
+        .world_port_id = @as(u32, @intCast(manifest.actuation_world_port_ids[binding_index])),
+        .target_ref_fingerprint = manifest.root_target_ref_fingerprint,
+        .world_surface_fingerprint = manifest.root_world_surface_fingerprint,
+        .actuator_ref_fingerprint = manifest.actuation_actuator_ref_fingerprints[binding_index],
+        .actuation_class = manifest.actuation_classes[binding_index],
+        .allowed_response_statuses = manifest.actuation_allowed_response_statuses[binding_index],
+        .intent_fingerprint = base.intent_fingerprint,
+        .envelope_fingerprint = base.envelope_fingerprint,
+        .decision_fingerprint = base.decision_fingerprint,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[binding_index],
+        .idempotency_key_fingerprint = base.idempotency_key_fingerprint,
+        .supervision_ref_fingerprint = if (manifest.supervision_policy_fingerprint == 0) null else manifest.supervision_policy_fingerprint,
+        .metadata = base.metadata,
+        .frame_request_bytes = base.frame_request_bytes,
+        .payload_value_image_bytes = base.payload_value_image_bytes,
+        .payload_value_ref_fingerprint = applianceManifestRef(manifest.actuation_payload_value_ref_fingerprints, binding_index),
+        .payload_schema_ref_fingerprint = binding_fingerprint,
+        .expected_response_value_ref_fingerprint = applianceManifestRef(manifest.actuation_response_value_ref_fingerprints, binding_index),
+        .expected_response_schema_ref_fingerprint = binding_fingerprint,
+        .prepared_actuation_evidence_bytes = base.prepared_actuation_evidence_bytes,
+        .idempotency_key_bytes = base.idempotency_key_bytes,
+    });
+}
+
 fn applianceHostReplyFor(request: world.Appliance.HostRequest, response_fingerprint: u64) world.Appliance.HostReply {
     const HostReplyResponse = struct {
         bytes: []const u8,
@@ -4126,6 +4165,63 @@ test "appliance Core restore command applies checkpoint and replies without side
         .previous_turn_receipt_fingerprint = prior_receipt,
         .outstanding_host_requests = &.{outstanding},
     });
+    const forged_outstanding = world.Appliance.HostRequest.init(.{
+        .turn_sequence_number = outstanding.turn_sequence_number,
+        .request_ordinal = outstanding.request_ordinal,
+        .run_handle_fingerprint = outstanding.run_handle_fingerprint,
+        .pending_port_fingerprint = outstanding.pending_port_fingerprint,
+        .world_port_id = outstanding.world_port_id,
+        .target_ref_fingerprint = outstanding.target_ref_fingerprint,
+        .world_surface_fingerprint = outstanding.world_surface_fingerprint,
+        .actuator_ref_fingerprint = outstanding.actuator_ref_fingerprint,
+        .actuation_class = outstanding.actuation_class,
+        .allowed_response_statuses = outstanding.allowed_response_statuses,
+        .intent_fingerprint = outstanding.intent_fingerprint,
+        .envelope_fingerprint = outstanding.envelope_fingerprint,
+        .decision_fingerprint = outstanding.decision_fingerprint,
+        .expected_response_descriptor_fingerprint = outstanding.expected_response_descriptor_fingerprint,
+        .idempotency_key_fingerprint = outstanding.idempotency_key_fingerprint,
+        .supervision_ref_fingerprint = outstanding.supervision_ref_fingerprint,
+        .metadata = outstanding.metadata,
+        .frame_request_bytes = outstanding.frame_request_bytes,
+        .payload_value_image_bytes = outstanding.payload_value_image_bytes,
+        .payload_value_ref_fingerprint = outstanding.payload_value_ref_fingerprint,
+        .payload_schema_ref_fingerprint = outstanding.payload_schema_ref_fingerprint,
+        .expected_response_value_ref_fingerprint = null,
+        .expected_response_schema_ref_fingerprint = null,
+        .prepared_actuation_evidence_bytes = outstanding.prepared_actuation_evidence_bytes,
+        .idempotency_key_bytes = outstanding.idempotency_key_bytes,
+    });
+    const forged_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = checkpoint.turn_sequence_number,
+        .capsule_fingerprint = checkpoint.capsule_fingerprint,
+        .pending_archive_append_batch_fingerprint = checkpoint.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = checkpoint.pending_archive_resulting_cursor,
+        .previous_turn_receipt_fingerprint = checkpoint.previous_turn_receipt_fingerprint,
+        .outstanding_host_requests = &.{forged_outstanding},
+    });
+    const forged_reply = applianceHostReplyFor(forged_outstanding, 0xD513);
+    const forged_restore = world.Appliance.Command.init(.{
+        .kind = .restore,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .host_replies = &.{forged_reply},
+        .restore_checkpoint = forged_checkpoint,
+    });
+    const forged_restore_bytes = try forged_restore.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_restore_bytes);
+    var forged_restored = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer forged_restored.reset();
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_restored.submit(forged_restore_bytes));
+    try std.testing.expectEqual(world.Appliance.CoreState.uninitialized, forged_restored.state);
+
     const reply = applianceHostReplyFor(outstanding, 0xD511);
     const restore = world.Appliance.Command.init(.{
         .kind = .restore,
@@ -5338,12 +5434,11 @@ test "appliance Core restore rolls back allocation failure" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer core.reset();
-    const old_request = applianceSyntheticHostRequest(.{
+    const old_request = applianceManifestHostRequest(manifest, .{
         .turn_sequence_number = 6,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD6A0,
         .pending_port_fingerprint = 0xD6A1,
-        .world_port_id = 0,
         .intent_fingerprint = 0xD6A2,
         .envelope_fingerprint = 0xD6A3,
         .decision_fingerprint = 0xD6A4,
@@ -5356,12 +5451,11 @@ test "appliance Core restore rolls back allocation failure" {
     core.previous_turn_receipt_fingerprint = 0xD6A6;
     core.outstanding_host_request = old_request;
 
-    const new_request = applianceSyntheticHostRequest(.{
+    const new_request = applianceManifestHostRequest(manifest, .{
         .turn_sequence_number = 7,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xD6B0,
         .pending_port_fingerprint = 0xD6B1,
-        .world_port_id = 0,
         .intent_fingerprint = 0xD6B2,
         .envelope_fingerprint = 0xD6B3,
         .decision_fingerprint = 0xD6B4,
@@ -7301,7 +7395,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
     });
     const manifest = PortsAppliance.manifest();
     const capacity = world.Appliance.Capacity.tiny_one_port;
-    const checkpoint_request = applianceSyntheticHostRequest(.{
+    const checkpoint_request = applianceManifestHostRequest(manifest, .{
         .turn_sequence_number = 1,
         .request_ordinal = 0,
         .run_handle_fingerprint = 0xC0F0_0010,
@@ -7309,7 +7403,7 @@ test "appliance conformance report binds native resident reconstructed replay ar
         .intent_fingerprint = 0xC0F0_0012,
         .envelope_fingerprint = 0xC0F0_0013,
         .decision_fingerprint = 0xC0F0_0014,
-        .expected_response_descriptor_fingerprint = 0xC0F0_0015,
+        .expected_response_descriptor_fingerprint = manifest.actuation_descriptor_fingerprints[0],
         .idempotency_key_fingerprint = 0xC0F0_0016,
     });
     const checkpoint = world.Appliance.Checkpoint.init(.{

@@ -2848,6 +2848,33 @@ pub fn Appliance(comptime World: type) type {
 
             fn validateRestoreCheckpointManifestBindings(self: @This(), checkpoint: Checkpoint) !void {
                 if (checkpoint.core_state == .waiting_host and self.manifest_value.actuation_binding_fingerprints.len == 0) return error.InvalidFrameEncoding;
+                for (checkpoint.outstanding_host_requests) |request| try self.validateRestoredHostRequestManifestBinding(request);
+            }
+
+            fn validateRestoredHostRequestManifestBinding(self: @This(), request: HostRequest) !void {
+                const binding_index: usize = request.request_ordinal;
+                if (binding_index >= self.manifest_value.actuation_binding_fingerprints.len) return error.InvalidFrameEncoding;
+
+                const binding_fingerprint = self.manifest_value.actuation_binding_fingerprints[binding_index];
+                const expected_payload_value_ref = optionalManifestRef(self.manifest_value.actuation_payload_value_ref_fingerprints, binding_index);
+                const expected_response_value_ref = optionalManifestRef(self.manifest_value.actuation_response_value_ref_fingerprints, binding_index);
+                const expected_supervision_ref = if (self.manifest_value.supervision_policy_fingerprint == 0)
+                    null
+                else
+                    self.manifest_value.supervision_policy_fingerprint;
+
+                if (request.world_port_id != @as(u32, @intCast(self.manifest_value.actuation_world_port_ids[binding_index]))) return error.InvalidFrameEncoding;
+                if (request.target_ref_fingerprint != self.manifest_value.root_target_ref_fingerprint) return error.InvalidFrameEncoding;
+                if (request.world_surface_fingerprint != self.manifest_value.root_world_surface_fingerprint) return error.InvalidFrameEncoding;
+                if (request.actuator_ref_fingerprint != self.manifest_value.actuation_actuator_ref_fingerprints[binding_index]) return error.InvalidFrameEncoding;
+                if (request.actuation_class != self.manifest_value.actuation_classes[binding_index]) return error.InvalidFrameEncoding;
+                if (!std.meta.eql(request.allowed_response_statuses, self.manifest_value.actuation_allowed_response_statuses[binding_index])) return error.InvalidFrameEncoding;
+                if (request.expected_response_descriptor_fingerprint != self.manifest_value.actuation_descriptor_fingerprints[binding_index]) return error.InvalidFrameEncoding;
+                if (request.supervision_ref_fingerprint != expected_supervision_ref) return error.InvalidFrameEncoding;
+                if (request.payload_value_ref_fingerprint != expected_payload_value_ref) return error.InvalidFrameEncoding;
+                if (request.payload_schema_ref_fingerprint != binding_fingerprint) return error.InvalidFrameEncoding;
+                if (request.expected_response_value_ref_fingerprint != expected_response_value_ref) return error.InvalidFrameEncoding;
+                if (request.expected_response_schema_ref_fingerprint != binding_fingerprint) return error.InvalidFrameEncoding;
             }
 
             fn applyCheckpointState(self: *@This(), checkpoint: Checkpoint) !void {
@@ -6644,6 +6671,12 @@ pub fn Appliance(comptime World: type) type {
                 if (left.request_fingerprint != right.request_fingerprint) return false;
             }
             return true;
+        }
+
+        fn optionalManifestRef(fingerprints: []const u64, index: usize) ?u64 {
+            if (fingerprints.len == 0) return null;
+            const fingerprint = fingerprints[index];
+            return if (fingerprint == 0) null else fingerprint;
         }
 
         fn freeHostRequest(allocator: std.mem.Allocator, request: *HostRequest) void {
