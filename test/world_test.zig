@@ -40655,6 +40655,15 @@ test "Loaded Admission admits executable image without local target registry" {
     try std.testing.expectEqual(image.dispatch_image.dispatch_fingerprint, admitted.loaded_run.?.dispatch_fingerprint);
     try std.testing.expectEqual(image.module_set.root().?.module_ref.module_ref_fingerprint, admitted.loaded_run.?.root_module_ref_fingerprint);
 
+    var invalid_supported_profile = world.Executable.RuntimeProfile.universal_v1;
+    invalid_supported_profile.profile_fingerprint = 0;
+    const invalid_supported_profile_result = receiver.admitExecutableImage(image, .{
+        .runtime_profile = invalid_supported_profile,
+    });
+    try std.testing.expect(!invalid_supported_profile_result.report.accepted);
+    try std.testing.expect(invalid_supported_profile_result.loaded_run == null);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.ModuleInvalid, invalid_supported_profile_result.report.blockers[0]);
+
     const module_limit_receiver = world.Admission.Admitter.init(.{
         .registry = empty_registry,
         .policy = world.Admission.AdmissionPolicy.init(.{

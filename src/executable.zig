@@ -706,6 +706,7 @@ pub fn Executable(comptime W: type) type {
             }) !CompatibilityReport {
                 if (self.format_version != W.world_executable_image_format_version) return error.InvalidFrameEncoding;
                 if (self.fingerprint_version != W.world_executable_image_fingerprint_version) return error.InvalidFrameEncoding;
+                try supported_profile.validate();
                 try self.required_runtime_profile.validate();
                 if (!self.required_runtime_profile.supports_loaded_execution) return error.InvalidFrameEncoding;
                 try self.module_set.validate();
