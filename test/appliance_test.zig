@@ -7689,16 +7689,16 @@ test "appliance Native exposes ABI-shaped operations over canonical Core output"
     const previous_len = native.outputLen();
     try std.testing.expectEqual(world.Appliance.Abi.Status.invalid_command, native.submitCommand("bad"));
     try std.testing.expectEqual(previous_len, native.outputLen());
-    try std.testing.expectEqualStrings("invalid_command", native.lastErrorBytes());
+    try std.testing.expectEqualStrings("submit.decode:InvalidFrameEncoding", native.lastErrorBytes());
     var last_error_too_small: [1]u8 = .{0xAA};
     try std.testing.expectEqual(native.lastErrorLen(), native.readLastError(&last_error_too_small));
     try std.testing.expectEqual(@as(u8, 0xAA), last_error_too_small[0]);
-    var last_error_bytes: [32]u8 = undefined;
+    var last_error_bytes: [64]u8 = undefined;
     const last_error_len = native.readLastError(&last_error_bytes);
-    try std.testing.expectEqualStrings("invalid_command", last_error_bytes[0..last_error_len]);
+    try std.testing.expectEqualStrings("submit.decode:InvalidFrameEncoding", last_error_bytes[0..last_error_len]);
 
     try std.testing.expectEqual(world.Appliance.Abi.Status.stale_turn, native.submitCommand(command_bytes));
-    try std.testing.expectEqualStrings("stale_turn", native.lastErrorBytes());
+    try std.testing.expectEqualStrings("submit.sequence:StaleTurn", native.lastErrorBytes());
 
     try std.testing.expectEqual(world.Appliance.Abi.Status.ok, native.reset());
     try std.testing.expectEqual(@as(usize, 0), native.outputLen());

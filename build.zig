@@ -166,6 +166,7 @@ pub fn build(b: *std.Build) void {
         .target = wasm_target,
         .optimize = .ReleaseSmall,
     });
+    universal_appliance_wasm_module.addImport("world", wasm_world);
     const universal_appliance_wasm = b.addExecutable(.{
         .name = "world_universal_appliance",
         .root_module = universal_appliance_wasm_module,
@@ -173,33 +174,59 @@ pub fn build(b: *std.Build) void {
     universal_appliance_wasm.entry = .disabled;
     universal_appliance_wasm.rdynamic = true;
     universal_appliance_wasm.export_memory = true;
-    universal_appliance_wasm.initial_memory = 4_194_304;
-    universal_appliance_wasm.max_memory = 4_194_304;
+    universal_appliance_wasm.stack_size = 16_777_216;
+    universal_appliance_wasm.initial_memory = 134_217_728;
+    universal_appliance_wasm.max_memory = 134_217_728;
     const install_universal_appliance_wasm = b.addInstallArtifact(universal_appliance_wasm, .{});
     const world_universal_appliance_wasm_step = b.step("world-universal-appliance-wasm", "Build World universal Appliance ABI conformance wasm artifact.");
     world_universal_appliance_wasm_step.dependOn(&install_universal_appliance_wasm.step);
     const check_world_universal_appliance_wasm_step = b.step("check-world-universal-appliance-wasm", "Build and inspect World universal Appliance ABI conformance wasm artifact.");
     check_world_universal_appliance_wasm_step.dependOn(&universal_appliance_wasm.step);
+    const universal_fixture_mod = b.createModule(.{
+        .root_source_file = b.path("examples/world_universal_appliance_fixtures.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    universal_fixture_mod.addImport("world", world);
+    universal_fixture_mod.addImport("world_fixtures", fixtures);
+    const universal_fixture_gen = b.addExecutable(.{ .name = "world-universal-appliance-fixtures", .root_module = universal_fixture_mod });
+    const run_universal_fixture_gen = b.addRunArtifact(universal_fixture_gen);
+    const universal_image_a = run_universal_fixture_gen.addOutputFileArg("world-universal-image-a.bin");
+    const universal_command_a = run_universal_fixture_gen.addOutputFileArg("world-universal-command-a.bin");
+    const universal_image_b = run_universal_fixture_gen.addOutputFileArg("world-universal-image-b.bin");
+    const universal_command_b = run_universal_fixture_gen.addOutputFileArg("world-universal-command-b.bin");
     const run_universal_appliance_node = b.addSystemCommand(&.{
         "node",
-        "scripts/world_universal_appliance_node_conformance.js",
+        "scripts/world_universal_appliance_conformance.mjs",
     });
+    run_universal_appliance_node.addArtifactArg(universal_fixture_gen);
     run_universal_appliance_node.addFileArg(universal_appliance_wasm.getEmittedBin());
+    run_universal_appliance_node.addFileArg(universal_image_a);
+    run_universal_appliance_node.addFileArg(universal_command_a);
+    run_universal_appliance_node.addFileArg(universal_image_b);
+    run_universal_appliance_node.addFileArg(universal_command_b);
     const check_world_universal_appliance_node_step = b.step("check-world-universal-appliance-node", "Run World universal Appliance ABI conformance wasm in Node WebAssembly.");
     check_world_universal_appliance_node_step.dependOn(&run_universal_appliance_node.step);
+    check_world_universal_appliance_wasm_step.dependOn(&run_universal_fixture_gen.step);
     const universal_appliance_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test/universal_appliance_test.zig"),
-            .target = b.graph.host,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "universal_appliance_impl", .module = b.createModule(.{
-                    .root_source_file = b.path("examples/world_universal_appliance_wasm.zig"),
-                    .target = b.graph.host,
-                    .optimize = optimize,
-                }) },
-            },
-        }),
+        .root_module = blk: {
+            const universal_impl = b.createModule(.{
+                .root_source_file = b.path("examples/world_universal_appliance_wasm.zig"),
+                .target = b.graph.host,
+                .optimize = optimize,
+            });
+            universal_impl.addImport("world", world);
+            break :blk b.createModule(.{
+                .root_source_file = b.path("test/universal_appliance_test.zig"),
+                .target = b.graph.host,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "universal_appliance_impl", .module = universal_impl },
+                    .{ .name = "world", .module = world },
+                    .{ .name = "world_fixtures", .module = fixtures },
+                },
+            });
+        },
         .filters = test_args.filters,
     });
     check_world_universal_appliance_wasm_step.dependOn(&addRunArtifactWithArgs(b, universal_appliance_tests, test_args.passthrough).step);
@@ -426,6 +453,14 @@ pub fn build(b: *std.Build) void {
     check_world_universal_step.dependOn(check_world_universal_appliance_wasm_step);
     check_world_universal_step.dependOn(check_world_universal_appliance_node_step);
 
+    const check_world_runtime_closure_step = b.step("check-world-runtime-closure", "Run World Runtime Closure proof lanes.");
+    check_world_runtime_closure_step.dependOn(check_world_loaded_runspace_step);
+    check_world_runtime_closure_step.dependOn(check_world_loaded_admission_step);
+    check_world_runtime_closure_step.dependOn(check_world_loaded_fabric_step);
+    check_world_runtime_closure_step.dependOn(check_world_loaded_capsule_step);
+    check_world_runtime_closure_step.dependOn(check_world_seed_migration_step);
+    check_world_runtime_closure_step.dependOn(check_world_universal_step);
+
     const forged_descriptor_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/forged_descriptor_metadata.zig"),
@@ -563,6 +598,12 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(check_world_universal_step);
     const check_world_seed_step = b.step("check-world-seed", "Run World Seed killer examples and conformance checks.");
     const check_world_seed_malformed_step = b.step("check-world-seed-malformed", "Run World Seed malformed/rejection checks.");
+    const check_world_v0_step = b.step("check-world-v0", "Run the World v0 Runtime Closure completion gate.");
+    check_world_v0_step.dependOn(check_world_executable_image_step);
+    check_world_v0_step.dependOn(check_world_runtime_closure_step);
+    check_world_v0_step.dependOn(check_world_seed_step);
+    check_world_v0_step.dependOn(check_world_seed_malformed_step);
+    check_world_v0_step.dependOn(check_world_wasm_step);
     check_step.dependOn(check_world_seed_step);
     check_step.dependOn(check_world_seed_malformed_step);
 
@@ -613,7 +654,7 @@ pub fn build(b: *std.Build) void {
             \\images=2
             \\images_loaded=true
             \\manifests_present=true
-            \\commands_completed=true
+            \\turn_outputs_ready=true
             \\
             ,
         },

@@ -100,7 +100,7 @@ pub fn Executable(comptime W: type) type {
 
             pub fn validateForRuntimeProfile(self: @This(), profile: RuntimeProfile) !void {
                 try self.validate();
-                try validateModuleCanonicalBytes(self, profile);
+                try validateModuleCanonicalBytes(std.heap.page_allocator, self, profile);
             }
         };
 
@@ -655,6 +655,19 @@ pub fn Executable(comptime W: type) type {
             metadata: []const u8 = "",
             owns_memory: bool = false,
 
+            pub const DecodeLimits = struct {
+                max_image_bytes: usize = RuntimeProfile.universal_v1.max_image_bytes,
+                max_modules: usize = RuntimeProfile.universal_v1.max_modules,
+                max_imports_per_module: usize = 4096,
+                max_external_bindings: usize = RuntimeProfile.universal_v1.max_external_bindings,
+                max_dispatch_entries: usize = 8192,
+                max_metadata_bytes: usize = 1024 * 1024,
+                max_module_bytes: usize = RuntimeProfile.universal_v1.max_module_bytes,
+            };
+            pub const ValidateOptions = struct {
+                require_certificate: bool = true,
+            };
+
             pub fn init(args: struct {
                 required_runtime_profile: RuntimeProfile,
                 module_set: ModuleSet,
@@ -711,8 +724,42 @@ pub fn Executable(comptime W: type) type {
                 self.* = undefined;
             }
 
+            pub fn encodedLen(self: @This()) usize {
+                return imageEncodedLen(self) catch std.math.maxInt(usize);
+            }
+
+            pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]u8 {
+                return encodeExecutableImage(allocator, self);
+            }
+
+            pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: DecodeLimits) !@This() {
+                return decodeExecutableImage(allocator, bytes, limits);
+            }
+
+            pub fn validationReport(bytes: []const u8, supported_profile: RuntimeProfile, limits: DecodeLimits) !CompatibilityReport {
+                var image = try Image.decode(std.heap.page_allocator, bytes, limits);
+                defer image.deinit(std.heap.page_allocator);
+                return image.validate(supported_profile);
+            }
+
+            pub fn cloneOwned(self: @This(), allocator: std.mem.Allocator) !@This() {
+                const bytes = try self.encode(allocator);
+                defer allocator.free(bytes);
+                return Image.decode(allocator, bytes, .{
+                    .max_image_bytes = bytes.len,
+                    .max_modules = @max(self.module_set.modules.len, RuntimeProfile.universal_v1.max_modules),
+                    .max_external_bindings = @max(self.external_bindings.len, RuntimeProfile.universal_v1.max_external_bindings),
+                    .max_dispatch_entries = @max(dispatchEntryCount(self.dispatch_image), 8192),
+                    .max_module_bytes = @max(maxCanonicalModuleBytes(self.module_set.modules), RuntimeProfile.universal_v1.max_module_bytes),
+                });
+            }
+
             pub fn validate(self: @This(), supported_profile: RuntimeProfile) !CompatibilityReport {
                 return self.validateWithOptions(supported_profile, .{});
+            }
+
+            pub fn validateWithAllocator(self: @This(), allocator: std.mem.Allocator, supported_profile: RuntimeProfile) !CompatibilityReport {
+                return self.validateWithOptionsWithAllocator(allocator, supported_profile, .{});
             }
 
             pub fn ownedByteFootprint(self: @This()) usize {
@@ -726,16 +773,21 @@ pub fn Executable(comptime W: type) type {
                 });
             }
 
-            pub fn validateWithOptions(self: @This(), supported_profile: RuntimeProfile, options: struct {
-                require_certificate: bool = true,
-            }) !CompatibilityReport {
+            pub fn validateWithOptions(self: @This(), supported_profile: RuntimeProfile, options: ValidateOptions) !CompatibilityReport {
+                return self.validateWithOptionsWithAllocator(std.heap.page_allocator, supported_profile, options);
+            }
+
+            fn validateWithOptionsWithAllocator(self: @This(), allocator: std.mem.Allocator, supported_profile: RuntimeProfile, options: ValidateOptions) !CompatibilityReport {
                 if (self.format_version != W.world_executable_image_format_version) return error.InvalidFrameEncoding;
                 if (self.fingerprint_version != W.world_executable_image_fingerprint_version) return error.InvalidFrameEncoding;
                 try supported_profile.validate();
                 try self.required_runtime_profile.validate();
                 if (!self.required_runtime_profile.supports_loaded_execution) return error.InvalidFrameEncoding;
                 try self.module_set.validate();
-                for (self.module_set.modules) |module| try module.validateForRuntimeProfile(self.required_runtime_profile);
+                for (self.module_set.modules) |module| {
+                    try module.validate();
+                    try validateModuleCanonicalBytes(allocator, module, self.required_runtime_profile);
+                }
                 if (self.dispatch_image.format_version != W.world_executable_dispatch_image_format_version) return error.InvalidFrameEncoding;
                 if (self.dispatch_image.fingerprint_version != W.world_executable_dispatch_image_fingerprint_version) return error.InvalidFrameEncoding;
                 if (self.dispatch_image.dispatch_fingerprint != fingerprintDispatchImage(self.dispatch_image)) return error.InvalidFrameEncoding;
@@ -745,7 +797,7 @@ pub fn Executable(comptime W: type) type {
                 {
                     return error.InvalidFrameEncoding;
                 }
-                try validateDispatchTablesForImage(self);
+                try validateDispatchTablesForImage(allocator, self);
                 if (self.memory_plan.memory_plan_fingerprint != fingerprintMemoryPlan(self.memory_plan)) return error.InvalidFrameEncoding;
                 const expected_memory_plan = MemoryPlan.deriveForDispatch(
                     self.required_runtime_profile,
@@ -1127,12 +1179,14 @@ pub fn Executable(comptime W: type) type {
             return counts;
         }
 
-        fn validateModuleCanonicalBytes(module: Module, profile: RuntimeProfile) !void {
-            const decoded = moduleFromBytes(std.heap.page_allocator, module.canonical_bytes, module.role, module.module_id, profile) catch
-                return error.InvalidFrameEncoding;
+        fn validateModuleCanonicalBytes(allocator: std.mem.Allocator, module: Module, profile: RuntimeProfile) !void {
+            const decoded = moduleFromBytes(allocator, module.canonical_bytes, module.role, module.module_id, profile) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
             defer {
-                std.heap.page_allocator.free(decoded.imports);
-                std.heap.page_allocator.free(decoded.canonical_bytes);
+                allocator.free(decoded.imports);
+                allocator.free(decoded.canonical_bytes);
             }
             if (decoded.module_ref.module_ref_fingerprint != module.module_ref.module_ref_fingerprint) return error.InvalidFrameEncoding;
             if (decoded.module_ref.boundary_module_fingerprint != module.module_ref.boundary_module_fingerprint) return error.InvalidFrameEncoding;
@@ -1257,7 +1311,7 @@ pub fn Executable(comptime W: type) type {
                 (!subset.cancelled or superset.cancelled);
         }
 
-        fn validateDispatchTablesForImage(image: Image) !void {
+        fn validateDispatchTablesForImage(allocator: std.mem.Allocator, image: Image) !void {
             if (image.dispatch_image.root_module_id != image.module_set.root_module_id) return error.InvalidFrameEncoding;
             if (image.dispatch_image.module_fingerprints.len != image.module_set.modules.len) return error.InvalidFrameEncoding;
             const route_count = image.dispatch_image.route_ids.len;
@@ -1290,11 +1344,10 @@ pub fn Executable(comptime W: type) type {
             for (image.dispatch_image.external_binding_fingerprints) |fingerprint| {
                 if (countExternalBindingFingerprint(image.external_bindings, fingerprint) != countU64(image.dispatch_image.external_binding_fingerprints, fingerprint)) return error.InvalidFrameEncoding;
             }
-            try validateDispatchRouteRowsAgainstLinkWitness(image);
+            try validateDispatchRouteRowsAgainstLinkWitness(allocator, image);
         }
 
-        fn validateDispatchRouteRowsAgainstLinkWitness(image: Image) !void {
-            const allocator = std.heap.page_allocator;
+        fn validateDispatchRouteRowsAgainstLinkWitness(allocator: std.mem.Allocator, image: Image) !void {
             const root = image.module_set.root() orelse return error.InvalidFrameEncoding;
             const catalog_entries = try allocator.alloc(W.Linker.Catalog.Entry, image.module_set.modules.len);
             defer allocator.free(catalog_entries);
@@ -1545,17 +1598,50 @@ pub fn Executable(comptime W: type) type {
             errdefer freeModuleSlice(allocator, cloned[0..initialized]);
             for (modules, 0..) |module, index| {
                 var current = module;
+                current.module_ref.label = null;
+                current.module_ref.metadata = "";
+                current.target_ref.target_label = null;
+                current.target_ref.metadata = "";
                 current.imports = &.{};
+                current.export_summary.target_label = null;
+                current.export_summary.loaded_execution_unsupported_reason = null;
                 current.canonical_bytes = &.{};
                 errdefer {
-                    allocator.free(current.imports);
+                    freeModuleOwnedFields(allocator, current);
                     allocator.free(current.canonical_bytes);
                 }
-                current.imports = try allocator.dupe(W.ImportRequirement, module.imports);
+                current.module_ref.label = try cloneOptionalBytes(allocator, module.module_ref.label);
+                current.module_ref.metadata = try allocator.dupe(u8, module.module_ref.metadata);
+                current.target_ref.target_label = try cloneOptionalBytes(allocator, module.target_ref.target_label);
+                current.target_ref.metadata = try allocator.dupe(u8, module.target_ref.metadata);
+                const cloned_imports = try allocator.alloc(W.ImportRequirement, module.imports.len);
+                current.imports = cloned_imports;
+                for (cloned_imports) |*cloned_requirement| {
+                    cloned_requirement.suggested_symbolic_name = null;
+                    cloned_requirement.tags = &.{};
+                    cloned_requirement.metadata = "";
+                }
+                for (cloned_imports, module.imports) |*cloned_requirement, requirement| {
+                    cloned_requirement.* = requirement;
+                    cloned_requirement.suggested_symbolic_name = null;
+                    cloned_requirement.tags = &.{};
+                    cloned_requirement.metadata = "";
+                    cloned_requirement.suggested_symbolic_name = try cloneOptionalBytes(allocator, requirement.suggested_symbolic_name);
+                    cloned_requirement.tags = try cloneStringSlice(allocator, requirement.tags);
+                    cloned_requirement.metadata = try allocator.dupe(u8, requirement.metadata);
+                }
+                current.export_summary.target_label = try cloneOptionalBytes(allocator, module.export_summary.target_label);
+                current.export_summary.loaded_execution_unsupported_reason = try cloneOptionalBytes(allocator, module.export_summary.loaded_execution_unsupported_reason);
                 current.canonical_bytes = try allocator.dupe(u8, module.canonical_bytes);
                 cloned[index] = current;
                 initialized += 1;
+                current.module_ref.label = null;
+                current.module_ref.metadata = "";
+                current.target_ref.target_label = null;
+                current.target_ref.metadata = "";
                 current.imports = &.{};
+                current.export_summary.target_label = null;
+                current.export_summary.loaded_execution_unsupported_reason = null;
                 current.canonical_bytes = &.{};
             }
             return cloned;
@@ -1563,10 +1649,25 @@ pub fn Executable(comptime W: type) type {
 
         fn freeModuleSlice(allocator: std.mem.Allocator, modules: []Module) void {
             for (modules) |module| {
+                freeModuleOwnedFields(allocator, module);
                 allocator.free(module.imports);
                 allocator.free(module.canonical_bytes);
             }
             allocator.free(modules);
+        }
+
+        fn freeModuleOwnedFields(allocator: std.mem.Allocator, module: Module) void {
+            if (module.module_ref.label) |label| allocator.free(@constCast(label));
+            allocator.free(@constCast(module.module_ref.metadata));
+            if (module.target_ref.target_label) |label| allocator.free(@constCast(label));
+            allocator.free(@constCast(module.target_ref.metadata));
+            for (module.imports) |requirement| {
+                if (requirement.suggested_symbolic_name) |symbol| allocator.free(@constCast(symbol));
+                freeStringSlice(allocator, requirement.tags);
+                allocator.free(@constCast(requirement.metadata));
+            }
+            if (module.export_summary.target_label) |label| allocator.free(@constCast(label));
+            if (module.export_summary.loaded_execution_unsupported_reason) |reason| allocator.free(@constCast(reason));
         }
 
         fn bindingFingerprintSlice(allocator: std.mem.Allocator, bindings: []const ExternalBinding) ![]u64 {
@@ -1715,6 +1816,1317 @@ pub fn Executable(comptime W: type) type {
         fn freeExternalBindingSlice(allocator: std.mem.Allocator, bindings: []const ExternalBinding) void {
             for (bindings) |binding| freeExternalBinding(allocator, binding);
             allocator.free(bindings);
+        }
+
+        const executable_image_magic = "world.Executable.Image.v2\x00";
+        const executable_image_total_len_offset = executable_image_magic.len + @sizeOf(u32) + @sizeOf(u32) + @sizeOf(u32);
+
+        fn encodeExecutableImage(allocator: std.mem.Allocator, image: Image) ![]u8 {
+            _ = try image.validate(image.required_runtime_profile);
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeRawBytes(&out, allocator, executable_image_magic);
+            try writeU32(&out, allocator, image.format_version);
+            try writeU32(&out, allocator, image.fingerprint_version);
+            try writeU32(&out, allocator, W.world_executable_image_codec_version);
+            try writeU64(&out, allocator, 0);
+            try writeU64(&out, allocator, image.image_fingerprint);
+            try writeRuntimeProfile(&out, allocator, image.required_runtime_profile);
+            try writeModuleSet(&out, allocator, image.module_set);
+            try writeU64(&out, allocator, image.link_plan_fingerprint);
+            try writeU64(&out, allocator, image.linker_certificate_fingerprint);
+            try writeU64(&out, allocator, image.assembly_fingerprint);
+            try writeDispatchImage(&out, allocator, image.dispatch_image);
+            try writeExternalBindingSlice(&out, allocator, image.external_bindings);
+            try writeMemoryPlan(&out, allocator, image.memory_plan);
+            try writeCompatibilityReport(&out, allocator, image.compatibility_report);
+            try writeCertificate(&out, allocator, image.certificate);
+            try writeBytes(&out, allocator, image.metadata);
+            patchU64(out.items, executable_image_total_len_offset, out.items.len);
+            return out.toOwnedSlice(allocator);
+        }
+
+        fn decodeExecutableImage(allocator: std.mem.Allocator, bytes: []const u8, limits: Image.DecodeLimits) !Image {
+            if (bytes.len == 0 or bytes.len > limits.max_image_bytes) return error.InvalidFrameEncoding;
+            var cursor: usize = 0;
+            try readFixedBytes(bytes, &cursor, executable_image_magic);
+            const format_version = try readU32(bytes, &cursor);
+            if (format_version != W.world_executable_image_format_version) return error.InvalidFrameEncoding;
+            const fingerprint_version = try readU32(bytes, &cursor);
+            if (fingerprint_version != W.world_executable_image_fingerprint_version) return error.InvalidFrameEncoding;
+            const codec_version = try readU32(bytes, &cursor);
+            if (codec_version != W.world_executable_image_codec_version) return error.InvalidFrameEncoding;
+            const total_len = try readCount(bytes, &cursor, limits.max_image_bytes);
+            if (total_len != bytes.len) return error.InvalidFrameEncoding;
+            const image_fingerprint = try readU64(bytes, &cursor);
+            const required_runtime_profile = try readRuntimeProfile(allocator, bytes, &cursor, limits);
+            errdefer allocator.free(@constCast(required_runtime_profile.metadata));
+            const module_set = try readModuleSet(allocator, bytes, &cursor, limits);
+            errdefer freeModuleSlice(allocator, @constCast(module_set.modules.ptr)[0..module_set.modules.len]);
+            const link_plan_fingerprint = try readU64(bytes, &cursor);
+            const linker_certificate_fingerprint = try readU64(bytes, &cursor);
+            const assembly_fingerprint = try readU64(bytes, &cursor);
+            const dispatch_image = try readDispatchImage(allocator, bytes, &cursor, limits);
+            errdefer freeDispatchImage(allocator, dispatch_image);
+            const external_bindings = try readExternalBindingSlice(allocator, bytes, &cursor, limits);
+            errdefer freeExternalBindingSlice(allocator, external_bindings);
+            const memory_plan = try readMemoryPlan(bytes, &cursor);
+            const compatibility_report = try readCompatibilityReport(allocator, bytes, &cursor, limits);
+            errdefer allocator.free(@constCast(compatibility_report.summary));
+            const certificate = try readCertificate(bytes, &cursor);
+            const metadata = try readBytesOwned(allocator, bytes, &cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(metadata);
+            if (cursor != bytes.len) return error.InvalidFrameEncoding;
+            var image = Image{
+                .format_version = format_version,
+                .fingerprint_version = fingerprint_version,
+                .image_fingerprint = image_fingerprint,
+                .required_runtime_profile = required_runtime_profile,
+                .module_set = module_set,
+                .link_plan_fingerprint = link_plan_fingerprint,
+                .linker_certificate_fingerprint = linker_certificate_fingerprint,
+                .assembly_fingerprint = assembly_fingerprint,
+                .dispatch_image = dispatch_image,
+                .external_bindings = external_bindings,
+                .memory_plan = memory_plan,
+                .compatibility_report = compatibility_report,
+                .certificate = certificate,
+                .metadata = metadata,
+                .owns_memory = true,
+            };
+            _ = try image.validateWithAllocator(allocator, image.required_runtime_profile);
+            return image;
+        }
+
+        fn imageEncodedLen(image: Image) !usize {
+            var total: usize = executable_image_magic.len + 4 + 4 + 4 + 8 + 8;
+            try addRuntimeProfileLen(&total, image.required_runtime_profile);
+            try addModuleSetLen(&total, image.module_set);
+            try addChecked(&total, 8 + 8 + 8);
+            try addDispatchImageLen(&total, image.dispatch_image);
+            try addExternalBindingSliceLen(&total, image.external_bindings);
+            try addMemoryPlanLen(&total);
+            try addCompatibilityReportLen(&total, image.compatibility_report);
+            try addCertificateLen(&total);
+            try addBytesLen(&total, image.metadata);
+            return total;
+        }
+
+        fn dispatchEntryCount(image: DispatchImage) usize {
+            return image.module_fingerprints.len +| image.external_binding_fingerprints.len +| image.residual_request_order.len +|
+                image.fabric_plan_fingerprints.len +| image.route_ids.len +| image.route_kinds.len +|
+                image.route_parent_world_port_ids.len +| image.route_requirement_fingerprints.len +| image.route_provider_module_fingerprints.len;
+        }
+
+        fn maxCanonicalModuleBytes(modules: []const Module) usize {
+            var max_bytes: usize = 0;
+            for (modules) |module| max_bytes = @max(max_bytes, module.canonical_bytes.len);
+            return max_bytes;
+        }
+
+        fn addChecked(total: *usize, amount: usize) !void {
+            total.* = std.math.add(usize, total.*, amount) catch return error.InvalidFrameEncoding;
+        }
+
+        fn addBytesLen(total: *usize, bytes: []const u8) !void {
+            try addChecked(total, 8);
+            try addChecked(total, bytes.len);
+        }
+
+        fn addOptionalBytesLen(total: *usize, value: ?[]const u8) !void {
+            try addChecked(total, 1);
+            if (value) |bytes| try addBytesLen(total, bytes);
+        }
+
+        fn addStringSliceLen(total: *usize, values: []const []const u8) !void {
+            try addChecked(total, 8);
+            for (values) |value| try addBytesLen(total, value);
+        }
+
+        fn addRuntimeProfileLen(total: *usize, profile: RuntimeProfile) !void {
+            try addChecked(total, 8 + 1 + 1 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8);
+            try addBytesLen(total, profile.metadata);
+        }
+
+        fn addModuleSetLen(total: *usize, module_set: ModuleSet) !void {
+            try addChecked(total, 8 + 8 + 8);
+            for (module_set.modules) |module| {
+                try addChecked(total, 8 + 1);
+                try addModuleRefLen(total, module.module_ref);
+                try addTargetRefLen(total, module.target_ref);
+                try addImportSetLen(total);
+                try addChecked(total, 8);
+                for (module.imports) |requirement| try addImportRequirementLen(total, requirement);
+                try addExportSummaryLen(total, module.export_summary);
+                try addChecked(total, 8 + 8 + 8);
+                try addBytesLen(total, module.canonical_bytes);
+            }
+        }
+
+        fn addModuleRefLen(total: *usize, ref: W.Admission.ModuleRef) !void {
+            try addChecked(total, 4 + 4 + 8 + 8 + 1 + 8 + 8 + 8);
+            try addOptionalU64Len(total, ref.residual_program_plan_hash);
+            try addOptionalU64Len(total, ref.import_surface_fingerprint);
+            try addOptionalU64Len(total, ref.export_surface_fingerprint);
+            try addOptionalU64Len(total, ref.module_graph_fingerprint);
+            try addChecked(total, 1 + 8);
+            try addOptionalU64Len(total, ref.world_port_table_fingerprint);
+            try addOptionalU64Len(total, ref.world_value_table_fingerprint);
+            try addOptionalU64Len(total, ref.world_dispatch_table_fingerprint);
+            try addOptionalBytesLen(total, ref.label);
+            try addBytesLen(total, ref.metadata);
+        }
+
+        fn addTargetRefLen(total: *usize, ref: W.TargetRef) !void {
+            try addChecked(total, 4 + 4 + 8);
+            try addOptionalBytesLen(total, ref.target_label);
+            try addChecked(total, 8);
+            try addOptionalU64Len(total, ref.world_surface_replay_scope_fingerprint);
+            try addChecked(total, 8);
+            try addOptionalU64Len(total, ref.residual_program_plan_hash);
+            try addChecked(total, 1);
+            try addOptionalU64Len(total, ref.world_port_table_fingerprint);
+            try addOptionalU64Len(total, ref.world_value_table_fingerprint);
+            try addOptionalU64Len(total, ref.world_dispatch_table_fingerprint);
+            try addOptionalU64Len(total, ref.surface_profile_fingerprint);
+            try addOptionalU64Len(total, ref.boundary_module_fingerprint);
+            try addBytesLen(total, ref.metadata);
+        }
+
+        fn addOptionalU64Len(total: *usize, value: ?u64) !void {
+            try addChecked(total, 1 + if (value != null) @as(usize, 8) else 0);
+        }
+
+        fn addOptionalU32Len(total: *usize, value: ?u32) !void {
+            try addChecked(total, 1 + if (value != null) @as(usize, 4) else 0);
+        }
+
+        fn addImportSetLen(total: *usize) !void {
+            try addChecked(total, 8 + 8 + 8 + 8 + 8 + 8);
+            try addOptionalU64Len(total, null);
+        }
+
+        fn addImportRequirementLen(total: *usize, requirement: W.ImportRequirement) !void {
+            try addChecked(total, 8);
+            try addOptionalU64Len(total, requirement.target_ref_fingerprint);
+            try addOptionalU64Len(total, requirement.world_value_table_fingerprint);
+            try addChecked(total, 8 + 4);
+            try addOptionalU64Len(total, requirement.world_port_ref_fingerprint);
+            try addOptionalU64Len(total, requirement.source_effect_shape_ref_fingerprint);
+            try addChecked(total, 8 + 8);
+            try addOptionalU32Len(total, requirement.payload_value_table_id);
+            try addOptionalU64Len(total, requirement.payload_value_ref_fingerprint);
+            try addOptionalU32Len(total, requirement.response_value_table_id);
+            try addOptionalU64Len(total, requirement.response_value_ref_fingerprint);
+            try addChecked(total, 1 + 1);
+            try addOptionalU64Len(total, requirement.replay_key_recipe_fingerprint);
+            try addOptionalBytesLen(total, requirement.suggested_symbolic_name);
+            try addChecked(total, 1);
+            try addStringSliceLen(total, requirement.tags);
+            try addBytesLen(total, requirement.metadata);
+        }
+
+        fn addExportSummaryLen(total: *usize, summary: W.Admission.ExportSummary) !void {
+            try addChecked(total, 8 + 8);
+            try addOptionalU64Len(total, summary.module_ref_fingerprint);
+            try addChecked(total, 1);
+            try addOptionalU64Len(total, summary.result_value_ref_fingerprint);
+            try addChecked(total, 8 + 1);
+            try addOptionalBytesLen(total, summary.target_label);
+            try addChecked(total, 1);
+            try addOptionalBytesLen(total, summary.loaded_execution_unsupported_reason);
+        }
+
+        fn addDispatchImageLen(total: *usize, image: DispatchImage) !void {
+            try addChecked(total, 4 + 4 + 8 + 4);
+            try addU64SliceLen(total, image.module_fingerprints);
+            try addU64SliceLen(total, image.external_binding_fingerprints);
+            try addU64SliceLen(total, image.residual_request_order);
+            try addU64SliceLen(total, image.fabric_plan_fingerprints);
+            try addU64SliceLen(total, image.route_ids);
+            try addChecked(total, 8 + image.route_kinds.len);
+            try addU32SliceLen(total, image.route_parent_world_port_ids);
+            try addU64SliceLen(total, image.route_requirement_fingerprints);
+            try addU64SliceLen(total, image.route_provider_module_fingerprints);
+            try addPolicyLen(total);
+            try addChecked(total, 8 + 8 + 8);
+        }
+
+        fn addExternalBindingSliceLen(total: *usize, bindings: []const ExternalBinding) !void {
+            try addChecked(total, 8);
+            for (bindings) |binding| try addExternalBindingLen(total, binding);
+        }
+
+        fn addExternalBindingLen(total: *usize, binding: ExternalBinding) !void {
+            try addChecked(total, 8 + 8 + 4);
+            try addOptionalU64Len(total, binding.world_port_ref_fingerprint);
+            try addOptionalU32Len(total, binding.payload_value_table_id);
+            try addOptionalU64Len(total, binding.payload_value_ref_fingerprint);
+            try addOptionalU32Len(total, binding.response_value_table_id);
+            try addOptionalU64Len(total, binding.response_value_ref_fingerprint);
+            try addActuatorRefLen(total, binding.actuator_ref);
+            try addDescriptorLen(total, binding.descriptor);
+            try addChecked(total, 6 + 1);
+            try addValuePolicyLen(total, binding.value_policy);
+            try addOptionalU64Len(total, binding.supervision_rule_ref);
+            try addOptionalU64Len(total, binding.authority_descriptor_ref);
+            try addBytesLen(total, binding.label);
+            try addBytesLen(total, binding.metadata);
+        }
+
+        fn addActuatorRefLen(total: *usize, ref: W.Actuation.Ref) !void {
+            try addChecked(total, 4 + 4 + 8 + 1 + 1);
+            try addBytesLen(total, ref.label);
+            try addChecked(total, 4 + 6 + 8);
+            try addOptionalU64Len(total, ref.authority_descriptor_fingerprint);
+            try addOptionalU64Len(total, ref.protocol_descriptor_fingerprint);
+            try addBytesLen(total, ref.metadata);
+        }
+
+        fn addDescriptorLen(total: *usize, descriptor: W.Actuation.Descriptor) !void {
+            try addChecked(total, 4 + 4 + 8 + 8 + 8);
+            try addOptionalU64Len(total, descriptor.target_ref_fingerprint);
+            try addOptionalU32Len(total, descriptor.world_port_id);
+            try addOptionalU64Len(total, descriptor.world_port_ref_fingerprint);
+            try addOptionalU64Len(total, descriptor.source_effect_shape_ref_fingerprint);
+            try addOptionalU32Len(total, descriptor.payload_value_ref);
+            try addOptionalU32Len(total, descriptor.payload_value_table_id);
+            try addOptionalU32Len(total, descriptor.response_value_ref);
+            try addOptionalU32Len(total, descriptor.response_value_table_id);
+            try addChecked(total, 4 + 6 + 1 + 1);
+            try addValuePolicyLen(total, descriptor.value_policy);
+            try addBytesLen(total, descriptor.label);
+            try addBytesLen(total, descriptor.metadata);
+        }
+
+        fn addValuePolicyLen(total: *usize, policy: W.ValuePolicy) !void {
+            _ = policy;
+            try addChecked(total, 1 + 1 + 1 + 1);
+            try addOptionalU64Len(total, null);
+        }
+
+        fn addPolicyLen(total: *usize) !void {
+            try addChecked(total, 14 + 8 + 8 + 8 + 8 + 3);
+        }
+
+        fn addMemoryPlanLen(total: *usize) !void {
+            try addChecked(total, 8 * 14);
+        }
+
+        fn addCompatibilityReportLen(total: *usize, report: CompatibilityReport) !void {
+            try addChecked(total, 8 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 8 + 8 + 8);
+            try addBytesLen(total, report.summary);
+        }
+
+        fn addCertificateLen(total: *usize) !void {
+            try addChecked(total, 4 + 4 + 8 * 13);
+        }
+
+        fn addU64SliceLen(total: *usize, values: []const u64) !void {
+            try addChecked(total, 8 + values.len * @sizeOf(u64));
+        }
+
+        fn addU32SliceLen(total: *usize, values: []const u32) !void {
+            try addChecked(total, 8 + values.len * @sizeOf(u32));
+        }
+
+        fn writeRuntimeProfile(out: *std.ArrayList(u8), allocator: std.mem.Allocator, profile: RuntimeProfile) !void {
+            try writeU64(out, allocator, profile.profile_fingerprint);
+            try writeBool(out, allocator, profile.supports_loaded_execution);
+            try writeBool(out, allocator, profile.supports_internal_providers);
+            try writeBool(out, allocator, profile.supports_external_actuation);
+            try writeCount(out, allocator, profile.max_modules);
+            try writeCount(out, allocator, profile.max_provider_depth);
+            try writeCount(out, allocator, profile.max_external_bindings);
+            try writeCount(out, allocator, profile.max_module_bytes);
+            try writeCount(out, allocator, profile.max_image_bytes);
+            try writeCount(out, allocator, profile.max_command_bytes);
+            try writeCount(out, allocator, profile.max_output_bytes);
+            try writeCount(out, allocator, profile.max_linear_memory_pages);
+            try writeBytes(out, allocator, profile.metadata);
+        }
+
+        fn readRuntimeProfile(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !RuntimeProfile {
+            return .{
+                .profile_fingerprint = try readU64(bytes, cursor),
+                .supports_loaded_execution = try readBool(bytes, cursor),
+                .supports_internal_providers = try readBool(bytes, cursor),
+                .supports_external_actuation = try readBool(bytes, cursor),
+                .max_modules = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_provider_depth = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_external_bindings = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_module_bytes = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_image_bytes = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_command_bytes = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_output_bytes = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_linear_memory_pages = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+            };
+        }
+
+        fn writeModuleSet(out: *std.ArrayList(u8), allocator: std.mem.Allocator, set: ModuleSet) !void {
+            try writeCount(out, allocator, set.modules.len);
+            try writeU32(out, allocator, set.root_module_id);
+            try writeU64(out, allocator, set.module_set_fingerprint);
+            for (set.modules) |module| try writeModule(out, allocator, module);
+        }
+
+        fn readModuleSet(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !ModuleSet {
+            const count = try readCount(bytes, cursor, limits.max_modules);
+            const root_module_id = try readU32(bytes, cursor);
+            const module_set_fingerprint = try readU64(bytes, cursor);
+            const modules = try allocator.alloc(Module, count);
+            var initialized: usize = 0;
+            errdefer freeModuleSlice(allocator, modules[0..initialized]);
+            while (initialized < count) : (initialized += 1) {
+                modules[initialized] = try readModule(allocator, bytes, cursor, limits);
+            }
+            return .{
+                .modules = modules,
+                .root_module_id = root_module_id,
+                .module_set_fingerprint = module_set_fingerprint,
+            };
+        }
+
+        fn writeModule(out: *std.ArrayList(u8), allocator: std.mem.Allocator, module: Module) !void {
+            try writeU32(out, allocator, module.module_id);
+            try writeU8(out, allocator, @intFromEnum(module.role));
+            try writeModuleRef(out, allocator, module.module_ref);
+            try writeTargetRef(out, allocator, module.target_ref);
+            try writeImportSet(out, allocator, module.import_set);
+            try writeCount(out, allocator, module.imports.len);
+            for (module.imports) |requirement| try writeImportRequirement(out, allocator, requirement);
+            try writeExportSummary(out, allocator, module.export_summary);
+            try writeU64(out, allocator, module.executable_plan_fingerprint);
+            try writeU64(out, allocator, module.validation_report_fingerprint);
+            try writeU64(out, allocator, module.compatibility_report_fingerprint);
+            try writeBytes(out, allocator, module.canonical_bytes);
+        }
+
+        fn readModule(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !Module {
+            const module_id = try readU32(bytes, cursor);
+            const role = try readEnum(Module.Role, bytes, cursor);
+            const module_ref = try readModuleRef(allocator, bytes, cursor, limits);
+            errdefer freeModuleRefFields(allocator, module_ref);
+            const target_ref = try readTargetRef(allocator, bytes, cursor, limits);
+            errdefer freeTargetRefFields(allocator, target_ref);
+            const import_set = try readImportSet(bytes, cursor);
+            const import_count = try readCount(bytes, cursor, limits.max_imports_per_module);
+            const imports = try allocator.alloc(W.ImportRequirement, import_count);
+            var initialized: usize = 0;
+            errdefer {
+                for (imports[0..initialized]) |requirement| freeImportRequirementFields(allocator, requirement);
+                allocator.free(imports);
+            }
+            while (initialized < import_count) : (initialized += 1) {
+                imports[initialized] = try readImportRequirement(allocator, bytes, cursor, limits);
+            }
+            const export_summary = try readExportSummary(allocator, bytes, cursor, limits);
+            errdefer freeExportSummaryFields(allocator, export_summary);
+            const executable_plan_fingerprint = try readU64(bytes, cursor);
+            const validation_report_fingerprint = try readU64(bytes, cursor);
+            const compatibility_report_fingerprint = try readU64(bytes, cursor);
+            const canonical_bytes = try readBytesOwned(allocator, bytes, cursor, limits.max_module_bytes);
+            errdefer allocator.free(canonical_bytes);
+            return .{
+                .module_id = module_id,
+                .role = role,
+                .module_ref = module_ref,
+                .target_ref = target_ref,
+                .import_set = import_set,
+                .imports = imports,
+                .export_summary = export_summary,
+                .executable_plan_fingerprint = executable_plan_fingerprint,
+                .validation_report_fingerprint = validation_report_fingerprint,
+                .compatibility_report_fingerprint = compatibility_report_fingerprint,
+                .canonical_bytes = canonical_bytes,
+            };
+        }
+
+        fn writeModuleRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, ref: W.Admission.ModuleRef) !void {
+            try writeU32(out, allocator, ref.format_version);
+            try writeU32(out, allocator, ref.fingerprint_version);
+            try writeU64(out, allocator, ref.module_ref_fingerprint);
+            try writeU64(out, allocator, ref.boundary_module_fingerprint);
+            try writeU8(out, allocator, @intFromEnum(ref.module_kind));
+            try writeU64(out, allocator, ref.target_ref_fingerprint);
+            try writeU64(out, allocator, ref.world_surface_fingerprint);
+            try writeU64(out, allocator, ref.target_certificate_fingerprint);
+            try writeOptionalU64(out, allocator, ref.residual_program_plan_hash);
+            try writeOptionalU64(out, allocator, ref.import_surface_fingerprint);
+            try writeOptionalU64(out, allocator, ref.export_surface_fingerprint);
+            try writeOptionalU64(out, allocator, ref.module_graph_fingerprint);
+            try writeU8(out, allocator, @intFromEnum(ref.normal_form_kind));
+            try writeCount(out, allocator, ref.world_port_count);
+            try writeOptionalU64(out, allocator, ref.world_port_table_fingerprint);
+            try writeOptionalU64(out, allocator, ref.world_value_table_fingerprint);
+            try writeOptionalU64(out, allocator, ref.world_dispatch_table_fingerprint);
+            try writeOptionalBytes(out, allocator, ref.label);
+            try writeBytes(out, allocator, ref.metadata);
+        }
+
+        fn readModuleRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.Admission.ModuleRef {
+            return .{
+                .format_version = try readU32(bytes, cursor),
+                .fingerprint_version = try readU32(bytes, cursor),
+                .module_ref_fingerprint = try readU64(bytes, cursor),
+                .boundary_module_fingerprint = try readU64(bytes, cursor),
+                .module_kind = try readEnum(W.Admission.BoundaryModuleKind, bytes, cursor),
+                .target_ref_fingerprint = try readU64(bytes, cursor),
+                .world_surface_fingerprint = try readU64(bytes, cursor),
+                .target_certificate_fingerprint = try readU64(bytes, cursor),
+                .residual_program_plan_hash = try readOptionalU64(bytes, cursor),
+                .import_surface_fingerprint = try readOptionalU64(bytes, cursor),
+                .export_surface_fingerprint = try readOptionalU64(bytes, cursor),
+                .module_graph_fingerprint = try readOptionalU64(bytes, cursor),
+                .normal_form_kind = try readEnum(W.NormalFormKind, bytes, cursor),
+                .world_port_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .world_port_table_fingerprint = try readOptionalU64(bytes, cursor),
+                .world_value_table_fingerprint = try readOptionalU64(bytes, cursor),
+                .world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor),
+                .label = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+            };
+        }
+
+        fn writeTargetRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, ref: W.TargetRef) !void {
+            try writeU32(out, allocator, ref.format_version);
+            try writeU32(out, allocator, ref.fingerprint_version);
+            try writeU64(out, allocator, ref.target_ref_fingerprint);
+            try writeOptionalBytes(out, allocator, ref.target_label);
+            try writeU64(out, allocator, ref.world_surface_fingerprint);
+            try writeOptionalU64(out, allocator, ref.world_surface_replay_scope_fingerprint);
+            try writeU64(out, allocator, ref.target_certificate_fingerprint);
+            try writeOptionalU64(out, allocator, ref.residual_program_plan_hash);
+            try writeU8(out, allocator, @intFromEnum(ref.normal_form_kind));
+            try writeOptionalU64(out, allocator, ref.world_port_table_fingerprint);
+            try writeOptionalU64(out, allocator, ref.world_value_table_fingerprint);
+            try writeOptionalU64(out, allocator, ref.world_dispatch_table_fingerprint);
+            try writeOptionalU64(out, allocator, ref.surface_profile_fingerprint);
+            try writeOptionalU64(out, allocator, ref.boundary_module_fingerprint);
+            try writeBytes(out, allocator, ref.metadata);
+        }
+
+        fn readTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.TargetRef {
+            return .{
+                .format_version = try readU32(bytes, cursor),
+                .fingerprint_version = try readU32(bytes, cursor),
+                .target_ref_fingerprint = try readU64(bytes, cursor),
+                .target_label = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .world_surface_fingerprint = try readU64(bytes, cursor),
+                .world_surface_replay_scope_fingerprint = try readOptionalU64(bytes, cursor),
+                .target_certificate_fingerprint = try readU64(bytes, cursor),
+                .residual_program_plan_hash = try readOptionalU64(bytes, cursor),
+                .normal_form_kind = try readEnum(W.NormalFormKind, bytes, cursor),
+                .world_port_table_fingerprint = try readOptionalU64(bytes, cursor),
+                .world_value_table_fingerprint = try readOptionalU64(bytes, cursor),
+                .world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor),
+                .surface_profile_fingerprint = try readOptionalU64(bytes, cursor),
+                .boundary_module_fingerprint = try readOptionalU64(bytes, cursor),
+                .metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+            };
+        }
+
+        fn writeImportSet(out: *std.ArrayList(u8), allocator: std.mem.Allocator, set: W.ImportSet) !void {
+            try writeU64(out, allocator, set.import_set_fingerprint);
+            try writeU64(out, allocator, set.target_ref_fingerprint);
+            try writeCount(out, allocator, set.required_count);
+            try writeCount(out, allocator, set.optional_count);
+            try writeCount(out, allocator, set.world_port_count);
+            try writeCount(out, allocator, set.value_table_entry_count);
+            try writeOptionalU64(out, allocator, set.surface_profile_fingerprint);
+        }
+
+        fn readImportSet(bytes: []const u8, cursor: *usize) !W.ImportSet {
+            return .{
+                .import_set_fingerprint = try readU64(bytes, cursor),
+                .target_ref_fingerprint = try readU64(bytes, cursor),
+                .required_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .optional_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .world_port_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .value_table_entry_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .surface_profile_fingerprint = try readOptionalU64(bytes, cursor),
+            };
+        }
+
+        fn writeImportRequirement(out: *std.ArrayList(u8), allocator: std.mem.Allocator, requirement: W.ImportRequirement) !void {
+            try writeU64(out, allocator, requirement.requirement_fingerprint);
+            try writeOptionalU64(out, allocator, requirement.target_ref_fingerprint);
+            try writeOptionalU64(out, allocator, requirement.world_value_table_fingerprint);
+            try writeU64(out, allocator, requirement.world_surface_fingerprint);
+            try writeU32(out, allocator, requirement.world_port_id);
+            try writeOptionalU64(out, allocator, requirement.world_port_ref_fingerprint);
+            try writeOptionalU64(out, allocator, requirement.source_effect_shape_ref_fingerprint);
+            try writeCount(out, allocator, requirement.residual_site_index);
+            try writeU64(out, allocator, requirement.residual_site_fingerprint);
+            try writeOptionalU32(out, allocator, requirement.payload_value_table_id);
+            try writeOptionalU64(out, allocator, requirement.payload_value_ref_fingerprint);
+            try writeOptionalU32(out, allocator, requirement.response_value_table_id);
+            try writeOptionalU64(out, allocator, requirement.response_value_ref_fingerprint);
+            try writeU8(out, allocator, @intFromEnum(requirement.mode));
+            try writeU8(out, allocator, @intFromEnum(requirement.allowed_response_kinds));
+            try writeOptionalU64(out, allocator, requirement.replay_key_recipe_fingerprint);
+            try writeOptionalBytes(out, allocator, requirement.suggested_symbolic_name);
+            try writeBool(out, allocator, requirement.required);
+            try writeStringSlice(out, allocator, requirement.tags);
+            try writeBytes(out, allocator, requirement.metadata);
+        }
+
+        fn readImportRequirement(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.ImportRequirement {
+            const requirement_fingerprint = try readU64(bytes, cursor);
+            const target_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const world_value_table_fingerprint = try readOptionalU64(bytes, cursor);
+            const world_surface_fingerprint = try readU64(bytes, cursor);
+            const world_port_id = try readU32(bytes, cursor);
+            const world_port_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const source_effect_shape_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const residual_site_index = try readCount(bytes, cursor, std.math.maxInt(usize));
+            const residual_site_fingerprint = try readU64(bytes, cursor);
+            const payload_value_table_id = try readOptionalU32(bytes, cursor);
+            const payload_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const response_value_table_id = try readOptionalU32(bytes, cursor);
+            const response_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const mode = try readEnum(W.BindingModePolicy, bytes, cursor);
+            const allowed_response_kinds = try readEnum(W.ImportRequirement.ResponseKindMask, bytes, cursor);
+            const replay_key_recipe_fingerprint = try readOptionalU64(bytes, cursor);
+            const suggested_symbolic_name = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer if (suggested_symbolic_name) |symbol| allocator.free(@constCast(symbol));
+            const required = try readBool(bytes, cursor);
+            const tags = try readStringSliceOwned(allocator, bytes, cursor, limits.max_imports_per_module, limits.max_metadata_bytes);
+            errdefer freeStringSlice(allocator, tags);
+            const metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(metadata);
+            return .{
+                .requirement_fingerprint = requirement_fingerprint,
+                .target_ref_fingerprint = target_ref_fingerprint,
+                .world_value_table_fingerprint = world_value_table_fingerprint,
+                .world_surface_fingerprint = world_surface_fingerprint,
+                .world_port_id = world_port_id,
+                .world_port_ref_fingerprint = world_port_ref_fingerprint,
+                .source_effect_shape_ref_fingerprint = source_effect_shape_ref_fingerprint,
+                .residual_site_index = residual_site_index,
+                .residual_site_fingerprint = residual_site_fingerprint,
+                .payload_value_table_id = payload_value_table_id,
+                .payload_value_ref_fingerprint = payload_value_ref_fingerprint,
+                .response_value_table_id = response_value_table_id,
+                .response_value_ref_fingerprint = response_value_ref_fingerprint,
+                .mode = mode,
+                .allowed_response_kinds = allowed_response_kinds,
+                .replay_key_recipe_fingerprint = replay_key_recipe_fingerprint,
+                .suggested_symbolic_name = suggested_symbolic_name,
+                .required = required,
+                .tags = tags,
+                .metadata = metadata,
+            };
+        }
+
+        fn writeExportSummary(out: *std.ArrayList(u8), allocator: std.mem.Allocator, summary: W.Admission.ExportSummary) !void {
+            try writeU64(out, allocator, summary.export_summary_fingerprint);
+            try writeU64(out, allocator, summary.target_ref_fingerprint);
+            try writeOptionalU64(out, allocator, summary.module_ref_fingerprint);
+            try writeBool(out, allocator, summary.main_export_present);
+            try writeOptionalU64(out, allocator, summary.result_value_ref_fingerprint);
+            try writeCount(out, allocator, summary.argument_value_ref_count);
+            try writeU8(out, allocator, @intFromEnum(summary.normal_form_kind));
+            try writeOptionalBytes(out, allocator, summary.target_label);
+            try writeBool(out, allocator, summary.loaded_execution_supported);
+            try writeOptionalBytes(out, allocator, summary.loaded_execution_unsupported_reason);
+        }
+
+        fn readExportSummary(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.Admission.ExportSummary {
+            return .{
+                .export_summary_fingerprint = try readU64(bytes, cursor),
+                .target_ref_fingerprint = try readU64(bytes, cursor),
+                .module_ref_fingerprint = try readOptionalU64(bytes, cursor),
+                .main_export_present = try readBool(bytes, cursor),
+                .result_value_ref_fingerprint = try readOptionalU64(bytes, cursor),
+                .argument_value_ref_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .normal_form_kind = try readEnum(W.NormalFormKind, bytes, cursor),
+                .target_label = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .loaded_execution_supported = try readBool(bytes, cursor),
+                .loaded_execution_unsupported_reason = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+            };
+        }
+
+        fn writeDispatchImage(out: *std.ArrayList(u8), allocator: std.mem.Allocator, image: DispatchImage) !void {
+            try writeU32(out, allocator, image.format_version);
+            try writeU32(out, allocator, image.fingerprint_version);
+            try writeU64(out, allocator, image.dispatch_fingerprint);
+            try writeU32(out, allocator, image.root_module_id);
+            try writeU64Slice(out, allocator, image.module_fingerprints);
+            try writeU64Slice(out, allocator, image.external_binding_fingerprints);
+            try writeU64Slice(out, allocator, image.residual_request_order);
+            try writeU64Slice(out, allocator, image.fabric_plan_fingerprints);
+            try writeU64Slice(out, allocator, image.route_ids);
+            try writeCount(out, allocator, image.route_kinds.len);
+            for (image.route_kinds) |kind| try writeU8(out, allocator, @intFromEnum(kind));
+            try writeU32Slice(out, allocator, image.route_parent_world_port_ids);
+            try writeU64Slice(out, allocator, image.route_requirement_fingerprints);
+            try writeU64Slice(out, allocator, image.route_provider_module_fingerprints);
+            try writePolicy(out, allocator, image.linker_policy);
+            try writeU64(out, allocator, image.link_plan_fingerprint);
+            try writeU64(out, allocator, image.linker_certificate_fingerprint);
+            try writeU64(out, allocator, image.assembly_fingerprint);
+        }
+
+        fn readDispatchImage(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !DispatchImage {
+            const format_version = try readU32(bytes, cursor);
+            const fingerprint_version = try readU32(bytes, cursor);
+            const dispatch_fingerprint = try readU64(bytes, cursor);
+            const root_module_id = try readU32(bytes, cursor);
+            const module_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, limits.max_dispatch_entries);
+            errdefer allocator.free(module_fingerprints);
+            const external_binding_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, limits.max_dispatch_entries);
+            errdefer allocator.free(external_binding_fingerprints);
+            const residual_request_order = try readU64SliceOwned(allocator, bytes, cursor, limits.max_dispatch_entries);
+            errdefer allocator.free(residual_request_order);
+            const fabric_plan_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, limits.max_dispatch_entries);
+            errdefer allocator.free(fabric_plan_fingerprints);
+            const route_ids = try readU64SliceOwned(allocator, bytes, cursor, limits.max_dispatch_entries);
+            errdefer allocator.free(route_ids);
+            const route_kind_count = try readCount(bytes, cursor, limits.max_dispatch_entries);
+            const route_kinds = try allocator.alloc(W.Fabric.RouteKind, route_kind_count);
+            var initialized_route_kinds: usize = 0;
+            errdefer allocator.free(route_kinds);
+            while (initialized_route_kinds < route_kind_count) : (initialized_route_kinds += 1) {
+                route_kinds[initialized_route_kinds] = try readEnum(W.Fabric.RouteKind, bytes, cursor);
+            }
+            const route_parent_world_port_ids = try readU32SliceOwned(allocator, bytes, cursor, limits.max_dispatch_entries);
+            errdefer allocator.free(route_parent_world_port_ids);
+            const route_requirement_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, limits.max_dispatch_entries);
+            errdefer allocator.free(route_requirement_fingerprints);
+            const route_provider_module_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, limits.max_dispatch_entries);
+            errdefer allocator.free(route_provider_module_fingerprints);
+            const linker_policy = try readPolicy(bytes, cursor);
+            return .{
+                .format_version = format_version,
+                .fingerprint_version = fingerprint_version,
+                .dispatch_fingerprint = dispatch_fingerprint,
+                .root_module_id = root_module_id,
+                .module_fingerprints = module_fingerprints,
+                .external_binding_fingerprints = external_binding_fingerprints,
+                .residual_request_order = residual_request_order,
+                .fabric_plan_fingerprints = fabric_plan_fingerprints,
+                .route_ids = route_ids,
+                .route_kinds = route_kinds,
+                .route_parent_world_port_ids = route_parent_world_port_ids,
+                .route_requirement_fingerprints = route_requirement_fingerprints,
+                .route_provider_module_fingerprints = route_provider_module_fingerprints,
+                .linker_policy = linker_policy,
+                .link_plan_fingerprint = try readU64(bytes, cursor),
+                .linker_certificate_fingerprint = try readU64(bytes, cursor),
+                .assembly_fingerprint = try readU64(bytes, cursor),
+            };
+        }
+
+        fn writeExternalBindingSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bindings: []const ExternalBinding) !void {
+            try writeCount(out, allocator, bindings.len);
+            for (bindings) |binding| try writeExternalBinding(out, allocator, binding);
+        }
+
+        fn readExternalBindingSlice(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) ![]ExternalBinding {
+            const count = try readCount(bytes, cursor, limits.max_external_bindings);
+            const bindings = try allocator.alloc(ExternalBinding, count);
+            var initialized: usize = 0;
+            errdefer freeExternalBindingSlice(allocator, bindings[0..initialized]);
+            while (initialized < count) : (initialized += 1) {
+                bindings[initialized] = try readExternalBinding(allocator, bytes, cursor, limits);
+            }
+            return bindings;
+        }
+
+        fn writeExternalBinding(out: *std.ArrayList(u8), allocator: std.mem.Allocator, binding: ExternalBinding) !void {
+            try writeU64(out, allocator, binding.binding_fingerprint);
+            try writeU64(out, allocator, binding.parent_module_fingerprint);
+            try writeU32(out, allocator, binding.world_port_id);
+            try writeOptionalU64(out, allocator, binding.world_port_ref_fingerprint);
+            try writeOptionalU32(out, allocator, binding.payload_value_table_id);
+            try writeOptionalU64(out, allocator, binding.payload_value_ref_fingerprint);
+            try writeOptionalU32(out, allocator, binding.response_value_table_id);
+            try writeOptionalU64(out, allocator, binding.response_value_ref_fingerprint);
+            try writeActuatorRef(out, allocator, binding.actuator_ref);
+            try writeDescriptor(out, allocator, binding.descriptor);
+            try writeResponseStatusSet(out, allocator, binding.allowed_response_statuses);
+            try writeU8(out, allocator, @intFromEnum(binding.actuation_class));
+            try writeValuePolicy(out, allocator, binding.value_policy);
+            try writeOptionalU64(out, allocator, binding.supervision_rule_ref);
+            try writeOptionalU64(out, allocator, binding.authority_descriptor_ref);
+            try writeBytes(out, allocator, binding.label);
+            try writeBytes(out, allocator, binding.metadata);
+        }
+
+        fn readExternalBinding(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !ExternalBinding {
+            const binding_fingerprint = try readU64(bytes, cursor);
+            const parent_module_fingerprint = try readU64(bytes, cursor);
+            const world_port_id = try readU32(bytes, cursor);
+            const world_port_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const payload_value_table_id = try readOptionalU32(bytes, cursor);
+            const payload_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const response_value_table_id = try readOptionalU32(bytes, cursor);
+            const response_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const actuator_ref = try readActuatorRef(allocator, bytes, cursor, limits);
+            errdefer freeActuatorRefFields(allocator, actuator_ref);
+            const descriptor = try readDescriptor(allocator, bytes, cursor, limits);
+            errdefer freeDescriptorFields(allocator, descriptor);
+            const allowed_response_statuses = try readResponseStatusSet(bytes, cursor);
+            const actuation_class = try readEnum(W.Actuation.Class, bytes, cursor);
+            const value_policy = try readValuePolicy(bytes, cursor);
+            const supervision_rule_ref = try readOptionalU64(bytes, cursor);
+            const authority_descriptor_ref = try readOptionalU64(bytes, cursor);
+            const label = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(label);
+            const metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(metadata);
+            return .{
+                .binding_fingerprint = binding_fingerprint,
+                .parent_module_fingerprint = parent_module_fingerprint,
+                .world_port_id = world_port_id,
+                .world_port_ref_fingerprint = world_port_ref_fingerprint,
+                .payload_value_table_id = payload_value_table_id,
+                .payload_value_ref_fingerprint = payload_value_ref_fingerprint,
+                .response_value_table_id = response_value_table_id,
+                .response_value_ref_fingerprint = response_value_ref_fingerprint,
+                .actuator_ref = actuator_ref,
+                .descriptor = descriptor,
+                .allowed_response_statuses = allowed_response_statuses,
+                .actuation_class = actuation_class,
+                .value_policy = value_policy,
+                .supervision_rule_ref = supervision_rule_ref,
+                .authority_descriptor_ref = authority_descriptor_ref,
+                .label = label,
+                .metadata = metadata,
+            };
+        }
+
+        fn writeActuatorRef(out: *std.ArrayList(u8), allocator: std.mem.Allocator, ref: W.Actuation.Ref) !void {
+            try writeU32(out, allocator, ref.format_version);
+            try writeU32(out, allocator, ref.fingerprint_version);
+            try writeU64(out, allocator, ref.ref_fingerprint);
+            try writeU8(out, allocator, @intFromEnum(ref.kind));
+            try writeU8(out, allocator, @intFromEnum(ref.class));
+            try writeBytes(out, allocator, ref.label);
+            try writeModeSet(out, allocator, ref.supported_modes);
+            try writeResponseStatusSet(out, allocator, ref.supported_response_statuses);
+            try writeU64(out, allocator, ref.value_policy_fingerprint);
+            try writeOptionalU64(out, allocator, ref.authority_descriptor_fingerprint);
+            try writeOptionalU64(out, allocator, ref.protocol_descriptor_fingerprint);
+            try writeBytes(out, allocator, ref.metadata);
+        }
+
+        fn readActuatorRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.Actuation.Ref {
+            return .{
+                .format_version = try readU32(bytes, cursor),
+                .fingerprint_version = try readU32(bytes, cursor),
+                .ref_fingerprint = try readU64(bytes, cursor),
+                .kind = try readEnum(W.Actuation.Kind, bytes, cursor),
+                .class = try readEnum(W.Actuation.Class, bytes, cursor),
+                .label = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .supported_modes = try readModeSet(bytes, cursor),
+                .supported_response_statuses = try readResponseStatusSet(bytes, cursor),
+                .value_policy_fingerprint = try readU64(bytes, cursor),
+                .authority_descriptor_fingerprint = try readOptionalU64(bytes, cursor),
+                .protocol_descriptor_fingerprint = try readOptionalU64(bytes, cursor),
+                .metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+            };
+        }
+
+        fn writeDescriptor(out: *std.ArrayList(u8), allocator: std.mem.Allocator, descriptor: W.Actuation.Descriptor) !void {
+            try writeU32(out, allocator, descriptor.format_version);
+            try writeU32(out, allocator, descriptor.fingerprint_version);
+            try writeU64(out, allocator, descriptor.descriptor_fingerprint);
+            try writeU64(out, allocator, descriptor.actuator_ref_fingerprint);
+            try writeU64(out, allocator, descriptor.world_surface_fingerprint);
+            try writeOptionalU64(out, allocator, descriptor.target_ref_fingerprint);
+            try writeOptionalU32(out, allocator, descriptor.world_port_id);
+            try writeOptionalU64(out, allocator, descriptor.world_port_ref_fingerprint);
+            try writeOptionalU64(out, allocator, descriptor.source_effect_shape_ref_fingerprint);
+            try writeOptionalU32(out, allocator, descriptor.payload_value_ref);
+            try writeOptionalU32(out, allocator, descriptor.payload_value_table_id);
+            try writeOptionalU32(out, allocator, descriptor.response_value_ref);
+            try writeOptionalU32(out, allocator, descriptor.response_value_table_id);
+            try writeModeSet(out, allocator, descriptor.supported_modes);
+            try writeResponseStatusSet(out, allocator, descriptor.allowed_response_kinds);
+            try writeU8(out, allocator, @intFromEnum(descriptor.kind));
+            try writeU8(out, allocator, @intFromEnum(descriptor.class));
+            try writeValuePolicy(out, allocator, descriptor.value_policy);
+            try writeBytes(out, allocator, descriptor.label);
+            try writeBytes(out, allocator, descriptor.metadata);
+        }
+
+        fn readDescriptor(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.Actuation.Descriptor {
+            return .{
+                .format_version = try readU32(bytes, cursor),
+                .fingerprint_version = try readU32(bytes, cursor),
+                .descriptor_fingerprint = try readU64(bytes, cursor),
+                .actuator_ref_fingerprint = try readU64(bytes, cursor),
+                .world_surface_fingerprint = try readU64(bytes, cursor),
+                .target_ref_fingerprint = try readOptionalU64(bytes, cursor),
+                .world_port_id = try readOptionalU32(bytes, cursor),
+                .world_port_ref_fingerprint = try readOptionalU64(bytes, cursor),
+                .source_effect_shape_ref_fingerprint = try readOptionalU64(bytes, cursor),
+                .payload_value_ref = try readOptionalU32(bytes, cursor),
+                .payload_value_table_id = try readOptionalU32(bytes, cursor),
+                .response_value_ref = try readOptionalU32(bytes, cursor),
+                .response_value_table_id = try readOptionalU32(bytes, cursor),
+                .supported_modes = try readModeSet(bytes, cursor),
+                .allowed_response_kinds = try readResponseStatusSet(bytes, cursor),
+                .kind = try readEnum(W.Actuation.Kind, bytes, cursor),
+                .class = try readEnum(W.Actuation.Class, bytes, cursor),
+                .value_policy = try readValuePolicy(bytes, cursor),
+                .label = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+            };
+        }
+
+        fn writeMemoryPlan(out: *std.ArrayList(u8), allocator: std.mem.Allocator, plan: MemoryPlan) !void {
+            try writeU64(out, allocator, plan.memory_plan_fingerprint);
+            try writeCount(out, allocator, plan.decoded_module_bytes);
+            try writeCount(out, allocator, plan.dispatch_table_entries);
+            try writeCount(out, allocator, plan.schema_table_entries);
+            try writeCount(out, allocator, plan.max_session_frames);
+            try writeCount(out, allocator, plan.max_runspace_slots);
+            try writeCount(out, allocator, plan.max_mailbox_entries);
+            try writeCount(out, allocator, plan.max_provider_runs);
+            try writeCount(out, allocator, plan.max_host_requests_per_turn);
+            try writeCount(out, allocator, plan.max_command_bytes);
+            try writeCount(out, allocator, plan.max_output_bytes);
+            try writeCount(out, allocator, plan.max_capsule_bytes);
+            try writeCount(out, allocator, plan.max_archive_append_bytes);
+            try writeCount(out, allocator, plan.max_linear_memory_pages);
+        }
+
+        fn readMemoryPlan(bytes: []const u8, cursor: *usize) !MemoryPlan {
+            return .{
+                .memory_plan_fingerprint = try readU64(bytes, cursor),
+                .decoded_module_bytes = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .dispatch_table_entries = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .schema_table_entries = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_session_frames = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_runspace_slots = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_mailbox_entries = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_provider_runs = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_host_requests_per_turn = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_command_bytes = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_output_bytes = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_capsule_bytes = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_archive_append_bytes = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_linear_memory_pages = try readCount(bytes, cursor, std.math.maxInt(usize)),
+            };
+        }
+
+        fn writeCompatibilityReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, report: CompatibilityReport) !void {
+            try writeU64(out, allocator, report.report_fingerprint);
+            try writeBool(out, allocator, report.compatible);
+            try writeBool(out, allocator, report.image_format_compatible);
+            try writeBool(out, allocator, report.boundary_module_compatible);
+            try writeBool(out, allocator, report.executable_plan_compatible);
+            try writeBool(out, allocator, report.instruction_feature_compatible);
+            try writeBool(out, allocator, report.value_codec_compatible);
+            try writeBool(out, allocator, report.profile_compatible);
+            try writeBool(out, allocator, report.capacity_compatible);
+            try writeBool(out, allocator, report.memory_compatible);
+            try writeCount(out, allocator, report.missing_optional_features);
+            try writeCount(out, allocator, report.hard_blockers);
+            try writeCount(out, allocator, report.warnings);
+            try writeBytes(out, allocator, report.summary);
+        }
+
+        fn readCompatibilityReport(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !CompatibilityReport {
+            return .{
+                .report_fingerprint = try readU64(bytes, cursor),
+                .compatible = try readBool(bytes, cursor),
+                .image_format_compatible = try readBool(bytes, cursor),
+                .boundary_module_compatible = try readBool(bytes, cursor),
+                .executable_plan_compatible = try readBool(bytes, cursor),
+                .instruction_feature_compatible = try readBool(bytes, cursor),
+                .value_codec_compatible = try readBool(bytes, cursor),
+                .profile_compatible = try readBool(bytes, cursor),
+                .capacity_compatible = try readBool(bytes, cursor),
+                .memory_compatible = try readBool(bytes, cursor),
+                .missing_optional_features = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .hard_blockers = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .warnings = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .summary = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+            };
+        }
+
+        fn writeCertificate(out: *std.ArrayList(u8), allocator: std.mem.Allocator, cert: Certificate) !void {
+            try writeU32(out, allocator, cert.format_version);
+            try writeU32(out, allocator, cert.fingerprint_version);
+            try writeU64(out, allocator, cert.certificate_fingerprint);
+            try writeU64(out, allocator, cert.image_fingerprint);
+            try writeU64(out, allocator, cert.module_set_fingerprint);
+            try writeU64(out, allocator, cert.runtime_profile_fingerprint);
+            try writeU64(out, allocator, cert.dispatch_fingerprint);
+            try writeU64(out, allocator, cert.memory_plan_fingerprint);
+            try writeU64(out, allocator, cert.compatibility_report_fingerprint);
+            try writeU64(out, allocator, cert.link_plan_fingerprint);
+            try writeU64(out, allocator, cert.linker_certificate_fingerprint);
+            try writeU64(out, allocator, cert.assembly_fingerprint);
+            try writeCount(out, allocator, cert.module_count);
+            try writeCount(out, allocator, cert.residual_external_binding_count);
+            try writeCount(out, allocator, cert.blocker_count);
+            try writeCount(out, allocator, cert.warning_count);
+        }
+
+        fn readCertificate(bytes: []const u8, cursor: *usize) !Certificate {
+            return .{
+                .format_version = try readU32(bytes, cursor),
+                .fingerprint_version = try readU32(bytes, cursor),
+                .certificate_fingerprint = try readU64(bytes, cursor),
+                .image_fingerprint = try readU64(bytes, cursor),
+                .module_set_fingerprint = try readU64(bytes, cursor),
+                .runtime_profile_fingerprint = try readU64(bytes, cursor),
+                .dispatch_fingerprint = try readU64(bytes, cursor),
+                .memory_plan_fingerprint = try readU64(bytes, cursor),
+                .compatibility_report_fingerprint = try readU64(bytes, cursor),
+                .link_plan_fingerprint = try readU64(bytes, cursor),
+                .linker_certificate_fingerprint = try readU64(bytes, cursor),
+                .assembly_fingerprint = try readU64(bytes, cursor),
+                .module_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .residual_external_binding_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .blocker_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .warning_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
+            };
+        }
+
+        fn writePolicy(out: *std.ArrayList(u8), allocator: std.mem.Allocator, policy: W.Linker.Policy) !void {
+            try writeBool(out, allocator, policy.require_closed_graph);
+            try writeBool(out, allocator, policy.allow_external_environment_ports);
+            try writeBool(out, allocator, policy.allow_adapter_fallback);
+            try writeBool(out, allocator, policy.allow_replay_routes);
+            try writeBool(out, allocator, policy.allow_guest_routes);
+            try writeBool(out, allocator, policy.allow_reject_routes);
+            try writeBool(out, allocator, policy.allow_ambiguous_matches);
+            try writeBool(out, allocator, policy.require_explicit_hint_for_ambiguous_match);
+            try writeBool(out, allocator, policy.require_exact_value_refs);
+            try writeBool(out, allocator, policy.allow_same_schema_compatible_refs);
+            try writeBool(out, allocator, policy.reject_cross_type_conversion);
+            try writeBool(out, allocator, policy.reject_same_target_cycle);
+            try writeBool(out, allocator, policy.reject_same_module_cycle);
+            try writeBool(out, allocator, policy.reject_recursive_route);
+            try writeCount(out, allocator, policy.max_link_depth);
+            try writeCount(out, allocator, policy.max_provider_runs);
+            try writeCount(out, allocator, policy.max_candidates_per_import);
+            try writeCount(out, allocator, policy.max_unresolved_imports);
+            try writeBool(out, allocator, policy.require_supervision_compatible_routes);
+            try writeBool(out, allocator, policy.require_guest_conformance_for_guest_routes);
+            try writeBool(out, allocator, policy.require_admission_for_provider_targets);
+        }
+
+        fn readPolicy(bytes: []const u8, cursor: *usize) !W.Linker.Policy {
+            return .{
+                .require_closed_graph = try readBool(bytes, cursor),
+                .allow_external_environment_ports = try readBool(bytes, cursor),
+                .allow_adapter_fallback = try readBool(bytes, cursor),
+                .allow_replay_routes = try readBool(bytes, cursor),
+                .allow_guest_routes = try readBool(bytes, cursor),
+                .allow_reject_routes = try readBool(bytes, cursor),
+                .allow_ambiguous_matches = try readBool(bytes, cursor),
+                .require_explicit_hint_for_ambiguous_match = try readBool(bytes, cursor),
+                .require_exact_value_refs = try readBool(bytes, cursor),
+                .allow_same_schema_compatible_refs = try readBool(bytes, cursor),
+                .reject_cross_type_conversion = try readBool(bytes, cursor),
+                .reject_same_target_cycle = try readBool(bytes, cursor),
+                .reject_same_module_cycle = try readBool(bytes, cursor),
+                .reject_recursive_route = try readBool(bytes, cursor),
+                .max_link_depth = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_provider_runs = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_candidates_per_import = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .max_unresolved_imports = try readCount(bytes, cursor, std.math.maxInt(usize)),
+                .require_supervision_compatible_routes = try readBool(bytes, cursor),
+                .require_guest_conformance_for_guest_routes = try readBool(bytes, cursor),
+                .require_admission_for_provider_targets = try readBool(bytes, cursor),
+            };
+        }
+
+        fn writeValuePolicy(out: *std.ArrayList(u8), allocator: std.mem.Allocator, policy: W.ValuePolicy) !void {
+            try writeBool(out, allocator, policy.require_portable_values);
+            try writeBool(out, allocator, policy.allow_native_only_values);
+            try writeBool(out, allocator, policy.require_response_images_for_replay);
+            try writeBool(out, allocator, policy.allow_diagnostic_type_labels);
+            try writeOptionalCount(out, allocator, policy.max_value_image_bytes);
+        }
+
+        fn readValuePolicy(bytes: []const u8, cursor: *usize) !W.ValuePolicy {
+            return .{
+                .require_portable_values = try readBool(bytes, cursor),
+                .allow_native_only_values = try readBool(bytes, cursor),
+                .require_response_images_for_replay = try readBool(bytes, cursor),
+                .allow_diagnostic_type_labels = try readBool(bytes, cursor),
+                .max_value_image_bytes = try readOptionalCount(bytes, cursor),
+            };
+        }
+
+        fn writeModeSet(out: *std.ArrayList(u8), allocator: std.mem.Allocator, modes: W.Actuation.ModeSet) !void {
+            try writeBool(out, allocator, modes.fresh);
+            try writeBool(out, allocator, modes.replay);
+            try writeBool(out, allocator, modes.verify);
+            try writeBool(out, allocator, modes.audit);
+        }
+
+        fn readModeSet(bytes: []const u8, cursor: *usize) !W.Actuation.ModeSet {
+            return .{
+                .fresh = try readBool(bytes, cursor),
+                .replay = try readBool(bytes, cursor),
+                .verify = try readBool(bytes, cursor),
+                .audit = try readBool(bytes, cursor),
+            };
+        }
+
+        fn writeResponseStatusSet(out: *std.ArrayList(u8), allocator: std.mem.Allocator, statuses: W.Actuation.ResponseStatusSet) !void {
+            try writeBool(out, allocator, statuses.responded);
+            try writeBool(out, allocator, statuses.rejected);
+            try writeBool(out, allocator, statuses.failed);
+            try writeBool(out, allocator, statuses.pending);
+            try writeBool(out, allocator, statuses.deferred);
+            try writeBool(out, allocator, statuses.cancelled);
+        }
+
+        fn readResponseStatusSet(bytes: []const u8, cursor: *usize) !W.Actuation.ResponseStatusSet {
+            return .{
+                .responded = try readBool(bytes, cursor),
+                .rejected = try readBool(bytes, cursor),
+                .failed = try readBool(bytes, cursor),
+                .pending = try readBool(bytes, cursor),
+                .deferred = try readBool(bytes, cursor),
+                .cancelled = try readBool(bytes, cursor),
+            };
+        }
+
+        fn writeU64Slice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const u64) !void {
+            try writeCount(out, allocator, values.len);
+            for (values) |value| try writeU64(out, allocator, value);
+        }
+
+        fn writeU32Slice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const u32) !void {
+            try writeCount(out, allocator, values.len);
+            for (values) |value| try writeU32(out, allocator, value);
+        }
+
+        fn readU64SliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]u64 {
+            const count = try readCount(bytes, cursor, max_count);
+            const values = try allocator.alloc(u64, count);
+            errdefer allocator.free(values);
+            for (values) |*value| value.* = try readU64(bytes, cursor);
+            return values;
+        }
+
+        fn readU32SliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]u32 {
+            const count = try readCount(bytes, cursor, max_count);
+            const values = try allocator.alloc(u32, count);
+            errdefer allocator.free(values);
+            for (values) |*value| value.* = try readU32(bytes, cursor);
+            return values;
+        }
+
+        fn writeStringSlice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const []const u8) !void {
+            try writeCount(out, allocator, values.len);
+            for (values) |value| try writeBytes(out, allocator, value);
+        }
+
+        fn readStringSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize, max_bytes: usize) ![][]const u8 {
+            const count = try readCount(bytes, cursor, max_count);
+            const values = try allocator.alloc([]const u8, count);
+            var initialized: usize = 0;
+            errdefer {
+                for (values[0..initialized]) |value| allocator.free(@constCast(value));
+                allocator.free(values);
+            }
+            while (initialized < count) : (initialized += 1) {
+                values[initialized] = try readBytesOwned(allocator, bytes, cursor, max_bytes);
+            }
+            return values;
+        }
+
+        fn cloneOptionalBytes(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
+            if (value) |bytes| return try allocator.dupe(u8, bytes);
+            return null;
+        }
+
+        fn cloneStringSlice(allocator: std.mem.Allocator, values: []const []const u8) ![][]const u8 {
+            const cloned = try allocator.alloc([]const u8, values.len);
+            var initialized: usize = 0;
+            errdefer {
+                for (cloned[0..initialized]) |value| allocator.free(@constCast(value));
+                allocator.free(cloned);
+            }
+            while (initialized < values.len) : (initialized += 1) {
+                cloned[initialized] = try allocator.dupe(u8, values[initialized]);
+            }
+            return cloned;
+        }
+
+        fn freeStringSlice(allocator: std.mem.Allocator, values: []const []const u8) void {
+            for (values) |value| allocator.free(@constCast(value));
+            allocator.free(values);
+        }
+
+        fn freeModuleRefFields(allocator: std.mem.Allocator, ref: W.Admission.ModuleRef) void {
+            if (ref.label) |label| allocator.free(@constCast(label));
+            allocator.free(@constCast(ref.metadata));
+        }
+
+        fn freeTargetRefFields(allocator: std.mem.Allocator, ref: W.TargetRef) void {
+            if (ref.target_label) |label| allocator.free(@constCast(label));
+            allocator.free(@constCast(ref.metadata));
+        }
+
+        fn freeImportRequirementFields(allocator: std.mem.Allocator, requirement: W.ImportRequirement) void {
+            if (requirement.suggested_symbolic_name) |symbol| allocator.free(@constCast(symbol));
+            freeStringSlice(allocator, requirement.tags);
+            allocator.free(@constCast(requirement.metadata));
+        }
+
+        fn freeExportSummaryFields(allocator: std.mem.Allocator, summary: W.Admission.ExportSummary) void {
+            if (summary.target_label) |label| allocator.free(@constCast(label));
+            if (summary.loaded_execution_unsupported_reason) |reason| allocator.free(@constCast(reason));
+        }
+
+        fn freeActuatorRefFields(allocator: std.mem.Allocator, ref: W.Actuation.Ref) void {
+            allocator.free(@constCast(ref.label));
+            allocator.free(@constCast(ref.metadata));
+        }
+
+        fn freeDescriptorFields(allocator: std.mem.Allocator, descriptor: W.Actuation.Descriptor) void {
+            allocator.free(@constCast(descriptor.label));
+            allocator.free(@constCast(descriptor.metadata));
+        }
+
+        fn writeRawBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []const u8) !void {
+            try out.appendSlice(allocator, bytes);
+        }
+
+        fn writeBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []const u8) !void {
+            try writeCount(out, allocator, bytes.len);
+            try writeRawBytes(out, allocator, bytes);
+        }
+
+        fn writeOptionalBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?[]const u8) !void {
+            try writeBool(out, allocator, value != null);
+            if (value) |bytes| try writeBytes(out, allocator, bytes);
+        }
+
+        fn writeBool(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: bool) !void {
+            try writeU8(out, allocator, if (value) 1 else 0);
+        }
+
+        fn writeU8(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u8) !void {
+            try out.append(allocator, value);
+        }
+
+        fn writeU32(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u32) !void {
+            var buf: [4]u8 = undefined;
+            std.mem.writeInt(u32, &buf, value, .little);
+            try writeRawBytes(out, allocator, &buf);
+        }
+
+        fn writeU64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: anytype) !void {
+            const casted = std.math.cast(u64, value) orelse return error.InvalidFrameEncoding;
+            var buf: [8]u8 = undefined;
+            std.mem.writeInt(u64, &buf, casted, .little);
+            try writeRawBytes(out, allocator, &buf);
+        }
+
+        fn writeCount(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: usize) !void {
+            try writeU64(out, allocator, value);
+        }
+
+        fn writeOptionalU32(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?u32) !void {
+            try writeBool(out, allocator, value != null);
+            if (value) |present| try writeU32(out, allocator, present);
+        }
+
+        fn writeOptionalU64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?u64) !void {
+            try writeBool(out, allocator, value != null);
+            if (value) |present| try writeU64(out, allocator, present);
+        }
+
+        fn writeOptionalCount(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?usize) !void {
+            try writeBool(out, allocator, value != null);
+            if (value) |present| try writeCount(out, allocator, present);
+        }
+
+        fn patchU64(bytes: []u8, offset: usize, value: usize) void {
+            std.mem.writeInt(u64, bytes[offset..][0..8], @intCast(value), .little);
+        }
+
+        fn readFixedBytes(bytes: []const u8, cursor: *usize, expected: []const u8) !void {
+            if (bytes.len - cursor.* < expected.len) return error.InvalidFrameEncoding;
+            if (!std.mem.eql(u8, bytes[cursor.* .. cursor.* + expected.len], expected)) return error.InvalidFrameEncoding;
+            cursor.* += expected.len;
+        }
+
+        fn readBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_len: usize) ![]u8 {
+            const len = try readCount(bytes, cursor, max_len);
+            if (bytes.len - cursor.* < len) return error.InvalidFrameEncoding;
+            const owned = try allocator.dupe(u8, bytes[cursor.* .. cursor.* + len]);
+            cursor.* += len;
+            return owned;
+        }
+
+        fn readOptionalBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_len: usize) !?[]const u8 {
+            if (!try readBool(bytes, cursor)) return null;
+            return try readBytesOwned(allocator, bytes, cursor, max_len);
+        }
+
+        fn readBool(bytes: []const u8, cursor: *usize) !bool {
+            return switch (try readU8(bytes, cursor)) {
+                0 => false,
+                1 => true,
+                else => error.InvalidFrameEncoding,
+            };
+        }
+
+        fn readU8(bytes: []const u8, cursor: *usize) !u8 {
+            if (bytes.len - cursor.* < 1) return error.InvalidFrameEncoding;
+            const value = bytes[cursor.*];
+            cursor.* += 1;
+            return value;
+        }
+
+        fn readU32(bytes: []const u8, cursor: *usize) !u32 {
+            if (bytes.len - cursor.* < 4) return error.InvalidFrameEncoding;
+            const value = std.mem.readInt(u32, bytes[cursor.*..][0..4], .little);
+            cursor.* += 4;
+            return value;
+        }
+
+        fn readU64(bytes: []const u8, cursor: *usize) !u64 {
+            if (bytes.len - cursor.* < 8) return error.InvalidFrameEncoding;
+            const value = std.mem.readInt(u64, bytes[cursor.*..][0..8], .little);
+            cursor.* += 8;
+            return value;
+        }
+
+        fn readCount(bytes: []const u8, cursor: *usize, max: usize) !usize {
+            const value = try readU64(bytes, cursor);
+            const casted = std.math.cast(usize, value) orelse return error.InvalidFrameEncoding;
+            if (casted > max) return error.InvalidFrameEncoding;
+            return casted;
+        }
+
+        fn readOptionalU32(bytes: []const u8, cursor: *usize) !?u32 {
+            if (!try readBool(bytes, cursor)) return null;
+            return try readU32(bytes, cursor);
+        }
+
+        fn readOptionalU64(bytes: []const u8, cursor: *usize) !?u64 {
+            if (!try readBool(bytes, cursor)) return null;
+            return try readU64(bytes, cursor);
+        }
+
+        fn readOptionalCount(bytes: []const u8, cursor: *usize) !?usize {
+            if (!try readBool(bytes, cursor)) return null;
+            return try readCount(bytes, cursor, std.math.maxInt(usize));
+        }
+
+        fn readEnum(comptime E: type, bytes: []const u8, cursor: *usize) !E {
+            const raw = try readU8(bytes, cursor);
+            inline for (@typeInfo(E).@"enum".fields) |field| {
+                if (field.value == raw) return @enumFromInt(field.value);
+            }
+            return error.InvalidFrameEncoding;
         }
 
         fn moduleKindFromBoundary(kind: BoundaryModule.Kind) W.Admission.BoundaryModuleKind {

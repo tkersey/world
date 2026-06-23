@@ -77,7 +77,7 @@ const Machine = world.Machine(Target, .{
 
 The legacy `.ports` form remains available. It is sugar over the same import-binding shape used by `world.Environment`.
 
-`world.Executable` builds a sealed World Seed from explicit Boundary full-module bytes, provider modules, residual Actuation descriptors, Linker witnesses, dense dispatch tables, and memory bounds. It is the generic path for runtimes that do not possess a locally generated Boundary Target type. `world_universal_appliance.wasm` is currently an ABI v2 text-envelope conformance artifact for target-neutral host integration; sealed `world.Executable.Image` byte execution remains owned by the native loaded-execution path. See [docs/executable.md](docs/executable.md) and [docs/appliance.md](docs/appliance.md).
+`world.Executable` builds a sealed World Seed from explicit Boundary full-module bytes, provider modules, residual Actuation descriptors, Linker witnesses, dense dispatch tables, and memory bounds. It is the generic path for runtimes that do not possess a locally generated Boundary Target type. `world_universal_appliance.wasm` is an ABI v2 conformance artifact that loads canonical `world.Executable.Image` bytes and executes them through actual Boundary loaded sessions plus World Appliance/Runspace/Fabric/Actuation/Capsule/Archive owners. World pins the reviewed Boundary v0.5.0 release for this path. See [docs/executable.md](docs/executable.md), [docs/appliance.md](docs/appliance.md), and [docs/runtime_closure.md](docs/runtime_closure.md).
 
 ## Certified Targets
 
@@ -566,4 +566,4 @@ The `check` step runs unit tests, the forged-descriptor compile-fail fixture, al
 
 ## Non-Goals
 
-World v0 does not implement a scheduler, async runtime, storage backend, network transport, provider lifecycle manager, service discovery, real model/tool/file/human integrations, WASI filesystem, Component Model/WIT bindings, security/signing/encryption, distributed execution, Boundary loaded module execution, Boundary closure, Boundary normalization, treaty resolution, provider harness execution, provider catalog lookup, morphism catalog lookup, closure graph traversal, or evidence graph traversal.
+World v0 does not implement a scheduler, async runtime, storage backend, network transport, provider lifecycle manager, service discovery, real model/tool/file/human integrations, WASI filesystem, Component Model/WIT bindings, security/signing/encryption, distributed execution, Boundary closure, Boundary normalization, treaty resolution, provider harness execution, provider catalog lookup, morphism catalog lookup, closure graph traversal, or evidence graph traversal.

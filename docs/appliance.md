@@ -94,7 +94,7 @@ Appliance ABI v1 is a deployment ABI above Guest ABI v1. Required exports includ
 
 ## Universal Appliance ABI v2
 
-`world_universal_appliance.wasm` is a target-neutral ABI v2 conformance artifact for the generic World Seed host surface. It is not compiled for a particular Boundary Target. In this revision it accepts deterministic `world.Executable.TextEnvelope.v1` fixtures rather than serialized sealed `world.Executable.Image` bytes:
+`world_universal_appliance.wasm` is a target-neutral ABI v2 conformance artifact for the generic World Seed host surface. It is not compiled for a particular Boundary Target. It accepts canonical `world.Executable.Image` v2 bytes, decodes and validates the embedded Boundary module closure, derives the Appliance manifest from the loaded image, and executes through the existing Appliance/Core, Runspace, Fabric, Actuation, Capsule, Continuity, Chronicle, and Archive owners.
 
 - `world_appliance_abi_version`
 - `world_appliance_runtime_manifest_len`
@@ -111,9 +111,9 @@ Appliance ABI v1 is a deployment ABI above Guest ABI v1. Required exports includ
 - `world_appliance_reset`
 - bounded allocation helpers
 
-The runtime manifest is readable before image load. The executable manifest is readable only after successful load. Load is transactional, `reset` clears execution state while retaining the loaded image, `unload` clears image and execution state, and output remains readable until the next mutating call. The artifact has zero imports, no WASI, no host callbacks, and bounded linear memory.
+The runtime manifest is readable before image load. The executable manifest is canonical `Appliance.Manifest` bytes and is readable only after successful load. Load is transactional, `reset` clears execution state while retaining the loaded image, `unload` clears image and execution state, and output remains readable until the next mutating call. The artifact has zero imports, no WASI, no host callbacks, and bounded linear memory.
 
-`zig build check-world-universal-appliance-wasm` builds and inspects the artifact. `zig build check-world-universal-appliance-node` is the external runtime proof and is part of `zig build check-world-universal`: installed Node compiles the same WASM bytes once, instantiates with an empty import object, runs two unrelated executable text envelopes in fresh instances, and checks exact canonical WASM outputs.
+`zig build check-world-universal-appliance-wasm` builds and inspects the artifact. `zig build check-world-universal-appliance-node` is the external runtime proof and is part of `zig build check-world-universal`: installed Node compiles the same WASM bytes once, instantiates with an empty import object, loads two unrelated canonical `Executable.Image` byte images into one instance, repeats the same images in a fresh instance, and checks exact canonical host-request, result, and Archive append bytes.
 
 ## Agent appliance walkthrough
 
@@ -124,6 +124,8 @@ The canonical agent appliance is modeled as an external model Actuation boundary
 The host owns real effects, credentials, network clients, files, humans and approval systems, Archive byte retention, Checkpoint transport, WASM runtime choice, process lifecycle, and durability policy.
 
 The host must not forge World receipts, resume arbitrary mailbox entries, bypass Actuation preparation, reinterpret ObjectRef or Archive identity, mutate checkpoints, or redefine request ordering.
+
+The dependency-free ECMAScript reference host is split into `scripts/world_universal_appliance_codec.mjs`, `scripts/world_universal_appliance_host.mjs`, and `scripts/world_universal_appliance_conformance.mjs`. It compiles and instantiates the WASM, reads manifests and TurnOutput bytes, routes fixture effects by stable identity, asks the fixture generator for canonical response commands, and submits those commands back to the runtime. It does not execute ProgramPlan semantics, implement Runspace/Fabric/Actuation/Capsule/Chronicle/Archive, or validate Archive contents.
 
 ## Non-goals
 
