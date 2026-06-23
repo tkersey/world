@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import childProcess from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { decodeUtf8, inspectTurnOutput } from './world_universal_appliance_codec.mjs';
 
 export const statusOk = 0;
@@ -99,7 +100,18 @@ export function loadAndRunImage(replyHelperPath, instance, imageBytes, commandBy
     completed: completedSummary.status === 1 && completedSummary.hostRequestCount === 0,
     rootResultReady: completedSummary.rootResultFingerprint !== null && completedSummary.rootResultBytesLen > 0,
     archiveAppendReady: completedSummary.archiveAppendFingerprint !== null && completedSummary.archiveAppendBytesLen > 0,
+    completedOutputSha256: sha256Hex(completedOutput),
+    rootResultFingerprint: fingerprintString(completedSummary.rootResultFingerprint),
+    archiveAppendFingerprint: fingerprintString(completedSummary.archiveAppendFingerprint),
   };
+}
+
+function sha256Hex(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function fingerprintString(value) {
+  return value === null ? null : value.toString(16).padStart(16, '0');
 }
 
 export function replyCommandForOutput(replyHelperPath, outputBytes, metadata) {

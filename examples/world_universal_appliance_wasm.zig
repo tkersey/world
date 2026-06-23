@@ -23,6 +23,11 @@ const runtime_manifest =
 const guest_memory_bytes: usize = 1024 * 1024;
 const max_image_bytes: usize = 128 * 1024;
 const max_command_bytes: usize = 64 * 1024;
+const max_output_bytes: usize = 128 * 1024;
+const max_modules: usize = 8;
+const max_external_bindings: usize = 16;
+const max_mailbox_entries: usize = 1024;
+const max_linear_memory_pages: usize = 2048;
 const max_error_bytes: usize = 160;
 const slot_heap_bytes: usize = 40 * 1024 * 1024;
 var guest_memory: [guest_memory_bytes]u8 align(16) = [_]u8{0} ** guest_memory_bytes;
@@ -39,6 +44,27 @@ var native: Native = undefined;
 
 var last_error: [max_error_bytes]u8 = [_]u8{0} ** max_error_bytes;
 var last_error_len_value: usize = 0;
+
+pub const executable_runtime_profile = world.Executable.RuntimeProfile.init(.{
+    .supports_internal_providers = false,
+    .max_modules = max_modules,
+    .max_external_bindings = max_external_bindings,
+    .max_module_bytes = max_image_bytes,
+    .max_image_bytes = max_image_bytes,
+    .max_command_bytes = max_command_bytes,
+    .max_output_bytes = max_output_bytes,
+    .max_linear_memory_pages = max_linear_memory_pages,
+});
+
+pub const abi_capacity = blk: {
+    var capacity = Appliance.Capacity.wasm_agent;
+    capacity.max_pending_ports = max_mailbox_entries;
+    capacity.max_capsule_bytes = 4 * 1024 * 1024;
+    capacity.max_archive_append_bytes = 4 * 1024 * 1024;
+    capacity.max_command_bytes = max_command_bytes;
+    capacity.max_output_bytes = max_output_bytes;
+    break :blk Appliance.Capacity.init(capacity);
+};
 
 pub export fn world_appliance_abi_version() u32 {
     return Abi.universal_version;
@@ -64,8 +90,23 @@ pub export fn world_appliance_load_executable(ptr: usize, len: usize) u32 {
         resetSlot(staging_slot);
         return status;
     };
+    const compatibility = image.validateWithAllocator(allocator, executable_runtime_profile) catch |err| {
+        const status = setLoadErrorForSlot(err, staging_slot);
+        resetSlot(staging_slot);
+        return status;
+    };
+    if (!compatibility.compatible) {
+        resetSlot(staging_slot);
+        return setErrorStatus(.capacity_exceeded, "executable runtime profile exceeds appliance ABI");
+    }
+    if (!imageSupportedByUniversalAppliance(image)) {
+        resetSlot(staging_slot);
+        return setErrorStatus(.invalid_command, "executable image requires unsupported loaded routes");
+    }
     var core = Core.initExecutable(allocator, image, .{
         .profile = .wasm_small,
+        .capacity = abi_capacity,
+        .supported_runtime_profile = executable_runtime_profile,
         .metadata = "world-universal-appliance",
     }) catch |err| {
         const status = setLoadErrorForSlot(err, staging_slot);
@@ -82,6 +123,16 @@ pub export fn world_appliance_load_executable(ptr: usize, len: usize) u32 {
     bump = 16;
     clearError();
     return @intFromEnum(Abi.Status.ok);
+}
+
+fn imageSupportedByUniversalAppliance(image: Image) bool {
+    if (image.module_set.modules.len != 1) return false;
+    for (image.module_set.modules) |module| {
+        if (module.role != .root) return false;
+    }
+    return image.dispatch_image.route_ids.len == 0 and
+        image.dispatch_image.fabric_plan_fingerprints.len == 0 and
+        image.dispatch_image.route_provider_module_fingerprints.len == 0;
 }
 
 pub export fn world_appliance_unload_executable() u32 {

@@ -6,8 +6,72 @@ const fixtures = @import("world_fixtures");
 test "Universal Appliance ABI v2 loads canonical executable image bytes" {
     try std.testing.expectEqual(@as(u32, 2), universal.world_appliance_abi_version());
     try std.testing.expect(universal.world_appliance_runtime_manifest_len() > 0);
+    try std.testing.expect(!universal.executable_runtime_profile.supports_internal_providers);
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_read_manifest(0, 0));
+
+    var oversized_contract_image = try buildExecutableImageWithProfile(
+        std.testing.allocator,
+        world.Executable.RuntimeProfile.universal_v1,
+        "universal.test.oversized-contract",
+        "universal.test.oversized-contract",
+    );
+    defer oversized_contract_image.deinit(std.testing.allocator);
+    const oversized_contract_bytes = try oversized_contract_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(oversized_contract_bytes);
+    const oversized_contract_ptr = try writeGuest(oversized_contract_bytes);
+    try std.testing.expectEqual(@as(u32, 12), universal.world_appliance_load_executable(oversized_contract_ptr, oversized_contract_bytes.len));
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
+    try std.testing.expect(universal.world_appliance_last_error_len() > 0);
+
+    var loaded_route_image = try buildLoadedRouteImage(std.testing.allocator);
+    defer loaded_route_image.deinit(std.testing.allocator);
+    const loaded_route_bytes = try loaded_route_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(loaded_route_bytes);
+    try std.testing.expect(loaded_route_bytes.len <= 128 * 1024);
+    const loaded_route_ptr = try writeGuest(loaded_route_bytes);
+    try std.testing.expectEqual(@as(u32, 12), universal.world_appliance_load_executable(loaded_route_ptr, loaded_route_bytes.len));
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
+    try std.testing.expect(universal.world_appliance_last_error_len() > 0);
+
+    var no_host_image = try buildNoHostExecutableImage(std.testing.allocator, "universal.test.no-host");
+    defer no_host_image.deinit(std.testing.allocator);
+    const no_host_bytes = try no_host_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(no_host_bytes);
+    const no_host_ptr = try writeGuest(no_host_bytes);
+    try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_load_executable(no_host_ptr, no_host_bytes.len));
+    const no_host_manifest_len = universal.world_appliance_manifest_len();
+    try std.testing.expect(no_host_manifest_len > 0);
+    const no_host_manifest_ptr = universal.world_appliance_alloc(no_host_manifest_len);
+    try std.testing.expect(no_host_manifest_ptr != 0);
+    try std.testing.expectEqual(no_host_manifest_len, universal.world_appliance_read_manifest(no_host_manifest_ptr, no_host_manifest_len));
+    var no_host_manifest = try world.Appliance.Manifest.decode(std.testing.allocator, guestSlice(no_host_manifest_ptr, no_host_manifest_len));
+    defer no_host_manifest.deinit(std.testing.allocator);
+    const no_host_command = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = no_host_manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .metadata = "native-universal-test.no-host",
+    });
+    const no_host_command_bytes = try no_host_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(no_host_command_bytes);
+    const no_host_command_ptr = try writeGuest(no_host_command_bytes);
+    try std.testing.expectEqual(@as(u32, 3), universal.world_appliance_submit_command(no_host_command_ptr, no_host_command_bytes.len));
+    const no_host_output_len = universal.world_appliance_output_len();
+    try std.testing.expect(no_host_output_len > 0);
+    const no_host_output_ptr = universal.world_appliance_alloc(no_host_output_len);
+    try std.testing.expect(no_host_output_ptr != 0);
+    try std.testing.expectEqual(no_host_output_len, universal.world_appliance_read_output(no_host_output_ptr, no_host_output_len));
+    var no_host_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        guestSlice(no_host_output_ptr, no_host_output_len),
+        no_host_manifest.manifest_fingerprint,
+        universal.abi_capacity,
+    );
+    defer no_host_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, no_host_output.status);
+    try std.testing.expectEqual(@as(usize, 0), no_host_output.host_requests.len);
+    try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_unload_executable());
 
     var image = try buildExecutableImage(std.testing.allocator, "universal.test.image", "universal.test.binding");
     defer image.deinit(std.testing.allocator);
@@ -77,7 +141,7 @@ test "Universal Appliance ABI v2 loads canonical executable image bytes" {
         std.testing.allocator,
         guestSlice(completed_output_ptr, completed_output_len),
         manifest.manifest_fingerprint,
-        world.Appliance.Capacity.wasm_small,
+        universal.abi_capacity,
     );
     defer completed_output.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Appliance.TurnStatus.completed, completed_output.status);
@@ -101,10 +165,37 @@ test "Universal Appliance ABI v2 loads canonical executable image bytes" {
 }
 
 fn buildExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8, binding_label: []const u8) !world.Executable.Image {
+    return buildExecutableImageWithProfile(allocator, universal.executable_runtime_profile, image_metadata, binding_label);
+}
+
+fn buildNoHostExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8) !world.Executable.Image {
+    const root_bytes = try fixtures.Strict.Target.Module.fullImage(allocator);
+    defer allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(allocator, .{
+        .runtime_profile = universal.executable_runtime_profile,
+        .metadata = image_metadata,
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    return try prepared.seal();
+}
+
+fn buildExecutableImageWithProfile(
+    allocator: std.mem.Allocator,
+    runtime_profile: world.Executable.RuntimeProfile,
+    image_metadata: []const u8,
+    binding_label: []const u8,
+) !world.Executable.Image {
     const root_bytes = try fixtures.Ports.Target.Module.fullImage(allocator);
     defer allocator.free(root_bytes);
 
-    var builder = world.Executable.Builder.init(allocator, .{ .metadata = image_metadata });
+    var builder = world.Executable.Builder.init(allocator, .{
+        .runtime_profile = runtime_profile,
+        .metadata = image_metadata,
+    });
     defer builder.deinit();
     try builder.addRootModule(root_bytes);
 
@@ -142,6 +233,35 @@ fn buildExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8
         .label = binding_label,
     }));
 
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    return try prepared.seal();
+}
+
+fn buildLoadedRouteImage(allocator: std.mem.Allocator) !world.Executable.Image {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(allocator);
+    defer allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Strict.Target.Module.fullImage(allocator);
+    defer allocator.free(provider_bytes);
+    const provider_runtime_profile = world.Executable.RuntimeProfile.init(.{
+        .supports_internal_providers = true,
+        .max_modules = universal.executable_runtime_profile.max_modules,
+        .max_external_bindings = universal.executable_runtime_profile.max_external_bindings,
+        .max_module_bytes = universal.executable_runtime_profile.max_module_bytes,
+        .max_image_bytes = universal.executable_runtime_profile.max_image_bytes,
+        .max_command_bytes = universal.executable_runtime_profile.max_command_bytes,
+        .max_output_bytes = universal.executable_runtime_profile.max_output_bytes,
+        .max_linear_memory_pages = universal.executable_runtime_profile.max_linear_memory_pages,
+    });
+
+    var builder = world.Executable.Builder.init(allocator, .{
+        .runtime_profile = provider_runtime_profile,
+        .linker_policy = .strict_closed,
+        .metadata = "universal.test.loaded-route",
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
     var prepared = try builder.prepare();
     defer prepared.deinit();
     return try prepared.seal();

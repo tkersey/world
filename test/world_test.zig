@@ -39989,6 +39989,7 @@ test "admitter accepts inspect-only full module and rejects missing permit for e
 fn buildCodecExecutableImage(allocator: std.mem.Allocator) !world.Executable.Image {
     const root_bytes = try fixtures.Ports.Target.Module.fullImage(allocator);
     defer allocator.free(root_bytes);
+    const bounded_policy = world.ValuePolicy{ .max_value_image_bytes = 7 };
 
     var builder = world.Executable.Builder.init(allocator, .{
         .metadata = "codec.image.metadata",
@@ -40004,7 +40005,7 @@ fn buildCodecExecutableImage(allocator: std.mem.Allocator) !world.Executable.Ima
         .label = "codec.fixture",
         .supported_modes = .all,
         .supported_response_statuses = .all,
-        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+        .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(bounded_policy),
     });
     const descriptor = world.Actuation.Descriptor.init(.{
         .actuator_ref = actuator_ref,
@@ -40015,6 +40016,7 @@ fn buildCodecExecutableImage(allocator: std.mem.Allocator) !world.Executable.Ima
         .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
         .payload_value_table_id = root_import.payload_value_table_id,
         .response_value_table_id = root_import.response_value_table_id,
+        .value_policy = bounded_policy,
         .label = "codec.fixture",
     });
     try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
@@ -40027,6 +40029,7 @@ fn buildCodecExecutableImage(allocator: std.mem.Allocator) !world.Executable.Ima
         .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
         .actuator_ref = actuator_ref,
         .descriptor = descriptor,
+        .value_policy = bounded_policy,
         .label = "codec.fixture",
     }));
 
@@ -40061,7 +40064,8 @@ test "Executable Builder canonical image codec roundtrips sealed image bytes" {
     const decoded_report = try decoded.validate(world.Executable.RuntimeProfile.universal_v1);
     try std.testing.expect(decoded_report.compatible);
 
-    const report = try world.Executable.Image.validationReport(encoded, world.Executable.RuntimeProfile.universal_v1, limits);
+    const report = try world.Executable.Image.validationReport(std.testing.allocator, encoded, world.Executable.RuntimeProfile.universal_v1, limits);
+    defer std.testing.allocator.free(report.summary);
     try std.testing.expect(report.compatible);
 
     var cloned = try image.cloneOwned(std.testing.allocator);
@@ -40103,6 +40107,30 @@ test "Executable Builder canonical image codec rejects malformed bytes" {
     const image_fingerprint_offset = magic_len + 4 + 4 + 4 + 8;
     std.mem.writeInt(u64, forged_fingerprint[image_fingerprint_offset..][0..8], image.image_fingerprint +% 1, .little);
     try std.testing.expectError(error.InvalidFrameEncoding, world.Executable.Image.decode(std.testing.allocator, forged_fingerprint, limits));
+
+    const label_offset = std.mem.indexOf(u8, encoded, "codec.fixture").?;
+    const partial_actuator_ref = encoded[0 .. label_offset + "codec.fixture".len];
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Executable.Image.decode(std.testing.allocator, partial_actuator_ref, limits));
+}
+
+test "Executable Builder encoded length accounts for provider module set entries" {
+    const root_bytes = try fixtures.Ports.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Strict.Target.Module.fullImage(std.testing.allocator);
+    defer std.testing.allocator.free(provider_bytes);
+
+    var builder = world.Executable.Builder.init(std.testing.allocator, .{ .linker_policy = .strict_closed });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    var image = try prepared.seal();
+    defer image.deinit(std.testing.allocator);
+
+    const encoded = try image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expectEqual(encoded.len, image.encodedLen());
 }
 
 test "Executable Builder seals full module image with explicit residual external binding" {

@@ -2355,10 +2355,11 @@ pub fn Appliance(comptime World: type) type {
                 options: struct {
                     profile: Profile = .wasm_agent,
                     capacity: ?Capacity = null,
+                    supported_runtime_profile: World.Executable.RuntimeProfile = World.Executable.RuntimeProfile.universal_v1,
                     metadata: []const u8 = "world-executable-image",
                 },
             ) !@This() {
-                const compatibility = try image.validateWithAllocator(allocator, World.Executable.RuntimeProfile.universal_v1);
+                const compatibility = try image.validateWithAllocator(allocator, options.supported_runtime_profile);
                 if (!compatibility.compatible) return error.ExecutableLoadRejected;
                 const capacity = options.capacity orelse capacityFromExecutableMemoryPlan(image.memory_plan, options.profile);
                 try capacity.validateForProfile(options.profile);

@@ -1,6 +1,7 @@
 const std = @import("std");
 const world = @import("world");
 const fixtures = @import("world_fixtures");
+const universal = @import("world_universal_appliance_wasm.zig");
 
 pub fn main(init: std.process.Init) !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -52,7 +53,10 @@ fn buildExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8
     const root_bytes = try fixtures.Ports.Target.Module.fullImage(allocator);
     defer allocator.free(root_bytes);
 
-    var builder = world.Executable.Builder.init(allocator, .{ .metadata = image_metadata });
+    var builder = world.Executable.Builder.init(allocator, .{
+        .runtime_profile = universal.executable_runtime_profile,
+        .metadata = image_metadata,
+    });
     defer builder.deinit();
     try builder.addRootModule(root_bytes);
 
@@ -98,6 +102,8 @@ fn buildExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8
 fn manifestFingerprintForImage(allocator: std.mem.Allocator, image: world.Executable.Image) !u64 {
     var core = try world.Appliance.Core.initExecutable(allocator, image, .{
         .profile = .wasm_small,
+        .capacity = universal.abi_capacity,
+        .supported_runtime_profile = universal.executable_runtime_profile,
         .metadata = "world-universal-appliance",
     });
     defer core.deinit();
@@ -122,6 +128,8 @@ fn replyCommandBytesForBoot(
 ) ![]const u8 {
     var core = try world.Appliance.Core.initExecutable(allocator, image, .{
         .profile = .wasm_small,
+        .capacity = universal.abi_capacity,
+        .supported_runtime_profile = universal.executable_runtime_profile,
         .metadata = "world-universal-appliance",
     });
     defer core.deinit();
@@ -133,7 +141,7 @@ fn replyCommandBytesForBoot(
         allocator,
         output_bytes,
         core.readManifest().manifest_fingerprint,
-        world.Appliance.Capacity.wasm_small,
+        universal.abi_capacity,
     );
     defer output.deinit(allocator);
     if (output.status != .needs_host or output.host_requests.len != 1) return error.InvalidFrameEncoding;
@@ -158,7 +166,7 @@ fn replyCommandBytesForOutput(
 ) ![]const u8 {
     const reply = try hostReplyFor(allocator, output.host_requests[0], 0x600D_0001);
     defer if (reply.outcome.response_bytes.len != 0) allocator.free(reply.outcome.response_bytes);
-    try reply.validateWithAllocator(allocator, output.host_requests, world.Appliance.Capacity.wasm_small);
+    try reply.validateWithAllocator(allocator, output.host_requests, universal.abi_capacity);
     const command = world.Appliance.Command.init(.{
         .kind = .@"continue",
         .manifest_fingerprint = output.manifest_fingerprint,
@@ -167,7 +175,7 @@ fn replyCommandBytesForOutput(
         .host_replies = &.{reply},
         .metadata = metadata,
     });
-    try command.validateWithAllocator(allocator, output.manifest_fingerprint, world.Appliance.Capacity.wasm_small);
+    try command.validateWithAllocator(allocator, output.manifest_fingerprint, universal.abi_capacity);
     return command.encode(allocator);
 }
 

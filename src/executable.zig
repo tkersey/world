@@ -736,10 +736,12 @@ pub fn Executable(comptime W: type) type {
                 return decodeExecutableImage(allocator, bytes, limits);
             }
 
-            pub fn validationReport(bytes: []const u8, supported_profile: RuntimeProfile, limits: DecodeLimits) !CompatibilityReport {
-                var image = try Image.decode(std.heap.page_allocator, bytes, limits);
-                defer image.deinit(std.heap.page_allocator);
-                return image.validate(supported_profile);
+            pub fn validationReport(allocator: std.mem.Allocator, bytes: []const u8, supported_profile: RuntimeProfile, limits: DecodeLimits) !CompatibilityReport {
+                var image = try Image.decode(allocator, bytes, limits);
+                defer image.deinit(allocator);
+                var report = try image.validateWithAllocator(allocator, supported_profile);
+                report.summary = try allocator.dupe(u8, report.summary);
+                return report;
             }
 
             pub fn cloneOwned(self: @This(), allocator: std.mem.Allocator) !@This() {
@@ -1595,7 +1597,10 @@ pub fn Executable(comptime W: type) type {
         fn cloneModuleSlice(allocator: std.mem.Allocator, modules: []const Module) ![]Module {
             const cloned = try allocator.alloc(Module, modules.len);
             var initialized: usize = 0;
-            errdefer freeModuleSlice(allocator, cloned[0..initialized]);
+            errdefer {
+                freeModuleElements(allocator, cloned[0..initialized]);
+                allocator.free(cloned);
+            }
             for (modules, 0..) |module, index| {
                 var current = module;
                 current.module_ref.label = null;
@@ -1608,6 +1613,7 @@ pub fn Executable(comptime W: type) type {
                 current.canonical_bytes = &.{};
                 errdefer {
                     freeModuleOwnedFields(allocator, current);
+                    if (current.imports.len != 0) allocator.free(current.imports);
                     allocator.free(current.canonical_bytes);
                 }
                 current.module_ref.label = try cloneOptionalBytes(allocator, module.module_ref.label);
@@ -1648,12 +1654,16 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn freeModuleSlice(allocator: std.mem.Allocator, modules: []Module) void {
+            freeModuleElements(allocator, modules);
+            allocator.free(modules);
+        }
+
+        fn freeModuleElements(allocator: std.mem.Allocator, modules: []const Module) void {
             for (modules) |module| {
                 freeModuleOwnedFields(allocator, module);
                 allocator.free(module.imports);
                 allocator.free(module.canonical_bytes);
             }
-            allocator.free(modules);
         }
 
         fn freeModuleOwnedFields(allocator: std.mem.Allocator, module: Module) void {
@@ -1814,8 +1824,12 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn freeExternalBindingSlice(allocator: std.mem.Allocator, bindings: []const ExternalBinding) void {
-            for (bindings) |binding| freeExternalBinding(allocator, binding);
+            freeExternalBindingElements(allocator, bindings);
             allocator.free(bindings);
+        }
+
+        fn freeExternalBindingElements(allocator: std.mem.Allocator, bindings: []const ExternalBinding) void {
+            for (bindings) |binding| freeExternalBinding(allocator, binding);
         }
 
         const executable_image_magic = "world.Executable.Image.v2\x00";
@@ -1949,16 +1963,16 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn addModuleSetLen(total: *usize, module_set: ModuleSet) !void {
-            try addChecked(total, 8 + 8 + 8);
+            try addChecked(total, 8 + 4 + 8);
             for (module_set.modules) |module| {
-                try addChecked(total, 8 + 1);
+                try addChecked(total, 4 + 1);
                 try addModuleRefLen(total, module.module_ref);
                 try addTargetRefLen(total, module.target_ref);
-                try addImportSetLen(total);
+                try addImportSetLen(total, module.import_set);
                 try addChecked(total, 8);
                 for (module.imports) |requirement| try addImportRequirementLen(total, requirement);
                 try addExportSummaryLen(total, module.export_summary);
-                try addChecked(total, 8 + 8 + 8);
+                try addChecked(total, 8 * 3);
                 try addBytesLen(total, module.canonical_bytes);
             }
         }
@@ -2001,9 +2015,9 @@ pub fn Executable(comptime W: type) type {
             try addChecked(total, 1 + if (value != null) @as(usize, 4) else 0);
         }
 
-        fn addImportSetLen(total: *usize) !void {
+        fn addImportSetLen(total: *usize, set: W.ImportSet) !void {
             try addChecked(total, 8 + 8 + 8 + 8 + 8 + 8);
-            try addOptionalU64Len(total, null);
+            try addOptionalU64Len(total, set.surface_profile_fingerprint);
         }
 
         fn addImportRequirementLen(total: *usize, requirement: W.ImportRequirement) !void {
@@ -2100,9 +2114,8 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn addValuePolicyLen(total: *usize, policy: W.ValuePolicy) !void {
-            _ = policy;
             try addChecked(total, 1 + 1 + 1 + 1);
-            try addOptionalU64Len(total, null);
+            try addOptionalU64Len(total, policy.max_value_image_bytes);
         }
 
         fn addPolicyLen(total: *usize) !void {
@@ -2119,7 +2132,7 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn addCertificateLen(total: *usize) !void {
-            try addChecked(total, 4 + 4 + 8 * 13);
+            try addChecked(total, 4 + 4 + 8 * 14);
         }
 
         fn addU64SliceLen(total: *usize, values: []const u64) !void {
@@ -2177,7 +2190,10 @@ pub fn Executable(comptime W: type) type {
             const module_set_fingerprint = try readU64(bytes, cursor);
             const modules = try allocator.alloc(Module, count);
             var initialized: usize = 0;
-            errdefer freeModuleSlice(allocator, modules[0..initialized]);
+            errdefer {
+                freeModuleElements(allocator, modules[0..initialized]);
+                allocator.free(modules);
+            }
             while (initialized < count) : (initialized += 1) {
                 modules[initialized] = try readModule(allocator, bytes, cursor, limits);
             }
@@ -2266,26 +2282,47 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn readModuleRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.Admission.ModuleRef {
+            const format_version = try readU32(bytes, cursor);
+            const fingerprint_version = try readU32(bytes, cursor);
+            const module_ref_fingerprint = try readU64(bytes, cursor);
+            const boundary_module_fingerprint = try readU64(bytes, cursor);
+            const module_kind = try readEnum(W.Admission.BoundaryModuleKind, bytes, cursor);
+            const target_ref_fingerprint = try readU64(bytes, cursor);
+            const world_surface_fingerprint = try readU64(bytes, cursor);
+            const target_certificate_fingerprint = try readU64(bytes, cursor);
+            const residual_program_plan_hash = try readOptionalU64(bytes, cursor);
+            const import_surface_fingerprint = try readOptionalU64(bytes, cursor);
+            const export_surface_fingerprint = try readOptionalU64(bytes, cursor);
+            const module_graph_fingerprint = try readOptionalU64(bytes, cursor);
+            const normal_form_kind = try readEnum(W.NormalFormKind, bytes, cursor);
+            const world_port_count = try readCount(bytes, cursor, std.math.maxInt(usize));
+            const world_port_table_fingerprint = try readOptionalU64(bytes, cursor);
+            const world_value_table_fingerprint = try readOptionalU64(bytes, cursor);
+            const world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor);
+            const label = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer if (label) |value| allocator.free(@constCast(value));
+            const metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(metadata);
             return .{
-                .format_version = try readU32(bytes, cursor),
-                .fingerprint_version = try readU32(bytes, cursor),
-                .module_ref_fingerprint = try readU64(bytes, cursor),
-                .boundary_module_fingerprint = try readU64(bytes, cursor),
-                .module_kind = try readEnum(W.Admission.BoundaryModuleKind, bytes, cursor),
-                .target_ref_fingerprint = try readU64(bytes, cursor),
-                .world_surface_fingerprint = try readU64(bytes, cursor),
-                .target_certificate_fingerprint = try readU64(bytes, cursor),
-                .residual_program_plan_hash = try readOptionalU64(bytes, cursor),
-                .import_surface_fingerprint = try readOptionalU64(bytes, cursor),
-                .export_surface_fingerprint = try readOptionalU64(bytes, cursor),
-                .module_graph_fingerprint = try readOptionalU64(bytes, cursor),
-                .normal_form_kind = try readEnum(W.NormalFormKind, bytes, cursor),
-                .world_port_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
-                .world_port_table_fingerprint = try readOptionalU64(bytes, cursor),
-                .world_value_table_fingerprint = try readOptionalU64(bytes, cursor),
-                .world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor),
-                .label = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
-                .metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .format_version = format_version,
+                .fingerprint_version = fingerprint_version,
+                .module_ref_fingerprint = module_ref_fingerprint,
+                .boundary_module_fingerprint = boundary_module_fingerprint,
+                .module_kind = module_kind,
+                .target_ref_fingerprint = target_ref_fingerprint,
+                .world_surface_fingerprint = world_surface_fingerprint,
+                .target_certificate_fingerprint = target_certificate_fingerprint,
+                .residual_program_plan_hash = residual_program_plan_hash,
+                .import_surface_fingerprint = import_surface_fingerprint,
+                .export_surface_fingerprint = export_surface_fingerprint,
+                .module_graph_fingerprint = module_graph_fingerprint,
+                .normal_form_kind = normal_form_kind,
+                .world_port_count = world_port_count,
+                .world_port_table_fingerprint = world_port_table_fingerprint,
+                .world_value_table_fingerprint = world_value_table_fingerprint,
+                .world_dispatch_table_fingerprint = world_dispatch_table_fingerprint,
+                .label = label,
+                .metadata = metadata,
             };
         }
 
@@ -2308,22 +2345,39 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn readTargetRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.TargetRef {
+            const format_version = try readU32(bytes, cursor);
+            const fingerprint_version = try readU32(bytes, cursor);
+            const target_ref_fingerprint = try readU64(bytes, cursor);
+            const target_label = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer if (target_label) |value| allocator.free(@constCast(value));
+            const world_surface_fingerprint = try readU64(bytes, cursor);
+            const world_surface_replay_scope_fingerprint = try readOptionalU64(bytes, cursor);
+            const target_certificate_fingerprint = try readU64(bytes, cursor);
+            const residual_program_plan_hash = try readOptionalU64(bytes, cursor);
+            const normal_form_kind = try readEnum(W.NormalFormKind, bytes, cursor);
+            const world_port_table_fingerprint = try readOptionalU64(bytes, cursor);
+            const world_value_table_fingerprint = try readOptionalU64(bytes, cursor);
+            const world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor);
+            const surface_profile_fingerprint = try readOptionalU64(bytes, cursor);
+            const boundary_module_fingerprint = try readOptionalU64(bytes, cursor);
+            const metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(metadata);
             return .{
-                .format_version = try readU32(bytes, cursor),
-                .fingerprint_version = try readU32(bytes, cursor),
-                .target_ref_fingerprint = try readU64(bytes, cursor),
-                .target_label = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
-                .world_surface_fingerprint = try readU64(bytes, cursor),
-                .world_surface_replay_scope_fingerprint = try readOptionalU64(bytes, cursor),
-                .target_certificate_fingerprint = try readU64(bytes, cursor),
-                .residual_program_plan_hash = try readOptionalU64(bytes, cursor),
-                .normal_form_kind = try readEnum(W.NormalFormKind, bytes, cursor),
-                .world_port_table_fingerprint = try readOptionalU64(bytes, cursor),
-                .world_value_table_fingerprint = try readOptionalU64(bytes, cursor),
-                .world_dispatch_table_fingerprint = try readOptionalU64(bytes, cursor),
-                .surface_profile_fingerprint = try readOptionalU64(bytes, cursor),
-                .boundary_module_fingerprint = try readOptionalU64(bytes, cursor),
-                .metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .format_version = format_version,
+                .fingerprint_version = fingerprint_version,
+                .target_ref_fingerprint = target_ref_fingerprint,
+                .target_label = target_label,
+                .world_surface_fingerprint = world_surface_fingerprint,
+                .world_surface_replay_scope_fingerprint = world_surface_replay_scope_fingerprint,
+                .target_certificate_fingerprint = target_certificate_fingerprint,
+                .residual_program_plan_hash = residual_program_plan_hash,
+                .normal_form_kind = normal_form_kind,
+                .world_port_table_fingerprint = world_port_table_fingerprint,
+                .world_value_table_fingerprint = world_value_table_fingerprint,
+                .world_dispatch_table_fingerprint = world_dispatch_table_fingerprint,
+                .surface_profile_fingerprint = surface_profile_fingerprint,
+                .boundary_module_fingerprint = boundary_module_fingerprint,
+                .metadata = metadata,
             };
         }
 
@@ -2434,17 +2488,29 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn readExportSummary(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.Admission.ExportSummary {
+            const export_summary_fingerprint = try readU64(bytes, cursor);
+            const target_ref_fingerprint = try readU64(bytes, cursor);
+            const module_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const main_export_present = try readBool(bytes, cursor);
+            const result_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const argument_value_ref_count = try readCount(bytes, cursor, std.math.maxInt(usize));
+            const normal_form_kind = try readEnum(W.NormalFormKind, bytes, cursor);
+            const target_label = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer if (target_label) |value| allocator.free(@constCast(value));
+            const loaded_execution_supported = try readBool(bytes, cursor);
+            const loaded_execution_unsupported_reason = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer if (loaded_execution_unsupported_reason) |value| allocator.free(@constCast(value));
             return .{
-                .export_summary_fingerprint = try readU64(bytes, cursor),
-                .target_ref_fingerprint = try readU64(bytes, cursor),
-                .module_ref_fingerprint = try readOptionalU64(bytes, cursor),
-                .main_export_present = try readBool(bytes, cursor),
-                .result_value_ref_fingerprint = try readOptionalU64(bytes, cursor),
-                .argument_value_ref_count = try readCount(bytes, cursor, std.math.maxInt(usize)),
-                .normal_form_kind = try readEnum(W.NormalFormKind, bytes, cursor),
-                .target_label = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
-                .loaded_execution_supported = try readBool(bytes, cursor),
-                .loaded_execution_unsupported_reason = try readOptionalBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .export_summary_fingerprint = export_summary_fingerprint,
+                .target_ref_fingerprint = target_ref_fingerprint,
+                .module_ref_fingerprint = module_ref_fingerprint,
+                .main_export_present = main_export_present,
+                .result_value_ref_fingerprint = result_value_ref_fingerprint,
+                .argument_value_ref_count = argument_value_ref_count,
+                .normal_form_kind = normal_form_kind,
+                .target_label = target_label,
+                .loaded_execution_supported = loaded_execution_supported,
+                .loaded_execution_unsupported_reason = loaded_execution_unsupported_reason,
             };
         }
 
@@ -2528,7 +2594,10 @@ pub fn Executable(comptime W: type) type {
             const count = try readCount(bytes, cursor, limits.max_external_bindings);
             const bindings = try allocator.alloc(ExternalBinding, count);
             var initialized: usize = 0;
-            errdefer freeExternalBindingSlice(allocator, bindings[0..initialized]);
+            errdefer {
+                freeExternalBindingElements(allocator, bindings[0..initialized]);
+                allocator.free(bindings);
+            }
             while (initialized < count) : (initialized += 1) {
                 bindings[initialized] = try readExternalBinding(allocator, bytes, cursor, limits);
             }
@@ -2614,19 +2683,33 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn readActuatorRef(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.Actuation.Ref {
+            const format_version = try readU32(bytes, cursor);
+            const fingerprint_version = try readU32(bytes, cursor);
+            const ref_fingerprint = try readU64(bytes, cursor);
+            const kind = try readEnum(W.Actuation.Kind, bytes, cursor);
+            const class = try readEnum(W.Actuation.Class, bytes, cursor);
+            const label = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(label);
+            const supported_modes = try readModeSet(bytes, cursor);
+            const supported_response_statuses = try readResponseStatusSet(bytes, cursor);
+            const value_policy_fingerprint = try readU64(bytes, cursor);
+            const authority_descriptor_fingerprint = try readOptionalU64(bytes, cursor);
+            const protocol_descriptor_fingerprint = try readOptionalU64(bytes, cursor);
+            const metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(metadata);
             return .{
-                .format_version = try readU32(bytes, cursor),
-                .fingerprint_version = try readU32(bytes, cursor),
-                .ref_fingerprint = try readU64(bytes, cursor),
-                .kind = try readEnum(W.Actuation.Kind, bytes, cursor),
-                .class = try readEnum(W.Actuation.Class, bytes, cursor),
-                .label = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
-                .supported_modes = try readModeSet(bytes, cursor),
-                .supported_response_statuses = try readResponseStatusSet(bytes, cursor),
-                .value_policy_fingerprint = try readU64(bytes, cursor),
-                .authority_descriptor_fingerprint = try readOptionalU64(bytes, cursor),
-                .protocol_descriptor_fingerprint = try readOptionalU64(bytes, cursor),
-                .metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .format_version = format_version,
+                .fingerprint_version = fingerprint_version,
+                .ref_fingerprint = ref_fingerprint,
+                .kind = kind,
+                .class = class,
+                .label = label,
+                .supported_modes = supported_modes,
+                .supported_response_statuses = supported_response_statuses,
+                .value_policy_fingerprint = value_policy_fingerprint,
+                .authority_descriptor_fingerprint = authority_descriptor_fingerprint,
+                .protocol_descriptor_fingerprint = protocol_descriptor_fingerprint,
+                .metadata = metadata,
             };
         }
 
@@ -2654,27 +2737,49 @@ pub fn Executable(comptime W: type) type {
         }
 
         fn readDescriptor(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: Image.DecodeLimits) !W.Actuation.Descriptor {
+            const format_version = try readU32(bytes, cursor);
+            const fingerprint_version = try readU32(bytes, cursor);
+            const descriptor_fingerprint = try readU64(bytes, cursor);
+            const actuator_ref_fingerprint = try readU64(bytes, cursor);
+            const world_surface_fingerprint = try readU64(bytes, cursor);
+            const target_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const world_port_id = try readOptionalU32(bytes, cursor);
+            const world_port_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const source_effect_shape_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const payload_value_ref = try readOptionalU32(bytes, cursor);
+            const payload_value_table_id = try readOptionalU32(bytes, cursor);
+            const response_value_ref = try readOptionalU32(bytes, cursor);
+            const response_value_table_id = try readOptionalU32(bytes, cursor);
+            const supported_modes = try readModeSet(bytes, cursor);
+            const allowed_response_kinds = try readResponseStatusSet(bytes, cursor);
+            const kind = try readEnum(W.Actuation.Kind, bytes, cursor);
+            const class = try readEnum(W.Actuation.Class, bytes, cursor);
+            const value_policy = try readValuePolicy(bytes, cursor);
+            const label = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(label);
+            const metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes);
+            errdefer allocator.free(metadata);
             return .{
-                .format_version = try readU32(bytes, cursor),
-                .fingerprint_version = try readU32(bytes, cursor),
-                .descriptor_fingerprint = try readU64(bytes, cursor),
-                .actuator_ref_fingerprint = try readU64(bytes, cursor),
-                .world_surface_fingerprint = try readU64(bytes, cursor),
-                .target_ref_fingerprint = try readOptionalU64(bytes, cursor),
-                .world_port_id = try readOptionalU32(bytes, cursor),
-                .world_port_ref_fingerprint = try readOptionalU64(bytes, cursor),
-                .source_effect_shape_ref_fingerprint = try readOptionalU64(bytes, cursor),
-                .payload_value_ref = try readOptionalU32(bytes, cursor),
-                .payload_value_table_id = try readOptionalU32(bytes, cursor),
-                .response_value_ref = try readOptionalU32(bytes, cursor),
-                .response_value_table_id = try readOptionalU32(bytes, cursor),
-                .supported_modes = try readModeSet(bytes, cursor),
-                .allowed_response_kinds = try readResponseStatusSet(bytes, cursor),
-                .kind = try readEnum(W.Actuation.Kind, bytes, cursor),
-                .class = try readEnum(W.Actuation.Class, bytes, cursor),
-                .value_policy = try readValuePolicy(bytes, cursor),
-                .label = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
-                .metadata = try readBytesOwned(allocator, bytes, cursor, limits.max_metadata_bytes),
+                .format_version = format_version,
+                .fingerprint_version = fingerprint_version,
+                .descriptor_fingerprint = descriptor_fingerprint,
+                .actuator_ref_fingerprint = actuator_ref_fingerprint,
+                .world_surface_fingerprint = world_surface_fingerprint,
+                .target_ref_fingerprint = target_ref_fingerprint,
+                .world_port_id = world_port_id,
+                .world_port_ref_fingerprint = world_port_ref_fingerprint,
+                .source_effect_shape_ref_fingerprint = source_effect_shape_ref_fingerprint,
+                .payload_value_ref = payload_value_ref,
+                .payload_value_table_id = payload_value_table_id,
+                .response_value_ref = response_value_ref,
+                .response_value_table_id = response_value_table_id,
+                .supported_modes = supported_modes,
+                .allowed_response_kinds = allowed_response_kinds,
+                .kind = kind,
+                .class = class,
+                .value_policy = value_policy,
+                .label = label,
+                .metadata = metadata,
             };
         }
 

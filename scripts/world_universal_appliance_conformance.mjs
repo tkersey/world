@@ -16,6 +16,8 @@ async function main() {
   if (runs.some((run) => !run.completed)) throw new Error(`canonical reply did not complete execution: ${JSON.stringify(runs)}`);
   if (runs.some((run) => !run.rootResultReady)) throw new Error('completed output missing root result bytes');
   if (runs.some((run) => !run.archiveAppendReady)) throw new Error('completed output missing Archive.AppendBatch bytes');
+  if (!sameCompletedOutput(result.resultA, result.freshA)) throw new Error('image A completed output is not deterministic across fresh instances');
+  if (!sameCompletedOutput(result.resultB, result.freshB)) throw new Error('image B completed output is not deterministic across fresh instances');
   if (!result.rejectedTextEnvelope) throw new Error('text envelope was accepted');
   if (!result.submitWithoutImageRejected) throw new Error('submit without image was not rejected');
 
@@ -31,8 +33,16 @@ async function main() {
   console.log('completed_outputs_ready=true');
   console.log('root_result_bytes_ready=true');
   console.log('archive_append_batch_bytes_ready=true');
+  console.log('fresh_image_a_completed_output_matches=true');
+  console.log('fresh_image_b_completed_output_matches=true');
   console.log('text_envelope_rejected=true');
   console.log('submit_without_image_rejected=true');
+}
+
+function sameCompletedOutput(left, right) {
+  return left.completedOutputSha256 === right.completedOutputSha256 &&
+    left.rootResultFingerprint === right.rootResultFingerprint &&
+    left.archiveAppendFingerprint === right.archiveAppendFingerprint;
 }
 
 main().catch((error) => {

@@ -49,6 +49,8 @@ fn loadAndSubmit(image_bytes: []const u8, command_bytes: []const u8) !struct { l
 fn commandForImage(allocator: std.mem.Allocator, image: world.Executable.Image, metadata: []const u8) ![]const u8 {
     var core = try world.Appliance.Core.initExecutable(allocator, image, .{
         .profile = .wasm_small,
+        .capacity = universal.abi_capacity,
+        .supported_runtime_profile = universal.executable_runtime_profile,
         .metadata = "world-universal-appliance",
     });
     defer core.deinit();
@@ -65,7 +67,10 @@ fn buildExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8
     const root_bytes = try fixtures.Ports.Target.Module.fullImage(allocator);
     defer allocator.free(root_bytes);
 
-    var builder = world.Executable.Builder.init(allocator, .{ .metadata = image_metadata });
+    var builder = world.Executable.Builder.init(allocator, .{
+        .runtime_profile = universal.executable_runtime_profile,
+        .metadata = image_metadata,
+    });
     defer builder.deinit();
     try builder.addRootModule(root_bytes);
 

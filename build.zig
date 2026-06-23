@@ -133,6 +133,25 @@ pub fn build(b: *std.Build) void {
     fixtures.addImport("world", world);
     fixtures.addImport("boundary", boundary);
 
+    const host_boundary_dep = b.dependency("boundary", .{
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    const host_boundary = host_boundary_dep.module("boundary");
+    const host_world = b.createModule(.{
+        .root_source_file = b.path("src/world.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    host_world.addImport("boundary", host_boundary);
+    const host_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/fixtures.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    host_fixtures.addImport("world", host_world);
+    host_fixtures.addImport("boundary", host_boundary);
+
     const wasm_fixtures = b.createModule(.{
         .root_source_file = b.path("test/fixtures.zig"),
         .target = wasm_target,
@@ -187,8 +206,8 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .optimize = optimize,
     });
-    universal_fixture_mod.addImport("world", world);
-    universal_fixture_mod.addImport("world_fixtures", fixtures);
+    universal_fixture_mod.addImport("world", host_world);
+    universal_fixture_mod.addImport("world_fixtures", host_fixtures);
     const universal_fixture_gen = b.addExecutable(.{ .name = "world-universal-appliance-fixtures", .root_module = universal_fixture_mod });
     const run_universal_fixture_gen = b.addRunArtifact(universal_fixture_gen);
     const universal_image_a = run_universal_fixture_gen.addOutputFileArg("world-universal-image-a.bin");
@@ -215,15 +234,15 @@ pub fn build(b: *std.Build) void {
                 .target = b.graph.host,
                 .optimize = optimize,
             });
-            universal_impl.addImport("world", world);
+            universal_impl.addImport("world", host_world);
             break :blk b.createModule(.{
                 .root_source_file = b.path("test/universal_appliance_test.zig"),
                 .target = b.graph.host,
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "universal_appliance_impl", .module = universal_impl },
-                    .{ .name = "world", .module = world },
-                    .{ .name = "world_fixtures", .module = fixtures },
+                    .{ .name = "world", .module = host_world },
+                    .{ .name = "world_fixtures", .module = host_fixtures },
                 },
             });
         },
@@ -1675,24 +1694,6 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    const host_boundary_dep = b.dependency("boundary", .{
-        .target = b.graph.host,
-        .optimize = optimize,
-    });
-    const host_boundary = host_boundary_dep.module("boundary");
-    const host_world = b.createModule(.{
-        .root_source_file = b.path("src/world.zig"),
-        .target = b.graph.host,
-        .optimize = optimize,
-    });
-    host_world.addImport("boundary", host_boundary);
-    const host_fixtures = b.createModule(.{
-        .root_source_file = b.path("test/fixtures.zig"),
-        .target = b.graph.host,
-        .optimize = optimize,
-    });
-    host_fixtures.addImport("world", host_world);
-    host_fixtures.addImport("boundary", host_boundary);
     const wasm_export_check_mod = b.createModule(.{
         .root_source_file = b.path("examples/world_wasm_export_check.zig"),
         .target = b.graph.host,
