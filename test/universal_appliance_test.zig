@@ -7,6 +7,30 @@ test "Universal Appliance ABI v2 loads canonical executable image bytes" {
     try std.testing.expectEqual(@as(u32, 2), universal.world_appliance_abi_version());
     try std.testing.expect(universal.world_appliance_runtime_manifest_len() > 0);
     try std.testing.expect(!universal.executable_runtime_profile.supports_internal_providers);
+    const runtime_manifest_len = universal.world_appliance_runtime_manifest_len();
+    const runtime_manifest_ptr = universal.world_appliance_alloc(runtime_manifest_len);
+    try std.testing.expect(runtime_manifest_ptr != 0);
+    try std.testing.expectEqual(runtime_manifest_len, universal.world_appliance_read_runtime_manifest(runtime_manifest_ptr, runtime_manifest_len));
+    const runtime_manifest = guestSlice(runtime_manifest_ptr, runtime_manifest_len);
+    var runtime_profile_fingerprint_line_buf: [64]u8 = undefined;
+    const runtime_profile_fingerprint_line = try std.fmt.bufPrint(
+        &runtime_profile_fingerprint_line_buf,
+        "runtime_profile_fingerprint={x}\n",
+        .{universal.executable_runtime_profile.profile_fingerprint},
+    );
+    try expectManifestLine(runtime_manifest, runtime_profile_fingerprint_line);
+    try expectManifestLine(runtime_manifest, "supports_loaded_execution=true\n");
+    try expectManifestLine(runtime_manifest, "supports_internal_providers=false\n");
+    try expectManifestLine(runtime_manifest, "supports_external_actuation=true\n");
+    try expectManifestLine(runtime_manifest, "max_modules=8\n");
+    try expectManifestLine(runtime_manifest, "max_provider_depth=8\n");
+    try expectManifestLine(runtime_manifest, "max_external_bindings=16\n");
+    try expectManifestLine(runtime_manifest, "max_module_bytes=131072\n");
+    try expectManifestLine(runtime_manifest, "max_image_bytes=131072\n");
+    try expectManifestLine(runtime_manifest, "max_command_bytes=65536\n");
+    try expectManifestLine(runtime_manifest, "max_output_bytes=131072\n");
+    try expectManifestLine(runtime_manifest, "max_linear_memory_pages=2048\n");
+    try expectManifestLine(runtime_manifest, "runtime_profile_metadata=\n");
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_read_manifest(0, 0));
 
@@ -166,6 +190,10 @@ test "Universal Appliance ABI v2 loads canonical executable image bytes" {
 
 fn buildExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8, binding_label: []const u8) !world.Executable.Image {
     return buildExecutableImageWithProfile(allocator, universal.executable_runtime_profile, image_metadata, binding_label);
+}
+
+fn expectManifestLine(manifest: []const u8, line: []const u8) !void {
+    try std.testing.expect(std.mem.indexOf(u8, manifest, line) != null);
 }
 
 fn buildNoHostExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8) !world.Executable.Image {

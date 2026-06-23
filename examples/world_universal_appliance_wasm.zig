@@ -8,23 +8,12 @@ const Image = world.Executable.Image;
 const DecodeLimits = Image.DecodeLimits;
 const Abi = Appliance.Abi;
 
-const runtime_manifest =
-    "world.universal_appliance.runtime.v2\n" ++
-    "imports=0\n" ++
-    "wasi=false\n" ++
-    "target_specific_boundary_type=false\n" ++
-    "executable_image_format=2\n" ++
-    "manifest=world.Appliance.Manifest.canonical\n" ++
-    "max_image_bytes=131072\n" ++
-    "max_command_bytes=65536\n" ++
-    "max_output_bytes=131072\n" ++
-    "max_linear_memory_pages=2048\n";
-
 const guest_memory_bytes: usize = 1024 * 1024;
 const max_image_bytes: usize = 128 * 1024;
 const max_command_bytes: usize = 64 * 1024;
 const max_output_bytes: usize = 128 * 1024;
 const max_modules: usize = 8;
+const max_provider_depth: usize = 8;
 const max_external_bindings: usize = 16;
 const max_mailbox_entries: usize = 1024;
 const max_linear_memory_pages: usize = 2048;
@@ -48,6 +37,7 @@ var last_error_len_value: usize = 0;
 pub const executable_runtime_profile = world.Executable.RuntimeProfile.init(.{
     .supports_internal_providers = false,
     .max_modules = max_modules,
+    .max_provider_depth = max_provider_depth,
     .max_external_bindings = max_external_bindings,
     .max_module_bytes = max_image_bytes,
     .max_image_bytes = max_image_bytes,
@@ -55,6 +45,27 @@ pub const executable_runtime_profile = world.Executable.RuntimeProfile.init(.{
     .max_output_bytes = max_output_bytes,
     .max_linear_memory_pages = max_linear_memory_pages,
 });
+
+const runtime_manifest =
+    "world.universal_appliance.runtime.v2\n" ++
+    "imports=0\n" ++
+    "wasi=false\n" ++
+    "target_specific_boundary_type=false\n" ++
+    "executable_image_format=2\n" ++
+    "manifest=world.Appliance.Manifest.canonical\n" ++
+    std.fmt.comptimePrint("runtime_profile_fingerprint={x}\n", .{executable_runtime_profile.profile_fingerprint}) ++
+    std.fmt.comptimePrint("supports_loaded_execution={}\n", .{executable_runtime_profile.supports_loaded_execution}) ++
+    std.fmt.comptimePrint("supports_internal_providers={}\n", .{executable_runtime_profile.supports_internal_providers}) ++
+    std.fmt.comptimePrint("supports_external_actuation={}\n", .{executable_runtime_profile.supports_external_actuation}) ++
+    std.fmt.comptimePrint("max_modules={d}\n", .{executable_runtime_profile.max_modules}) ++
+    std.fmt.comptimePrint("max_provider_depth={d}\n", .{executable_runtime_profile.max_provider_depth}) ++
+    std.fmt.comptimePrint("max_external_bindings={d}\n", .{executable_runtime_profile.max_external_bindings}) ++
+    std.fmt.comptimePrint("max_module_bytes={d}\n", .{executable_runtime_profile.max_module_bytes}) ++
+    std.fmt.comptimePrint("max_image_bytes={d}\n", .{executable_runtime_profile.max_image_bytes}) ++
+    std.fmt.comptimePrint("max_command_bytes={d}\n", .{executable_runtime_profile.max_command_bytes}) ++
+    std.fmt.comptimePrint("max_output_bytes={d}\n", .{executable_runtime_profile.max_output_bytes}) ++
+    std.fmt.comptimePrint("max_linear_memory_pages={d}\n", .{executable_runtime_profile.max_linear_memory_pages}) ++
+    std.fmt.comptimePrint("runtime_profile_metadata={s}\n", .{executable_runtime_profile.metadata});
 
 pub const abi_capacity = blk: {
     var capacity = Appliance.Capacity.wasm_agent;

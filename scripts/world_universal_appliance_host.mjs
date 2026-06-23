@@ -59,6 +59,7 @@ export function loadAndRunImage(replyHelperPath, instance, imageBytes, commandBy
 
   const manifest = readRuntimeManifest(instance);
   if (!manifest.includes('imports=0\n')) throw new Error('runtime manifest does not declare zero imports');
+  assertRuntimeProfileManifest(manifest);
 
   const loadStatus = exports.world_appliance_load_executable(writeGuest(instance, imageBytes), imageBytes.length);
   if (loadStatus !== statusOk) return { loaded: false, loadStatus, lastError: readLastError(instance) };
@@ -146,6 +147,27 @@ export function readRuntimeManifest(instance) {
   const copied = exports.world_appliance_read_runtime_manifest(ptr, len);
   if (copied !== len) throw new Error('runtime manifest read failed');
   return readGuest(instance, ptr, len);
+}
+
+function assertRuntimeProfileManifest(manifest) {
+  const required = [
+    'runtime_profile_fingerprint=',
+    'supports_loaded_execution=true\n',
+    'supports_internal_providers=false\n',
+    'supports_external_actuation=true\n',
+    'max_modules=8\n',
+    'max_provider_depth=8\n',
+    'max_external_bindings=16\n',
+    'max_module_bytes=131072\n',
+    'max_image_bytes=131072\n',
+    'max_command_bytes=65536\n',
+    'max_output_bytes=131072\n',
+    'max_linear_memory_pages=2048\n',
+    'runtime_profile_metadata=\n',
+  ];
+  for (const line of required) {
+    if (!manifest.includes(line)) throw new Error(`runtime manifest missing ${line.trim()}`);
+  }
 }
 
 export function readLastError(instance) {

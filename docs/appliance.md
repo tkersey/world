@@ -111,7 +111,7 @@ Appliance ABI v1 is a deployment ABI above Guest ABI v1. Required exports includ
 - `world_appliance_reset`
 - bounded allocation helpers
 
-The runtime manifest is readable before image load. The executable manifest is canonical `Appliance.Manifest` bytes and is readable only after successful load. Load is transactional, `reset` clears execution state while retaining the loaded image, `unload` clears image and execution state, and output remains readable until the next mutating call. The artifact has zero imports, no WASI, no host callbacks, and bounded linear memory.
+The runtime manifest is readable before image load and includes the enforced `Executable.RuntimeProfile` fingerprint, feature booleans, and size bounds required for image compatibility. The executable manifest is canonical `Appliance.Manifest` bytes and is readable only after successful load. Load is transactional, `reset` clears execution state while retaining the loaded image, `unload` clears image and execution state, and output remains readable until the next mutating call. The artifact has zero imports, no WASI, no host callbacks, and bounded linear memory.
 
 `zig build check-world-universal-appliance-wasm` builds and inspects the artifact. `zig build check-world-universal-appliance-node` is the external runtime proof and is part of `zig build check-world-universal`: installed Node compiles the same WASM bytes once, instantiates with an empty import object, loads two unrelated canonical `Executable.Image` byte images into one instance, repeats the same images in a fresh instance, and checks exact canonical host-request, result, and Archive append bytes.
 
