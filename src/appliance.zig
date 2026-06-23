@@ -608,13 +608,17 @@ pub fn Appliance(comptime World: type) type {
                 return bytes;
             }
 
-            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+            pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
                 var cursor: usize = 0;
                 var manifest = try readManifestOwned(allocator, bytes, &cursor);
                 errdefer manifest.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
                 try manifest.validate();
                 return manifest;
+            }
+
+            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                return decode(allocator, bytes);
             }
 
             pub fn writeCanonicalBytes(self: @This(), dest: []u8) !usize {
@@ -716,6 +720,10 @@ pub fn Appliance(comptime World: type) type {
             }
 
             pub fn validate(self: @This(), expected_manifest_fingerprint: u64, capacity: Capacity) !void {
+                return self.validateWithAllocator(std.heap.page_allocator, expected_manifest_fingerprint, capacity);
+            }
+
+            pub fn validateWithAllocator(self: @This(), allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, capacity: Capacity) !void {
                 if (self.command_format_version != World.world_appliance_command_format_version) return error.InvalidFrameEncoding;
                 if (self.command_fingerprint_version != World.world_appliance_command_fingerprint_version) return error.InvalidFrameEncoding;
                 if (self.manifest_fingerprint != expected_manifest_fingerprint) return error.WrongManifest;
@@ -731,7 +739,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.kind != .@"continue" and self.kind != .restore and self.host_replies.len != 0) return error.InvalidFrameEncoding;
                 if (self.host_replies.len != 0 and self.execution_mode != .fresh) return error.InvalidMode;
                 for (self.host_replies) |reply| {
-                    try reply.validateShape(capacity);
+                    try reply.validateShapeWithAllocator(allocator, capacity);
                     if (reply.outcome.status == .responded and reply.outcome.response_kind != .frame_value_image) return error.InvalidFrameEncoding;
                     if (reply.outcome.host_request_fingerprint != reply.target_host_request_fingerprint) return error.InvalidFrameEncoding;
                 }
@@ -749,7 +757,7 @@ pub fn Appliance(comptime World: type) type {
                     if (self.turn_sequence_number != checkpoint.turn_sequence_number + 1) return error.InvalidFrameEncoding;
                     if (self.previous_turn_receipt_fingerprint != checkpoint.previous_turn_receipt_fingerprint) return error.InvalidFrameEncoding;
                     if (self.host_replies.len != 0 and checkpoint.outstanding_host_requests.len == 0) return error.InvalidFrameEncoding;
-                    for (self.host_replies) |reply| try reply.validate(checkpoint.outstanding_host_requests, capacity);
+                    for (self.host_replies) |reply| try reply.validateWithAllocator(allocator, checkpoint.outstanding_host_requests, capacity);
                     if (try effectiveRetentionAck(self)) |ack| {
                         try ack.validate(checkpoint.pending_archive_append_batch_fingerprint orelse return error.ArchiveParentMismatch, capacity);
                     }
@@ -1050,6 +1058,10 @@ pub fn Appliance(comptime World: type) type {
             }
 
             pub fn validate(self: @This(), expected_request: ?HostRequest, capacity: Capacity) !void {
+                return self.validateWithAllocator(std.heap.page_allocator, expected_request, capacity);
+            }
+
+            pub fn validateWithAllocator(self: @This(), allocator: std.mem.Allocator, expected_request: ?HostRequest, capacity: Capacity) !void {
                 if (self.outcome_format_version != World.world_appliance_host_outcome_format_version) return error.InvalidFrameEncoding;
                 if (self.outcome_fingerprint_version != World.world_appliance_host_outcome_fingerprint_version) return error.InvalidFrameEncoding;
                 if (self.host_request_fingerprint == 0 or self.intent_fingerprint == 0) return error.InvalidFrameEncoding;
@@ -1083,8 +1095,11 @@ pub fn Appliance(comptime World: type) type {
                     false;
                 if (self.response_kind == .frame_value_image and response_refs_bound and self.response_bytes.len == 0) return error.InvalidFrameEncoding;
                 if (self.response_kind == .frame_value_image and self.response_bytes.len != 0) {
-                    var response_image = World.Frame.ValueImage.decode(std.heap.page_allocator, self.response_bytes) catch return error.InvalidFrameEncoding;
-                    defer response_image.deinit(std.heap.page_allocator);
+                    var response_image = World.Frame.ValueImage.decode(allocator, self.response_bytes) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidFrameEncoding,
+                    };
+                    defer response_image.deinit(allocator);
                     if (self.response_fingerprint == null or response_image.value_image_fingerprint != self.response_fingerprint.?) return error.InvalidFrameEncoding;
                     if (expected_request) |request| {
                         if (request.expected_response_value_ref_fingerprint) |expected| {
@@ -1149,18 +1164,26 @@ pub fn Appliance(comptime World: type) type {
             }
 
             pub fn validate(self: @This(), outstanding_requests: []const HostRequest, capacity: Capacity) !void {
-                try self.validateShape(capacity);
+                return self.validateWithAllocator(std.heap.page_allocator, outstanding_requests, capacity);
+            }
+
+            pub fn validateWithAllocator(self: @This(), allocator: std.mem.Allocator, outstanding_requests: []const HostRequest, capacity: Capacity) !void {
+                try self.validateShapeWithAllocator(allocator, capacity);
                 const request = findHostRequest(outstanding_requests, self.target_host_request_fingerprint) orelse return error.UnknownRequest;
                 if (self.outcome.host_request_fingerprint != self.target_host_request_fingerprint) return error.UnknownRequest;
-                try self.outcome.validate(request, capacity);
+                try self.outcome.validateWithAllocator(allocator, request, capacity);
                 if (!request.allowed_response_statuses.allows(actuationStatusForHostOutcome(self.outcome.status))) return error.PortRuleDenied;
             }
 
             pub fn validateShape(self: @This(), capacity: Capacity) !void {
+                return self.validateShapeWithAllocator(std.heap.page_allocator, capacity);
+            }
+
+            pub fn validateShapeWithAllocator(self: @This(), allocator: std.mem.Allocator, capacity: Capacity) !void {
                 if (self.reply_format_version != World.world_appliance_host_reply_format_version) return error.InvalidFrameEncoding;
                 if (self.reply_fingerprint_version != World.world_appliance_host_reply_fingerprint_version) return error.InvalidFrameEncoding;
                 if (self.target_host_request_fingerprint == 0) return error.InvalidFrameEncoding;
-                try self.outcome.validate(null, capacity);
+                try self.outcome.validateWithAllocator(allocator, null, capacity);
                 try validateOptionalFingerprint(self.retention_ack_fingerprint);
                 if (self.retention_ack) |ack| {
                     try ack.validate(null, capacity);
@@ -1648,6 +1671,10 @@ pub fn Appliance(comptime World: type) type {
             }
 
             pub fn validate(self: @This(), expected_manifest_fingerprint: u64, capacity: Capacity) !void {
+                return self.validateWithAllocator(std.heap.page_allocator, expected_manifest_fingerprint, capacity);
+            }
+
+            pub fn validateWithAllocator(self: @This(), allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, capacity: Capacity) !void {
                 if (self.output_format_version != World.world_appliance_turn_output_format_version) return error.InvalidFrameEncoding;
                 if (self.output_fingerprint_version != World.world_appliance_turn_output_fingerprint_version) return error.InvalidFrameEncoding;
                 if (expected_manifest_fingerprint == 0) return error.InvalidFrameEncoding;
@@ -1719,9 +1746,9 @@ pub fn Appliance(comptime World: type) type {
                 if (self.checkpoint_bytes.len > capacity.max_output_bytes) return error.CapacityExceeded;
                 if (self.archive_append_batch_bytes.len > capacity.max_archive_append_bytes) return error.CapacityExceeded;
                 try validateRootResultValueImageBytes(self.root_result_value_image_bytes, self.root_result_fingerprint);
-                try validateRunReceiptBytes(self.run_receipt_bytes, self.run_receipt_fingerprint);
-                try validateArchiveAppendBatchBytes(self.archive_append_batch_bytes, self.archive_append_batch_fingerprint);
-                try validateCheckpointBytes(expected_manifest_fingerprint, capacity, self.checkpoint_bytes, self.checkpoint);
+                try validateRunReceiptBytes(allocator, self.run_receipt_bytes, self.run_receipt_fingerprint);
+                try validateArchiveAppendBatchBytes(allocator, self.archive_append_batch_bytes, self.archive_append_batch_fingerprint);
+                try validateCheckpointBytes(allocator, expected_manifest_fingerprint, capacity, self.checkpoint_bytes, self.checkpoint);
                 if (self.blocker_count != self.turn_receipt.blocker_count or self.blocker_count != self.quiescence.blocker_count) return error.InvalidFrameEncoding;
                 if (self.warning_count != self.turn_receipt.warning_count or self.warning_count != self.quiescence.warning_count) return error.InvalidFrameEncoding;
                 if (self.status == .blocked and self.blocker_count == 0) return error.InvalidFrameEncoding;
@@ -1784,8 +1811,8 @@ pub fn Appliance(comptime World: type) type {
                 var output = try readTurnOutputOwned(allocator, bytes, &cursor);
                 errdefer output.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
-                try output.validate(expected_manifest_fingerprint, capacity);
-                try validateDecodedCheckpointBytes(expected_manifest_fingerprint, capacity, output.checkpoint_bytes, output.checkpoint);
+                try output.validateWithAllocator(allocator, expected_manifest_fingerprint, capacity);
+                try validateDecodedCheckpointBytes(allocator, expected_manifest_fingerprint, capacity, output.checkpoint_bytes, output.checkpoint);
                 return output;
             }
 
@@ -1794,7 +1821,7 @@ pub fn Appliance(comptime World: type) type {
                 var output = try readTurnOutputOwned(allocator, bytes, &cursor);
                 errdefer output.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
-                try output.validate(output.manifest_fingerprint, Capacity.archive_decode);
+                try output.validateWithAllocator(allocator, output.manifest_fingerprint, Capacity.archive_decode);
                 return output;
             }
 
@@ -1871,10 +1898,10 @@ pub fn Appliance(comptime World: type) type {
                 output: TurnOutput,
                 capacity: Capacity,
             ) !@This() {
-                try output.validate(output.manifest_fingerprint, capacity);
+                try output.validateWithAllocator(allocator, output.manifest_fingerprint, capacity);
                 try parent_cursor.validate();
                 const archive_output = archiveNeutralTurnOutput(output);
-                try archive_output.validate(output.manifest_fingerprint, capacity);
+                try archive_output.validateWithAllocator(allocator, output.manifest_fingerprint, capacity);
 
                 const checkpoint_payload = try encodeCheckpointOwned(allocator, archive_output.checkpoint);
                 defer allocator.free(checkpoint_payload);
@@ -1904,7 +1931,7 @@ pub fn Appliance(comptime World: type) type {
                     .warning_count = archive_output.warning_count,
                     .diagnostic_metadata = archive_output.diagnostic_metadata,
                 });
-                try archived_output.validate(output.manifest_fingerprint, capacity);
+                try archived_output.validateWithAllocator(allocator, output.manifest_fingerprint, capacity);
                 const output_payload = try archived_output.encode(allocator);
                 defer allocator.free(output_payload);
 
@@ -2230,6 +2257,7 @@ pub fn Appliance(comptime World: type) type {
             memory_plan_value: MemoryPlan,
             capacity_value: Capacity = Capacity.wasm_small,
             pending_command: ?Command = null,
+            last_submit_stage: []const u8 = "",
             last_output_bytes: []const u8 = "",
             last_output_owned: bool = false,
             last_output_status: ?TurnStatus = null,
@@ -2327,10 +2355,11 @@ pub fn Appliance(comptime World: type) type {
                 options: struct {
                     profile: Profile = .wasm_agent,
                     capacity: ?Capacity = null,
+                    supported_runtime_profile: World.Executable.RuntimeProfile = World.Executable.RuntimeProfile.universal_v1,
                     metadata: []const u8 = "world-executable-image",
                 },
             ) !@This() {
-                const compatibility = try image.validate(World.Executable.RuntimeProfile.universal_v1);
+                const compatibility = try image.validateWithAllocator(allocator, options.supported_runtime_profile);
                 if (!compatibility.compatible) return error.ExecutableLoadRejected;
                 const capacity = options.capacity orelse capacityFromExecutableMemoryPlan(image.memory_plan, options.profile);
                 try capacity.validateForProfile(options.profile);
@@ -2358,15 +2387,23 @@ pub fn Appliance(comptime World: type) type {
             pub fn submit(self: *@This(), command_bytes: []const u8) !void {
                 try self.validateRuntimeContract();
                 if (command_bytes.len > self.capacity_value.max_command_bytes) return error.CapacityExceeded;
+                self.last_submit_stage = "decode";
                 var command = try Command.decode(self.allocator, command_bytes);
                 errdefer command.deinit(self.allocator);
-                try command.validate(self.manifest_value.manifest_fingerprint, self.capacity_value);
+                self.last_submit_stage = "validate";
+                try command.validateWithAllocator(self.allocator, self.manifest_value.manifest_fingerprint, self.capacity_value);
+                self.last_submit_stage = "mode";
                 try self.validateCommandExecutionMode(command);
+                self.last_submit_stage = "sequence";
                 try self.validateCommandSequence(command);
+                self.last_submit_stage = "replies";
                 try self.validateCommandReplies(command);
+                self.last_submit_stage = "retention";
                 try self.validateCommandRetentionAck(command);
+                self.last_submit_stage = "replace";
                 if (self.pending_command) |*pending| pending.deinit(self.allocator);
                 self.pending_command = command;
+                self.last_submit_stage = "";
             }
 
             pub fn executeTurn(self: *@This()) !void {
@@ -2557,6 +2594,7 @@ pub fn Appliance(comptime World: type) type {
                     .warning_count = warning_count,
                     .diagnostic_metadata = diagnostic_metadata,
                 });
+                output.output_fingerprint = fingerprintTurnOutput(output);
                 if (self.shouldPlanArchiveAppend(command) and output_archive_append_batch_fingerprint == null) {
                     const archive_planning_cursor = if (retention_ack == null)
                         self.pending_archive_resulting_cursor orelse acknowledged_archive_cursor_value
@@ -2637,8 +2675,9 @@ pub fn Appliance(comptime World: type) type {
                         .warning_count = warning_count,
                         .diagnostic_metadata = diagnostic_metadata,
                     });
+                    output.output_fingerprint = fingerprintTurnOutput(output);
                 }
-                try output.validate(self.manifest_value.manifest_fingerprint, self.capacity_value);
+                try output.validateWithAllocator(self.allocator, self.manifest_value.manifest_fingerprint, self.capacity_value);
                 const output_bytes = try output.encode(self.allocator);
                 var output_bytes_owned = true;
                 errdefer if (output_bytes_owned) self.allocator.free(output_bytes);
@@ -2805,7 +2844,7 @@ pub fn Appliance(comptime World: type) type {
                 if (command.kind == .@"continue" and command.host_replies.len == 0 and !commandHasRetentionAck(command)) return error.UnknownRequest;
                 var terminal_count: usize = 0;
                 for (command.host_replies) |reply| {
-                    try reply.validate(outstanding, self.capacity_value);
+                    try reply.validateWithAllocator(self.allocator, outstanding, self.capacity_value);
                     if (hostOutcomeStatusIsTerminal(reply.outcome.status)) terminal_count += 1;
                 }
                 if (terminal_count != 0 and terminal_count != command.host_replies.len) return error.InvalidCommand;
@@ -3137,8 +3176,8 @@ pub fn Appliance(comptime World: type) type {
             }
 
             pub fn submitCommand(self: *@This(), command_bytes: []const u8) Abi.Status {
-                self.core.submit(command_bytes) catch |err| return self.setErrorStatus(Abi.statusForError(err));
-                self.core.executeTurn() catch |err| return self.setErrorStatus(Abi.statusForError(err));
+                self.core.submit(command_bytes) catch |err| return self.setSubmitError(err);
+                self.core.executeTurn() catch |err| return self.setErrorAt("execute", err);
                 const status = if (self.core.last_output_status) |turn_status|
                     Abi.statusForTurnStatus(turn_status)
                 else
@@ -3169,11 +3208,18 @@ pub fn Appliance(comptime World: type) type {
                 return output.len;
             }
 
+            pub fn clearOutput(self: *@This()) void {
+                if (self.core.last_output_owned) self.core.allocator.free(self.core.last_output_bytes);
+                self.core.last_output_bytes = "";
+                self.core.last_output_owned = false;
+                self.core.last_output_status = null;
+            }
+
             pub fn lastErrorLen(self: @This()) usize {
                 return self.last_error_len;
             }
 
-            pub fn lastErrorBytes(self: @This()) []const u8 {
+            pub fn lastErrorBytes(self: *@This()) []const u8 {
                 return self.last_error_storage[0..self.last_error_len];
             }
 
@@ -3190,6 +3236,32 @@ pub fn Appliance(comptime World: type) type {
 
             fn setErrorStatus(self: *@This(), status: Abi.Status) Abi.Status {
                 self.setLastError(Abi.statusName(status));
+                return status;
+            }
+
+            fn setError(self: *@This(), err: anyerror) Abi.Status {
+                const status = Abi.statusForError(err);
+                self.setLastError(@errorName(err));
+                return status;
+            }
+
+            fn setErrorAt(self: *@This(), stage: []const u8, err: anyerror) Abi.Status {
+                const status = Abi.statusForError(err);
+                var buffer: [native_last_error_storage_bytes]u8 = undefined;
+                const message = std.fmt.bufPrint(&buffer, "{s}:{s}", .{ stage, @errorName(err) }) catch @errorName(err);
+                self.setLastError(message);
+                return status;
+            }
+
+            fn setSubmitError(self: *@This(), err: anyerror) Abi.Status {
+                const status = Abi.statusForError(err);
+                if (self.core.last_submit_stage.len == 0) {
+                    self.setLastError("submit");
+                    return status;
+                }
+                var buffer: [native_last_error_storage_bytes]u8 = undefined;
+                const message = std.fmt.bufPrint(&buffer, "submit.{s}:{s}", .{ self.core.last_submit_stage, @errorName(err) }) catch @errorName(err);
+                self.setLastError(message);
                 return status;
             }
 
@@ -6863,17 +6935,19 @@ pub fn Appliance(comptime World: type) type {
             return out.toOwnedSlice(allocator);
         }
 
-        fn validateCheckpointBytes(expected_manifest_fingerprint: u64, capacity: Capacity, bytes: []const u8, checkpoint: Checkpoint) !void {
+        fn validateCheckpointBytes(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, capacity: Capacity, bytes: []const u8, checkpoint: Checkpoint) !void {
             if (bytes.len == 0) return;
-            var decoded = Checkpoint.decode(std.heap.page_allocator, bytes, expected_manifest_fingerprint, capacity) catch
-                return error.InvalidFrameEncoding;
-            defer decoded.deinit(std.heap.page_allocator);
+            var decoded = Checkpoint.decode(allocator, bytes, expected_manifest_fingerprint, capacity) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
+            defer decoded.deinit(allocator);
             if (decoded.checkpoint_fingerprint != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
         }
 
-        fn validateDecodedCheckpointBytes(expected_manifest_fingerprint: u64, capacity: Capacity, bytes: []const u8, checkpoint: Checkpoint) !void {
+        fn validateDecodedCheckpointBytes(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, capacity: Capacity, bytes: []const u8, checkpoint: Checkpoint) !void {
             if (bytes.len == 0) return error.InvalidFrameEncoding;
-            try validateCheckpointBytes(expected_manifest_fingerprint, capacity, bytes, checkpoint);
+            try validateCheckpointBytes(allocator, expected_manifest_fingerprint, capacity, bytes, checkpoint);
         }
 
         fn encodeTurnReceiptOwned(allocator: std.mem.Allocator, receipt: TurnReceipt) ![]const u8 {
@@ -6904,25 +6978,31 @@ pub fn Appliance(comptime World: type) type {
             if (cursor != bytes.len) return error.InvalidFrameEncoding;
         }
 
-        fn validateRunReceiptBytes(bytes: []const u8, expected_fingerprint: ?u64) !void {
+        fn validateRunReceiptBytes(allocator: std.mem.Allocator, bytes: []const u8, expected_fingerprint: ?u64) !void {
             const fingerprint = expected_fingerprint orelse {
                 if (bytes.len != 0) return error.InvalidFrameEncoding;
                 return;
             };
             if (bytes.len == 0) return;
-            const receipt = World.Continuity.decodePortableEvidence(World.RunReceipt, std.heap.page_allocator, bytes) catch return error.InvalidFrameEncoding;
+            const receipt = World.Continuity.decodePortableEvidence(World.RunReceipt, allocator, bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
             if (!World.Continuity.validRunReceiptPayload(receipt)) return error.InvalidFrameEncoding;
             if (receipt.receipt_fingerprint != fingerprint) return error.InvalidFrameEncoding;
         }
 
-        fn validateArchiveAppendBatchBytes(bytes: []const u8, expected_fingerprint: ?u64) !void {
+        fn validateArchiveAppendBatchBytes(allocator: std.mem.Allocator, bytes: []const u8, expected_fingerprint: ?u64) !void {
             const fingerprint = expected_fingerprint orelse {
                 if (bytes.len != 0) return error.InvalidFrameEncoding;
                 return;
             };
             if (bytes.len == 0) return;
-            var batch = World.Archive.decodeAppendBatchOwned(std.heap.page_allocator, bytes, .{}) catch return error.InvalidFrameEncoding;
-            defer batch.deinit(std.heap.page_allocator);
+            var batch = World.Archive.decodeAppendBatchOwned(allocator, bytes, .{}) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
+            defer batch.deinit(allocator);
             if (batch.append_batch_fingerprint != fingerprint) return error.InvalidFrameEncoding;
         }
 
