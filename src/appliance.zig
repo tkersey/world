@@ -3208,6 +3208,13 @@ pub fn Appliance(comptime World: type) type {
                 return output.len;
             }
 
+            pub fn clearOutput(self: *@This()) void {
+                if (self.core.last_output_owned) self.core.allocator.free(self.core.last_output_bytes);
+                self.core.last_output_bytes = "";
+                self.core.last_output_owned = false;
+                self.core.last_output_status = null;
+            }
+
             pub fn lastErrorLen(self: @This()) usize {
                 return self.last_error_len;
             }

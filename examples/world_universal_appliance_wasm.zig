@@ -165,16 +165,31 @@ pub export fn world_appliance_read_manifest(ptr: usize, cap: usize) usize {
         return current.manifestLen();
     };
     const required = current.readManifest(out);
-    if (cap < required) _ = setErrorStatus(.buffer_too_small, "buffer too small");
+    if (cap < required) {
+        _ = setErrorStatus(.buffer_too_small, "buffer too small");
+    } else {
+        clearError();
+    }
     return required;
 }
 
 pub export fn world_appliance_submit_command(ptr: usize, len: usize) u32 {
     const current = activeNative() orelse return setErrorStatus(.invalid_command, "no executable image loaded");
-    if (len == 0 or len > max_command_bytes) return setErrorStatus(.capacity_exceeded, "invalid command length");
-    const command = guestRange(ptr, len) orelse return setErrorStatus(.invalid_command, "command outside appliance memory");
+    if (len == 0 or len > max_command_bytes) {
+        current.clearOutput();
+        return setErrorStatus(.capacity_exceeded, "invalid command length");
+    }
+    const command = guestRange(ptr, len) orelse {
+        current.clearOutput();
+        return setErrorStatus(.invalid_command, "command outside appliance memory");
+    };
     const status = current.submitCommand(command);
-    if (Abi.statusHasTurnOutput(status)) clearError() else setSubmitError(status, current.lastErrorBytes());
+    if (Abi.statusHasTurnOutput(status)) {
+        clearError();
+    } else {
+        current.clearOutput();
+        setSubmitError(status, current.lastErrorBytes());
+    }
     return @intFromEnum(status);
 }
 
@@ -190,7 +205,11 @@ pub export fn world_appliance_read_output(ptr: usize, cap: usize) usize {
         return current.outputLen();
     };
     const required = current.readOutput(out);
-    if (cap < required) _ = setErrorStatus(.buffer_too_small, "buffer too small");
+    if (cap < required) {
+        _ = setErrorStatus(.buffer_too_small, "buffer too small");
+    } else {
+        clearError();
+    }
     return required;
 }
 

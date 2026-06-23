@@ -118,7 +118,10 @@ test "Universal Appliance ABI v2 loads canonical executable image bytes" {
     try std.testing.expect(manifest_len > 0);
     const manifest_ptr = universal.world_appliance_alloc(manifest_len);
     try std.testing.expect(manifest_ptr != 0);
+    try std.testing.expectEqual(manifest_len, universal.world_appliance_read_manifest(manifest_ptr, 1));
+    try std.testing.expect(universal.world_appliance_last_error_len() > 0);
     try std.testing.expectEqual(manifest_len, universal.world_appliance_read_manifest(manifest_ptr, manifest_len));
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_last_error_len());
     var manifest = try world.Appliance.Manifest.decode(std.testing.allocator, guestSlice(manifest_ptr, manifest_len));
     defer manifest.deinit(std.testing.allocator);
 
@@ -136,7 +139,10 @@ test "Universal Appliance ABI v2 loads canonical executable image bytes" {
     try std.testing.expect(output_len > 0);
     const output_ptr = universal.world_appliance_alloc(output_len);
     try std.testing.expect(output_ptr != 0);
+    try std.testing.expectEqual(output_len, universal.world_appliance_read_output(output_ptr, 1));
+    try std.testing.expect(universal.world_appliance_last_error_len() > 0);
     try std.testing.expectEqual(output_len, universal.world_appliance_read_output(output_ptr, output_len));
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_last_error_len());
     var output = try world.Appliance.TurnOutput.decode(std.testing.allocator, guestSlice(output_ptr, output_len), manifest.manifest_fingerprint, world.Appliance.Capacity.archive_decode);
     defer output.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Appliance.TurnStatus.needs_host, output.status);
@@ -176,9 +182,11 @@ test "Universal Appliance ABI v2 loads canonical executable image bytes" {
 
     try std.testing.expectEqual(@as(u32, 8), universal.world_appliance_submit_command(continue_command_ptr, continue_command_bytes.len));
     try std.testing.expect(universal.world_appliance_last_error_len() > 0);
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
 
     try std.testing.expectEqual(@as(u32, 12), universal.world_appliance_submit_command(command_ptr, 0));
     try std.testing.expect(universal.world_appliance_last_error_len() > 0);
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
 
     try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_reset());
     try std.testing.expectEqual(manifest_len, universal.world_appliance_manifest_len());
