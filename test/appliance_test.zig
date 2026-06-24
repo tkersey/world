@@ -8285,6 +8285,47 @@ fn applianceTurnClosureFixture(allocator: std.mem.Allocator) !struct {
     };
 }
 
+fn applianceTestRecomputedTurnClosure(closure: world.Appliance.TurnClosure) world.Appliance.TurnClosure {
+    return world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = closure.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = closure.appliance_manifest_fingerprint,
+        .parent_closure_fingerprint = closure.parent_closure_fingerprint,
+        .turn_sequence_number = closure.turn_sequence_number,
+        .parent_state_fingerprint = closure.parent_state_fingerprint,
+        .resulting_state_fingerprint = closure.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = closure.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = closure.chronicle_resulting_cursor_fingerprint,
+        .archive_parent_moment_fingerprint = closure.archive_parent_moment_fingerprint,
+        .archive_parent_seal_fingerprint = closure.archive_parent_seal_fingerprint,
+        .archive_resulting_moment_fingerprint = closure.archive_resulting_moment_fingerprint,
+        .archive_resulting_seal_fingerprint = closure.archive_resulting_seal_fingerprint,
+        .checkpoint_fingerprint = closure.checkpoint_fingerprint,
+        .checkpoint_bytes = closure.checkpoint_bytes,
+        .capsule_fingerprint = closure.capsule_fingerprint,
+        .capsule_bytes = closure.capsule_bytes,
+        .turn_receipt_fingerprint = closure.turn_receipt_fingerprint,
+        .turn_receipt_bytes = closure.turn_receipt_bytes,
+        .evidence_bundle_bytes = closure.evidence_bundle_bytes,
+        .archive_append_batch_fingerprint = closure.archive_append_batch_fingerprint,
+        .archive_append_batch_bytes = closure.archive_append_batch_bytes,
+        .pending_host_request_bytes = closure.pending_host_request_bytes,
+        .root_result_fingerprint = closure.root_result_fingerprint,
+        .root_result_bytes = closure.root_result_bytes,
+        .root_result_value_ref_fingerprint = closure.root_result_value_ref_fingerprint,
+        .run_receipt_fingerprint = closure.run_receipt_fingerprint,
+        .run_receipt_bytes = closure.run_receipt_bytes,
+        .finalized_actuation_receipt_fingerprints = closure.finalized_actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = closure.finalized_actuation_receipt_bytes,
+        .replay_receipt_fingerprints = closure.replay_receipt_fingerprints,
+        .replay_receipt_bytes = closure.replay_receipt_bytes,
+        .verify_report_fingerprints = closure.verify_report_fingerprints,
+        .blockers = closure.blockers,
+        .warnings = closure.warnings,
+        .diagnostics = closure.diagnostics,
+        .status = closure.status,
+    });
+}
+
 test "appliance TurnClosure complete one-port closure validates" {
     const allocator = std.testing.allocator;
     const fixture = try applianceTurnClosureFixture(allocator);
@@ -8317,7 +8358,10 @@ test "appliance TurnClosure complete one-port closure validates" {
     var decoded = try world.Appliance.TurnClosure.decode(allocator, encoded);
     defer decoded.deinit(allocator);
     try decoded.validate(allocator, external_dependency_options);
+    var archived = try world.Appliance.TurnClosure.decodeArchivePayload(allocator, encoded);
+    defer archived.deinit(allocator);
     try std.testing.expectEqual(fixture.closure.closure_fingerprint, decoded.closure_fingerprint);
+    try std.testing.expectEqual(fixture.closure.closure_fingerprint, archived.closure_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.finalized_actuation_receipt_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 1), decoded.finalized_actuation_receipt_bytes.len);
     var actuation_receipt = try world.Actuation.Receipt.decode(allocator, decoded.finalized_actuation_receipt_bytes[0]);
@@ -8430,6 +8474,19 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
     var missing_receipt_bytes = fixture.closure;
     missing_receipt_bytes.finalized_actuation_receipt_bytes = &.{};
     try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, external_dependency_options));
+
+    var forged_genesis_parent_state = fixture.closure;
+    forged_genesis_parent_state.parent_state_fingerprint +%= 1;
+    forged_genesis_parent_state = applianceTestRecomputedTurnClosure(forged_genesis_parent_state);
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_genesis_parent_state.validate(allocator, external_dependency_options));
+    const forged_genesis_parent_state_bytes = try forged_genesis_parent_state.encode(allocator);
+    defer allocator.free(forged_genesis_parent_state_bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.TurnClosure.decodeArchivePayload(allocator, forged_genesis_parent_state_bytes));
+
+    var forged_genesis_parent_cursor = fixture.closure;
+    forged_genesis_parent_cursor.chronicle_parent_cursor_fingerprint +%= 1;
+    forged_genesis_parent_cursor = applianceTestRecomputedTurnClosure(forged_genesis_parent_cursor);
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_genesis_parent_cursor.validate(allocator, external_dependency_options));
 
     var missing_run_receipt_bytes = fixture.closure;
     missing_run_receipt_bytes.run_receipt_fingerprint = 0xD7C4;

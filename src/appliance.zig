@@ -2060,6 +2060,8 @@ pub fn Appliance(comptime World: type) type {
                 try validateArchiveAnchorPair(self.archive_resulting_moment_fingerprint, self.archive_resulting_seal_fingerprint);
                 if (self.turn_sequence_number == 0) {
                     if (self.parent_closure_fingerprint != null) return error.InvalidFrameEncoding;
+                    if (self.parent_state_fingerprint != coreStateFingerprint(.uninitialized, 0, null)) return error.InvalidFrameEncoding;
+                    if (self.chronicle_parent_cursor_fingerprint != World.Continuity.Chronicle.Cursor.initial().cursor_fingerprint) return error.InvalidFrameEncoding;
                 } else if (self.parent_closure_fingerprint == null) {
                     return error.InvalidFrameEncoding;
                 }
@@ -2213,12 +2215,17 @@ pub fn Appliance(comptime World: type) type {
                 return closure;
             }
 
-            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) anyerror!@This() {
                 var closure = try decode(allocator, bytes);
                 errdefer closure.deinit(allocator);
                 if (closure.closure_format_version != World.world_appliance_turn_closure_format_version) return error.InvalidFrameEncoding;
                 if (closure.closure_fingerprint_version != World.world_appliance_turn_closure_fingerprint_version) return error.InvalidFrameEncoding;
                 if (closure.closure_fingerprint == 0 or closure.closure_fingerprint != fingerprintTurnClosure(closure)) return error.InvalidFrameEncoding;
+                try closure.validate(allocator, .{
+                    .expected_manifest_fingerprint = closure.appliance_manifest_fingerprint,
+                    .limits = .archive_decode,
+                    .bundle_options = .{ .allow_external_dependencies = true },
+                });
                 return closure;
             }
 
