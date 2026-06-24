@@ -73,6 +73,21 @@ fn nativeFromClosure(
     return native;
 }
 
+fn freshNative(
+    allocator: std.mem.Allocator,
+    manifest: world.Appliance.Manifest,
+    capacity: world.Appliance.Capacity,
+) Native {
+    var core = world.Appliance.Core.initWithCapacity(
+        allocator,
+        manifest,
+        common.PortsAppliance.memoryPlan(),
+        capacity,
+    );
+    core.executable_image_fingerprint = executable_image_fingerprint;
+    return Native.init(core);
+}
+
 fn submitBootClosure(
     allocator: std.mem.Allocator,
     manifest: world.Appliance.Manifest,
@@ -197,6 +212,40 @@ pub fn main(init: std.process.Init) !void {
     if (!std.mem.eql(u8, first_output.root_result_value_image_bytes, retry_output.root_result_value_image_bytes)) return error.RootResultRetryMismatch;
     if (!std.mem.eql(u64, first_output.finalized_actuation_receipt_fingerprints, retry_output.finalized_actuation_receipt_fingerprints)) return error.ActuationReceiptRetryMismatch;
     if (first_output.resulting_state_fingerprint != retry_output.resulting_state_fingerprint) return error.StateRetryMismatch;
+
+    var restore_native = freshNative(allocator, manifest, capacity);
+    defer restore_native.deinit();
+    const restore_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .restore,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .expected_parent_closure_fingerprint = parent_closure.closure_fingerprint,
+        .expected_parent_state_fingerprint = parent_closure.resulting_state_fingerprint,
+        .previous_turn_receipt_fingerprint = parent_closure.turn_receipt_fingerprint,
+        .turn_sequence_number = parent_closure.turn_sequence_number + 1,
+        .parent_turn_closure_bytes = parent_closure_bytes,
+        .resolutions = &.{resolution},
+    });
+    const restore_bytes = try restore_input.encode(allocator);
+    defer allocator.free(restore_bytes);
+    if (restore_native.submitTurn(restore_bytes) != .completed) return error.ExpectedRestoreCompleted;
+
+    var stale_parent_state_fingerprint = parent_closure.resulting_state_fingerprint ^ 0xA5A5_A5A5_A5A5_A5A5;
+    if (stale_parent_state_fingerprint == 0) stale_parent_state_fingerprint = 1;
+    const stale_restore_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .restore,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .expected_parent_closure_fingerprint = parent_closure.closure_fingerprint,
+        .expected_parent_state_fingerprint = stale_parent_state_fingerprint,
+        .previous_turn_receipt_fingerprint = parent_closure.turn_receipt_fingerprint,
+        .turn_sequence_number = parent_closure.turn_sequence_number + 1,
+        .parent_turn_closure_bytes = parent_closure_bytes,
+        .resolutions = &.{resolution},
+    });
+    const stale_restore_bytes = try stale_restore_input.encode(allocator);
+    defer allocator.free(stale_restore_bytes);
+    var stale_restore_native = freshNative(allocator, manifest, capacity);
+    defer stale_restore_native.deinit();
+    if (stale_restore_native.submitTurn(stale_restore_bytes) != .stale_turn) return error.ExpectedStaleParentState;
 
     if (first_output.archive_append_batch_bytes.len == 0) return error.ExpectedArchiveAppendBatch;
     const retained_append_batch = try allocator.dupe(u8, first_output.archive_append_batch_bytes);

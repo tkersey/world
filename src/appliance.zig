@@ -2407,7 +2407,9 @@ pub fn Appliance(comptime World: type) type {
                     if (self.retention) |retention| try retention.validate(limits);
                     if (self.operation == .boot) {
                         if (self.turn_sequence_number != 0 or self.parent_turn_closure_bytes.len != 0) return error.InvalidFrameEncoding;
-                        if (self.expected_parent_closure_fingerprint != null or self.previous_turn_receipt_fingerprint != null) return error.InvalidFrameEncoding;
+                        if (self.expected_parent_closure_fingerprint != null or
+                            self.expected_parent_state_fingerprint != null or
+                            self.previous_turn_receipt_fingerprint != null) return error.InvalidFrameEncoding;
                     } else {
                         if (self.turn_sequence_number == 0) return error.InvalidFrameEncoding;
                     }
@@ -3950,9 +3952,6 @@ pub fn Appliance(comptime World: type) type {
                 defer input.deinit(allocator);
                 if (input.appliance_manifest_fingerprint != self.core.manifest_value.manifest_fingerprint) return self.setSubmitError(error.WrongManifest);
 
-                const host_replies = self.hostRepliesFromWireInput(input) catch |err| return self.setSubmitError(err);
-                defer freeHostReplies(allocator, host_replies);
-
                 var parent_closure_for_lineage: ?TurnClosure = null;
                 defer if (parent_closure_for_lineage) |*closure| closure.deinit(allocator);
                 var restore_checkpoint: ?Checkpoint = null;
@@ -3961,6 +3960,9 @@ pub fn Appliance(comptime World: type) type {
                     const parent_closure = parent_closure_for_lineage.?;
                     if (input.expected_parent_closure_fingerprint) |expected| {
                         if (parent_closure.closure_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
+                    }
+                    if (input.expected_parent_state_fingerprint) |expected| {
+                        if (parent_closure.resulting_state_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
                     }
                     const checkpoint_bytes = parent_closure.materializeCheckpoint(allocator) catch |err| return self.setSubmitError(err);
                     defer allocator.free(checkpoint_bytes);
@@ -3972,8 +3974,14 @@ pub fn Appliance(comptime World: type) type {
                     if (input.expected_parent_closure_fingerprint) |expected| {
                         if (parent_closure.closure_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
                     }
+                    if (input.expected_parent_state_fingerprint) |expected| {
+                        if (parent_closure.resulting_state_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
+                    }
                 }
                 defer if (restore_checkpoint) |*checkpoint| checkpoint.deinit(allocator);
+
+                const host_replies = self.hostRepliesFromWireInput(input, restore_checkpoint) catch |err| return self.setSubmitError(err);
+                defer freeHostReplies(allocator, host_replies);
 
                 const root_argument_image = switch (input.root_argument_images.len) {
                     0 => "",
@@ -4190,7 +4198,7 @@ pub fn Appliance(comptime World: type) type {
                 return closure.encode(allocator);
             }
 
-            fn hostRepliesFromWireInput(self: *@This(), input: Wire.TurnInput) ![]HostReply {
+            fn hostRepliesFromWireInput(self: *@This(), input: Wire.TurnInput, restore_checkpoint: ?Checkpoint) ![]HostReply {
                 const allocator = self.core.allocator;
                 if (input.resolutions.len == 0) return allocator.alloc(HostReply, 0);
                 const replies = try allocator.alloc(HostReply, input.resolutions.len);
@@ -4200,7 +4208,7 @@ pub fn Appliance(comptime World: type) type {
                     allocator.free(replies);
                 }
                 for (input.resolutions, 0..) |resolution, index| {
-                    const request = try self.findOutstandingHostRequest(resolution.target_host_request_fingerprint);
+                    const request = try self.findOutstandingHostRequest(resolution.target_host_request_fingerprint, restore_checkpoint);
                     replies[index] = try hostReplyFromWireResolution(allocator, request, resolution);
                     initialized += 1;
                 }
@@ -4226,7 +4234,12 @@ pub fn Appliance(comptime World: type) type {
                 });
             }
 
-            fn findOutstandingHostRequest(self: *@This(), fingerprint: u64) !HostRequest {
+            fn findOutstandingHostRequest(self: *@This(), fingerprint: u64, restore_checkpoint: ?Checkpoint) !HostRequest {
+                if (restore_checkpoint) |checkpoint| {
+                    for (checkpoint.outstanding_host_requests) |request| {
+                        if (request.request_fingerprint == fingerprint) return request;
+                    }
+                }
                 for (self.core.outstanding_host_requests) |request| {
                     if (request.request_fingerprint == fingerprint) return request;
                 }
