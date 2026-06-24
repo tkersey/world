@@ -12,8 +12,12 @@ const max_image_bytes: usize = 128 * 1024;
 const max_command_bytes: usize = 64 * 1024;
 const max_output_bytes: usize = 128 * 1024;
 const max_closure_bytes: usize = max_output_bytes * 4;
-const max_turn_input_bytes: usize = max_closure_bytes + max_command_bytes;
-const guest_memory_bytes: usize = 2 * 1024 * 1024;
+const max_host_replies_per_turn: usize = 16;
+const max_metadata_bytes: usize = 8192;
+const max_wire_resolution_overhead_bytes: usize = 64;
+const max_turn_reply_bytes: usize = max_host_replies_per_turn * (max_output_bytes + 2 * max_metadata_bytes + max_wire_resolution_overhead_bytes);
+const max_turn_input_bytes: usize = max_closure_bytes + max_command_bytes + max_turn_reply_bytes;
+const guest_memory_bytes: usize = 4 * 1024 * 1024;
 const max_modules: usize = 8;
 const max_provider_depth: usize = 8;
 const max_external_bindings: usize = 16;
@@ -314,7 +318,14 @@ pub export fn world_appliance_alloc(len: usize) usize {
     return result;
 }
 
-pub export fn world_appliance_free(_: usize, _: usize) void {}
+pub export fn world_appliance_free(ptr: usize, len: usize) void {
+    if (len == 0) return;
+    if (len > ~@as(usize, 0) - 15) return;
+    const aligned = (len + 15) & ~@as(usize, 15);
+    const offset = guestOffset(ptr, len) orelse return;
+    if (offset % 16 != 0) return;
+    if (offset + aligned == bump) bump = offset;
+}
 
 fn decodeLimits(len: usize) DecodeLimits {
     return .{
@@ -360,11 +371,16 @@ fn resetSlot(slot: u1) void {
 }
 
 fn guestRange(ptr: usize, len: usize) ?[]u8 {
+    const offset = guestOffset(ptr, len) orelse return null;
+    return guest_memory[offset .. offset + len];
+}
+
+fn guestOffset(ptr: usize, len: usize) ?usize {
     const base = @intFromPtr(&guest_memory[0]);
     if (ptr < base) return null;
     const offset = ptr - base;
     if (offset > guest_memory.len or len > guest_memory.len - offset) return null;
-    return guest_memory[offset .. offset + len];
+    return offset;
 }
 
 fn copyToGuest(ptr: usize, cap: usize, bytes: []const u8) usize {
