@@ -4076,11 +4076,7 @@ pub fn Appliance(comptime World: type) type {
                 if (input.operation == .restore) {
                     parent_closure_for_lineage = TurnClosure.decodeWithLimits(allocator, input.parent_turn_closure_bytes, limits) catch |err| return self.setSubmitError(err);
                     const parent_closure = parent_closure_for_lineage.?;
-                    parent_closure.validate(allocator, .{
-                        .expected_executable_image_fingerprint = self.core.executable_image_fingerprint,
-                        .expected_manifest_fingerprint = input.appliance_manifest_fingerprint,
-                        .limits = .archive_decode,
-                    }) catch |err| return self.setSubmitError(err);
+                    parent_closure.validate(allocator, parentTurnClosureValidation(self.core.executable_image_fingerprint, input.appliance_manifest_fingerprint)) catch |err| return self.setSubmitError(err);
                     if (input.expected_parent_closure_fingerprint) |expected| {
                         if (parent_closure.closure_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
                     }
@@ -4094,11 +4090,7 @@ pub fn Appliance(comptime World: type) type {
                     if (self.last_closure_bytes.len == 0) return self.setSubmitError(error.StaleTurn);
                     parent_closure_for_lineage = TurnClosure.decodeWithLimits(allocator, self.last_closure_bytes, limits) catch |err| return self.setSubmitError(err);
                     const parent_closure = parent_closure_for_lineage.?;
-                    parent_closure.validate(allocator, .{
-                        .expected_executable_image_fingerprint = self.core.executable_image_fingerprint,
-                        .expected_manifest_fingerprint = input.appliance_manifest_fingerprint,
-                        .limits = .archive_decode,
-                    }) catch |err| return self.setSubmitError(err);
+                    parent_closure.validate(allocator, parentTurnClosureValidation(self.core.executable_image_fingerprint, input.appliance_manifest_fingerprint)) catch |err| return self.setSubmitError(err);
                     if (input.expected_parent_closure_fingerprint) |expected| {
                         if (parent_closure.closure_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
                     }
@@ -4404,6 +4396,15 @@ pub fn Appliance(comptime World: type) type {
                 .verify => .verify,
                 .inspect => .audit,
                 else => .fresh,
+            };
+        }
+
+        fn parentTurnClosureValidation(executable_image_fingerprint: u64, manifest_fingerprint: u64) TurnClosureValidation {
+            return .{
+                .expected_executable_image_fingerprint = executable_image_fingerprint,
+                .expected_manifest_fingerprint = manifest_fingerprint,
+                .limits = .archive_decode,
+                .bundle_options = .{ .allow_external_dependencies = true },
             };
         }
 

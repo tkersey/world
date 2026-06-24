@@ -10343,6 +10343,10 @@ test "capsule freeze active fabric requires parked allowance" {
     try std.testing.expectEqual(world.Capsule.NormalForm.active_fabric_parked, image.manifest.normal_form);
     try std.testing.expectEqual(@as(usize, 1), image.manifest.active_fabric_invocation_count);
     try std.testing.expectEqual(invocation.invocation_fingerprint, image.fabric_image.?.active_invocation_fingerprints[0]);
+    const orphan_active_invocations = world.Capsule.FabricImage.init(.{
+        .active_invocations = image.fabric_image.?.active_invocations,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, orphan_active_invocations.validate(.{}));
     const missing_active_witnesses = world.Capsule.FabricImage.init(.{
         .fabric_plan_fingerprints = image.fabric_image.?.fabric_plan_fingerprints,
         .active_invocation_fingerprints = image.fabric_image.?.active_invocation_fingerprints,

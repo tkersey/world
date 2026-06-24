@@ -24948,10 +24948,10 @@ pub const Capsule = struct {
             for (self.active_invocations) |invocation| try invocation.validate();
             for (self.route_witnesses) |route| try route.validate();
             for (self.value_mapping_witnesses) |mapping| try mapping.validate();
+            if (self.active_invocations.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
             if (self.active_invocation_fingerprints.len != 0) {
                 if (self.parent_pending_port_refs.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.depth_route_stack.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
-                if (self.active_invocations.len != self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.provider_run_refs.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.provider_state_summary_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.route_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
