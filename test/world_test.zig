@@ -127,6 +127,18 @@ fn fabricTestMapping(kind: world.Fabric.ValueMappingKind) world.Fabric.ValueMapp
     };
 }
 
+fn fabricActiveInvocationWitnessFingerprintForTest(invocation_fingerprint: u64, route_fingerprint: u64, mapping_fingerprint: u64) u64 {
+    var hasher = std.hash.Wyhash.init(0x6361_7073_6662_6177);
+    var buffer: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buffer, invocation_fingerprint, .little);
+    hasher.update(&buffer);
+    std.mem.writeInt(u64, &buffer, route_fingerprint, .little);
+    hasher.update(&buffer);
+    std.mem.writeInt(u64, &buffer, mapping_fingerprint, .little);
+    hasher.update(&buffer);
+    return hasher.final();
+}
+
 fn fabricTestRoute(kind: world.Fabric.RouteKind, provider_target_ref_fingerprint: ?u64) world.Fabric.Route {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
@@ -10366,6 +10378,11 @@ test "capsule freeze active fabric requires parked allowance" {
     try std.testing.expectError(error.InvalidFrameEncoding, under_witnessed_image.validate(.{}));
     const wrong_mapping = fabricTestMapping(.unit_args);
     const wrong_mapping_refs = [_]u64{wrong_mapping.mapping_fingerprint};
+    const wrong_mapping_depth_stack = [_]u64{fabricActiveInvocationWitnessFingerprintForTest(
+        invocation.invocation_fingerprint,
+        route.route_fingerprint,
+        wrong_mapping.mapping_fingerprint,
+    )};
     const mismatched_active_witnesses = world.Capsule.FabricImage.init(.{
         .fabric_plan_fingerprints = image.fabric_image.?.fabric_plan_fingerprints,
         .active_invocation_fingerprints = image.fabric_image.?.active_invocation_fingerprints,
@@ -10376,7 +10393,10 @@ test "capsule freeze active fabric requires parked allowance" {
         .route_fingerprints = image.fabric_image.?.route_fingerprints,
         .route_plan_fingerprints = image.fabric_image.?.route_plan_fingerprints,
         .value_mapping_fingerprints = &wrong_mapping_refs,
-        .depth_route_stack = image.fabric_image.?.depth_route_stack,
+        .active_invocations = image.fabric_image.?.active_invocations,
+        .route_witnesses = image.fabric_image.?.route_witnesses,
+        .value_mapping_witnesses = &.{wrong_mapping},
+        .depth_route_stack = &wrong_mapping_depth_stack,
         .status_summary_fingerprint = image.fabric_image.?.status_summary_fingerprint,
     });
     const mismatched_witness_image = world.Capsule.Image.init(.{

@@ -8702,6 +8702,31 @@ test "appliance TurnClosure complete one-port closure validates" {
     const materialized_capsule = try decoded.materializeCapsule(allocator);
     defer allocator.free(materialized_capsule);
     try std.testing.expectEqualSlices(u8, fixture.capsule_bytes, materialized_capsule);
+
+    var child = fixture.closure;
+    child.parent_closure_fingerprint = fixture.closure.closure_fingerprint;
+    child.turn_sequence_number = fixture.closure.turn_sequence_number + 1;
+    child.parent_state_fingerprint = fixture.closure.resulting_state_fingerprint;
+    child.chronicle_parent_cursor_fingerprint = fixture.closure.chronicle_resulting_cursor_fingerprint;
+    child.archive_parent_moment_fingerprint = fixture.closure.archive_resulting_moment_fingerprint;
+    child.archive_parent_seal_fingerprint = fixture.closure.archive_resulting_seal_fingerprint;
+    child = applianceTestRecomputedTurnClosure(child);
+    try world.Appliance.validateTurnClosureParentContinuity(child, fixture.closure);
+
+    var wrong_manifest_parent = fixture.closure;
+    wrong_manifest_parent.appliance_manifest_fingerprint +%= 1;
+    wrong_manifest_parent = applianceTestRecomputedTurnClosure(wrong_manifest_parent);
+    var wrong_manifest_child = child;
+    wrong_manifest_child.parent_closure_fingerprint = wrong_manifest_parent.closure_fingerprint;
+    wrong_manifest_child.parent_state_fingerprint = wrong_manifest_parent.resulting_state_fingerprint;
+    wrong_manifest_child.chronicle_parent_cursor_fingerprint = wrong_manifest_parent.chronicle_resulting_cursor_fingerprint;
+    wrong_manifest_child = applianceTestRecomputedTurnClosure(wrong_manifest_child);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.validateTurnClosureParentContinuity(wrong_manifest_child, wrong_manifest_parent));
+
+    var skipped_turn_child = child;
+    skipped_turn_child.turn_sequence_number = fixture.closure.turn_sequence_number + 2;
+    skipped_turn_child = applianceTestRecomputedTurnClosure(skipped_turn_child);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.validateTurnClosureParentContinuity(skipped_turn_child, fixture.closure));
 }
 
 test "appliance TurnClosure validationReport preserves allocation failures" {

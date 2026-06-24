@@ -8941,6 +8941,9 @@ pub fn Appliance(comptime World: type) type {
 
         pub fn validateTurnClosureParentContinuity(closure: TurnClosure, parent: TurnClosure) !void {
             if (closure.parent_closure_fingerprint != parent.closure_fingerprint) return error.InvalidFrameEncoding;
+            if (closure.executable_image_fingerprint != parent.executable_image_fingerprint) return error.InvalidFrameEncoding;
+            if (closure.appliance_manifest_fingerprint != parent.appliance_manifest_fingerprint) return error.InvalidFrameEncoding;
+            if (closure.turn_sequence_number != parent.turn_sequence_number + 1) return error.InvalidFrameEncoding;
             if (closure.parent_state_fingerprint != parent.resulting_state_fingerprint) return error.InvalidFrameEncoding;
             if (closure.chronicle_parent_cursor_fingerprint != parent.chronicle_resulting_cursor_fingerprint) return error.InvalidFrameEncoding;
             if (closure.archive_parent_moment_fingerprint != parent.archive_resulting_moment_fingerprint) return error.InvalidFrameEncoding;

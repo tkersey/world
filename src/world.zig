@@ -25115,6 +25115,11 @@ pub const Capsule = struct {
                     if (self.active_invocations[index].plan_fingerprint != self.route_plan_fingerprints[index]) return error.InvalidFrameEncoding;
                     if (self.active_invocations[index].provider_run_handle_fingerprint != self.provider_run_refs[index]) return error.InvalidFrameEncoding;
                     if (self.active_invocations[index].parent_pending_port_fingerprint != self.parent_pending_port_refs[index]) return error.InvalidFrameEncoding;
+                    if (!fabricImageContainsRouteValueMappingWitness(
+                        self.route_witnesses,
+                        self.route_fingerprints[index],
+                        self.value_mapping_fingerprints[index],
+                    )) return error.InvalidFrameEncoding;
                     if (self.depth_route_stack[index] != fingerprintFabricActiveInvocationWitness(
                         invocation,
                         self.route_fingerprints[index],
@@ -27583,6 +27588,16 @@ pub const Capsule = struct {
     fn fabricImageContainsRouteWitness(routes: []const Fabric.Route, fingerprint: u64) bool {
         for (routes) |route| {
             if (route.route_fingerprint == fingerprint) return true;
+        }
+        return false;
+    }
+
+    fn fabricImageContainsRouteValueMappingWitness(routes: []const Fabric.Route, route_fingerprint: u64, mapping_fingerprint: u64) bool {
+        for (routes) |route| {
+            if (route.route_fingerprint != route_fingerprint) continue;
+            if (route.value_mapping_fingerprint == mapping_fingerprint) return true;
+            if (route.response_value_mapping_fingerprint == mapping_fingerprint) return true;
+            return false;
         }
         return false;
     }
