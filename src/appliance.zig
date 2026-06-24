@@ -1859,6 +1859,7 @@ pub fn Appliance(comptime World: type) type {
             max_metadata_bytes: usize,
             max_diagnostic_bytes: usize,
             max_items: usize,
+            max_resolution_inputs: usize,
 
             pub const default = fromCapacity(Capacity.wasm_small);
             pub const archive_decode = fromCapacity(Capacity.archive_decode);
@@ -1876,6 +1877,7 @@ pub fn Appliance(comptime World: type) type {
                     .max_metadata_bytes = capacity.max_metadata_bytes,
                     .max_diagnostic_bytes = capacity.max_metadata_bytes,
                     .max_items = capacity.max_host_requests_per_turn + capacity.max_actuation_records + capacity.max_fabric_invocations + 8,
+                    .max_resolution_inputs = capacity.max_host_replies_per_turn + capacity.max_actuation_records,
                 };
             }
         };
@@ -2404,7 +2406,7 @@ pub fn Appliance(comptime World: type) type {
                     try validateOptionalFingerprint(self.previous_turn_receipt_fingerprint);
                     if (self.host_metadata.len > limits.max_metadata_bytes) return error.CapacityExceeded;
                     if (self.root_argument_images.len > limits.max_items) return error.CapacityExceeded;
-                    if (self.resolutions.len > limits.max_items) return error.CapacityExceeded;
+                    if (self.resolutions.len > limits.max_resolution_inputs) return error.CapacityExceeded;
                     if (self.receiver_evidence_fingerprints.len > limits.max_items) return error.CapacityExceeded;
                     if (self.parent_turn_closure_bytes.len > limits.max_closure_bytes) return error.CapacityExceeded;
                     for (self.root_argument_images) |image| {
@@ -2460,7 +2462,7 @@ pub fn Appliance(comptime World: type) type {
 
                 pub fn decodeWithLimits(allocator: std.mem.Allocator, bytes: []const u8, limits: TurnClosureLimits) !@This() {
                     var cursor: usize = 0;
-                    var input = try readWireTurnInputOwned(allocator, bytes, &cursor);
+                    var input = try readWireTurnInputOwned(allocator, bytes, &cursor, limits);
                     errdefer input.deinit(allocator);
                     if (cursor != bytes.len) return error.InvalidFrameEncoding;
                     try canonicalizeWireResolutionOrder(@constCast(input.resolutions));
@@ -8187,9 +8189,9 @@ pub fn Appliance(comptime World: type) type {
             };
         }
 
-        fn readWireResolutionInputsOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]Wire.ResolutionInput {
+        fn readWireResolutionInputsOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: TurnClosureLimits) ![]Wire.ResolutionInput {
             const count = try readUsize(bytes, cursor);
-            if (count > Capacity.archive_decode.max_host_replies_per_turn + Capacity.archive_decode.max_actuation_records) return error.InvalidFrameEncoding;
+            if (count > limits.max_resolution_inputs) return error.CapacityExceeded;
             const values = try allocator.alloc(Wire.ResolutionInput, count);
             var initialized: usize = 0;
             errdefer {
@@ -8232,7 +8234,7 @@ pub fn Appliance(comptime World: type) type {
             };
         }
 
-        fn readWireTurnInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Wire.TurnInput {
+        fn readWireTurnInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: TurnClosureLimits) !Wire.TurnInput {
             const wire_format_version = try readU32(bytes, cursor);
             const operation = try enumFromByte(Wire.Operation, try readU8(bytes, cursor));
             const appliance_manifest_fingerprint = try readU64(bytes, cursor);
@@ -8244,7 +8246,7 @@ pub fn Appliance(comptime World: type) type {
             errdefer freeByteSlices(allocator, root_argument_images);
             const parent_turn_closure_bytes = try readBytesOwned(allocator, bytes, cursor);
             errdefer allocator.free(parent_turn_closure_bytes);
-            const resolutions = try readWireResolutionInputsOwned(allocator, bytes, cursor);
+            const resolutions = try readWireResolutionInputsOwned(allocator, bytes, cursor, limits);
             errdefer freeWireResolutionInputs(allocator, resolutions);
             const receiver_evidence_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(receiver_evidence_fingerprints);

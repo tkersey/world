@@ -8553,6 +8553,32 @@ test "appliance Wire TurnInput canonicalizes resolution input order" {
     try std.testing.expectError(error.DuplicateHostReply, duplicate_input.encode(allocator));
 }
 
+test "appliance Wire TurnInput rejects over-limit resolution count before reading entries" {
+    const allocator = std.testing.allocator;
+    const input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = 0xA010,
+        .turn_sequence_number = 0,
+    });
+    const bytes = try input.encode(allocator);
+    defer allocator.free(bytes);
+
+    const limits = world.Appliance.TurnClosureLimits.fromCapacity(world.Appliance.Capacity.tiny_one_port);
+    const resolution_count_offset =
+        @sizeOf(u32) +
+        @sizeOf(u8) +
+        @sizeOf(u64) +
+        3 * @sizeOf(u8) +
+        @sizeOf(u64) +
+        @sizeOf(u64) +
+        @sizeOf(u32);
+    var malformed = try allocator.dupe(u8, bytes);
+    defer allocator.free(malformed);
+    std.mem.writeInt(u64, malformed[resolution_count_offset..][0..8], limits.max_resolution_inputs + 1, .little);
+
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, malformed, limits));
+}
+
 test "appliance Wire turn input decodes against active capacity limits" {
     const allocator = std.testing.allocator;
     const metadata = try allocator.alloc(u8, world.Appliance.Capacity.wasm_small.max_metadata_bytes + 1);
