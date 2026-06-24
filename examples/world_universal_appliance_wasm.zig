@@ -200,10 +200,12 @@ pub export fn world_appliance_submit_command(ptr: usize, len: usize) u32 {
     const current = activeNative() orelse return setErrorStatus(.invalid_command, "no executable image loaded");
     if (len == 0 or len > max_command_bytes) {
         current.clearOutput();
+        current.clearClosure();
         return setErrorStatus(.capacity_exceeded, "invalid command length");
     }
     const command = guestRange(ptr, len) orelse {
         current.clearOutput();
+        current.clearClosure();
         return setErrorStatus(.invalid_command, "command outside appliance memory");
     };
     const status = current.submitCommand(command);

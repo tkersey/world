@@ -2121,6 +2121,7 @@ pub fn Appliance(comptime World: type) type {
                 try validateTurnClosurePayloadBindings(self, checkpoint, turn_receipt, pending_host_requests);
                 try validateRootResultBytesForClosure(self.root_result_bytes, self.root_result_fingerprint, self.root_result_value_ref_fingerprint, turn_receipt.root_result_fingerprint);
                 try validateRunReceiptBytes(allocator, self.run_receipt_bytes, self.run_receipt_fingerprint);
+                if (self.archive_append_batch_fingerprint != null and self.archive_append_batch_bytes.len == 0) return error.InvalidFrameEncoding;
                 try validateArchiveAppendBatchBytes(allocator, self.archive_append_batch_bytes, self.archive_append_batch_fingerprint);
                 var bundle_options = options.bundle_options;
                 bundle_options.allow_external_dependencies = true;

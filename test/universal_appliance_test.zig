@@ -221,6 +221,13 @@ test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded m
     try std.testing.expectEqual(world.Appliance.TurnClosureStatus.completed, completed_closure.status);
     try std.testing.expect(completed_closure.root_result_fingerprint != null);
     try std.testing.expect(completed_closure.archive_append_batch_fingerprint != null);
+    try completed_closure.validate(std.testing.allocator, .{
+        .expected_manifest_fingerprint = manifest.manifest_fingerprint,
+        .limits = .archive_decode,
+    });
+    var missing_archive_closure = completed_closure;
+    missing_archive_closure.archive_append_batch_bytes = "";
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_archive_closure.validate(std.testing.allocator, .{ .limits = .archive_decode }));
     const completed_output_len = universal.world_appliance_output_len();
     try std.testing.expect(completed_output_len > 0);
     const completed_output_ptr = universal.world_appliance_alloc(completed_output_len);
@@ -242,6 +249,7 @@ test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded m
     try std.testing.expectEqual(@as(u32, 12), universal.world_appliance_submit_command(turn_input_ptr, 0));
     try std.testing.expect(universal.world_appliance_last_error_len() > 0);
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_closure_len());
 
     try std.testing.expectEqual(@as(u32, 8), universal.world_appliance_submit_turn(continue_turn_ptr, continue_turn_bytes.len));
     try std.testing.expect(universal.world_appliance_last_error_len() > 0);
