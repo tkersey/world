@@ -34,7 +34,7 @@ test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded m
     try expectManifestLine(runtime_manifest, "max_linear_memory_pages=1024\n");
     try expectManifestLine(runtime_manifest, "decoded_immutable_bytes_limit=16777216\n");
     try expectManifestLine(runtime_manifest, "staging_high_water_limit=16777216\n");
-    try expectManifestLine(runtime_manifest, "execution_high_water_limit=4194304\n");
+    try std.testing.expect(std.mem.indexOf(u8, runtime_manifest, "execution_high_water_limit=") == null);
     try expectManifestLine(runtime_manifest, "linear_memory_initial_limit_bytes=67108864\n");
     try expectManifestLine(runtime_manifest, "linear_memory_max_limit_bytes=67108864\n");
     try expectManifestLine(runtime_manifest, "runtime_profile_metadata=\n");

@@ -22,7 +22,6 @@ const max_linear_memory_pages: usize = 1024;
 const max_error_bytes: usize = 160;
 const loaded_image_arena_bytes: usize = 16 * 1024 * 1024;
 const staging_arena_bytes: usize = 16 * 1024 * 1024;
-const turn_scratch_bytes: usize = 4 * 1024 * 1024;
 var guest_memory: [guest_memory_bytes]u8 align(16) = [_]u8{0} ** guest_memory_bytes;
 var bump: usize = 16;
 
@@ -75,7 +74,6 @@ const runtime_manifest =
     std.fmt.comptimePrint("encoded_image_bytes_limit={d}\n", .{max_image_bytes}) ++
     std.fmt.comptimePrint("decoded_immutable_bytes_limit={d}\n", .{loaded_image_arena_bytes}) ++
     std.fmt.comptimePrint("staging_high_water_limit={d}\n", .{staging_arena_bytes}) ++
-    std.fmt.comptimePrint("execution_high_water_limit={d}\n", .{turn_scratch_bytes}) ++
     std.fmt.comptimePrint("runspace_slots={d}\n", .{max_modules}) ++
     std.fmt.comptimePrint("loaded_frames={d}\n", .{max_modules}) ++
     std.fmt.comptimePrint("mailbox_entries={d}\n", .{max_mailbox_entries}) ++

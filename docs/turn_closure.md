@@ -76,7 +76,7 @@ Foreign hosts only need the independent Wire and loaded-value codecs. They decod
 
 ## Memory Profile
 
-The universal profile is bounded: one immutable loaded-image arena, one staging arena, resettable per-turn scratch, image-derived memory-plan checks, fixed 64 MiB shipped WASM maximum, no allocator imports, no unbounded growth, no repeated module parsing per turn, and no second permanent full image copy.
+The universal profile is bounded: one immutable loaded-image arena, one staging arena, image-derived memory-plan checks, fixed 64 MiB shipped WASM maximum, no allocator imports, no unbounded growth, no repeated module parsing per turn, and no second permanent full image copy.
 
 ## Non-Goals
 
