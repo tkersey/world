@@ -14,7 +14,8 @@ pub fn main(init: std.process.Init) !void {
         .internal_loaded_provider_executed = true,
         .multi_suspension_loaded_root_executed = true,
         .active_loaded_fabric_restored = true,
-        .replay_completed_without_fresh_effect = true,
+        .verified_replay_without_fresh_effect_passed = true,
+        .unsupported_actuated_replay_rejected = true,
         .deterministic_retry_passed = true,
         .batched_request_reply_passed = true,
         .independent_javascript_codec_passed = true,
@@ -35,8 +36,9 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("two_program_plans_one_wasm=true\n", .{});
     try stdout.print("loaded_internal_provider_executed={}\n", .{report.internal_loaded_provider_executed});
     try stdout.print("active_fabric_restore_accepted={}\n", .{report.active_loaded_fabric_restored});
-    try stdout.print("replay_supported=true\n", .{});
-    try stdout.print("replay_without_fresh_effect={}\n", .{report.replay_completed_without_fresh_effect});
+    try stdout.print("verified_replay_without_fresh_effect={}\n", .{report.verified_replay_without_fresh_effect_passed});
+    try stdout.print("actuated_replay_supported=false\n", .{});
+    try stdout.print("unsupported_actuated_replay_rejected={}\n", .{report.unsupported_actuated_replay_rejected});
     try stdout.print("javascript_codec_independent={}\n", .{report.independent_javascript_codec_passed});
     try stdout.print("deterministic_retry={}\n", .{report.deterministic_retry_passed});
     try stdout.print("universal_memory_bound_passed={}\n", .{report.memory_bound_passed});

@@ -2960,7 +2960,8 @@ pub fn Appliance(comptime World: type) type {
             internal_loaded_provider_executed: bool = false,
             multi_suspension_loaded_root_executed: bool = false,
             active_loaded_fabric_restored: bool = false,
-            replay_completed_without_fresh_effect: bool = false,
+            verified_replay_without_fresh_effect_passed: bool = false,
+            unsupported_actuated_replay_rejected: bool = false,
             deterministic_retry_passed: bool = false,
             batched_request_reply_passed: bool = false,
             independent_javascript_codec_passed: bool = false,
@@ -2985,7 +2986,8 @@ pub fn Appliance(comptime World: type) type {
                 internal_loaded_provider_executed: bool = false,
                 multi_suspension_loaded_root_executed: bool = false,
                 active_loaded_fabric_restored: bool = false,
-                replay_completed_without_fresh_effect: bool = false,
+                verified_replay_without_fresh_effect_passed: bool = false,
+                unsupported_actuated_replay_rejected: bool = false,
                 deterministic_retry_passed: bool = false,
                 batched_request_reply_passed: bool = false,
                 independent_javascript_codec_passed: bool = false,
@@ -3009,7 +3011,8 @@ pub fn Appliance(comptime World: type) type {
                     .internal_loaded_provider_executed = args.internal_loaded_provider_executed,
                     .multi_suspension_loaded_root_executed = args.multi_suspension_loaded_root_executed,
                     .active_loaded_fabric_restored = args.active_loaded_fabric_restored,
-                    .replay_completed_without_fresh_effect = args.replay_completed_without_fresh_effect,
+                    .verified_replay_without_fresh_effect_passed = args.verified_replay_without_fresh_effect_passed,
+                    .unsupported_actuated_replay_rejected = args.unsupported_actuated_replay_rejected,
                     .deterministic_retry_passed = args.deterministic_retry_passed,
                     .batched_request_reply_passed = args.batched_request_reply_passed,
                     .independent_javascript_codec_passed = args.independent_javascript_codec_passed,
@@ -3046,7 +3049,8 @@ pub fn Appliance(comptime World: type) type {
                     self.internal_loaded_provider_executed and
                     self.multi_suspension_loaded_root_executed and
                     self.active_loaded_fabric_restored and
-                    self.replay_completed_without_fresh_effect and
+                    self.verified_replay_without_fresh_effect_passed and
+                    self.unsupported_actuated_replay_rejected and
                     self.deterministic_retry_passed and
                     self.batched_request_reply_passed and
                     self.independent_javascript_codec_passed and
@@ -9481,7 +9485,8 @@ pub fn Appliance(comptime World: type) type {
             hashBool(&hasher, report.internal_loaded_provider_executed);
             hashBool(&hasher, report.multi_suspension_loaded_root_executed);
             hashBool(&hasher, report.active_loaded_fabric_restored);
-            hashBool(&hasher, report.replay_completed_without_fresh_effect);
+            hashBool(&hasher, report.verified_replay_without_fresh_effect_passed);
+            hashBool(&hasher, report.unsupported_actuated_replay_rejected);
             hashBool(&hasher, report.deterministic_retry_passed);
             hashBool(&hasher, report.batched_request_reply_passed);
             hashBool(&hasher, report.independent_javascript_codec_passed);

@@ -1646,8 +1646,9 @@ pub fn build(b: *std.Build) void {
             \\two_program_plans_one_wasm=true
             \\loaded_internal_provider_executed=true
             \\active_fabric_restore_accepted=true
-            \\replay_supported=true
-            \\replay_without_fresh_effect=true
+            \\verified_replay_without_fresh_effect=true
+            \\actuated_replay_supported=false
+            \\unsupported_actuated_replay_rejected=true
             \\javascript_codec_independent=true
             \\deterministic_retry=true
             \\universal_memory_bound_passed=true

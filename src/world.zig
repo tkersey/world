@@ -398,7 +398,7 @@ pub const world_appliance_wire_retention_input_format_version: u32 = 1;
 pub const world_appliance_reconstruction_report_fingerprint_version: u32 = 1;
 pub const world_appliance_conformance_vector_fingerprint_version: u32 = 1;
 pub const world_appliance_conformance_report_fingerprint_version: u32 = 1;
-pub const world_v0_report_fingerprint_version: u32 = 1;
+pub const world_v0_report_fingerprint_version: u32 = 2;
 
 var next_runspace_instance_id = std.atomic.Value(u64).init(0);
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;

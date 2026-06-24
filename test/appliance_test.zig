@@ -10222,7 +10222,7 @@ test "World Seed Replay accepts batched host replies for independent requests" {
     try std.testing.expect(output.checkpoint_bytes.len != 0);
 }
 
-test "WorldV0Report requires every positive completion proof" {
+test "WorldV0Report requires every completion proof bit" {
     const report = world.Appliance.WorldV0Report.init(.{
         .boundary_v0_5_0_portable_v2_baseline_passed = true,
         .canonical_executable_image_passed = true,
@@ -10231,7 +10231,8 @@ test "WorldV0Report requires every positive completion proof" {
         .internal_loaded_provider_executed = true,
         .multi_suspension_loaded_root_executed = true,
         .active_loaded_fabric_restored = true,
-        .replay_completed_without_fresh_effect = true,
+        .verified_replay_without_fresh_effect_passed = true,
+        .unsupported_actuated_replay_rejected = true,
         .deterministic_retry_passed = true,
         .batched_request_reply_passed = true,
         .independent_javascript_codec_passed = true,
@@ -10257,7 +10258,8 @@ test "WorldV0Report requires every positive completion proof" {
         .internal_loaded_provider_executed = true,
         .multi_suspension_loaded_root_executed = true,
         .active_loaded_fabric_restored = false,
-        .replay_completed_without_fresh_effect = true,
+        .verified_replay_without_fresh_effect_passed = true,
+        .unsupported_actuated_replay_rejected = true,
         .deterministic_retry_passed = true,
         .batched_request_reply_passed = true,
         .independent_javascript_codec_passed = true,
@@ -10274,6 +10276,32 @@ test "WorldV0Report requires every positive completion proof" {
     try missing_active_restore.validate();
     try std.testing.expect(!missing_active_restore.passed);
 
+    const missing_actuated_replay_rejection = world.Appliance.WorldV0Report.init(.{
+        .boundary_v0_5_0_portable_v2_baseline_passed = true,
+        .canonical_executable_image_passed = true,
+        .actual_universal_wasm_executed = true,
+        .genuinely_unrelated_images_executed = true,
+        .internal_loaded_provider_executed = true,
+        .multi_suspension_loaded_root_executed = true,
+        .active_loaded_fabric_restored = true,
+        .verified_replay_without_fresh_effect_passed = true,
+        .unsupported_actuated_replay_rejected = false,
+        .deterministic_retry_passed = true,
+        .batched_request_reply_passed = true,
+        .independent_javascript_codec_passed = true,
+        .exact_root_result_bytes_passed = true,
+        .exact_receipt_bytes_passed = true,
+        .exact_capsule_bytes_passed = true,
+        .exact_archive_append_batch_bytes_passed = true,
+        .native_wasm_parity_passed = true,
+        .cold_warm_parity_passed = true,
+        .memory_bound_passed = true,
+        .malformed_input_suite_passed = true,
+        .regression_matrix_passed = true,
+    });
+    try missing_actuated_replay_rejection.validate();
+    try std.testing.expect(!missing_actuated_replay_rejection.passed);
+
     const blocked = world.Appliance.WorldV0Report.init(.{
         .boundary_v0_5_0_portable_v2_baseline_passed = true,
         .canonical_executable_image_passed = true,
@@ -10282,7 +10310,8 @@ test "WorldV0Report requires every positive completion proof" {
         .internal_loaded_provider_executed = true,
         .multi_suspension_loaded_root_executed = true,
         .active_loaded_fabric_restored = true,
-        .replay_completed_without_fresh_effect = true,
+        .verified_replay_without_fresh_effect_passed = true,
+        .unsupported_actuated_replay_rejected = true,
         .deterministic_retry_passed = true,
         .batched_request_reply_passed = true,
         .independent_javascript_codec_passed = true,
