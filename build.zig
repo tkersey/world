@@ -1648,7 +1648,7 @@ pub fn build(b: *std.Build) void {
             \\loaded_internal_provider_executed=true
             \\active_fabric_restore_accepted=true
             \\replay_supported=true
-            \\replay_final_result=false
+            \\replay_final_result=true
             \\javascript_codec_independent=true
             \\deterministic_retry=true
             \\universal_memory_bound_passed=true

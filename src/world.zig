@@ -39316,6 +39316,16 @@ pub const Continuity = struct {
         for (refs) |ref| {
             if ((try bundleEnvelopeForRef(allocator, envelopes, ref)) == null) return false;
         }
+        if (closure.parent_closure_fingerprint) |fingerprint| {
+            const parent_ref = semanticObjectRef(.appliance_turn_closure, fingerprint);
+            const parent_envelope = (try bundleEnvelopeForRef(allocator, envelopes, parent_ref)) orelse return false;
+            var parent = Appliance.TurnClosure.decodeArchivePayload(allocator, parent_envelope.payload_bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return false,
+            };
+            defer parent.deinit(allocator);
+            Appliance.validateTurnClosureParentContinuity(closure, parent) catch return false;
+        }
         return true;
     }
 

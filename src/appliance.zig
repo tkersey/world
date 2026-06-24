@@ -1886,6 +1886,10 @@ pub fn Appliance(comptime World: type) type {
             expected_executable_image_fingerprint: ?u64 = null,
             expected_manifest_fingerprint: ?u64 = null,
             expected_parent_closure_fingerprint: ?u64 = null,
+            expected_parent_state_fingerprint: ?u64 = null,
+            expected_parent_chronicle_cursor_fingerprint: ?u64 = null,
+            expected_archive_parent_moment_fingerprint: ?u64 = null,
+            expected_archive_parent_seal_fingerprint: ?u64 = null,
             limits: TurnClosureLimits = TurnClosureLimits.default,
             bundle_options: World.Continuity.BundleOptions = .{},
         };
@@ -2056,8 +2060,13 @@ pub fn Appliance(comptime World: type) type {
                 try validateOptionalFingerprint(self.archive_parent_seal_fingerprint);
                 try validateOptionalFingerprint(self.archive_resulting_moment_fingerprint);
                 try validateOptionalFingerprint(self.archive_resulting_seal_fingerprint);
+                try validateOptionalFingerprint(options.expected_parent_state_fingerprint);
+                try validateOptionalFingerprint(options.expected_parent_chronicle_cursor_fingerprint);
+                try validateOptionalFingerprint(options.expected_archive_parent_moment_fingerprint);
+                try validateOptionalFingerprint(options.expected_archive_parent_seal_fingerprint);
                 try validateArchiveAnchorPair(self.archive_parent_moment_fingerprint, self.archive_parent_seal_fingerprint);
                 try validateArchiveAnchorPair(self.archive_resulting_moment_fingerprint, self.archive_resulting_seal_fingerprint);
+                try validateArchiveAnchorPair(options.expected_archive_parent_moment_fingerprint, options.expected_archive_parent_seal_fingerprint);
                 if (self.turn_sequence_number == 0) {
                     if (self.parent_closure_fingerprint != null) return error.InvalidFrameEncoding;
                     if (self.parent_state_fingerprint != coreStateFingerprint(.uninitialized, 0, null)) return error.InvalidFrameEncoding;
@@ -2073,6 +2082,19 @@ pub fn Appliance(comptime World: type) type {
                 }
                 if (options.expected_parent_closure_fingerprint) |expected| {
                     if (self.parent_closure_fingerprint != expected) return error.InvalidFrameEncoding;
+                }
+                if (options.expected_parent_state_fingerprint) |expected| {
+                    if (self.parent_state_fingerprint != expected) return error.InvalidFrameEncoding;
+                }
+                if (options.expected_parent_chronicle_cursor_fingerprint) |expected| {
+                    if (self.chronicle_parent_cursor_fingerprint != expected) return error.InvalidFrameEncoding;
+                }
+                const expected_archive_parent_anchor =
+                    options.expected_archive_parent_moment_fingerprint != null or
+                    options.expected_archive_parent_seal_fingerprint != null;
+                if (expected_archive_parent_anchor) {
+                    if (options.expected_archive_parent_moment_fingerprint != self.archive_parent_moment_fingerprint) return error.InvalidFrameEncoding;
+                    if (options.expected_archive_parent_seal_fingerprint != self.archive_parent_seal_fingerprint) return error.InvalidFrameEncoding;
                 }
                 if (self.checkpoint_bytes.len == 0 or self.checkpoint_bytes.len > options.limits.max_checkpoint_bytes) return error.CapacityExceeded;
                 if (self.capsule_bytes.len == 0 or self.capsule_bytes.len > options.limits.max_capsule_bytes) return error.CapacityExceeded;
@@ -8759,6 +8781,14 @@ pub fn Appliance(comptime World: type) type {
                 break :blk stateFingerprintFor(checkpoint.core_state, closure.turn_sequence_number, receipt.receipt_fingerprint);
             };
             if (closure.resulting_state_fingerprint != expected_resulting_state_fingerprint) return error.InvalidFrameEncoding;
+        }
+
+        pub fn validateTurnClosureParentContinuity(closure: TurnClosure, parent: TurnClosure) !void {
+            if (closure.parent_closure_fingerprint != parent.closure_fingerprint) return error.InvalidFrameEncoding;
+            if (closure.parent_state_fingerprint != parent.resulting_state_fingerprint) return error.InvalidFrameEncoding;
+            if (closure.chronicle_parent_cursor_fingerprint != parent.chronicle_resulting_cursor_fingerprint) return error.InvalidFrameEncoding;
+            if (closure.archive_parent_moment_fingerprint != parent.archive_resulting_moment_fingerprint) return error.InvalidFrameEncoding;
+            if (closure.archive_parent_seal_fingerprint != parent.archive_resulting_seal_fingerprint) return error.InvalidFrameEncoding;
         }
 
         fn validateActuationReceiptBytes(allocator: std.mem.Allocator, bytes: []const u8, expected_fingerprint: u64) !void {

@@ -4998,6 +4998,33 @@ test "appliance Core accepts replay evidence with verified transcript support" {
     const replay_wire_continue_bytes = try replay_wire_continue.encode(std.testing.allocator);
     defer std.testing.allocator.free(replay_wire_continue_bytes);
     try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, replay_native.submitTurn(replay_wire_continue_bytes));
+    var native_child_closure = try world.Appliance.TurnClosure.decode(std.testing.allocator, replay_native.last_closure_bytes);
+    defer native_child_closure.deinit(std.testing.allocator);
+    try world.Appliance.validateTurnClosureParentContinuity(native_child_closure, native_parent_closure);
+    try native_child_closure.validate(std.testing.allocator, .{
+        .expected_executable_image_fingerprint = replay_native.core.executable_image_fingerprint,
+        .expected_manifest_fingerprint = manifest.manifest_fingerprint,
+        .expected_parent_closure_fingerprint = native_parent_closure.closure_fingerprint,
+        .expected_parent_state_fingerprint = native_parent_closure.resulting_state_fingerprint,
+        .expected_parent_chronicle_cursor_fingerprint = native_parent_closure.chronicle_resulting_cursor_fingerprint,
+        .limits = .archive_decode,
+    });
+    var forged_parent_state = native_child_closure;
+    forged_parent_state.parent_state_fingerprint +%= 1;
+    forged_parent_state = applianceTestRecomputedTurnClosure(forged_parent_state);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.validateTurnClosureParentContinuity(forged_parent_state, native_parent_closure));
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_parent_state.validate(std.testing.allocator, .{
+        .expected_parent_state_fingerprint = native_parent_closure.resulting_state_fingerprint,
+        .limits = .archive_decode,
+    }));
+    var forged_parent_cursor = native_child_closure;
+    forged_parent_cursor.chronicle_parent_cursor_fingerprint +%= 1;
+    forged_parent_cursor = applianceTestRecomputedTurnClosure(forged_parent_cursor);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.validateTurnClosureParentContinuity(forged_parent_cursor, native_parent_closure));
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_parent_cursor.validate(std.testing.allocator, .{
+        .expected_parent_chronicle_cursor_fingerprint = native_parent_closure.chronicle_resulting_cursor_fingerprint,
+        .limits = .archive_decode,
+    }));
 
     var duplicate_replay_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
