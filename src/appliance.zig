@@ -565,7 +565,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.actuation_binding_fingerprints.len != 0) {
                     if (!self.enabled_features.actuation or !self.required_host_capabilities.actuation or !self.supported_execution_modes.fresh) return error.InvalidFrameEncoding;
                     if (self.supported_execution_modes.verify or self.supported_execution_modes.audit) return error.InvalidFrameEncoding;
-                    if (self.supported_execution_modes.replay != self.required_host_capabilities.replay_evidence) return error.InvalidFrameEncoding;
+                    if (self.supported_execution_modes.replay or self.required_host_capabilities.replay_evidence) return error.InvalidFrameEncoding;
                 }
                 for (self.provider_target_ref_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;

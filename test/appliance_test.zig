@@ -8140,6 +8140,16 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, replay_evidence_manifest.validate());
 
+    var actuated_replay_modes = manifest.supported_execution_modes;
+    actuated_replay_modes.replay = true;
+    var actuated_replay_capabilities = manifest.required_host_capabilities;
+    actuated_replay_capabilities.replay_evidence = true;
+    const actuated_replay_manifest = applianceManifestVariant(manifest, .{
+        .supported_execution_modes = actuated_replay_modes,
+        .required_host_capabilities = actuated_replay_capabilities,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, actuated_replay_manifest.validate());
+
     var hidden_actuation_capabilities = manifest.required_host_capabilities;
     hidden_actuation_capabilities.actuation = false;
     const hidden_actuation_manifest = applianceManifestVariant(manifest, .{
