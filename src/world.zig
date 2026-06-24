@@ -10526,6 +10526,69 @@ pub const Runspace = struct {
             };
         }
 
+        fn resultImageMatchesDeclaredRef(self: *@This(), image: Frame.ValueImage) !bool {
+            try validateValueImage(image);
+            const result_ref = self.loaded_module.resultValueRef();
+            const expected_ref = loadedValueRefFromBoundary(result_ref) orelse return false;
+            if (try self.resultImageMatchesPortableRef(expected_ref, image)) return true;
+            return self.resultImageMatchesLoadedRef(expected_ref, image);
+        }
+
+        fn resultImageMatchesPortableRef(
+            self: *@This(),
+            expected_ref: Executable.Boundary.LoadedExecution.LoadedValueRef,
+            image: Frame.ValueImage,
+        ) !bool {
+            switch (expected_ref.codec) {
+                .unit => {
+                    _ = image.decodeValue(self.allocator, void) catch return false;
+                    return true;
+                },
+                .bool => {
+                    _ = image.decodeValue(self.allocator, bool) catch return false;
+                    return true;
+                },
+                .i32 => {
+                    _ = image.decodeValue(self.allocator, i32) catch return false;
+                    return true;
+                },
+                .usize => {
+                    _ = image.decodeValue(self.allocator, u64) catch return false;
+                    return true;
+                },
+                .string => {
+                    const value = image.decodeValue(self.allocator, []const u8) catch return false;
+                    defer self.allocator.free(value);
+                    return true;
+                },
+                else => return false,
+            }
+        }
+
+        fn resultImageMatchesLoadedRef(
+            self: *@This(),
+            expected_ref: Executable.Boundary.LoadedExecution.LoadedValueRef,
+            image: Frame.ValueImage,
+        ) bool {
+            const executable_plan = self.session.executable_plan orelse return false;
+            const schemas = Executable.Boundary.LoadedExecution.SchemaSet{
+                .schemas = executable_plan.program_plan.value_schemas,
+                .fields = executable_plan.program_plan.value_fields,
+                .variants = executable_plan.program_plan.value_variants,
+            };
+            var arena = Executable.Boundary.LoadedExecution.LoadedValueArena.init(self.allocator);
+            defer arena.deinit();
+            _ = Executable.Boundary.LoadedExecution.decodeLoadedValueImage(
+                self.allocator,
+                &arena,
+                schemas,
+                expected_ref,
+                image.bytes,
+                .{},
+            ) catch return false;
+            return true;
+        }
+
         fn loadedValueRefFromBoundary(ref: anytype) ?Executable.Boundary.LoadedExecution.LoadedValueRef {
             const LoadedRef = Executable.Boundary.LoadedExecution.LoadedValueRef;
             const Codec = @TypeOf((LoadedRef{ .codec = .unit }).codec);
@@ -10621,6 +10684,7 @@ pub const Runspace = struct {
             beforeBranch: *const fn (*anyopaque, usize) anyerror!void,
             cloneSupervisor: *const fn (*anyopaque, std.mem.Allocator) anyerror!?Supervision.Supervisor,
             restoreSupervisor: *const fn (*anyopaque, std.mem.Allocator, ?Supervision.Supervisor) void,
+            loadedResultImageMatchesDeclaredRef: *const fn (*anyopaque, Frame.ValueImage) anyerror!bool,
             hasSupervisor: *const fn (*anyopaque) bool,
             supervisorWarningCount: *const fn (*anyopaque) usize,
             supervisorBlockerCount: *const fn (*anyopaque) usize,
@@ -10731,6 +10795,10 @@ pub const Runspace = struct {
 
         fn restoreSupervisor(self: @This(), allocator: std.mem.Allocator, supervisor: ?Supervision.Supervisor) void {
             self.vtable.restoreSupervisor(self.ptr, allocator, supervisor);
+        }
+
+        fn loadedResultImageMatchesDeclaredRef(self: @This(), image: Frame.ValueImage) !bool {
+            return self.vtable.loadedResultImageMatchesDeclaredRef(self.ptr, image);
         }
 
         fn hasSupervisor(self: @This()) bool {
@@ -10875,6 +10943,10 @@ pub const Runspace = struct {
                     if (active.supervisor) |*current| current.deinit();
                     active.supervisor = supervisor;
                 }
+                fn loadedResultImageMatchesDeclaredRefFn(ptr: *anyopaque, image: Frame.ValueImage) anyerror!bool {
+                    const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
+                    return active.resultImageMatchesDeclaredRef(image);
+                }
                 fn loadedHasSupervisor(ptr: *anyopaque) bool {
                     const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
                     return active.supervisor != null;
@@ -10930,6 +11002,7 @@ pub const Runspace = struct {
                     .beforeBranch = loadedBeforeBranch,
                     .cloneSupervisor = loadedCloneSupervisor,
                     .restoreSupervisor = loadedRestoreSupervisor,
+                    .loadedResultImageMatchesDeclaredRef = loadedResultImageMatchesDeclaredRefFn,
                     .hasSupervisor = loadedHasSupervisor,
                     .supervisorWarningCount = loadedSupervisorWarningCount,
                     .supervisorBlockerCount = loadedSupervisorBlockerCount,
@@ -11182,6 +11255,10 @@ pub const Runspace = struct {
                     _ = allocator;
                 }
 
+                fn runLoadedResultImageMatchesDeclaredRef(_: *anyopaque, _: Frame.ValueImage) anyerror!bool {
+                    return false;
+                }
+
                 fn runHasSupervisor(ptr: *anyopaque) bool {
                     const active: *RunType = @ptrCast(@alignCast(ptr));
                     if (@hasField(RunType, "supervisor")) return active.supervisor != null;
@@ -11255,6 +11332,7 @@ pub const Runspace = struct {
                     .beforeBranch = runBeforeBranch,
                     .cloneSupervisor = runCloneSupervisor,
                     .restoreSupervisor = runRestoreSupervisor,
+                    .loadedResultImageMatchesDeclaredRef = runLoadedResultImageMatchesDeclaredRef,
                     .hasSupervisor = runHasSupervisor,
                     .supervisorWarningCount = runSupervisorWarningCount,
                     .supervisorBlockerCount = runSupervisorBlockerCount,
@@ -14087,6 +14165,9 @@ pub const Runspace = struct {
         const parent_index = try self.slotIndex(pending.handle);
         const parent_slot = &self.slots.items[parent_index];
         const route = try self.installedFabricRoute(recorded.route_fingerprint);
+        const provider_handle_fingerprint = recorded.provider_run_handle_fingerprint orelse return error.InvalidRunspaceTransition;
+        const provider_index = self.slotIndexByHandleFingerprint(provider_handle_fingerprint) orelse return error.StaleRunHandle;
+        const provider_slot = self.slots.items[provider_index];
         var receipt_evidence = try self.prepareFabricReceiptEvidence(3);
         defer receipt_evidence.deinit(self.allocator);
         var provider_image = self.fabricProviderResultImage(recorded) catch |err| {
@@ -14124,7 +14205,7 @@ pub const Runspace = struct {
             try self.failProviderFabricInvocation(parent_slot.handle, recorded, pending, provider_image.prior_run_receipt_fingerprint, null, fabricResponseBlocker(err), receipt_evidence.takeReceiptSummary());
             return err;
         };
-        const mapped_contract = self.fabricParentResponseContract(route, provider_result, pending.expected_response_value_table_id) catch |err| {
+        const mapped_contract = self.fabricParentResponseContract(route, provider_slot, provider_result, pending.expected_response_value_table_id) catch |err| {
             try self.failProviderFabricInvocation(parent_slot.handle, recorded, pending, provider_image.prior_run_receipt_fingerprint, null, fabricResponseBlocker(err), receipt_evidence.takeReceiptSummary());
             return err;
         };
@@ -14351,6 +14432,7 @@ pub const Runspace = struct {
     fn fabricParentResponseContract(
         self: *const @This(),
         route: Fabric.Route,
+        provider_slot: Runspace.RunSlot,
         provider_result: Frame.ValueImage,
         expected_response_value_table_id: ?u32,
     ) !struct { value_table_id: ?u32, boundary_value_fingerprint: ?u64 } {
@@ -14371,7 +14453,9 @@ pub const Runspace = struct {
                 return error.ProviderResultMismatch;
             }
             if (mapping.provider_result_value_fingerprint) |expected| {
-                if (!fabricProviderResultMatchesResponseMapping(route, mapping, provider_result, expected)) return error.ProviderResultMismatch;
+                if (!try fabricProviderResultMatchesResponseMapping(route, provider_slot, provider_result, expected)) {
+                    return error.ProviderResultMismatch;
+                }
             }
             const parent_table_id = mapping.parent_response_value_table_id;
             if (parent_table_id != expected_response_value_table_id) return error.CrossTypeConversionRejected;
@@ -14389,14 +14473,17 @@ pub const Runspace = struct {
 
     fn fabricProviderResultMatchesResponseMapping(
         route: Fabric.Route,
-        mapping: Fabric.ValueMapping,
+        provider_slot: Runspace.RunSlot,
         provider_result: Frame.ValueImage,
         expected: u64,
-    ) bool {
+    ) !bool {
         if (provider_result.value_image_fingerprint == expected) return true;
         if (provider_result.boundary_value_fingerprint == expected) return true;
-        if (route.kind != .loaded_module_export) return false;
-        return mapping.parent_response_value_fingerprint != null and mapping.parent_response_value_fingerprint.? == expected;
+        if (route.kind == .loaded_module_export) {
+            const driver = provider_slot.driver orelse return false;
+            return driver.loadedResultImageMatchesDeclaredRef(provider_result);
+        }
+        return false;
     }
 
     fn fabricProviderRunCount(self: *const @This(), plan_fingerprint: u64) usize {

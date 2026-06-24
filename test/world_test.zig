@@ -23514,6 +23514,7 @@ test "runspace loaded fabric response enforces provider result fingerprint mappi
         .provider_result_value_table_id = 1,
         .provider_result_value_fingerprint = provider_final_image.value_image_fingerprint +% 1,
         .parent_response_value_table_id = 1,
+        .parent_response_value_fingerprint = provider_final_image.value_image_fingerprint +% 1,
     });
     const route = world.Fabric.Route.init(.{
         .route_id = 423,
