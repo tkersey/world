@@ -4638,6 +4638,9 @@ pub fn Appliance(comptime World: type) type {
             if (output.archive_append_batch_fingerprint) |fingerprint| {
                 try appendClosureBundleObject(allocator, &roots, &envelopes, .archive_append_batch, fingerprint, output.archive_append_batch_bytes, "archive.append_batch");
             }
+            if (output.run_receipt_fingerprint) |fingerprint| {
+                try appendClosureBundleObject(allocator, &roots, &envelopes, .run_receipt, fingerprint, output.run_receipt_bytes, "run.receipt");
+            }
             const replay_receipts_without_payloads = output.checkpoint.execution_mode == .replay and output.finalized_actuation_receipt_bytes.len == 0;
             if (replay_receipts_without_payloads) {
                 try validateFingerprintSlice(output.finalized_actuation_receipt_fingerprints);
@@ -9006,6 +9009,7 @@ pub fn Appliance(comptime World: type) type {
             try requireBundleRoot(allocator, bundle, .capsule_image, closure.capsule_fingerprint);
             if (closure.root_result_fingerprint) |fingerprint| try requireBundleRoot(allocator, bundle, .root_result, fingerprint);
             if (closure.archive_append_batch_fingerprint) |fingerprint| try requireBundleRoot(allocator, bundle, .archive_append_batch, fingerprint);
+            if (closure.run_receipt_fingerprint) |fingerprint| try requireBundleRoot(allocator, bundle, .run_receipt, fingerprint);
             for (closure.finalized_actuation_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
             for (closure.replay_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
             for (closure.verify_report_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_verify_report, fingerprint);

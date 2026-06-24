@@ -8472,6 +8472,86 @@ fn applianceTestClosureBundleBytes(
     return bundle.toBytes(allocator);
 }
 
+fn applianceTestClosureBundleBytesWithRunReceipt(
+    allocator: std.mem.Allocator,
+    checkpoint_bytes: []const u8,
+    turn_receipt_bytes: []const u8,
+    capsule_bytes: []const u8,
+    root_result_bytes: []const u8,
+    actuation_receipt_bytes: []const u8,
+    run_receipt_bytes: []const u8,
+) ![]const u8 {
+    const checkpoint_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_checkpoint,
+        .payload_bytes = checkpoint_bytes,
+        .label = "checkpoint",
+    });
+    const receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_receipt,
+        .payload_bytes = turn_receipt_bytes,
+        .label = "receipt",
+    });
+    const capsule_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = world.world_capsule_image_format_version,
+        .payload_bytes = capsule_bytes,
+        .label = "capsule",
+    });
+    const root_result_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .root_result,
+        .payload_bytes = root_result_bytes,
+        .label = "root-result",
+    });
+    const actuation_receipt_envelope_without_deps = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .payload_bytes = actuation_receipt_bytes,
+        .label = "actuation-receipt",
+    });
+    const actuation_receipt_deps = try world.Continuity.objectEnvelopeRequiredDependencyRefs(allocator, actuation_receipt_envelope_without_deps);
+    defer allocator.free(actuation_receipt_deps);
+    const actuation_receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .dependency_refs = actuation_receipt_deps,
+        .payload_bytes = actuation_receipt_bytes,
+        .label = "actuation-receipt",
+    });
+    const run_receipt_envelope_without_deps = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .run_receipt,
+        .payload_bytes = run_receipt_bytes,
+        .label = "run-receipt",
+    });
+    const run_receipt_deps = try world.Continuity.objectEnvelopeRequiredDependencyRefs(allocator, run_receipt_envelope_without_deps);
+    defer allocator.free(run_receipt_deps);
+    const run_receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .run_receipt,
+        .dependency_refs = run_receipt_deps,
+        .payload_bytes = run_receipt_bytes,
+        .label = "run-receipt",
+    });
+    const roots = [_]world.Continuity.ObjectRef{
+        checkpoint_envelope.objectRef(),
+        receipt_envelope.objectRef(),
+        capsule_envelope.objectRef(),
+        root_result_envelope.objectRef(),
+        actuation_receipt_envelope.objectRef(),
+        run_receipt_envelope.objectRef(),
+    };
+    var envelopes = [_]world.Continuity.ObjectEnvelope{
+        checkpoint_envelope,
+        receipt_envelope,
+        capsule_envelope,
+        root_result_envelope,
+        actuation_receipt_envelope,
+        run_receipt_envelope,
+    };
+    const bundle = world.Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = world.Continuity.BundleManifest.init(.{ .roots = &roots, .object_count = envelopes.len }),
+        .envelopes = &envelopes,
+    };
+    return bundle.toBytes(allocator);
+}
+
 fn applianceTurnClosureFixture(allocator: std.mem.Allocator) !struct {
     closure: world.Appliance.TurnClosure,
     capsule_bytes: []const u8,
@@ -8938,6 +9018,103 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
     var missing_run_receipt_bytes = fixture.closure;
     missing_run_receipt_bytes.run_receipt_fingerprint = 0xD7C4;
     try std.testing.expectError(error.InvalidFrameEncoding, missing_run_receipt_bytes.validate(allocator, external_dependency_options));
+
+    const run_receipt = world.RunReceipt.init(.{
+        .run_permit_fingerprint = 0xD7D0,
+        .environment_certificate_fingerprint = 0xD7D1,
+        .target_ref_fingerprint = 0xD7D2,
+        .usage_ledger_fingerprint = 0xD7D3,
+        .final_run_state_fingerprint = 0xD7D4,
+        .final_status = .completed,
+    });
+    const run_receipt_bytes = try world.Continuity.encodePortableEvidence(world.RunReceipt, allocator, run_receipt);
+    defer allocator.free(run_receipt_bytes);
+    var base_turn_receipt = try world.Appliance.TurnReceipt.decodeArchivePayload(allocator, fixture.turn_receipt_bytes);
+    defer base_turn_receipt.deinit(allocator);
+    const turn_receipt_with_run = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = base_turn_receipt.manifest_fingerprint,
+        .turn_sequence_number = base_turn_receipt.turn_sequence_number,
+        .command_fingerprint = base_turn_receipt.command_fingerprint,
+        .prior_checkpoint_fingerprint = base_turn_receipt.prior_checkpoint_fingerprint,
+        .applied_host_reply_fingerprints = base_turn_receipt.applied_host_reply_fingerprints,
+        .emitted_host_request_fingerprints = base_turn_receipt.emitted_host_request_fingerprints,
+        .source_capsule_fingerprint = base_turn_receipt.source_capsule_fingerprint,
+        .resulting_capsule_fingerprint = base_turn_receipt.resulting_capsule_fingerprint,
+        .archive_append_batch_fingerprint = base_turn_receipt.archive_append_batch_fingerprint,
+        .resulting_archive_moment_fingerprint = base_turn_receipt.resulting_archive_moment_fingerprint,
+        .resulting_archive_seal_fingerprint = base_turn_receipt.resulting_archive_seal_fingerprint,
+        .resulting_chronicle_cursor_fingerprint = base_turn_receipt.resulting_chronicle_cursor_fingerprint,
+        .root_result_fingerprint = base_turn_receipt.root_result_fingerprint,
+        .status = base_turn_receipt.status,
+        .run_receipt_fingerprint = run_receipt.receipt_fingerprint,
+        .blocker_count = base_turn_receipt.blocker_count,
+        .warning_count = base_turn_receipt.warning_count,
+    });
+    var turn_receipt_with_run_payload: std.ArrayList(u8) = .empty;
+    defer turn_receipt_with_run_payload.deinit(allocator);
+    try turn_receipt_with_run.encode(&turn_receipt_with_run_payload, allocator);
+    const turn_receipt_with_run_bytes = try allocator.dupe(u8, turn_receipt_with_run_payload.items);
+    defer allocator.free(turn_receipt_with_run_bytes);
+    var base_checkpoint = try world.Appliance.Checkpoint.decodeArchivePayload(allocator, fixture.checkpoint_bytes);
+    defer base_checkpoint.deinit(allocator);
+    const checkpoint_with_run = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = base_checkpoint.manifest_fingerprint,
+        .turn_sequence_number = base_checkpoint.turn_sequence_number,
+        .capsule_fingerprint = base_checkpoint.capsule_fingerprint,
+        .capsule_image_ref_fingerprint = base_checkpoint.capsule_image_ref_fingerprint,
+        .capsule_image_bytes = base_checkpoint.capsule_image_bytes,
+        .latest_archive_moment_fingerprint = base_checkpoint.latest_archive_moment_fingerprint,
+        .latest_archive_seal_fingerprint = base_checkpoint.latest_archive_seal_fingerprint,
+        .latest_chronicle_cursor_fingerprint = base_checkpoint.latest_chronicle_cursor_fingerprint,
+        .pending_archive_append_batch_fingerprint = base_checkpoint.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = base_checkpoint.pending_archive_resulting_cursor,
+        .latest_archive_cursor = base_checkpoint.latest_archive_cursor,
+        .core_state = base_checkpoint.core_state,
+        .previous_turn_receipt_fingerprint = turn_receipt_with_run.receipt_fingerprint,
+        .outstanding_host_requests = base_checkpoint.outstanding_host_requests,
+        .execution_mode = base_checkpoint.execution_mode,
+        .metadata = base_checkpoint.metadata,
+    });
+    var checkpoint_with_run_payload: std.ArrayList(u8) = .empty;
+    defer checkpoint_with_run_payload.deinit(allocator);
+    try checkpoint_with_run.encode(&checkpoint_with_run_payload, allocator);
+    const checkpoint_with_run_bytes = try allocator.dupe(u8, checkpoint_with_run_payload.items);
+    defer allocator.free(checkpoint_with_run_bytes);
+    const bundle_missing_run_receipt = try applianceTestClosureBundleBytes(
+        allocator,
+        checkpoint_with_run_bytes,
+        turn_receipt_with_run_bytes,
+        fixture.capsule_bytes,
+        fixture.root_result_bytes,
+        fixture.actuation_receipt_bytes,
+    );
+    defer allocator.free(bundle_missing_run_receipt);
+    var closure_missing_run_receipt_root = fixture.closure;
+    closure_missing_run_receipt_root.checkpoint_fingerprint = checkpoint_with_run.checkpoint_fingerprint;
+    closure_missing_run_receipt_root.checkpoint_bytes = checkpoint_with_run_bytes;
+    closure_missing_run_receipt_root.turn_receipt_fingerprint = turn_receipt_with_run.receipt_fingerprint;
+    closure_missing_run_receipt_root.turn_receipt_bytes = turn_receipt_with_run_bytes;
+    closure_missing_run_receipt_root.evidence_bundle_bytes = bundle_missing_run_receipt;
+    closure_missing_run_receipt_root.resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, fixture.closure.turn_sequence_number, turn_receipt_with_run.receipt_fingerprint);
+    closure_missing_run_receipt_root.run_receipt_fingerprint = run_receipt.receipt_fingerprint;
+    closure_missing_run_receipt_root.run_receipt_bytes = run_receipt_bytes;
+    closure_missing_run_receipt_root = applianceTestRecomputedTurnClosure(closure_missing_run_receipt_root);
+    try std.testing.expectError(error.ObjectMissing, closure_missing_run_receipt_root.validate(allocator, external_dependency_options));
+
+    const bundle_with_run_receipt = try applianceTestClosureBundleBytesWithRunReceipt(
+        allocator,
+        checkpoint_with_run_bytes,
+        turn_receipt_with_run_bytes,
+        fixture.capsule_bytes,
+        fixture.root_result_bytes,
+        fixture.actuation_receipt_bytes,
+        run_receipt_bytes,
+    );
+    defer allocator.free(bundle_with_run_receipt);
+    var closure_with_run_receipt_root = closure_missing_run_receipt_root;
+    closure_with_run_receipt_root.evidence_bundle_bytes = bundle_with_run_receipt;
+    closure_with_run_receipt_root = applianceTestRecomputedTurnClosure(closure_with_run_receipt_root);
+    try closure_with_run_receipt_root.validate(allocator, external_dependency_options);
 
     const replay_checkpoint = world.Appliance.Checkpoint.init(.{
         .manifest_fingerprint = fixture.closure.appliance_manifest_fingerprint,
