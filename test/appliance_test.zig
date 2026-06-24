@@ -8725,6 +8725,12 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
     missing_receipt_bytes.finalized_actuation_receipt_bytes = &.{};
     try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, external_dependency_options));
 
+    const forged_warnings = [_]u64{0xD7C4};
+    var forged_warning_count = fixture.closure;
+    forged_warning_count.warnings = &forged_warnings;
+    forged_warning_count = applianceTestRecomputedTurnClosure(forged_warning_count);
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_warning_count.validate(allocator, external_dependency_options));
+
     var forged_genesis_parent_state = fixture.closure;
     forged_genesis_parent_state.parent_state_fingerprint +%= 1;
     forged_genesis_parent_state = applianceTestRecomputedTurnClosure(forged_genesis_parent_state);

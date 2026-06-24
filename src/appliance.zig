@@ -4293,6 +4293,15 @@ pub fn Appliance(comptime World: type) type {
                     World.Continuity.ObjectRef.fromPayload(.root_result, World.Continuity.ObjectKind.root_result.defaultFormatVersion(), output.root_result_value_image_bytes, "root.result")
                 else
                     null;
+                var warning_refs_storage: [1]u64 = undefined;
+                const warning_refs: []const u64 = switch (output.warning_count) {
+                    0 => &.{},
+                    1 => blk: {
+                        warning_refs_storage[0] = output.turn_receipt.receipt_fingerprint;
+                        break :blk warning_refs_storage[0..1];
+                    },
+                    else => return error.InvalidFrameEncoding,
+                };
                 const closure = TurnClosure.init(.{
                     .executable_image_fingerprint = self.core.executable_image_fingerprint,
                     .appliance_manifest_fingerprint = self.core.manifest_value.manifest_fingerprint,
@@ -4324,7 +4333,7 @@ pub fn Appliance(comptime World: type) type {
                     .finalized_actuation_receipt_fingerprints = output.finalized_actuation_receipt_fingerprints,
                     .finalized_actuation_receipt_bytes = output.finalized_actuation_receipt_bytes,
                     .blockers = if (output.status == .blocked) &.{output.turn_receipt.receipt_fingerprint} else &.{},
-                    .warnings = &.{},
+                    .warnings = warning_refs,
                     .diagnostics = output.diagnostic_metadata,
                     .status = closureStatusForTurnStatus(output.status),
                 });
@@ -8887,6 +8896,7 @@ pub fn Appliance(comptime World: type) type {
             if (receipt.resulting_archive_moment_fingerprint != closure.archive_resulting_moment_fingerprint) return error.InvalidFrameEncoding;
             if (receipt.resulting_archive_seal_fingerprint != closure.archive_resulting_seal_fingerprint) return error.InvalidFrameEncoding;
             if (receipt.blocker_count != closure.blockers.len) return error.InvalidFrameEncoding;
+            if (receipt.warning_count != closure.warnings.len) return error.InvalidFrameEncoding;
             if (receipt.status == .inspected and checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
             if (receipt.status != .inspected and checkpoint.core_state != stateForStatus(receipt.status)) {
                 if (!(receipt.status == .cancelled and checkpoint.core_state == .uninitialized)) return error.InvalidFrameEncoding;
