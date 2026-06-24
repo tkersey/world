@@ -2116,7 +2116,7 @@ pub fn Appliance(comptime World: type) type {
                 } else if (self.root_result_fingerprint != null or self.root_result_bytes.len != 0 or self.root_result_value_ref_fingerprint != null) {
                     return error.InvalidFrameEncoding;
                 }
-                const closure_allows_blockers = self.status == .failed or self.status == .yielded_budget;
+                const closure_allows_blockers = self.status == .yielded_budget;
                 if (closure_allows_blockers and self.blockers.len == 0) return error.InvalidFrameEncoding;
                 if (!closure_allows_blockers and self.blockers.len != 0) return error.InvalidFrameEncoding;
                 var turn_receipt = try decodeTurnReceiptBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.turn_receipt_bytes, self.turn_receipt_fingerprint);
@@ -4241,7 +4241,7 @@ pub fn Appliance(comptime World: type) type {
                     .run_receipt_bytes = output.run_receipt_bytes,
                     .finalized_actuation_receipt_fingerprints = output.finalized_actuation_receipt_fingerprints,
                     .finalized_actuation_receipt_bytes = output.finalized_actuation_receipt_bytes,
-                    .blockers = if (output.status == .failed or output.status == .blocked) &.{output.turn_receipt.receipt_fingerprint} else &.{},
+                    .blockers = if (output.status == .blocked) &.{output.turn_receipt.receipt_fingerprint} else &.{},
                     .warnings = &.{},
                     .diagnostics = output.diagnostic_metadata,
                     .status = closureStatusForTurnStatus(output.status),
