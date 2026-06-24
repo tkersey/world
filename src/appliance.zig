@@ -4138,8 +4138,7 @@ pub fn Appliance(comptime World: type) type {
                 defer rollback.deinit(allocator);
                 const status = self.submitCommand(command_bytes);
                 if (!Abi.statusHasTurnOutput(status)) {
-                    self.clearOutput();
-                    self.clearClosure();
+                    rollback.restore(self);
                     return status;
                 }
                 self.refreshClosureFromLastOutput(parent_closure_for_lineage) catch |err| {
