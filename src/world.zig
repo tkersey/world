@@ -2913,6 +2913,7 @@ pub const Admission = struct {
             const mapped_original = mappings[index * 2];
             const mapped_restored = mappings[index * 2 + 1];
             if (mapped_original != pending) return false;
+            if (mapped_restored == 0) return false;
             var previous_index: usize = 0;
             while (previous_index < index) : (previous_index += 1) {
                 if (mappings[previous_index * 2 + 1] == mapped_restored) return false;
@@ -2928,6 +2929,7 @@ pub const Admission = struct {
         for (refs, 0..) |invocation, index| {
             if (mappings[index * 2] != invocation) return false;
             const restored = mappings[index * 2 + 1];
+            if (restored == 0) return false;
             var previous_index: usize = 0;
             while (previous_index < index) : (previous_index += 1) {
                 if (mappings[previous_index * 2 + 1] == restored) return false;
