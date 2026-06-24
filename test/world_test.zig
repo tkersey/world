@@ -13274,6 +13274,119 @@ test "capsule active fabric restore rejects mutation without fabric state image"
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_fabric_admission.blockers[0]);
 }
 
+test "capsule active fabric restore preserves linked assembly fabric scope" {
+    const allocator = std.testing.allocator;
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const parent_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    const provider_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
+    const parent_request = testRunspaceRequestFrame();
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = parent_handle,
+        .target_ref = parent_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = parent_request.frame_fingerprint,
+            .turn_index = parent_request.turn_index,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_port,
+        .pending_mailbox_id = 0,
+    }));
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = provider_handle,
+        .target_ref = provider_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .status = .parked_on_supervision,
+        }),
+        .status = .parked_on_supervision,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+    }));
+    const parent_pending = try source.mailbox.push(.{
+        .run_handle = parent_handle,
+        .mailbox_id = 0,
+        .request = parent_request,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    source.next_mailbox_id = 1;
+
+    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 0x5150_3b10,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .metadata = "linked-active-fabric-scope",
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    const assembly = world.Assembly.init(.{
+        .root_target_ref = parent_ref,
+        .link_plan_fingerprint = 0x5150_3b11,
+        .linker_certificate_fingerprint = 0x5150_3b12,
+        .linker_policy_fingerprint = 0x5150_3b14,
+        .fabric_plans = &.{plan},
+        .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
+    });
+    try assembly.installIntoRunspace(&source);
+    try source.fabric_invocations.append(allocator, world.Fabric.Invocation.init(.{
+        .plan_fingerprint = plan.plan_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+        .parent_pending_port_fingerprint = parent_pending.pending_port_fingerprint,
+        .parent_mailbox_id = 0,
+        .request_frame_fingerprint = parent_request.frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .depth = 1,
+        .sequence = 0,
+        .status = .provider_parked,
+    }));
+
+    var image = try world.Capsule.freezeAssembly(&source, assembly, .{ .allow_active_fabric_parked = true });
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(assembly.link_plan_fingerprint, image.manifest.link_plan_fingerprint.?);
+    try std.testing.expectEqual(assembly.linker_certificate_fingerprint, image.manifest.link_certificate_fingerprint.?);
+    try std.testing.expectEqual(assembly.assembly_fingerprint, image.manifest.assembly_fingerprint.?);
+
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restored = try world.Capsule.thawIntoRunspace(image, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3b13, .{
+        .mode = .restore_parked,
+        .require_link_match = false,
+    });
+    defer restored.deinit(allocator);
+    try std.testing.expect(restored.accepted);
+
+    var refrozen = try world.Capsule.freezeAssembly(&receiver, assembly, .{ .allow_active_fabric_parked = true });
+    defer refrozen.deinit(allocator);
+    try std.testing.expectEqual(assembly.link_plan_fingerprint, refrozen.manifest.link_plan_fingerprint.?);
+    try std.testing.expectEqual(assembly.linker_certificate_fingerprint, refrozen.manifest.link_certificate_fingerprint.?);
+    try std.testing.expectEqual(assembly.assembly_fingerprint, refrozen.manifest.assembly_fingerprint.?);
+}
+
 test "capsule agent transfer preserves residual external import" {
     const allocator = std.testing.allocator;
     const root_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);

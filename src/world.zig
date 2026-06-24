@@ -28128,10 +28128,12 @@ pub const Capsule = struct {
         permit_fingerprint: ?u64,
         fabric_mappings: *std.ArrayList(u64),
     ) !void {
-        _ = image;
         if (fabric.active_invocations.len == 0) return;
         if (fabric.route_witnesses.len == 0 or fabric.value_mapping_witnesses.len == 0) return error.InvalidFrameEncoding;
 
+        const link_plan_fingerprint = image.manifest.link_plan_fingerprint;
+        const linker_certificate_fingerprint = image.manifest.link_certificate_fingerprint;
+        const assembly_fingerprint = image.manifest.assembly_fingerprint;
         try runspace.fabric_plan_fingerprints.ensureUnusedCapacity(runspace.allocator, fabric.fabric_plan_fingerprints.len);
         try runspace.fabric_plan_link_plan_fingerprints.ensureUnusedCapacity(runspace.allocator, fabric.fabric_plan_fingerprints.len);
         try runspace.fabric_plan_linker_certificate_fingerprints.ensureUnusedCapacity(runspace.allocator, fabric.fabric_plan_fingerprints.len);
@@ -28139,9 +28141,9 @@ pub const Capsule = struct {
         for (fabric.fabric_plan_fingerprints) |plan_fingerprint| {
             if (runspaceHasFabricPlanFingerprint(runspace, plan_fingerprint)) continue;
             runspace.fabric_plan_fingerprints.appendAssumeCapacity(plan_fingerprint);
-            runspace.fabric_plan_link_plan_fingerprints.appendAssumeCapacity(null);
-            runspace.fabric_plan_linker_certificate_fingerprints.appendAssumeCapacity(null);
-            runspace.fabric_plan_assembly_fingerprints.appendAssumeCapacity(null);
+            runspace.fabric_plan_link_plan_fingerprints.appendAssumeCapacity(link_plan_fingerprint);
+            runspace.fabric_plan_linker_certificate_fingerprints.appendAssumeCapacity(linker_certificate_fingerprint);
+            runspace.fabric_plan_assembly_fingerprints.appendAssumeCapacity(assembly_fingerprint);
         }
 
         try runspace.fabric_value_mappings.ensureUnusedCapacity(runspace.allocator, fabric.value_mapping_witnesses.len);
