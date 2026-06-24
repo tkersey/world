@@ -16,7 +16,7 @@ export function encodeBool(value) {
 }
 
 export function encodeI32(value) {
-  return i64(BigInt(value));
+  return i32(value);
 }
 
 export function encodeU64Word(value) {
@@ -25,7 +25,7 @@ export function encodeU64Word(value) {
 
 export function encodeBytes(value) {
   const bytes = bytesOf(value);
-  return concat([u64(bytes.length), bytes]);
+  return concat([u32(bytes.length), bytes]);
 }
 
 export function encodeString(value) {
@@ -33,15 +33,17 @@ export function encodeString(value) {
 }
 
 export function encodeByteStringList(values) {
-  return concat([u64(values.length), ...values.map((value) => encodeBytes(value))]);
+  return concat([u32(values.length), ...values.map((value) => encodeBytes(value))]);
 }
 
 export function encodeProduct(fields) {
-  return concat(fields.map(bytesOf));
+  return concat([u32(fields.length), ...fields.map(bytesOf)]);
 }
 
-export function encodeSum(variantIndex, payload = new Uint8Array()) {
-  return concat([u32(variantIndex), bytesOf(payload)]);
+export function encodeSum(variantIndex, payload = null) {
+  return payload == null
+    ? concat([u32(variantIndex), u8(0)])
+    : concat([u32(variantIndex), u8(1), bytesOf(payload)]);
 }
 
 export function encodeCanonicalValueImage({
@@ -152,6 +154,12 @@ function u32(value) {
   return out;
 }
 
+function i32(value) {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setInt32(0, Number(value), true);
+  return out;
+}
+
 function u64(value) {
   const out = new Uint8Array(8);
   const actual = BigInt.asUintN(64, BigInt(value));
@@ -159,10 +167,6 @@ function u64(value) {
   view.setUint32(0, Number(actual & 0xffff_ffffn), true);
   view.setUint32(4, Number((actual >> 32n) & 0xffff_ffffn), true);
   return out;
-}
-
-function i64(value) {
-  return u64(BigInt.asUintN(64, BigInt(value)));
 }
 
 function concat(chunks) {

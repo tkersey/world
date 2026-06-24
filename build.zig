@@ -229,6 +229,11 @@ pub fn build(b: *std.Build) void {
     check_world_universal_appliance_node_step.dependOn(&run_universal_appliance_node.step);
     const check_world_js_codec_step = b.step("check-world-js-codec", "Run dependency-free JavaScript Appliance Wire codec conformance.");
     check_world_js_codec_step.dependOn(&run_universal_appliance_node.step);
+    const run_loaded_value_codec_node = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_loaded_value_codec_test.mjs",
+    });
+    check_world_js_codec_step.dependOn(&run_loaded_value_codec_node.step);
     check_world_universal_appliance_wasm_step.dependOn(&run_universal_fixture_gen.step);
     const check_world_universal_memory_step = b.step("check-world-universal-memory", "Inspect World universal Appliance memory bounds.");
     check_world_universal_memory_step.dependOn(check_world_universal_appliance_wasm_step);
