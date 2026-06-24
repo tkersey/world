@@ -26339,7 +26339,11 @@ pub const Capsule = struct {
             try route.validate();
             try appendFabricRoutePlanEdge(&route_refs, &route_plan_refs, allocator, route.route_fingerprint, plan_fingerprint);
             if (!fabricImageContainsRouteWitness(route_witnesses.items, route.route_fingerprint)) {
-                try route_witnesses.append(allocator, try cloneFabricRouteWitness(allocator, route));
+                const cloned_route = try cloneFabricRouteWitness(allocator, route);
+                var cloned_route_owned = true;
+                errdefer if (cloned_route_owned) allocator.free(cloned_route.metadata);
+                try route_witnesses.append(allocator, cloned_route);
+                cloned_route_owned = false;
             }
         }
 

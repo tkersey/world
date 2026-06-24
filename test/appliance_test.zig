@@ -8431,6 +8431,10 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
     missing_receipt_bytes.finalized_actuation_receipt_bytes = &.{};
     try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, external_dependency_options));
 
+    var missing_run_receipt_bytes = fixture.closure;
+    missing_run_receipt_bytes.run_receipt_fingerprint = 0xD7C4;
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_run_receipt_bytes.validate(allocator, external_dependency_options));
+
     const replay_checkpoint = world.Appliance.Checkpoint.init(.{
         .manifest_fingerprint = fixture.closure.appliance_manifest_fingerprint,
         .turn_sequence_number = fixture.closure.turn_sequence_number,

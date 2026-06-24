@@ -2119,6 +2119,7 @@ pub fn Appliance(comptime World: type) type {
                 if (!closure_allows_blockers and self.blockers.len != 0) return error.InvalidFrameEncoding;
                 var turn_receipt = try decodeTurnReceiptBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.turn_receipt_bytes, self.turn_receipt_fingerprint);
                 defer turn_receipt.deinit(allocator);
+                if (self.run_receipt_fingerprint != null and self.run_receipt_bytes.len == 0) return error.InvalidFrameEncoding;
                 try validateTurnClosurePayloadBindings(self, checkpoint, turn_receipt, pending_host_requests);
                 try validateRootResultBytesForClosure(self.root_result_bytes, self.root_result_fingerprint, self.root_result_value_ref_fingerprint, turn_receipt.root_result_fingerprint);
                 try validateRunReceiptBytes(allocator, self.run_receipt_bytes, self.run_receipt_fingerprint);
