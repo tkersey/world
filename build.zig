@@ -796,7 +796,7 @@ pub fn build(b: *std.Build) void {
             \\replay_supported=true
             \\replay_host_requests=0
             \\replay_fresh_called=false
-            \\replay_final_result=false
+            \\replay_final_result=true
             \\
             ,
         },
@@ -1525,7 +1525,7 @@ pub fn build(b: *std.Build) void {
             \\replay_supported=true
             \\replay_host_requests=0
             \\replay_fresh_called=false
-            \\replay_final_result=false
+            \\replay_final_result=true
             \\
             ,
         },
@@ -1582,7 +1582,7 @@ pub fn build(b: *std.Build) void {
             \\replay_supported=true
             \\replay_host_requests=0
             \\replay_fresh_called=false
-            \\replay_final_result=false
+            \\replay_final_result=true
             \\
             ,
         },

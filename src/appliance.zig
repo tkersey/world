@@ -3867,6 +3867,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.commandIsTerminalArchiveAckOnly(command)) return .completed;
                 if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
                 if (command.execution_mode == .fresh) return .needs_host;
+                if (command.execution_mode == .replay and self.commandHasReplayEvidence(command)) return .completed;
                 return .blocked;
             }
 

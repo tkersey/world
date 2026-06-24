@@ -4951,12 +4951,13 @@ test "appliance Core accepts replay evidence with verified transcript support" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer replay_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(world.Appliance.TurnStatus.blocked, replay_output.status);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, replay_output.status);
     try std.testing.expectEqual(@as(usize, 0), replay_output.host_requests.len);
     try std.testing.expectEqual(@as(usize, 0), replay_output.turn_receipt.emitted_host_request_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 0), replay_output.turn_receipt.applied_host_reply_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 0), replay_output.finalized_actuation_receipt_fingerprints.len);
-    try std.testing.expectEqual(@as(?u64, null), replay_output.root_result_fingerprint);
+    try std.testing.expect(replay_output.root_result_fingerprint != null);
+    try std.testing.expect(replay_output.root_result_value_image_bytes.len != 0);
 
     var replay_native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
