@@ -2105,10 +2105,14 @@ pub fn Appliance(comptime World: type) type {
                 } else if (self.root_result_fingerprint != null or self.root_result_bytes.len != 0 or self.root_result_value_ref_fingerprint != null) {
                     return error.InvalidFrameEncoding;
                 }
-                if (self.status == .failed and self.blockers.len == 0) return error.InvalidFrameEncoding;
-                if (self.status != .failed and self.blockers.len != 0) return error.InvalidFrameEncoding;
-                try validateCheckpointBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.checkpoint_bytes, self.checkpoint_fingerprint);
-                try validateTurnReceiptBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.turn_receipt_bytes, self.turn_receipt_fingerprint);
+                const closure_allows_blockers = self.status == .failed or self.status == .yielded_budget;
+                if (closure_allows_blockers and self.blockers.len == 0) return error.InvalidFrameEncoding;
+                if (!closure_allows_blockers and self.blockers.len != 0) return error.InvalidFrameEncoding;
+                var checkpoint = try decodeCheckpointBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.checkpoint_bytes, self.checkpoint_fingerprint);
+                defer checkpoint.deinit(allocator);
+                var turn_receipt = try decodeTurnReceiptBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.turn_receipt_bytes, self.turn_receipt_fingerprint);
+                defer turn_receipt.deinit(allocator);
+                try validateTurnClosurePayloadBindings(self, checkpoint, turn_receipt);
                 try validateRootResultBytesForClosure(self.root_result_bytes, self.root_result_fingerprint, self.root_result_value_ref_fingerprint);
                 try validateRunReceiptBytes(allocator, self.run_receipt_bytes, self.run_receipt_fingerprint);
                 try validateArchiveAppendBatchBytes(allocator, self.archive_append_batch_bytes, self.archive_append_batch_fingerprint);
@@ -3958,6 +3962,11 @@ pub fn Appliance(comptime World: type) type {
                 if (input.operation == .restore) {
                     parent_closure_for_lineage = TurnClosure.decode(allocator, input.parent_turn_closure_bytes) catch |err| return self.setSubmitError(err);
                     const parent_closure = parent_closure_for_lineage.?;
+                    parent_closure.validate(allocator, .{
+                        .expected_executable_image_fingerprint = self.core.executable_image_fingerprint,
+                        .expected_manifest_fingerprint = input.appliance_manifest_fingerprint,
+                        .limits = .archive_decode,
+                    }) catch |err| return self.setSubmitError(err);
                     if (input.expected_parent_closure_fingerprint) |expected| {
                         if (parent_closure.closure_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
                     }
@@ -3971,6 +3980,11 @@ pub fn Appliance(comptime World: type) type {
                     if (self.last_closure_bytes.len == 0) return self.setSubmitError(error.StaleTurn);
                     parent_closure_for_lineage = TurnClosure.decode(allocator, self.last_closure_bytes) catch |err| return self.setSubmitError(err);
                     const parent_closure = parent_closure_for_lineage.?;
+                    parent_closure.validate(allocator, .{
+                        .expected_executable_image_fingerprint = self.core.executable_image_fingerprint,
+                        .expected_manifest_fingerprint = input.appliance_manifest_fingerprint,
+                        .limits = .archive_decode,
+                    }) catch |err| return self.setSubmitError(err);
                     if (input.expected_parent_closure_fingerprint) |expected| {
                         if (parent_closure.closure_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
                     }
@@ -8615,13 +8629,14 @@ pub fn Appliance(comptime World: type) type {
             if (decoded.checkpoint_fingerprint != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
         }
 
-        fn validateCheckpointBytesForClosure(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, bytes: []const u8, expected_fingerprint: u64) !void {
+        fn decodeCheckpointBytesForClosure(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, bytes: []const u8, expected_fingerprint: u64) !Checkpoint {
             var decoded = Checkpoint.decode(allocator, bytes, expected_manifest_fingerprint, Capacity.archive_decode) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.InvalidFrameEncoding,
             };
-            defer decoded.deinit(allocator);
+            errdefer decoded.deinit(allocator);
             if (decoded.checkpoint_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
+            return decoded;
         }
 
         fn validateDecodedCheckpointBytes(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, capacity: Capacity, bytes: []const u8, checkpoint: Checkpoint) !void {
@@ -8636,13 +8651,46 @@ pub fn Appliance(comptime World: type) type {
             return out.toOwnedSlice(allocator);
         }
 
-        fn validateTurnReceiptBytesForClosure(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, bytes: []const u8, expected_fingerprint: u64) !void {
+        fn decodeTurnReceiptBytesForClosure(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, bytes: []const u8, expected_fingerprint: u64) !TurnReceipt {
             var receipt = TurnReceipt.decode(allocator, bytes, expected_manifest_fingerprint) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.InvalidFrameEncoding,
             };
-            defer receipt.deinit(allocator);
+            errdefer receipt.deinit(allocator);
             if (receipt.receipt_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
+            return receipt;
+        }
+
+        fn validateTurnClosurePayloadBindings(closure: TurnClosure, checkpoint: Checkpoint, receipt: TurnReceipt) !void {
+            if (checkpoint.turn_sequence_number != closure.turn_sequence_number and !(checkpoint.core_state == .uninitialized and checkpoint.turn_sequence_number == 0)) return error.InvalidFrameEncoding;
+            if (receipt.turn_sequence_number != closure.turn_sequence_number) return error.InvalidFrameEncoding;
+            if (checkpoint.capsule_fingerprint != closure.capsule_fingerprint) return error.InvalidFrameEncoding;
+            if (receipt.resulting_capsule_fingerprint != closure.capsule_fingerprint) return error.InvalidFrameEncoding;
+            if (closureStatusForTurnStatus(receipt.status) != closure.status) return error.InvalidFrameEncoding;
+            if (receipt.run_receipt_fingerprint != closure.run_receipt_fingerprint) return error.InvalidFrameEncoding;
+            if (receipt.archive_append_batch_fingerprint != closure.archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
+            if (receipt.resulting_archive_moment_fingerprint != closure.archive_resulting_moment_fingerprint) return error.InvalidFrameEncoding;
+            if (receipt.resulting_archive_seal_fingerprint != closure.archive_resulting_seal_fingerprint) return error.InvalidFrameEncoding;
+            if (receipt.blocker_count != closure.blockers.len) return error.InvalidFrameEncoding;
+            if (receipt.status == .inspected and checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
+            if (receipt.status != .inspected and checkpoint.core_state != stateForStatus(receipt.status)) {
+                if (!(receipt.status == .cancelled and checkpoint.core_state == .uninitialized)) return error.InvalidFrameEncoding;
+            }
+            if (closure.archive_append_batch_fingerprint != null and closure.archive_append_batch_fingerprint != checkpoint.pending_archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
+            const initial_cursor = World.Continuity.Chronicle.Cursor.initial().cursor_fingerprint;
+            const expected_resulting_cursor = receipt.resulting_chronicle_cursor_fingerprint orelse
+                checkpoint.latest_chronicle_cursor_fingerprint orelse
+                if (checkpoint.pending_archive_resulting_cursor) |cursor| cursor.cursor_fingerprint else initial_cursor;
+            if (closure.chronicle_resulting_cursor_fingerprint != expected_resulting_cursor) return error.InvalidFrameEncoding;
+            const expected_resulting_state_fingerprint = if (receipt.status == .inspected)
+                stateFingerprintFor(checkpoint.core_state, checkpoint.turn_sequence_number, checkpoint.previous_turn_receipt_fingerprint)
+            else if (checkpoint.core_state == .uninitialized)
+                stateFingerprintFor(.uninitialized, 0, null)
+            else blk: {
+                if (checkpoint.previous_turn_receipt_fingerprint != receipt.receipt_fingerprint) return error.InvalidFrameEncoding;
+                break :blk stateFingerprintFor(checkpoint.core_state, closure.turn_sequence_number, receipt.receipt_fingerprint);
+            };
+            if (closure.resulting_state_fingerprint != expected_resulting_state_fingerprint) return error.InvalidFrameEncoding;
         }
 
         fn validateActuationReceiptBytes(allocator: std.mem.Allocator, bytes: []const u8, expected_fingerprint: u64) !void {

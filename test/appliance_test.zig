@@ -8129,14 +8129,15 @@ fn applianceTurnClosureFixture(allocator: std.mem.Allocator) !struct {
     const bundle_bytes = try bundle.toBytes(allocator);
     errdefer allocator.free(bundle_bytes);
 
+    const initial_cursor_fingerprint = world.Continuity.Chronicle.Cursor.initial().cursor_fingerprint;
     const closure = world.Appliance.TurnClosure.init(.{
         .executable_image_fingerprint = executable_fingerprint,
         .appliance_manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 0,
         .parent_state_fingerprint = world.Appliance.coreStateFingerprint(.uninitialized, 0, null),
         .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 0, receipt.receipt_fingerprint),
-        .chronicle_parent_cursor_fingerprint = 0xD7C3,
-        .chronicle_resulting_cursor_fingerprint = 0xD7C4,
+        .chronicle_parent_cursor_fingerprint = initial_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = initial_cursor_fingerprint,
         .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint,
         .checkpoint_bytes = checkpoint_bytes,
         .capsule_fingerprint = capsule_ref.object_fingerprint,
@@ -8241,6 +8242,32 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
     }).closure_fingerprint;
     try std.testing.expectError(error.InvalidFrameEncoding, wrong_checkpoint.validate(allocator, .{ .limits = .archive_decode }));
 
+    var wrong_resulting_state = fixture.closure;
+    wrong_resulting_state.resulting_state_fingerprint +%= 1;
+    wrong_resulting_state.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = wrong_resulting_state.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = wrong_resulting_state.appliance_manifest_fingerprint,
+        .turn_sequence_number = wrong_resulting_state.turn_sequence_number,
+        .parent_state_fingerprint = wrong_resulting_state.parent_state_fingerprint,
+        .resulting_state_fingerprint = wrong_resulting_state.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = wrong_resulting_state.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = wrong_resulting_state.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = wrong_resulting_state.checkpoint_fingerprint,
+        .checkpoint_bytes = wrong_resulting_state.checkpoint_bytes,
+        .capsule_fingerprint = wrong_resulting_state.capsule_fingerprint,
+        .capsule_bytes = wrong_resulting_state.capsule_bytes,
+        .turn_receipt_fingerprint = wrong_resulting_state.turn_receipt_fingerprint,
+        .turn_receipt_bytes = wrong_resulting_state.turn_receipt_bytes,
+        .evidence_bundle_bytes = wrong_resulting_state.evidence_bundle_bytes,
+        .root_result_fingerprint = wrong_resulting_state.root_result_fingerprint,
+        .root_result_bytes = wrong_resulting_state.root_result_bytes,
+        .root_result_value_ref_fingerprint = wrong_resulting_state.root_result_value_ref_fingerprint,
+        .finalized_actuation_receipt_fingerprints = wrong_resulting_state.finalized_actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = wrong_resulting_state.finalized_actuation_receipt_bytes,
+        .status = wrong_resulting_state.status,
+    }).closure_fingerprint;
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_resulting_state.validate(allocator, .{ .limits = .archive_decode }));
+
     var missing_receipt_bytes = fixture.closure;
     missing_receipt_bytes.finalized_actuation_receipt_bytes = &.{};
     try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, .{ .limits = .archive_decode }));
@@ -8274,7 +8301,7 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
         .root_result_value_ref_fingerprint = missing_root.root_result_value_ref_fingerprint,
         .status = missing_root.status,
     }).closure_fingerprint;
-    try std.testing.expectError(error.ObjectMissing, missing_root.validate(allocator, .{ .limits = .archive_decode }));
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_root.validate(allocator, .{ .limits = .archive_decode }));
 }
 
 test "appliance Wire TurnInput canonicalizes resolution input order" {
