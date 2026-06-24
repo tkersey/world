@@ -2083,7 +2083,10 @@ pub fn Appliance(comptime World: type) type {
                 if (self.replay_receipt_fingerprints.len > options.limits.max_items) return error.CapacityExceeded;
                 if (self.verify_report_fingerprints.len > options.limits.max_items) return error.CapacityExceeded;
                 if (self.blockers.len > options.limits.max_items or self.warnings.len > options.limits.max_items) return error.CapacityExceeded;
-                if (self.finalized_actuation_receipt_bytes.len != self.finalized_actuation_receipt_fingerprints.len) return error.InvalidFrameEncoding;
+                var checkpoint = try decodeCheckpointBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.checkpoint_bytes, self.checkpoint_fingerprint);
+                defer checkpoint.deinit(allocator);
+                const replay_receipts_without_payloads = checkpoint.execution_mode == .replay and self.finalized_actuation_receipt_bytes.len == 0;
+                if (!replay_receipts_without_payloads and self.finalized_actuation_receipt_bytes.len != self.finalized_actuation_receipt_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.replay_receipt_bytes.len != self.replay_receipt_fingerprints.len) return error.InvalidFrameEncoding;
                 try validateFingerprintSlice(self.finalized_actuation_receipt_fingerprints);
                 try validateFingerprintSlice(self.replay_receipt_fingerprints);
@@ -2111,8 +2114,6 @@ pub fn Appliance(comptime World: type) type {
                 const closure_allows_blockers = self.status == .failed or self.status == .yielded_budget;
                 if (closure_allows_blockers and self.blockers.len == 0) return error.InvalidFrameEncoding;
                 if (!closure_allows_blockers and self.blockers.len != 0) return error.InvalidFrameEncoding;
-                var checkpoint = try decodeCheckpointBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.checkpoint_bytes, self.checkpoint_fingerprint);
-                defer checkpoint.deinit(allocator);
                 var turn_receipt = try decodeTurnReceiptBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.turn_receipt_bytes, self.turn_receipt_fingerprint);
                 defer turn_receipt.deinit(allocator);
                 try validateTurnClosurePayloadBindings(self, checkpoint, turn_receipt, pending_host_requests);
@@ -2123,7 +2124,7 @@ pub fn Appliance(comptime World: type) type {
                 bundle_options.allow_external_dependencies = true;
                 const bundle_report = try World.Continuity.Bundle.validate(allocator, self.evidence_bundle_bytes, bundle_options);
                 if (!bundle_report.valid) return error.InvalidFrameEncoding;
-                try validateTurnClosureBundleRoots(allocator, self);
+                try validateTurnClosureBundleRoots(allocator, self, replay_receipts_without_payloads);
                 if (self.closure_fingerprint != fingerprintTurnClosure(self)) return error.InvalidFrameEncoding;
             }
 
@@ -2349,6 +2350,7 @@ pub fn Appliance(comptime World: type) type {
                 root_argument_images: []const []const u8 = &.{},
                 parent_turn_closure_bytes: []const u8 = "",
                 resolutions: []const ResolutionInput = &.{},
+                receiver_evidence_fingerprints: []const u64 = &.{},
                 retention: ?RetentionInput = null,
                 deterministic_turn_budget: u64 = 0,
                 requested_evidence_profile: EvidenceProfile = .standard,
@@ -2356,6 +2358,7 @@ pub fn Appliance(comptime World: type) type {
                 owns_root_argument_images: bool = false,
                 owns_parent_turn_closure_bytes: bool = false,
                 owns_resolutions: bool = false,
+                owns_receiver_evidence_fingerprints: bool = false,
                 owns_retention_metadata: bool = false,
                 owns_host_metadata: bool = false,
 
@@ -2369,6 +2372,7 @@ pub fn Appliance(comptime World: type) type {
                     root_argument_images: []const []const u8 = &.{},
                     parent_turn_closure_bytes: []const u8 = "",
                     resolutions: []const ResolutionInput = &.{},
+                    receiver_evidence_fingerprints: []const u64 = &.{},
                     retention: ?RetentionInput = null,
                     deterministic_turn_budget: u64 = 0,
                     requested_evidence_profile: EvidenceProfile = .standard,
@@ -2384,6 +2388,7 @@ pub fn Appliance(comptime World: type) type {
                         .root_argument_images = args.root_argument_images,
                         .parent_turn_closure_bytes = args.parent_turn_closure_bytes,
                         .resolutions = args.resolutions,
+                        .receiver_evidence_fingerprints = args.receiver_evidence_fingerprints,
                         .retention = args.retention,
                         .deterministic_turn_budget = args.deterministic_turn_budget,
                         .requested_evidence_profile = args.requested_evidence_profile,
@@ -2400,9 +2405,13 @@ pub fn Appliance(comptime World: type) type {
                     if (self.host_metadata.len > limits.max_metadata_bytes) return error.CapacityExceeded;
                     if (self.root_argument_images.len > limits.max_items) return error.CapacityExceeded;
                     if (self.resolutions.len > limits.max_items) return error.CapacityExceeded;
+                    if (self.receiver_evidence_fingerprints.len > limits.max_items) return error.CapacityExceeded;
                     if (self.parent_turn_closure_bytes.len > limits.max_closure_bytes) return error.CapacityExceeded;
                     for (self.root_argument_images) |image| {
                         if (image.len > limits.max_result_bytes) return error.CapacityExceeded;
+                    }
+                    for (self.receiver_evidence_fingerprints) |fingerprint| {
+                        if (fingerprint == 0) return error.InvalidFrameEncoding;
                     }
                     for (self.resolutions, 0..) |resolution, index| {
                         try resolution.validate(limits);
@@ -2437,6 +2446,7 @@ pub fn Appliance(comptime World: type) type {
                     try writeByteSlices(&out, allocator, self.root_argument_images);
                     try writeBytes(&out, allocator, self.parent_turn_closure_bytes);
                     try writeResolutionInputsCanonical(&out, allocator, self.resolutions);
+                    try writeU64Slice(&out, allocator, self.receiver_evidence_fingerprints);
                     try writeOptionalWireRetentionInput(&out, allocator, self.retention);
                     try writeU64(&out, allocator, self.deterministic_turn_budget);
                     try writeU8(&out, allocator, @intFromEnum(self.requested_evidence_profile));
@@ -2445,12 +2455,16 @@ pub fn Appliance(comptime World: type) type {
                 }
 
                 pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                    return decodeWithLimits(allocator, bytes, TurnClosureLimits.default);
+                }
+
+                pub fn decodeWithLimits(allocator: std.mem.Allocator, bytes: []const u8, limits: TurnClosureLimits) !@This() {
                     var cursor: usize = 0;
                     var input = try readWireTurnInputOwned(allocator, bytes, &cursor);
                     errdefer input.deinit(allocator);
                     if (cursor != bytes.len) return error.InvalidFrameEncoding;
                     try canonicalizeWireResolutionOrder(@constCast(input.resolutions));
-                    try input.validate(TurnClosureLimits.default);
+                    try input.validate(limits);
                     return input;
                 }
 
@@ -2458,6 +2472,7 @@ pub fn Appliance(comptime World: type) type {
                     if (self.owns_root_argument_images) freeByteSlices(allocator, self.root_argument_images);
                     if (self.owns_parent_turn_closure_bytes) allocator.free(self.parent_turn_closure_bytes);
                     if (self.owns_resolutions) freeWireResolutionInputs(allocator, self.resolutions);
+                    if (self.owns_receiver_evidence_fingerprints) allocator.free(self.receiver_evidence_fingerprints);
                     if (self.owns_retention_metadata) {
                         if (self.retention) |retention| {
                             var cleanup = retention;
@@ -3610,7 +3625,9 @@ pub fn Appliance(comptime World: type) type {
                     if (command.host_replies.len != 0) return error.UnknownRequest;
                     return;
                 };
-                if (command.kind == .@"continue" and command.host_replies.len == 0 and !commandHasRetentionAck(command)) return error.UnknownRequest;
+                if (command.kind == .@"continue" and command.host_replies.len == 0 and !commandHasRetentionAck(command)) {
+                    if (command.execution_mode != .replay or !self.commandHasReplayEvidence(command)) return error.UnknownRequest;
+                }
                 var terminal_count: usize = 0;
                 for (command.host_replies) |reply| {
                     try reply.validateWithAllocator(self.allocator, outstanding, self.capacity_value);
@@ -3809,11 +3826,11 @@ pub fn Appliance(comptime World: type) type {
                         .inspected => unreachable,
                     }
                 }
+                if (command.execution_mode == .replay and self.commandHasReplayEvidence(command)) return .completed;
                 if (commandLeavesOutstandingHostRequests(current_outstanding_host_requests, command)) return .needs_host;
                 if (self.commandIsTerminalArchiveAckOnly(command)) return .completed;
                 if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
                 if (command.execution_mode == .fresh) return .needs_host;
-                if (self.commandHasReplayEvidence(command)) return .completed;
                 return .blocked;
             }
 
@@ -3955,7 +3972,8 @@ pub fn Appliance(comptime World: type) type {
 
             pub fn submitTurn(self: *@This(), turn_input_bytes: []const u8) Abi.Status {
                 const allocator = self.core.allocator;
-                var input = Wire.TurnInput.decode(allocator, turn_input_bytes) catch |err| return self.setSubmitError(err);
+                const limits = TurnClosureLimits.fromCapacity(self.core.capacity_value);
+                var input = Wire.TurnInput.decodeWithLimits(allocator, turn_input_bytes, limits) catch |err| return self.setSubmitError(err);
                 defer input.deinit(allocator);
                 if (input.appliance_manifest_fingerprint != self.core.manifest_value.manifest_fingerprint) return self.setSubmitError(error.WrongManifest);
 
@@ -4014,6 +4032,7 @@ pub fn Appliance(comptime World: type) type {
                     .execution_mode = executionModeForWireOperation(input.operation),
                     .root_argument_image = root_argument_image,
                     .host_replies = host_replies,
+                    .receiver_evidence_fingerprints = input.receiver_evidence_fingerprints,
                     .retention_ack = retention_ack,
                     .restore_checkpoint = restore_checkpoint,
                     .metadata = input.host_metadata,
@@ -4029,7 +4048,7 @@ pub fn Appliance(comptime World: type) type {
                 }
                 self.refreshClosureFromLastOutput(parent_closure_for_lineage) catch |err| {
                     self.clearClosure();
-                    return self.setSubmitError(err);
+                    return self.setErrorAt("submit.closure", err);
                 };
                 return status;
             }
@@ -4130,11 +4149,12 @@ pub fn Appliance(comptime World: type) type {
 
             fn setSubmitError(self: *@This(), err: anyerror) Abi.Status {
                 const status = Abi.statusForError(err);
+                var buffer: [native_last_error_storage_bytes]u8 = undefined;
                 if (self.core.last_submit_stage.len == 0) {
-                    self.setLastError("submit");
+                    const message = std.fmt.bufPrint(&buffer, "submit:{s}", .{@errorName(err)}) catch @errorName(err);
+                    self.setLastError(message);
                     return status;
                 }
-                var buffer: [native_last_error_storage_bytes]u8 = undefined;
                 const message = std.fmt.bufPrint(&buffer, "submit.{s}:{s}", .{ self.core.last_submit_stage, @errorName(err) }) catch @errorName(err);
                 self.setLastError(message);
                 return status;
@@ -4497,15 +4517,20 @@ pub fn Appliance(comptime World: type) type {
             if (output.archive_append_batch_fingerprint) |fingerprint| {
                 try appendClosureBundleObject(allocator, &roots, &envelopes, .archive_append_batch, fingerprint, output.archive_append_batch_bytes, "archive.append_batch");
             }
-            try appendClosureBundleReceiptObjects(
-                allocator,
-                &roots,
-                &envelopes,
-                &dependency_ref_slices,
-                output.finalized_actuation_receipt_fingerprints,
-                output.finalized_actuation_receipt_bytes,
-                "actuation.receipt.finalized",
-            );
+            const replay_receipts_without_payloads = output.checkpoint.execution_mode == .replay and output.finalized_actuation_receipt_bytes.len == 0;
+            if (replay_receipts_without_payloads) {
+                try validateFingerprintSlice(output.finalized_actuation_receipt_fingerprints);
+            } else {
+                try appendClosureBundleReceiptObjects(
+                    allocator,
+                    &roots,
+                    &envelopes,
+                    &dependency_ref_slices,
+                    output.finalized_actuation_receipt_fingerprints,
+                    output.finalized_actuation_receipt_bytes,
+                    "actuation.receipt.finalized",
+                );
+            }
             const manifest = World.Continuity.BundleManifest.init(.{
                 .roots = roots.items,
                 .object_count = envelopes.items.len,
@@ -8231,6 +8256,8 @@ pub fn Appliance(comptime World: type) type {
             errdefer allocator.free(parent_turn_closure_bytes);
             const resolutions = try readWireResolutionInputsOwned(allocator, bytes, cursor);
             errdefer freeWireResolutionInputs(allocator, resolutions);
+            const receiver_evidence_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(receiver_evidence_fingerprints);
             const retention = try readOptionalWireRetentionInputOwned(allocator, bytes, cursor);
             errdefer if (retention) |value| {
                 var cleanup = value;
@@ -8251,6 +8278,7 @@ pub fn Appliance(comptime World: type) type {
                 .root_argument_images = root_argument_images,
                 .parent_turn_closure_bytes = parent_turn_closure_bytes,
                 .resolutions = resolutions,
+                .receiver_evidence_fingerprints = receiver_evidence_fingerprints,
                 .retention = retention,
                 .deterministic_turn_budget = deterministic_turn_budget,
                 .requested_evidence_profile = requested_evidence_profile,
@@ -8258,6 +8286,7 @@ pub fn Appliance(comptime World: type) type {
                 .owns_root_argument_images = true,
                 .owns_parent_turn_closure_bytes = true,
                 .owns_resolutions = true,
+                .owns_receiver_evidence_fingerprints = true,
                 .owns_retention_metadata = retention != null,
                 .owns_host_metadata = true,
             };
@@ -8775,7 +8804,7 @@ pub fn Appliance(comptime World: type) type {
             }
         }
 
-        fn validateTurnClosureBundleRoots(allocator: std.mem.Allocator, closure: TurnClosure) !void {
+        fn validateTurnClosureBundleRoots(allocator: std.mem.Allocator, closure: TurnClosure, replay_receipts_without_payloads: bool) !void {
             var bundle = World.Continuity.Bundle.decode(allocator, closure.evidence_bundle_bytes, .{}) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.InvalidFrameEncoding,
@@ -8786,7 +8815,9 @@ pub fn Appliance(comptime World: type) type {
             try requireBundleRoot(allocator, bundle, .capsule_image, closure.capsule_fingerprint);
             if (closure.root_result_fingerprint) |fingerprint| try requireBundleRoot(allocator, bundle, .root_result, fingerprint);
             if (closure.archive_append_batch_fingerprint) |fingerprint| try requireBundleRoot(allocator, bundle, .archive_append_batch, fingerprint);
-            for (closure.finalized_actuation_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
+            if (!replay_receipts_without_payloads) {
+                for (closure.finalized_actuation_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
+            }
             for (closure.replay_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
             for (closure.verify_report_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_verify_report, fingerprint);
         }

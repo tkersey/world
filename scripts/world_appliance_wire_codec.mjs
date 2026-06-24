@@ -65,6 +65,7 @@ export function encodeTurnInput({
   rootArgumentImages = [],
   parentTurnClosureBytes = new Uint8Array(),
   resolutions = [],
+  receiverEvidenceFingerprints = [],
   retention = null,
   deterministicTurnBudget = 0n,
   requestedEvidenceProfile = 1,
@@ -78,7 +79,7 @@ export function encodeTurnInput({
     }
   }
   return concat([
-    u32(1),
+    u32(2),
     u8(operation),
     u64(manifestFingerprint),
     optionalU64(expectedParentClosureFingerprint),
@@ -88,6 +89,7 @@ export function encodeTurnInput({
     byteSlices(rootArgumentImages),
     bytes(parentTurnClosureBytes),
     resolutionInputs(sortedResolutions),
+    u64Slice(receiverEvidenceFingerprints),
     optionalRetentionInput(retention),
     u64(deterministicTurnBudget),
     u8(requestedEvidenceProfile),
@@ -317,6 +319,10 @@ function optionalRetentionInput(value) {
 
 function byteSlices(values) {
   return concat([u64(values.length), ...values.map(bytes)]);
+}
+
+function u64Slice(values) {
+  return concat([u64(values.length), ...values.map(u64)]);
 }
 
 function optionalU64(value) {

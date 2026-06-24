@@ -4959,6 +4959,47 @@ test "appliance Core accepts replay evidence with verified transcript support" {
     try std.testing.expectEqual(terminal_output.finalized_actuation_receipt_fingerprints[0], replay_output.finalized_actuation_receipt_fingerprints[0]);
     try std.testing.expect(replay_output.root_result_fingerprint != null);
 
+    var replay_native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        ReplayAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    ));
+    defer replay_native.deinit();
+    replay_native.core.executable_image_fingerprint = 0xD501_E001;
+    const native_wire_boot = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const native_wire_boot_bytes = try native_wire_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(native_wire_boot_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, replay_native.submitTurn(native_wire_boot_bytes));
+    var native_fresh_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        replay_native.core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer native_fresh_output.deinit(std.testing.allocator);
+    var native_parent_closure = try world.Appliance.TurnClosure.decode(std.testing.allocator, replay_native.last_closure_bytes);
+    defer native_parent_closure.deinit(std.testing.allocator);
+    try native_parent_closure.validate(std.testing.allocator, .{
+        .expected_executable_image_fingerprint = replay_native.core.executable_image_fingerprint,
+        .expected_manifest_fingerprint = manifest.manifest_fingerprint,
+        .limits = .archive_decode,
+    });
+    const replay_wire_continue = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .replay,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = native_fresh_output.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = native_fresh_output.turn_receipt.receipt_fingerprint,
+        .receiver_evidence_fingerprints = &replay_evidence,
+    });
+    const replay_wire_continue_bytes = try replay_wire_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(replay_wire_continue_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.completed, replay_native.submitTurn(replay_wire_continue_bytes));
+
     var duplicate_replay_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
         manifest,
@@ -8388,6 +8429,32 @@ test "appliance Wire TurnInput canonicalizes resolution input order" {
         .resolutions = &duplicate,
     });
     try std.testing.expectError(error.DuplicateHostReply, duplicate_input.encode(allocator));
+}
+
+test "appliance Wire turn input decodes against active capacity limits" {
+    const allocator = std.testing.allocator;
+    const metadata = try allocator.alloc(u8, world.Appliance.Capacity.wasm_small.max_metadata_bytes + 1);
+    defer allocator.free(metadata);
+    @memset(metadata, 'm');
+
+    const input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = 0xA020,
+        .turn_sequence_number = 0,
+        .host_metadata = metadata,
+    });
+    const bytes = try input.encode(allocator);
+    defer allocator.free(bytes);
+
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decode(allocator, bytes));
+    var decoded = try world.Appliance.Wire.TurnInput.decodeWithLimits(
+        allocator,
+        bytes,
+        world.Appliance.TurnClosureLimits.fromCapacity(world.Appliance.Capacity.wasm_agent),
+    );
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqual(metadata.len, decoded.host_metadata.len);
+    try std.testing.expectEqualSlices(u8, metadata, decoded.host_metadata);
 }
 
 test "appliance Continuity object kinds are canonical evidence kinds" {
