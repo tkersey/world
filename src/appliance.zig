@@ -3144,6 +3144,7 @@ pub fn Appliance(comptime World: type) type {
             pub fn initWithCapacity(allocator: std.mem.Allocator, manifest: Manifest, memory_plan: MemoryPlan, capacity: Capacity) @This() {
                 return .{
                     .allocator = allocator,
+                    .executable_image_fingerprint = fingerprintNativeExecutableImage(manifest, memory_plan, capacity),
                     .manifest_value = manifest,
                     .memory_plan_value = memory_plan,
                     .capacity_value = capacity,
@@ -4007,6 +4008,7 @@ pub fn Appliance(comptime World: type) type {
                 var input = Wire.TurnInput.decodeWithLimits(allocator, turn_input_bytes, limits) catch |err| return self.setSubmitError(err);
                 defer input.deinit(allocator);
                 if (input.appliance_manifest_fingerprint != self.core.manifest_value.manifest_fingerprint) return self.setSubmitError(error.WrongManifest);
+                if (self.core.executable_image_fingerprint == 0) return self.setSubmitError(error.WrongExecutableImage);
 
                 var parent_closure_for_lineage: ?TurnClosure = null;
                 defer if (parent_closure_for_lineage) |*closure| closure.deinit(allocator);
@@ -6768,6 +6770,15 @@ pub fn Appliance(comptime World: type) type {
             hashU64(&hasher, plan.maximum_linear_memory_pages);
             hashU64(&hasher, plan.alignment);
             hashU64(&hasher, @as(u16, @bitCast(plan.enabled_feature_summary)));
+            return nonzero(hasher.final());
+        }
+
+        fn fingerprintNativeExecutableImage(manifest: Manifest, memory_plan: MemoryPlan, capacity: Capacity) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.appliance.native.executable-image");
+            hashU64(&hasher, manifest.manifest_fingerprint);
+            hashU64(&hasher, memory_plan.plan_fingerprint);
+            hashU64(&hasher, capacity.fingerprint());
             return nonzero(hasher.final());
         }
 

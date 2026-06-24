@@ -7807,6 +7807,7 @@ test "appliance Native legacy command clears stale turn closure cache" {
         world.Appliance.Capacity.tiny_one_port,
     ));
     defer native.deinit();
+    try std.testing.expect(native.core.executable_image_fingerprint != 0);
 
     const wire_boot = world.Appliance.Wire.TurnInput.init(.{
         .operation = .boot,
@@ -8387,6 +8388,33 @@ test "appliance TurnClosure complete one-port closure validates" {
     try decoded.validate(allocator, external_dependency_options);
     var archived = try world.Appliance.TurnClosure.decodeArchivePayload(allocator, encoded);
     defer archived.deinit(allocator);
+    const closure_envelope_without_deps = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_closure,
+        .payload_bytes = encoded,
+        .label = "turn-closure",
+    });
+    const closure_deps = try world.Continuity.objectEnvelopeRequiredDependencyRefs(allocator, closure_envelope_without_deps);
+    defer allocator.free(closure_deps);
+    var closure_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_closure,
+        .dependency_refs = closure_deps,
+        .payload_bytes = encoded,
+        .label = "turn-closure",
+    });
+    var closure_envelopes = [_]world.Continuity.ObjectEnvelope{closure_envelope};
+    var closure_bundle = world.Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = world.Continuity.BundleManifest.init(.{
+            .roots = &.{closure_envelope.objectRef()},
+            .object_count = 1,
+        }),
+        .envelopes = &closure_envelopes,
+    };
+    const closure_bundle_bytes = try closure_bundle.toBytes(allocator);
+    defer allocator.free(closure_bundle_bytes);
+    const closure_bundle_report = try world.Continuity.Bundle.validate(allocator, closure_bundle_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(closure_bundle_report.valid);
+    try std.testing.expect(closure_bundle_report.missing_dependency_count != 0);
     try std.testing.expectEqual(fixture.closure.closure_fingerprint, decoded.closure_fingerprint);
     try std.testing.expectEqual(fixture.closure.closure_fingerprint, archived.closure_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.finalized_actuation_receipt_fingerprints.len);

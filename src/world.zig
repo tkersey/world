@@ -33018,7 +33018,7 @@ pub const Continuity = struct {
             if (!(try bundleEnvelopeTypedPayloadValid(self.allocator, envelope))) return error.InvalidFrameEncoding;
             if (!(try bundleEnvelopeDeclaresRequiredDependencies(self.allocator, bundle.envelopes, envelope))) return error.InvalidFrameEncoding;
             if (storableEnvelopeRequiresDependencyPayloadValidation(envelope.kind)) {
-                if (!(try bundleEnvelopeDependencyPayloadsValid(self.allocator, bundle.envelopes, envelope))) return error.InvalidFrameEncoding;
+                if (!(try bundleEnvelopeDependencyPayloadsValid(self.allocator, bundle.envelopes, envelope, .{}))) return error.InvalidFrameEncoding;
             }
             try self.assertTransactionEnvelopeRefAvailable(tx, envelope);
         }
@@ -33091,7 +33091,7 @@ pub const Continuity = struct {
             if (!(try bundleEnvelopeDeclaresRequiredDependencies(self.allocator, available_envelopes, envelope))) return error.InvalidFrameEncoding;
             if (storableEnvelopeRequiresDependencyPayloadValidation(envelope.kind)) {
                 try self.rejectRawOnlyDeclaredDependencies(available_envelopes, envelope);
-                if (!(try bundleEnvelopeDependencyPayloadsValid(self.allocator, available_envelopes, envelope))) return error.InvalidFrameEncoding;
+                if (!(try bundleEnvelopeDependencyPayloadsValid(self.allocator, available_envelopes, envelope, .{}))) return error.InvalidFrameEncoding;
             }
         }
 
@@ -33184,7 +33184,7 @@ pub const Continuity = struct {
                 else
                     false;
                 const dependency_payloads_ok = if (decode_ok and declares_required_deps)
-                    try bundleEnvelopeDependencyPayloadsValid(self.allocator, self.objects.items, envelope)
+                    try bundleEnvelopeDependencyPayloadsValid(self.allocator, self.objects.items, envelope, .{})
                 else
                     true;
                 var graph_missing_count: ?usize = null;
@@ -34045,7 +34045,7 @@ pub const Continuity = struct {
                         .blockers = &.{.MissingDependency},
                     });
                 }
-                if (!(try bundleEnvelopeDependencyPayloadsValid(self.allocator, self.envelopes, envelope))) {
+                if (!(try bundleEnvelopeDependencyPayloadsValid(self.allocator, self.envelopes, envelope, options))) {
                     return ObjectValidationReport.init(.{
                         .object_ref = ObjectRef.init(.{
                             .kind = envelope.kind,
@@ -34199,7 +34199,7 @@ pub const Continuity = struct {
                     .blockers = &.{.MissingDependency},
                 });
             }
-            if (!(try bundleEnvelopeDependencyPayloadsValid(allocator, available_envelopes, envelope))) {
+            if (!(try bundleEnvelopeDependencyPayloadsValid(allocator, available_envelopes, envelope, options))) {
                 return ObjectValidationReport.init(.{
                     .object_ref = ObjectRef.init(.{
                         .kind = envelope.kind,
@@ -36992,7 +36992,7 @@ pub const Continuity = struct {
             try envelope.validate();
             if (!(try bundleEnvelopeTypedPayloadValid(destination.allocator, envelope))) return error.InvalidFrameEncoding;
             if (!(try bundleEnvelopeDeclaresRequiredDependencies(destination.allocator, validation_envelopes.items, envelope))) return error.InvalidFrameEncoding;
-            if (!(try bundleEnvelopeDependencyPayloadsValid(destination.allocator, validation_envelopes.items, envelope))) return error.InvalidFrameEncoding;
+            if (!(try bundleEnvelopeDependencyPayloadsValid(destination.allocator, validation_envelopes.items, envelope, .{}))) return error.InvalidFrameEncoding;
         }
     }
 
@@ -37853,7 +37853,10 @@ pub const Continuity = struct {
     }
 
     fn validApplianceTurnClosurePayload(allocator: std.mem.Allocator, closure: Appliance.TurnClosure) error{OutOfMemory}!bool {
-        closure.validate(allocator, .{ .limits = .archive_decode }) catch |err| switch (err) {
+        closure.validate(allocator, .{
+            .limits = .archive_decode,
+            .bundle_options = .{ .allow_external_dependencies = true },
+        }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return false,
         };
@@ -37914,7 +37917,7 @@ pub const Continuity = struct {
         envelope: ObjectEnvelope,
     ) !void {
         try envelope.validate();
-        if (!(try bundleEnvelopeDependencyPayloadsValid(allocator, envelopes, envelope))) return error.InvalidFrameEncoding;
+        if (!(try bundleEnvelopeDependencyPayloadsValid(allocator, envelopes, envelope, .{}))) return error.InvalidFrameEncoding;
     }
 
     pub fn objectEnvelopeRequiredDependencyRefs(allocator: std.mem.Allocator, envelope: ObjectEnvelope) ![]ObjectRef {
@@ -38134,7 +38137,7 @@ pub const Continuity = struct {
         return false;
     }
 
-    fn bundleEnvelopeDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, envelope: ObjectEnvelope) !bool {
+    fn bundleEnvelopeDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, envelope: ObjectEnvelope, options: BundleOptions) !bool {
         return switch (envelope.kind) {
             .actuation_descriptor => blk: {
                 const descriptor = decodePortableEvidence(Actuation.Descriptor, allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -38344,7 +38347,7 @@ pub const Continuity = struct {
                 };
                 defer closure.deinit(allocator);
                 if (!try validApplianceTurnClosurePayload(allocator, closure)) break :blk false;
-                break :blk try bundleApplianceTurnClosureDependencyPayloadsValid(allocator, envelopes, closure);
+                break :blk try bundleApplianceTurnClosureDependencyPayloadsValid(allocator, envelopes, closure, options);
             },
             .appliance_reconstruction_report => blk: {
                 const report = decodePortableEvidence(Appliance.ReconstructionReport, allocator, envelope.payload_bytes) catch |err| switch (err) {
@@ -39312,15 +39315,15 @@ pub const Continuity = struct {
         return refs.toOwnedSlice(allocator);
     }
 
-    fn bundleApplianceTurnClosureDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, closure: Appliance.TurnClosure) !bool {
+    fn bundleApplianceTurnClosureDependencyPayloadsValid(allocator: std.mem.Allocator, envelopes: []const ObjectEnvelope, closure: Appliance.TurnClosure, options: BundleOptions) !bool {
         const refs = try bundleApplianceTurnClosureRequiredDependencyRefs(allocator, closure);
         defer freeRefSlice(allocator, refs);
         for (refs) |ref| {
-            if ((try bundleEnvelopeForRef(allocator, envelopes, ref)) == null) return false;
+            if ((try bundleEnvelopeForRef(allocator, envelopes, ref)) == null and !options.allow_external_dependencies) return false;
         }
         if (closure.parent_closure_fingerprint) |fingerprint| {
             const parent_ref = semanticObjectRef(.appliance_turn_closure, fingerprint);
-            const parent_envelope = (try bundleEnvelopeForRef(allocator, envelopes, parent_ref)) orelse return false;
+            const parent_envelope = (try bundleEnvelopeForRef(allocator, envelopes, parent_ref)) orelse return options.allow_external_dependencies;
             var parent = Appliance.TurnClosure.decodeArchivePayload(allocator, parent_envelope.payload_bytes) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return false,
@@ -50976,7 +50979,7 @@ test "frame response dependency validation follows declared request ref" {
         .dependency_refs = &declared_request_deps,
         .payload_bytes = response_payload,
     });
-    try std.testing.expect(try Continuity.bundleEnvelopeDependencyPayloadsValid(allocator, &bundle_envelopes, response_envelope));
+    try std.testing.expect(try Continuity.bundleEnvelopeDependencyPayloadsValid(allocator, &bundle_envelopes, response_envelope, .{}));
 
     const wrong_request_ref = Continuity.semanticObjectRef(.frame_request, wrong_request.frame_fingerprint);
     const wrong_request_deps = [_]Continuity.ObjectRef{wrong_request_ref};
@@ -50986,7 +50989,7 @@ test "frame response dependency validation follows declared request ref" {
         .dependency_refs = &wrong_request_deps,
         .payload_bytes = response_payload,
     });
-    try std.testing.expect(!try Continuity.bundleEnvelopeDependencyPayloadsValid(allocator, &bundle_envelopes, mismatched_response_envelope));
+    try std.testing.expect(!try Continuity.bundleEnvelopeDependencyPayloadsValid(allocator, &bundle_envelopes, mismatched_response_envelope, .{}));
 }
 
 test "vault replay rejects response value image missing boundary binding" {
