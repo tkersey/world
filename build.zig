@@ -799,9 +799,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fresh_host_requests=1
             \\replay_supported=true
-            \\replay_host_requests=0
-            \\replay_fresh_called=false
-            \\replay_final_result=true
+            \\actuated_replay_rejected=true
             \\
             ,
         },
@@ -1528,9 +1526,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fresh_host_requests=1
             \\replay_supported=true
-            \\replay_host_requests=0
-            \\replay_fresh_called=false
-            \\replay_final_result=true
+            \\actuated_replay_rejected=true
             \\
             ,
         },
@@ -1585,9 +1581,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\fresh_host_requests=1
             \\replay_supported=true
-            \\replay_host_requests=0
-            \\replay_fresh_called=false
-            \\replay_final_result=true
+            \\actuated_replay_rejected=true
             \\
             ,
         },

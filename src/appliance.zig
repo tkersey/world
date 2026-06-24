@@ -3876,15 +3876,11 @@ pub fn Appliance(comptime World: type) type {
             }
 
             fn commandHasReplayEvidence(self: @This(), command: Command) bool {
-                const expected_evidence_count = 1 + self.manifest_value.actuation_binding_fingerprints.len;
-                if (command.receiver_evidence_fingerprints.len != expected_evidence_count) return false;
-                if (!fingerprintsAreDistinct(command.receiver_evidence_fingerprints)) return false;
-                const previous_turn_receipt = self.previous_turn_receipt_fingerprint orelse return false;
-                if (command.receiver_evidence_fingerprints[0] != previous_turn_receipt) return false;
-                for (self.manifest_value.actuation_binding_fingerprints, 0..) |binding_fingerprint, index| {
-                    if (command.receiver_evidence_fingerprints[index + 1] != binding_fingerprint) return false;
-                }
-                return true;
+                _ = self;
+                _ = command;
+                // Actuated replay needs authenticated actuation receipt payloads or bundle roots.
+                // Command currently carries only caller-supplied fingerprints, so fail closed.
+                return false;
             }
 
             fn diagnosticMetadata(self: @This()) []const u8 {
