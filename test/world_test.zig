@@ -13159,6 +13159,19 @@ test "capsule active fabric restore rejects mutation without fabric state image"
     }
     try std.testing.expect(saw_active_route);
     try std.testing.expect(saw_inactive_route);
+
+    const thaw_plan = try world.Capsule.planThaw(image, parent_ref.target_ref_fingerprint, 0, 0x5150_3a06, .{
+        .mode = .restore_parked,
+        .require_link_match = false,
+    });
+    const admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = image,
+        .thaw_plan = thaw_plan,
+        .restore_report = restored,
+    });
+    try std.testing.expect(admission.accepted);
+    try std.testing.expectEqual(restored.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
 }
 
 test "capsule agent transfer preserves residual external import" {

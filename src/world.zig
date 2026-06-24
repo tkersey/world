@@ -2836,10 +2836,10 @@ pub const Admission = struct {
         if (!Capsule.u64SlicesEqual(report.restored_actuation_receipt_refs, image.manifest.actuation_receipt_fingerprints)) return false;
 
         return switch (plan.requested_mode) {
-            .restore_completed, .restore_failed, .relink_and_restore => capsuleRestoreReportRunMappingsMatchImage(image, report) and
+            .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => capsuleRestoreReportRunMappingsMatchImage(image, report) and
                 capsuleRestoreReportPendingMappingsMatchImage(image, report) and
                 capsuleRestoreReportFabricMappingsMatchImage(image, report),
-            .inspect_only, .replay_only, .restore_parked, .verify_and_restore => false,
+            .inspect_only, .replay_only, .verify_and_restore => false,
         };
     }
 
@@ -2927,7 +2927,11 @@ pub const Admission = struct {
         if (mappings.len != refs.len * 2) return false;
         for (refs, 0..) |invocation, index| {
             if (mappings[index * 2] != invocation) return false;
-            if (mappings[index * 2 + 1] != invocation) return false;
+            const restored = mappings[index * 2 + 1];
+            var previous_index: usize = 0;
+            while (previous_index < index) : (previous_index += 1) {
+                if (mappings[previous_index * 2 + 1] == restored) return false;
+            }
         }
         return true;
     }
@@ -2956,8 +2960,8 @@ pub const Admission = struct {
 
     fn capsuleAdmissionModeAllowsRestoreReport(mode: CapsuleAdmissionMode) bool {
         return switch (mode) {
-            .restore_completed, .restore_failed, .relink_and_restore => true,
-            .inspect_only, .replay_only, .restore_parked, .verify => false,
+            .restore_parked, .restore_completed, .restore_failed, .relink_and_restore => true,
+            .inspect_only, .replay_only, .verify => false,
         };
     }
 
