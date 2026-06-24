@@ -13186,7 +13186,9 @@ test "capsule active fabric restore rejects mutation without fabric state image"
         .restored_root_run_handles = restored.restored_root_run_handles,
         .restored_provider_run_handles = restored.restored_provider_run_handles,
         .restored_pending_port_mappings = zero_pending_mappings,
+        .restored_pending_mailbox_id_mappings = restored.restored_pending_mailbox_id_mappings,
         .restored_fabric_invocation_mappings = restored.restored_fabric_invocation_mappings,
+        .restored_fabric_invocation_sequence_start = restored.restored_fabric_invocation_sequence_start,
         .guest_conformance_refs = restored.guest_conformance_refs,
         .restored_actuation_receipt_refs = restored.restored_actuation_receipt_refs,
         .environment_certificate_fingerprint = restored.environment_certificate_fingerprint,
@@ -13217,7 +13219,9 @@ test "capsule active fabric restore rejects mutation without fabric state image"
         .restored_root_run_handles = restored.restored_root_run_handles,
         .restored_provider_run_handles = restored.restored_provider_run_handles,
         .restored_pending_port_mappings = restored.restored_pending_port_mappings,
+        .restored_pending_mailbox_id_mappings = restored.restored_pending_mailbox_id_mappings,
         .restored_fabric_invocation_mappings = zero_fabric_mappings,
+        .restored_fabric_invocation_sequence_start = restored.restored_fabric_invocation_sequence_start,
         .guest_conformance_refs = restored.guest_conformance_refs,
         .restored_actuation_receipt_refs = restored.restored_actuation_receipt_refs,
         .environment_certificate_fingerprint = restored.environment_certificate_fingerprint,
@@ -13234,6 +13238,40 @@ test "capsule active fabric restore rejects mutation without fabric state image"
     });
     try std.testing.expect(!zero_fabric_admission.accepted);
     try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, zero_fabric_admission.blockers[0]);
+
+    var forged_fabric_mappings = try allocator.dupe(u64, restored.restored_fabric_invocation_mappings);
+    defer allocator.free(forged_fabric_mappings);
+    try std.testing.expect(forged_fabric_mappings.len >= 2);
+    forged_fabric_mappings[1] +%= 1;
+    if (forged_fabric_mappings[1] == 0) forged_fabric_mappings[1] = 1;
+    const forged_fabric_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restored.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restored.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restored.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restored.restored_local_run_id_start,
+        .restored_run_handle_mappings = restored.restored_run_handle_mappings,
+        .restored_root_run_handles = restored.restored_root_run_handles,
+        .restored_provider_run_handles = restored.restored_provider_run_handles,
+        .restored_pending_port_mappings = restored.restored_pending_port_mappings,
+        .restored_pending_mailbox_id_mappings = restored.restored_pending_mailbox_id_mappings,
+        .restored_fabric_invocation_mappings = forged_fabric_mappings,
+        .restored_fabric_invocation_sequence_start = restored.restored_fabric_invocation_sequence_start,
+        .guest_conformance_refs = restored.guest_conformance_refs,
+        .restored_actuation_receipt_refs = restored.restored_actuation_receipt_refs,
+        .environment_certificate_fingerprint = restored.environment_certificate_fingerprint,
+        .receiver_run_permit_fingerprint = restored.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restored.warnings,
+        .summary = restored.summary,
+    });
+    const forged_fabric_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = image,
+        .thaw_plan = thaw_plan,
+        .restore_report = forged_fabric_restore,
+    });
+    try std.testing.expect(!forged_fabric_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_fabric_admission.blockers[0]);
 }
 
 test "capsule agent transfer preserves residual external import" {

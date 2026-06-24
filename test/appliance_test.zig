@@ -4942,22 +4942,7 @@ test "appliance Core accepts replay evidence with verified transcript support" {
     });
     const replay_boot_bytes = try replay_boot.encode(std.testing.allocator);
     defer std.testing.allocator.free(replay_boot_bytes);
-    try replay_core.submit(replay_boot_bytes);
-    try replay_core.executeTurn();
-    var replay_output = try world.Appliance.TurnOutput.decode(
-        std.testing.allocator,
-        replay_core.readOutput(),
-        manifest.manifest_fingerprint,
-        world.Appliance.Capacity.tiny_one_port,
-    );
-    defer replay_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, replay_output.status);
-    try std.testing.expectEqual(@as(usize, 0), replay_output.host_requests.len);
-    try std.testing.expectEqual(@as(usize, 0), replay_output.turn_receipt.emitted_host_request_fingerprints.len);
-    try std.testing.expectEqual(@as(usize, 0), replay_output.turn_receipt.applied_host_reply_fingerprints.len);
-    try std.testing.expectEqual(@as(usize, 0), replay_output.finalized_actuation_receipt_fingerprints.len);
-    try std.testing.expect(replay_output.root_result_fingerprint != null);
-    try std.testing.expect(replay_output.root_result_value_image_bytes.len != 0);
+    try std.testing.expectError(error.InvalidCommand, replay_core.submit(replay_boot_bytes));
 
     var replay_native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -4989,16 +4974,20 @@ test "appliance Core accepts replay evidence with verified transcript support" {
         .expected_manifest_fingerprint = manifest.manifest_fingerprint,
         .limits = .archive_decode,
     });
+    const native_replay_evidence = [_]u64{
+        native_fresh_output.turn_receipt.receipt_fingerprint,
+        manifest.actuation_binding_fingerprints[0],
+    };
     const replay_wire_continue = world.Appliance.Wire.TurnInput.init(.{
         .operation = .replay,
         .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = native_fresh_output.turn_sequence_number + 1,
         .previous_turn_receipt_fingerprint = native_fresh_output.turn_receipt.receipt_fingerprint,
-        .receiver_evidence_fingerprints = &replay_evidence,
+        .receiver_evidence_fingerprints = &native_replay_evidence,
     });
     const replay_wire_continue_bytes = try replay_wire_continue.encode(std.testing.allocator);
     defer std.testing.allocator.free(replay_wire_continue_bytes);
-    try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, replay_native.submitTurn(replay_wire_continue_bytes));
+    try std.testing.expectEqual(world.Appliance.Abi.Status.completed, replay_native.submitTurn(replay_wire_continue_bytes));
     var native_child_closure = try world.Appliance.TurnClosure.decode(std.testing.allocator, replay_native.last_closure_bytes);
     defer native_child_closure.deinit(std.testing.allocator);
     try world.Appliance.validateTurnClosureParentContinuity(native_child_closure, native_parent_closure);
@@ -5026,6 +5015,38 @@ test "appliance Core accepts replay evidence with verified transcript support" {
         .expected_parent_chronicle_cursor_fingerprint = native_parent_closure.chronicle_resulting_cursor_fingerprint,
         .limits = .archive_decode,
     }));
+
+    var forged_replay_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        ReplayAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer forged_replay_core.reset();
+    try forged_replay_core.submit(fresh_boot_bytes);
+    try forged_replay_core.executeTurn();
+    var forged_fresh_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        forged_replay_core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer forged_fresh_output.deinit(std.testing.allocator);
+    const forged_replay_evidence = [_]u64{
+        forged_fresh_output.turn_receipt.receipt_fingerprint,
+        manifest.actuation_binding_fingerprints[0] +% 1,
+    };
+    const forged_replay = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = forged_fresh_output.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = forged_fresh_output.turn_receipt.receipt_fingerprint,
+        .execution_mode = .replay,
+        .receiver_evidence_fingerprints = &forged_replay_evidence,
+    });
+    const forged_replay_bytes = try forged_replay.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_replay_bytes);
+    try std.testing.expectError(error.InvalidCommand, forged_replay_core.submit(forged_replay_bytes));
 
     var duplicate_replay_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,

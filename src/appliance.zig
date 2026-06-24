@@ -3867,18 +3867,24 @@ pub fn Appliance(comptime World: type) type {
                         .inspected => unreachable,
                     }
                 }
+                if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
+                if (command.execution_mode == .replay and self.commandHasReplayEvidence(command)) return .completed;
                 if (commandLeavesOutstandingHostRequests(current_outstanding_host_requests, command)) return .needs_host;
                 if (self.commandIsTerminalArchiveAckOnly(command)) return .completed;
-                if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
                 if (command.execution_mode == .fresh) return .needs_host;
-                if (command.execution_mode == .replay and self.commandHasReplayEvidence(command)) return .completed;
                 return .blocked;
             }
 
             fn commandHasReplayEvidence(self: @This(), command: Command) bool {
                 const expected_evidence_count = 1 + self.manifest_value.actuation_binding_fingerprints.len;
                 if (command.receiver_evidence_fingerprints.len != expected_evidence_count) return false;
-                return fingerprintsAreDistinct(command.receiver_evidence_fingerprints);
+                if (!fingerprintsAreDistinct(command.receiver_evidence_fingerprints)) return false;
+                const previous_turn_receipt = self.previous_turn_receipt_fingerprint orelse return false;
+                if (command.receiver_evidence_fingerprints[0] != previous_turn_receipt) return false;
+                for (self.manifest_value.actuation_binding_fingerprints, 0..) |binding_fingerprint, index| {
+                    if (command.receiver_evidence_fingerprints[index + 1] != binding_fingerprint) return false;
+                }
+                return true;
             }
 
             fn diagnosticMetadata(self: @This()) []const u8 {

@@ -2922,14 +2922,51 @@ pub const Admission = struct {
         return true;
     }
 
+    fn capsuleRestoreReportMappedU64(mappings: []const u64, original: u64) !u64 {
+        if (mappings.len % 2 != 0) return error.InvalidFrameEncoding;
+        var index: usize = 0;
+        while (index < mappings.len) : (index += 2) {
+            if (mappings[index] == original) return mappings[index + 1];
+        }
+        return error.StaleRunHandle;
+    }
+
     fn capsuleRestoreReportFabricMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
-        const refs = if (image.fabric_image) |fabric| fabric.active_invocation_fingerprints else &.{};
+        const fabric = image.fabric_image orelse return report.restored_fabric_invocation_mappings.len == 0;
+        const refs = fabric.active_invocation_fingerprints;
+        if (fabric.active_invocations.len != refs.len) return false;
         const mappings = report.restored_fabric_invocation_mappings;
         if (mappings.len != refs.len * 2) return false;
-        for (refs, 0..) |invocation, index| {
-            if (mappings[index * 2] != invocation) return false;
+        for (fabric.active_invocations, 0..) |invocation, index| {
+            invocation.validate() catch return false;
+            if (mappings[index * 2] != invocation.invocation_fingerprint) return false;
+            if (refs[index] != invocation.invocation_fingerprint) return false;
+            const restored_parent = capsuleRestoreReportMappedU64(report.restored_run_handle_mappings, invocation.parent_run_handle_fingerprint) catch return false;
+            const source_provider = invocation.provider_run_handle_fingerprint orelse return false;
+            const restored_provider = capsuleRestoreReportMappedU64(report.restored_run_handle_mappings, source_provider) catch return false;
+            const restored_pending = capsuleRestoreReportMappedU64(report.restored_pending_port_mappings, invocation.parent_pending_port_fingerprint) catch return false;
+            const restored_mailbox_id = capsuleRestoreReportMappedU64(report.restored_pending_mailbox_id_mappings, invocation.parent_pending_port_fingerprint) catch return false;
+            const index_u64 = std.math.cast(u64, index) orelse return false;
+            const restored_sequence = std.math.add(u64, report.restored_fabric_invocation_sequence_start, index_u64) catch return false;
+            const expected = Fabric.Invocation.init(.{
+                .plan_fingerprint = invocation.plan_fingerprint,
+                .route_fingerprint = invocation.route_fingerprint,
+                .parent_run_handle_fingerprint = restored_parent,
+                .parent_pending_port_fingerprint = restored_pending,
+                .parent_mailbox_id = restored_mailbox_id,
+                .request_frame_fingerprint = invocation.request_frame_fingerprint,
+                .provider_run_handle_fingerprint = restored_provider,
+                .mapped_request_frame_fingerprint = invocation.mapped_request_frame_fingerprint,
+                .mapped_response_frame_fingerprint = invocation.mapped_response_frame_fingerprint,
+                .run_permit_fingerprint = report.receiver_run_permit_fingerprint orelse invocation.run_permit_fingerprint,
+                .actuation_receipt_fingerprint = invocation.actuation_receipt_fingerprint,
+                .depth = invocation.depth,
+                .sequence = restored_sequence,
+                .status = invocation.status,
+            });
+            expected.validate() catch return false;
             const restored = mappings[index * 2 + 1];
-            if (restored == 0) return false;
+            if (restored != expected.invocation_fingerprint) return false;
             var previous_index: usize = 0;
             while (previous_index < index) : (previous_index += 1) {
                 if (mappings[previous_index * 2 + 1] == restored) return false;
@@ -25765,7 +25802,9 @@ pub const Capsule = struct {
         restored_root_run_handles: []const u64 = &.{},
         restored_provider_run_handles: []const u64 = &.{},
         restored_pending_port_mappings: []const u64 = &.{},
+        restored_pending_mailbox_id_mappings: []const u64 = &.{},
         restored_fabric_invocation_mappings: []const u64 = &.{},
+        restored_fabric_invocation_sequence_start: u64 = 0,
         guest_conformance_refs: []const u64 = &.{},
         restored_actuation_receipt_refs: []const u64 = &.{},
         replayed_sender_actuation_receipt_refs: []const u64 = &.{},
@@ -25787,7 +25826,9 @@ pub const Capsule = struct {
             restored_root_run_handles: []const u64 = &.{},
             restored_provider_run_handles: []const u64 = &.{},
             restored_pending_port_mappings: []const u64 = &.{},
+            restored_pending_mailbox_id_mappings: []const u64 = &.{},
             restored_fabric_invocation_mappings: []const u64 = &.{},
+            restored_fabric_invocation_sequence_start: u64 = 0,
             guest_conformance_refs: []const u64 = &.{},
             restored_actuation_receipt_refs: []const u64 = &.{},
             replayed_sender_actuation_receipt_refs: []const u64 = &.{},
@@ -25809,7 +25850,9 @@ pub const Capsule = struct {
                 .restored_root_run_handles = args.restored_root_run_handles,
                 .restored_provider_run_handles = args.restored_provider_run_handles,
                 .restored_pending_port_mappings = args.restored_pending_port_mappings,
+                .restored_pending_mailbox_id_mappings = args.restored_pending_mailbox_id_mappings,
                 .restored_fabric_invocation_mappings = args.restored_fabric_invocation_mappings,
+                .restored_fabric_invocation_sequence_start = args.restored_fabric_invocation_sequence_start,
                 .guest_conformance_refs = args.guest_conformance_refs,
                 .restored_actuation_receipt_refs = args.restored_actuation_receipt_refs,
                 .replayed_sender_actuation_receipt_refs = args.replayed_sender_actuation_receipt_refs,
@@ -25831,6 +25874,7 @@ pub const Capsule = struct {
                 allocator.free(self.restored_root_run_handles);
                 allocator.free(self.restored_provider_run_handles);
                 allocator.free(self.restored_pending_port_mappings);
+                allocator.free(self.restored_pending_mailbox_id_mappings);
                 allocator.free(self.restored_fabric_invocation_mappings);
                 allocator.free(self.guest_conformance_refs);
                 allocator.free(self.restored_actuation_receipt_refs);
@@ -26981,6 +27025,7 @@ pub const Capsule = struct {
                 runspace.next_mailbox_id += mailbox.pending_port_fingerprints.len;
             }
         }
+        const fabric_invocation_sequence_start = runspace.fabric_invocations.items.len;
         if (image.fabric_image) |fabric| {
             try restoreActiveFabricFromCapsule(
                 image,
@@ -27002,6 +27047,8 @@ pub const Capsule = struct {
         errdefer allocator.free(handle_slice);
         const mailbox_slice = try mailbox_mappings.toOwnedSlice(allocator);
         errdefer allocator.free(mailbox_slice);
+        const mailbox_id_slice = try pending_mailbox_id_mappings.toOwnedSlice(allocator);
+        errdefer allocator.free(mailbox_id_slice);
         const fabric_slice = try fabric_mappings.toOwnedSlice(allocator);
         errdefer allocator.free(fabric_slice);
         const guest_slice = try allocator.dupe(u64, plan.guest_conformance_refs);
@@ -27022,7 +27069,9 @@ pub const Capsule = struct {
             .restored_root_run_handles = root_slice,
             .restored_provider_run_handles = provider_slice,
             .restored_pending_port_mappings = mailbox_slice,
+            .restored_pending_mailbox_id_mappings = mailbox_id_slice,
             .restored_fabric_invocation_mappings = fabric_slice,
+            .restored_fabric_invocation_sequence_start = @intCast(fabric_invocation_sequence_start),
             .guest_conformance_refs = guest_slice,
             .restored_actuation_receipt_refs = restored_actuation_receipts,
             .environment_certificate_fingerprint = if (image.manifest.environment_certificate_fingerprints.len == 0) null else environment_fingerprint,
@@ -27045,7 +27094,9 @@ pub const Capsule = struct {
         restored_root_run_handles: []const u64 = &.{},
         restored_provider_run_handles: []const u64 = &.{},
         restored_pending_port_mappings: []const u64 = &.{},
+        restored_pending_mailbox_id_mappings: []const u64 = &.{},
         restored_fabric_invocation_mappings: []const u64 = &.{},
+        restored_fabric_invocation_sequence_start: u64 = 0,
         guest_conformance_refs: []const u64 = &.{},
         restored_actuation_receipt_refs: []const u64 = &.{},
         replayed_sender_actuation_receipt_refs: []const u64 = &.{},
@@ -27065,6 +27116,8 @@ pub const Capsule = struct {
         errdefer allocator.free(provider_handles);
         const pending_mappings = try allocator.dupe(u64, args.restored_pending_port_mappings);
         errdefer allocator.free(pending_mappings);
+        const pending_mailbox_id_mappings = try allocator.dupe(u64, args.restored_pending_mailbox_id_mappings);
+        errdefer allocator.free(pending_mailbox_id_mappings);
         const fabric_mappings = try allocator.dupe(u64, args.restored_fabric_invocation_mappings);
         errdefer allocator.free(fabric_mappings);
         const guest_refs = try allocator.dupe(u64, args.guest_conformance_refs);
@@ -27091,7 +27144,9 @@ pub const Capsule = struct {
             .restored_root_run_handles = root_handles,
             .restored_provider_run_handles = provider_handles,
             .restored_pending_port_mappings = pending_mappings,
+            .restored_pending_mailbox_id_mappings = pending_mailbox_id_mappings,
             .restored_fabric_invocation_mappings = fabric_mappings,
+            .restored_fabric_invocation_sequence_start = args.restored_fabric_invocation_sequence_start,
             .guest_conformance_refs = guest_refs,
             .restored_actuation_receipt_refs = restored_actuation_receipts,
             .replayed_sender_actuation_receipt_refs = replayed_sender_actuation_receipts,
@@ -28788,7 +28843,9 @@ pub const Capsule = struct {
         hashU64Slice(&hasher, report.restored_root_run_handles);
         hashU64Slice(&hasher, report.restored_provider_run_handles);
         hashU64Slice(&hasher, report.restored_pending_port_mappings);
+        hashU64Slice(&hasher, report.restored_pending_mailbox_id_mappings);
         hashU64Slice(&hasher, report.restored_fabric_invocation_mappings);
+        hashU64(&hasher, report.restored_fabric_invocation_sequence_start);
         hashU64Slice(&hasher, report.guest_conformance_refs);
         if (report.restored_actuation_receipt_refs.len != 0 or report.replayed_sender_actuation_receipt_refs.len != 0 or report.receiver_local_actuation_receipt_refs.len != 0) {
             hashBytes(&hasher, "world.capsule.restore.actuation");

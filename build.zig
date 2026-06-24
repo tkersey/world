@@ -797,7 +797,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-seed-replay",
             .desc = "Run the World Seed replay example.",
             .expected_stdout =
-            \\fresh_host_requests=2
+            \\fresh_host_requests=1
             \\replay_supported=true
             \\replay_host_requests=0
             \\replay_fresh_called=false
@@ -1309,7 +1309,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\capsule_fingerprint=751785b147113438
             \\link_certificate_fingerprint=2045220a5ff7a9fd
-            \\restore_report_fingerprint=e4766d029802a3b5
+            \\restore_report_fingerprint=7c82875ce3c30859
             \\final_result=7
             \\
             ,
@@ -1362,7 +1362,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Assembly Capsule guest verify example.",
             .expected_stdout =
             \\guest_report_fingerprint=51763d4dbbec2098
-            \\restore_report_fingerprint=899cd4ee86628f80
+            \\restore_report_fingerprint=123fdd3f05347c5
             \\conformance=true
             \\
             ,
@@ -1423,7 +1423,7 @@ pub fn build(b: *std.Build) void {
             .expected_stdout =
             \\pending_actuation_intent_fingerprint=b0f6e22106da6b81
             \\capsule_fingerprint=36fd9fe6a214a37f
-            \\restore_report_fingerprint=f7b984c997a5c4ed
+            \\restore_report_fingerprint=288d2e68c8677716
             \\final_result=true
             \\
             ,
@@ -1526,7 +1526,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-appliance-replay",
             .desc = "Run the World Appliance replay example.",
             .expected_stdout =
-            \\fresh_host_requests=2
+            \\fresh_host_requests=1
             \\replay_supported=true
             \\replay_host_requests=0
             \\replay_fresh_called=false
@@ -1583,7 +1583,7 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-turn-closure-replay",
             .desc = "Run the World Turn Closure positive replay example.",
             .expected_stdout =
-            \\fresh_host_requests=2
+            \\fresh_host_requests=1
             \\replay_supported=true
             \\replay_host_requests=0
             \\replay_fresh_called=false
