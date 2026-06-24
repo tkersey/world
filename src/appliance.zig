@@ -3992,6 +3992,61 @@ pub fn Appliance(comptime World: type) type {
 
             const native_last_error_storage_bytes: usize = 256;
 
+            const SubmitTurnRollback = struct {
+                continuation: Core.ContinuationSnapshot,
+                output_bytes: []const u8 = "",
+                output_owned: bool = false,
+                closure_bytes: []const u8 = "",
+                closure_owned: bool = false,
+
+                fn capture(native: *Native) !@This() {
+                    const allocator = native.core.allocator;
+                    var continuation = try Core.ContinuationSnapshot.capture(&native.core);
+                    errdefer continuation.deinit(allocator);
+                    const output_bytes = if (native.core.last_output_bytes.len != 0)
+                        try allocator.dupe(u8, native.core.last_output_bytes)
+                    else
+                        "";
+                    errdefer if (output_bytes.len != 0) allocator.free(output_bytes);
+                    const closure_bytes = if (native.last_closure_bytes.len != 0)
+                        try allocator.dupe(u8, native.last_closure_bytes)
+                    else
+                        "";
+                    return .{
+                        .continuation = continuation,
+                        .output_bytes = output_bytes,
+                        .output_owned = output_bytes.len != 0,
+                        .closure_bytes = closure_bytes,
+                        .closure_owned = closure_bytes.len != 0,
+                    };
+                }
+
+                fn restore(self: *@This(), native: *Native) void {
+                    const allocator = native.core.allocator;
+                    if (native.core.last_output_owned) allocator.free(native.core.last_output_bytes);
+                    native.core.last_output_bytes = self.output_bytes;
+                    native.core.last_output_owned = self.output_owned;
+                    self.output_bytes = "";
+                    self.output_owned = false;
+                    self.continuation.restore(&native.core);
+                    native.clearClosure();
+                    native.last_closure_bytes = self.closure_bytes;
+                    native.last_closure_owned = self.closure_owned;
+                    self.closure_bytes = "";
+                    self.closure_owned = false;
+                }
+
+                fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                    self.continuation.deinit(allocator);
+                    if (self.output_owned) allocator.free(self.output_bytes);
+                    self.output_bytes = "";
+                    self.output_owned = false;
+                    if (self.closure_owned) allocator.free(self.closure_bytes);
+                    self.closure_bytes = "";
+                    self.closure_owned = false;
+                }
+            };
+
             pub fn init(core: Core) @This() {
                 return .{ .core = core };
             }
@@ -4073,6 +4128,8 @@ pub fn Appliance(comptime World: type) type {
                 const command_bytes = command.encode(allocator) catch |err| return self.setSubmitError(err);
                 defer allocator.free(command_bytes);
 
+                var rollback = SubmitTurnRollback.capture(self) catch |err| return self.setSubmitError(err);
+                defer rollback.deinit(allocator);
                 const status = self.submitCommand(command_bytes);
                 if (!Abi.statusHasTurnOutput(status)) {
                     self.clearOutput();
@@ -4080,7 +4137,7 @@ pub fn Appliance(comptime World: type) type {
                     return status;
                 }
                 self.refreshClosureFromLastOutput(parent_closure_for_lineage) catch |err| {
-                    self.clearClosure();
+                    rollback.restore(self);
                     return self.setErrorAt("submit.closure", err);
                 };
                 return status;
@@ -4447,8 +4504,10 @@ pub fn Appliance(comptime World: type) type {
                 defer receipt.deinit(allocator);
                 if (receipt.receipt_fingerprint != fingerprint) return error.InvalidFrameEncoding;
                 const dependency_refs = try actuationReceiptDependencyRefsOwned(allocator, receipt);
-                errdefer freeContinuityObjectRefs(allocator, dependency_refs);
+                var dependency_refs_owned = true;
+                errdefer if (dependency_refs_owned) freeContinuityObjectRefs(allocator, dependency_refs);
                 try dependency_ref_slices.append(allocator, dependency_refs);
+                dependency_refs_owned = false;
                 const envelope = World.Continuity.ObjectEnvelope.init(.{
                     .kind = .actuation_receipt,
                     .object_format_version = World.Continuity.ObjectKind.actuation_receipt.defaultFormatVersion(),

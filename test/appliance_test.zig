@@ -7834,6 +7834,99 @@ test "appliance Native legacy command clears stale turn closure cache" {
     try std.testing.expectEqual(@as(usize, 0), native.closureLen());
 }
 
+test "appliance Native submitTurn rolls back closure materialization failure" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_agent,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{world.bindActuator(AppliancePortsDecl, ApplianceActuator)},
+        .metadata = "native-submit-turn-rollback",
+    });
+    const manifest = PortsAppliance.manifest();
+
+    const wire_boot = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const wire_boot_bytes = try wire_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wire_boot_bytes);
+
+    var observed_closure_failure = false;
+    var observed_success = false;
+    var fail_offset: usize = 0;
+    while (fail_offset < 1024 and !(observed_closure_failure and observed_success)) : (fail_offset += 1) {
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = std.math.maxInt(usize),
+        });
+        var native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
+            failing_allocator.allocator(),
+            manifest,
+            PortsAppliance.memoryPlan(),
+            world.Appliance.Capacity.tiny_one_port,
+        ));
+        defer native.deinit();
+        try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, native.submitTurn(wire_boot_bytes));
+
+        const prior_turn_sequence_number = native.core.current_turn_sequence_number;
+        const prior_receipt = native.core.previous_turn_receipt_fingerprint;
+        const prior_state = native.core.state;
+        const prior_output = try std.testing.allocator.dupe(u8, native.core.readOutput());
+        defer std.testing.allocator.free(prior_output);
+        const prior_closure = try std.testing.allocator.dupe(u8, native.last_closure_bytes);
+        defer std.testing.allocator.free(prior_closure);
+        const request = native.core.outstanding_host_request orelse return error.UnknownRequest;
+        var response_image = try world.Frame.ValueImage.fromCanonicalBytes(
+            std.testing.allocator,
+            null,
+            request.expected_response_value_ref_fingerprint,
+            request.expected_response_schema_ref_fingerprint,
+            "native-submit-turn-response",
+            false,
+        );
+        defer response_image.deinit(std.testing.allocator);
+        const response_image_bytes = try response_image.encode(std.testing.allocator);
+        defer std.testing.allocator.free(response_image_bytes);
+        const resolution = world.Appliance.Wire.ResolutionInput.init(.{
+            .target_host_request_fingerprint = request.request_fingerprint,
+            .status = .responded,
+            .response_value_image_bytes = response_image_bytes,
+            .host_claim_bytes = "native-submit-turn-host-claim",
+            .attempt_number = 1,
+        });
+        const wire_continue = world.Appliance.Wire.TurnInput.init(.{
+            .operation = .@"continue",
+            .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+            .previous_turn_receipt_fingerprint = prior_receipt,
+            .turn_sequence_number = prior_turn_sequence_number + 1,
+            .resolutions = &.{resolution},
+        });
+        const wire_continue_bytes = try wire_continue.encode(std.testing.allocator);
+        defer std.testing.allocator.free(wire_continue_bytes);
+
+        failing_allocator.fail_index = failing_allocator.alloc_index + fail_offset;
+        const status = native.submitTurn(wire_continue_bytes);
+        if (status == .capacity_exceeded and std.mem.startsWith(u8, native.lastErrorBytes(), "submit.closure:")) {
+            observed_closure_failure = true;
+            try std.testing.expect(failing_allocator.has_induced_failure);
+            try std.testing.expectEqual(prior_state, native.core.state);
+            try std.testing.expectEqual(prior_turn_sequence_number, native.core.current_turn_sequence_number);
+            try std.testing.expectEqual(prior_receipt, native.core.previous_turn_receipt_fingerprint);
+            try std.testing.expectEqualSlices(u8, prior_output, native.core.readOutput());
+            try std.testing.expectEqualSlices(u8, prior_closure, native.last_closure_bytes);
+
+            failing_allocator.fail_index = std.math.maxInt(usize);
+            try std.testing.expectEqual(world.Appliance.Abi.Status.completed, native.submitTurn(wire_continue_bytes));
+            continue;
+        }
+        if (failing_allocator.has_induced_failure) continue;
+        try std.testing.expectEqual(world.Appliance.Abi.Status.completed, status);
+        observed_success = true;
+    }
+
+    try std.testing.expect(observed_closure_failure);
+    try std.testing.expect(observed_success);
+}
+
 test "appliance Native submit status preserves canonical TurnOutput status" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_agent,
