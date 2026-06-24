@@ -8220,6 +8220,85 @@ fn applianceTestWriteBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator
     try out.appendSlice(allocator, bytes);
 }
 
+fn applianceTestReadU8(bytes: []const u8, cursor: *usize) !u8 {
+    if (cursor.* + 1 > bytes.len) return error.InvalidFrameEncoding;
+    const value = bytes[cursor.*];
+    cursor.* += 1;
+    return value;
+}
+
+fn applianceTestReadU32(bytes: []const u8, cursor: *usize) !u32 {
+    if (cursor.* + 4 > bytes.len) return error.InvalidFrameEncoding;
+    const value = std.mem.readInt(u32, bytes[cursor.*..][0..4], .little);
+    cursor.* += 4;
+    return value;
+}
+
+fn applianceTestReadU64(bytes: []const u8, cursor: *usize) !u64 {
+    if (cursor.* + 8 > bytes.len) return error.InvalidFrameEncoding;
+    const value = std.mem.readInt(u64, bytes[cursor.*..][0..8], .little);
+    cursor.* += 8;
+    return value;
+}
+
+fn applianceTestSkipOptionalU64(bytes: []const u8, cursor: *usize) !void {
+    switch (try applianceTestReadU8(bytes, cursor)) {
+        0 => {},
+        1 => _ = try applianceTestReadU64(bytes, cursor),
+        else => return error.InvalidFrameEncoding,
+    }
+}
+
+fn applianceTestSkipBytes(bytes: []const u8, cursor: *usize) !void {
+    const len = try applianceTestReadU32(bytes, cursor);
+    if (cursor.* + len > bytes.len) return error.InvalidFrameEncoding;
+    cursor.* += len;
+}
+
+fn applianceTestSkipU64Slice(bytes: []const u8, cursor: *usize) !void {
+    const count = try applianceTestReadU64(bytes, cursor);
+    if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
+    const byte_len = try std.math.mul(usize, @as(usize, @intCast(count)), @sizeOf(u64));
+    if (cursor.* + byte_len > bytes.len) return error.InvalidFrameEncoding;
+    cursor.* += byte_len;
+}
+
+fn applianceTestTurnClosureFinalizedReceiptBytesCountOffset(bytes: []const u8) !usize {
+    var cursor: usize = 0;
+    _ = try applianceTestReadU32(bytes, &cursor);
+    _ = try applianceTestReadU32(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipU64Slice(bytes, &cursor);
+    return cursor;
+}
+
 fn applianceTestRootResultValueImageBytes(allocator: std.mem.Allocator, fingerprint: u64) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -8522,6 +8601,28 @@ test "appliance TurnClosure complete one-port closure validates" {
     const materialized_capsule = try decoded.materializeCapsule(allocator);
     defer allocator.free(materialized_capsule);
     try std.testing.expectEqualSlices(u8, fixture.capsule_bytes, materialized_capsule);
+}
+
+test "appliance TurnClosure rejects receipt byte counts before allocation" {
+    const allocator = std.testing.allocator;
+    const fixture = try applianceTurnClosureFixture(allocator);
+    defer allocator.free(fixture.capsule_bytes);
+    defer allocator.free(fixture.checkpoint_bytes);
+    defer allocator.free(fixture.turn_receipt_bytes);
+    defer allocator.free(fixture.actuation_receipt_fingerprints);
+    defer allocator.free(fixture.actuation_receipt_byte_slices);
+    defer allocator.free(fixture.actuation_receipt_bytes);
+    defer allocator.free(fixture.root_result_bytes);
+    defer allocator.free(fixture.bundle_bytes);
+
+    const encoded = try fixture.closure.encode(allocator);
+    defer allocator.free(encoded);
+    var malformed = try allocator.dupe(u8, encoded);
+    defer allocator.free(malformed);
+    const count_offset = try applianceTestTurnClosureFinalizedReceiptBytesCountOffset(malformed);
+    std.mem.writeInt(u64, malformed[count_offset..][0..8], world.Appliance.TurnClosureLimits.default.max_items + 1, .little);
+
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.TurnClosure.decode(allocator, malformed));
 }
 
 test "appliance TurnClosure rejects mismatched required bytes and unresolved roots" {

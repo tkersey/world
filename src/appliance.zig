@@ -1825,7 +1825,7 @@ pub fn Appliance(comptime World: type) type {
 
             pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, expected_manifest_fingerprint: u64, capacity: Capacity) !@This() {
                 var cursor: usize = 0;
-                var output = try readTurnOutputOwned(allocator, bytes, &cursor);
+                var output = try readTurnOutputOwned(allocator, bytes, &cursor, TurnClosureLimits.fromCapacity(capacity));
                 errdefer output.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
                 try output.validateWithAllocator(allocator, expected_manifest_fingerprint, capacity);
@@ -1835,7 +1835,7 @@ pub fn Appliance(comptime World: type) type {
 
             pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
                 var cursor: usize = 0;
-                var output = try readTurnOutputOwned(allocator, bytes, &cursor);
+                var output = try readTurnOutputOwned(allocator, bytes, &cursor, TurnClosureLimits.archive_decode);
                 errdefer output.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
                 try output.validateWithAllocator(allocator, output.manifest_fingerprint, Capacity.archive_decode);
@@ -2230,15 +2230,19 @@ pub fn Appliance(comptime World: type) type {
             }
 
             pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                return decodeWithLimits(allocator, bytes, TurnClosureLimits.default);
+            }
+
+            pub fn decodeWithLimits(allocator: std.mem.Allocator, bytes: []const u8, limits: TurnClosureLimits) !@This() {
                 var cursor: usize = 0;
-                var closure = try readTurnClosureOwned(allocator, bytes, &cursor);
+                var closure = try readTurnClosureOwned(allocator, bytes, &cursor, limits);
                 errdefer closure.deinit(allocator);
                 if (cursor != bytes.len) return error.InvalidFrameEncoding;
                 return closure;
             }
 
             pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) anyerror!@This() {
-                var closure = try decode(allocator, bytes);
+                var closure = try decodeWithLimits(allocator, bytes, TurnClosureLimits.archive_decode);
                 errdefer closure.deinit(allocator);
                 if (closure.closure_format_version != World.world_appliance_turn_closure_format_version) return error.InvalidFrameEncoding;
                 if (closure.closure_fingerprint_version != World.world_appliance_turn_closure_fingerprint_version) return error.InvalidFrameEncoding;
@@ -4069,7 +4073,7 @@ pub fn Appliance(comptime World: type) type {
                 defer if (parent_closure_for_lineage) |*closure| closure.deinit(allocator);
                 var restore_checkpoint: ?Checkpoint = null;
                 if (input.operation == .restore) {
-                    parent_closure_for_lineage = TurnClosure.decode(allocator, input.parent_turn_closure_bytes) catch |err| return self.setSubmitError(err);
+                    parent_closure_for_lineage = TurnClosure.decodeWithLimits(allocator, input.parent_turn_closure_bytes, limits) catch |err| return self.setSubmitError(err);
                     const parent_closure = parent_closure_for_lineage.?;
                     parent_closure.validate(allocator, .{
                         .expected_executable_image_fingerprint = self.core.executable_image_fingerprint,
@@ -4087,7 +4091,7 @@ pub fn Appliance(comptime World: type) type {
                     restore_checkpoint = Checkpoint.decode(allocator, checkpoint_bytes, self.core.manifest_value.manifest_fingerprint, self.core.capacity_value) catch |err| return self.setSubmitError(err);
                 } else if (input.operation != .boot) {
                     if (self.last_closure_bytes.len == 0) return self.setSubmitError(error.StaleTurn);
-                    parent_closure_for_lineage = TurnClosure.decode(allocator, self.last_closure_bytes) catch |err| return self.setSubmitError(err);
+                    parent_closure_for_lineage = TurnClosure.decodeWithLimits(allocator, self.last_closure_bytes, limits) catch |err| return self.setSubmitError(err);
                     const parent_closure = parent_closure_for_lineage.?;
                     parent_closure.validate(allocator, .{
                         .expected_executable_image_fingerprint = self.core.executable_image_fingerprint,
@@ -8117,7 +8121,7 @@ pub fn Appliance(comptime World: type) type {
             };
         }
 
-        fn readTurnOutputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !TurnOutput {
+        fn readTurnOutputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: TurnClosureLimits) !TurnOutput {
             const output_format_version = try readU32(bytes, cursor);
             const output_fingerprint_version = try readU32(bytes, cursor);
             const output_fingerprint = try readU64(bytes, cursor);
@@ -8129,9 +8133,9 @@ pub fn Appliance(comptime World: type) type {
             const status = try enumFromByte(TurnStatus, try readU8(bytes, cursor));
             const host_requests = try readHostRequestsOwned(allocator, bytes, cursor);
             errdefer freeHostRequests(allocator, host_requests);
-            const finalized_actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            const finalized_actuation_receipt_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(finalized_actuation_receipt_fingerprints);
-            const finalized_actuation_receipt_bytes = try readByteSlicesOwned(allocator, bytes, cursor);
+            const finalized_actuation_receipt_bytes = try readByteSlicesOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer freeByteSlices(allocator, finalized_actuation_receipt_bytes);
             const root_result_fingerprint = try readOptionalU64(bytes, cursor);
             const root_result_value_image_bytes = try readBytesOwned(allocator, bytes, cursor);
@@ -8197,7 +8201,7 @@ pub fn Appliance(comptime World: type) type {
             };
         }
 
-        fn readTurnClosureOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !TurnClosure {
+        fn readTurnClosureOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: TurnClosureLimits) !TurnClosure {
             const closure_format_version = try readU32(bytes, cursor);
             const closure_fingerprint_version = try readU32(bytes, cursor);
             const closure_fingerprint = try readU64(bytes, cursor);
@@ -8236,19 +8240,19 @@ pub fn Appliance(comptime World: type) type {
             const run_receipt_fingerprint = try readOptionalU64(bytes, cursor);
             const run_receipt_bytes = try readBytesOwned(allocator, bytes, cursor);
             errdefer allocator.free(run_receipt_bytes);
-            const finalized_actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            const finalized_actuation_receipt_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(finalized_actuation_receipt_fingerprints);
-            const finalized_actuation_receipt_bytes = try readByteSlicesOwned(allocator, bytes, cursor);
+            const finalized_actuation_receipt_bytes = try readByteSlicesOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer freeByteSlices(allocator, finalized_actuation_receipt_bytes);
-            const replay_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            const replay_receipt_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(replay_receipt_fingerprints);
-            const replay_receipt_bytes = try readByteSlicesOwned(allocator, bytes, cursor);
+            const replay_receipt_bytes = try readByteSlicesOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer freeByteSlices(allocator, replay_receipt_bytes);
-            const verify_report_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            const verify_report_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(verify_report_fingerprints);
-            const blockers = try readU64SliceOwned(allocator, bytes, cursor);
+            const blockers = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(blockers);
-            const warnings = try readU64SliceOwned(allocator, bytes, cursor);
+            const warnings = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(warnings);
             const diagnostics = try readBytesOwned(allocator, bytes, cursor);
             errdefer allocator.free(diagnostics);
