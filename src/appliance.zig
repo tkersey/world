@@ -2155,12 +2155,15 @@ pub fn Appliance(comptime World: type) type {
             }
 
             pub fn validationReport(self: @This(), allocator: std.mem.Allocator, options: TurnClosureValidation) !TurnClosureReport {
-                self.validate(allocator, options) catch return TurnClosureReport.init(.{
-                    .valid = false,
-                    .closure_fingerprint = if (self.closure_fingerprint == 0) 1 else self.closure_fingerprint,
-                    .blocker_count = 1,
-                    .warning_count = self.warnings.len,
-                });
+                self.validate(allocator, options) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return TurnClosureReport.init(.{
+                        .valid = false,
+                        .closure_fingerprint = if (self.closure_fingerprint == 0) 1 else self.closure_fingerprint,
+                        .blocker_count = 1,
+                        .warning_count = self.warnings.len,
+                    }),
+                };
                 return TurnClosureReport.init(.{
                     .valid = true,
                     .closure_fingerprint = self.closure_fingerprint,
@@ -2442,6 +2445,7 @@ pub fn Appliance(comptime World: type) type {
                     if (self.resolutions.len > limits.max_resolution_inputs) return error.CapacityExceeded;
                     if (self.receiver_evidence_fingerprints.len > limits.max_items) return error.CapacityExceeded;
                     if (self.parent_turn_closure_bytes.len > limits.max_closure_bytes) return error.CapacityExceeded;
+                    if (self.deterministic_turn_budget != 0) return error.InvalidFrameEncoding;
                     for (self.root_argument_images) |image| {
                         if (image.len > limits.max_result_bytes) return error.CapacityExceeded;
                     }

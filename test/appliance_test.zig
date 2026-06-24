@@ -8608,6 +8608,44 @@ test "appliance TurnClosure complete one-port closure validates" {
     try std.testing.expectEqualSlices(u8, fixture.capsule_bytes, materialized_capsule);
 }
 
+test "appliance TurnClosure validationReport preserves allocation failures" {
+    const allocator = std.testing.allocator;
+    const fixture = try applianceTurnClosureFixture(allocator);
+    defer allocator.free(fixture.capsule_bytes);
+    defer allocator.free(fixture.checkpoint_bytes);
+    defer allocator.free(fixture.turn_receipt_bytes);
+    defer allocator.free(fixture.actuation_receipt_fingerprints);
+    defer allocator.free(fixture.actuation_receipt_byte_slices);
+    defer allocator.free(fixture.actuation_receipt_bytes);
+    defer allocator.free(fixture.root_result_bytes);
+    defer allocator.free(fixture.bundle_bytes);
+
+    const external_dependency_options = world.Appliance.TurnClosureValidation{
+        .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    };
+    var observed_induced_failure = false;
+    var observed_success = false;
+    var fail_offset: usize = 0;
+    while (fail_offset < 128 and !observed_success) : (fail_offset += 1) {
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = std.math.maxInt(usize),
+        });
+        failing_allocator.fail_index = failing_allocator.alloc_index + fail_offset;
+        const report = fixture.closure.validationReport(failing_allocator.allocator(), external_dependency_options) catch {
+            observed_induced_failure = true;
+            try std.testing.expect(failing_allocator.has_induced_failure);
+            continue;
+        };
+        try report.validate();
+        try std.testing.expect(report.valid);
+        observed_success = true;
+    }
+
+    try std.testing.expect(observed_induced_failure);
+    try std.testing.expect(observed_success);
+}
+
 test "appliance TurnClosure rejects over-limit byte payloads before allocation" {
     const allocator = std.testing.allocator;
     const fixture = try applianceTurnClosureFixture(allocator);
@@ -8928,6 +8966,19 @@ test "appliance Wire TurnInput rejects ignored parent closure bytes" {
         .previous_turn_receipt_fingerprint = 0xA012,
         .turn_sequence_number = 1,
         .parent_turn_closure_bytes = "ignored-parent-closure",
+    });
+    const bytes = try input.encode(allocator);
+    defer allocator.free(bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Wire.TurnInput.decode(allocator, bytes));
+}
+
+test "appliance Wire TurnInput rejects unsupported deterministic turn budgets" {
+    const allocator = std.testing.allocator;
+    const input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = 0xA010,
+        .turn_sequence_number = 0,
+        .deterministic_turn_budget = 1,
     });
     const bytes = try input.encode(allocator);
     defer allocator.free(bytes);
