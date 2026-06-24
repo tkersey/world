@@ -4053,6 +4053,7 @@ pub fn Appliance(comptime World: type) type {
             }
 
             pub fn submitCommand(self: *@This(), command_bytes: []const u8) Abi.Status {
+                self.clearClosure();
                 self.core.submit(command_bytes) catch |err| return self.setSubmitError(err);
                 self.core.executeTurn() catch |err| return self.setErrorAt("execute", err);
                 const status = if (self.core.last_output_status) |turn_status|

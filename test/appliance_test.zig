@@ -7764,6 +7764,48 @@ test "appliance Native exposes ABI-shaped operations over canonical Core output"
     try std.testing.expectEqual(@as(usize, 0), native.lastErrorLen());
 }
 
+test "appliance Native legacy command clears stale turn closure cache" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{world.bindActuator(AppliancePortsDecl, ApplianceActuator)},
+        .metadata = "native-legacy-closure-clear",
+    });
+    const manifest = PortsAppliance.manifest();
+
+    var native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    ));
+    defer native.deinit();
+
+    const wire_boot = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const wire_boot_bytes = try wire_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wire_boot_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, native.submitTurn(wire_boot_bytes));
+    try std.testing.expect(native.closureLen() > 0);
+
+    const inspect = world.Appliance.Command.init(.{
+        .kind = .inspect,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = native.core.current_turn_sequence_number,
+        .previous_turn_receipt_fingerprint = native.core.previous_turn_receipt_fingerprint,
+    });
+    const inspect_bytes = try inspect.encode(std.testing.allocator);
+    defer std.testing.allocator.free(inspect_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.output_ready, native.submitCommand(inspect_bytes));
+    try std.testing.expectEqual(@as(usize, 0), native.closureLen());
+
+    try std.testing.expectEqual(world.Appliance.Abi.Status.invalid_command, native.submitCommand("bad"));
+    try std.testing.expectEqual(@as(usize, 0), native.closureLen());
+}
+
 test "appliance Native submit status preserves canonical TurnOutput status" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_agent,

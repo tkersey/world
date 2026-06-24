@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout.print("loaded_internal_provider_executed={}\n", .{report.internal_loaded_provider_executed});
     try stdout.print("active_fabric_restore_accepted={}\n", .{report.active_loaded_fabric_restored});
     try stdout.print("replay_supported=true\n", .{});
-    try stdout.print("replay_final_result=true\n", .{});
+    try stdout.print("replay_final_result={}\n", .{!report.replay_completed_without_fresh_effect});
     try stdout.print("javascript_codec_independent={}\n", .{report.independent_javascript_codec_passed});
     try stdout.print("deterministic_retry={}\n", .{report.deterministic_retry_passed});
     try stdout.print("universal_memory_bound_passed={}\n", .{report.memory_bound_passed});
