@@ -34,7 +34,7 @@ const Inspection = struct {
             self.memory_count == 1 and
             self.memory_export_present and
             self.memory_initial_pages > 0 and
-            self.memory_initial_pages <= 2048 and
+            self.memory_initial_pages <= 1024 and
             self.memory_max_pages != null and
             self.memory_max_pages.? == self.memory_initial_pages and
             (self.required_mask & all_required) == all_required and

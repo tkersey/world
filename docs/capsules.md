@@ -64,7 +64,7 @@ It never serializes Machine pointers, allocators, handlers, request tokens, nati
 
 ## Active Fabric / parked restore
 
-Active Fabric and parked capsules are fail-closed for mutating restore in this API surface. They can be frozen and inspected, but `restore_parked` and parked relink restore reject before destination mutation until capsules carry an executable continuation witness. Active Fabric proofs still report blockers such as `active_fabric_unsupported`, `non_quiescent_fabric`, `fabric_witness_missing`, `provider_state_unsupported`, or `mailbox_ownership_mismatch`.
+Loaded active Fabric capsules are executable when carried by a validated Appliance TurnClosure. The image must include executable image identity, dispatch identity, root/provider loaded session images, Runspace slot state, parent/provider handles, mailbox entries, active invocation state, route/provider witnesses, value mappings, supervision evidence, usage, outstanding HostRequests, and Chronicle/Archive anchors. Thaw validates these witnesses and the receiver permit before destination mutation. Malformed or unauthorized parked restore remains fail-closed and is covered by negative proof gates.
 
 ## Replay/verify restore
 

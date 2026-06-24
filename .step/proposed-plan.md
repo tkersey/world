@@ -1,45 +1,47 @@
-# World Appliance Kernel Implementation Plan
+# World Turn Closure v1 Execution Plan
 
 ## Summary
-Implement `world.Appliance` as an isolated vertical integration kernel that composes existing Runspace, Fabric, Linker, Actuation, Capsule, Continuity, Chronicle, Archive, and Supervision owner APIs into one canonical quiescent host-turn protocol.
+Implement World Turn Closure v1 by extending the existing World owners, not by adding a new kernel. The governing artifact is `Appliance.TurnClosure`: a proof-carrying, canonical, fresh-instance-restorable quiescent turn whose semantic references resolve only through the immutable `Executable.Image`, the authenticated parent closure, or objects embedded in the next closure.
 
-The first execution wave is the static contract layer: `src/appliance.zig`, a single root re-export, format/fingerprint constants, manifest/profile/capacity/memory plan types, and deterministic fingerprint helpers. Later waves add closed-world validation, turn orchestration, Actuation host preparation/finalization, Capsule checkpointing, Archive append evidence, Native/WASM ABI, examples, docs, and conformance tests.
+The first execution wave is the closure and wire contract: `Appliance.Wire`, `Appliance.TurnClosure`, Continuity bundle root kinds, closure validation/materialization, and ABI v3 skeleton while preserving current one-port behavior. Later waves add universal multi-module/provider execution, active Fabric restoration, positive replay, deterministic retry, batched host turns, independent JavaScript codecs/host, bounded universal memory, final examples, docs, and v0 gates.
 
-The work is complete only when the closed agent appliance proves resident versus reconstructed equivalence, emits one bounded canonical `TurnOutput` per turn, and passes the requested Zig, WASM-inspection, example, and appliance-focused proof commands.
+The work is complete only when `zig build check-world-v0` proves positive lifecycle closure with `world_v0_complete=true`, `two_program_plans_one_wasm=true`, `loaded_internal_provider_executed=true`, `active_fabric_restore_accepted=true`, `replay_supported=true`, `replay_final_result=true`, `javascript_codec_independent=true`, `deterministic_retry=true`, and `universal_memory_bound_passed=true`.
 
 ## Non-Goals
-- No real model API, tool registry, filesystem effect, network transport, storage adapter, scheduler, async runtime, WIT, Component Model binding, WASI, external WASM runtime dependency, signing, encryption, exactly-once host-effect claim, credential serialization, arbitrary loaded Boundary module execution, operation-name dispatch, TreatyResolver/ProviderHarness hot-path use, or hidden process state across completed turns.
-- Appliance must not duplicate owner state machines. Actuation owns effect semantics, Capsule owns freeze/thaw, Archive owns canonical sealed bytes, Runspace owns mailbox state, Fabric owns internal routes, and Supervision owns permits/budgets/receipts.
+- No new top-level runtime, reactor, mailbox, route executor, Actuation state machine, Capsule family, content-addressed graph, causal ledger, or Archive format.
+- No package discovery, module fetching, service discovery, package manager, marketplace, JIT, native shared-library loading, WASI, WIT/Component Model, network transport, production storage, real model API, production tool registry, filesystem authority inside World, scheduler threads, async runtime, multi-writer Archive coordination, live code upgrade, migration across different `Executable.Image` identities, exactly-once effect claims, signing, encryption, or cryptographic trust claims.
+- No host-authored World evidence fingerprints. `Wire.TurnInput` and related records are untrusted input only; World authors receipts and canonical evidence.
 
 ## Implementation Brief
-1. step=appliance_static_contract; owner=implementation; success_criteria=add `src/appliance.zig`, `world.Appliance` root re-export, format/fingerprint constants, Manifest/Profile/Capacity/MemoryPlan types, deterministic fingerprint helpers, and focused manifest/memory-plan tests.
-2. step=closed_world_define; owner=implementation; success_criteria=implement `Appliance.Define` compile-time validation and static tables against existing Linker/Fabric/Assembly/Actuation/Supervision inputs; reject unresolved ports, missing bindings, loaded modules, runtime discovery, string dispatch, and hot-path TreatyResolver/ProviderHarness use.
-3. step=actuation_host_membrane; owner=implementation; success_criteria=add `Actuation.Membrane.prepareHost`, `Actuation.Membrane.finalizeHost`, Prepared/Finalized records, and Appliance HostRequest/HostOutcome/HostReply validation with stale, duplicate, wrong request, wrong schema, replay, and no-host-call tests.
-4. step=core_quiescent_turn; owner=implementation; success_criteria=implement Core state machine, canonical Command decode/validate, submit/execute/read/reset/restore operations, deterministic quiescence loop, bounded buffers, capacity failures, inspect/cancel behavior, and no-mutation malformed-input tests.
-5. step=capsule_archive_receipts; owner=implementation; success_criteria=integrate Capsule checkpoint emission/restore, Continuity/Chronicle object evidence, Archive.AppendBatch planning, RetentionAck validation, TurnReceipt creation, and resident/reconstructed reconstruction reports.
-6. step=examples_agent_docs; owner=implementation; success_criteria=build one-port and canonical agent appliances plus examples for one-port, agent, reconstruct, archive, replay, and wasm-probe; update README and `docs/appliance.md` with host responsibility doctrine and non-goals.
-7. step=appliance_abi_wasm; owner=implementation; success_criteria=add Appliance ABI v1 exports, Native ABI-shaped simulation, `world-appliance-wasm`, `check-world-appliance-wasm`, and WASM inspection proving required exports, matching manifest, and zero forbidden imports.
-8. step=conformance_fixed_point; owner=verification; success_criteria=add ConformanceVector/ConformanceReport coverage for native owner APIs, Appliance.Native, resident Core, reconstructed Core, WASM artifact inspection, replay, archive ack/unack, and bounded equivalence trace digest; no duplicate truth owner or unretired scaffold remains.
-9. step=proof_closeout; owner=verification; success_criteria=run requested proof commands: `zig version`; `zig fmt --check build.zig src examples test`; `git diff --check`; `zig build --summary all`; `zig build check --summary all`; existing world/archive wasm checks; new appliance wasm checks; all appliance examples; focused appliance filters; `zig build lint -- --max-warnings 0`; inspect diff and update or open PR only if PR publication is explicitly in scope.
+1. step=turn_closure_wire_contract; owner=Appliance/Continuity; success_criteria=add `Appliance.Wire` and `Appliance.TurnClosure` types, constants, codecs, validation reports, `ClosureSelfAudit`, missing Continuity object kinds, and focused roundtrip/negative tests without changing current runtime semantics.
+2. step=abi_v3_memory_contract; owner=Appliance/Executable; success_criteria=replace the universal host governing surface with ABI v3 `submit_turn` and `read_closure`, keep load/reset/unload transactional, reject v2-as-v3 ambiguity, and reduce universal fixture memory to a bounded <=64 MiB profile.
+3. step=universal_loaded_provider_execution; owner=Executable/Runspace/Fabric/Supervision; success_criteria=enable `supports_internal_providers=true`, accept root plus provider modules, route by residual requirement identity and provider module fingerprint, execute loaded providers through Runspace/Fabric, and prove provider parking/rollback/no native callback.
+4. step=active_fabric_closure_restore; owner=Capsule/Runspace/Fabric/Appliance; success_criteria=freeze and thaw executable loaded active Fabric with root/provider sessions, mailboxes, invocation, mappings, permits, usage, requests, Chronicle and Archive anchors; positive migration completes after fresh runtime restore.
+5. step=replay_retry_batch_archive; owner=Actuation/Appliance/Archive/Chronicle; success_criteria=positive replay suppresses fresh covered HostRequests with `fresh_called=false`, deterministic retry produces byte-identical closures after lost output, batched replies canonicalize and preserve partial requests, and Archive crash-window recovery follows World Archive scanning.
+6. step=javascript_independent_host_codecs; owner=Appliance.Wire/JS reference host; success_criteria=add dependency-free JS Wire and loaded-value codecs, remove native reply helper and child-process reply construction, run one-port and loaded-agent flows through real WebAssembly, and pass Zig/JS positive and malformed fixture conformance.
+7. step=v0_report_examples_docs; owner=build/docs/verification; success_criteria=add required examples, `WorldV0Report`, focused check steps, revised `check-world-v0`, `check-world-v0-negative`, and docs/README updates; denial-only restore, unsupported replay, same-program reload, inspection-only WASM, and helper-dependent JS no longer count as v0 completion.
 
 ## Required Proof
 - `zig version`
-- `zig fmt --check build.zig src examples test`
+- `node --version`
+- `zig fmt --check build.zig src examples test scripts`
 - `git diff --check`
 - `zig build --summary all`
 - `zig build check --summary all`
-- `zig build world-wasm`
-- `zig build check-world-wasm`
-- `zig build world-archive-wasm`
-- `zig build check-world-archive-wasm`
-- `zig build world-appliance-wasm`
-- `zig build check-world-appliance-wasm`
-- `zig build run-world-appliance-one-port`
-- `zig build run-world-appliance-agent`
-- `zig build run-world-appliance-reconstruct`
-- `zig build run-world-appliance-archive`
-- `zig build run-world-appliance-replay`
-- `zig build run-world-appliance-wasm-probe`
-- `zig build test --summary none -- --test-filter "appliance"`
-- Focused appliance filters for definition, manifest, capacity, memory plan, command, host request, host reply, quiescence, checkpoint, reconstruction, actuation, archive, agent, and wasm.
-- `zig build lint -- --max-warnings 0`
+- `zig build check-world-turn-closure`
+- `zig build check-world-universal-providers`
+- `zig build check-world-active-fabric-restore`
+- `zig build check-world-replay-positive`
+- `zig build check-world-deterministic-retry`
+- `zig build check-world-appliance-batching`
+- `zig build check-world-js-codec`
+- `zig build check-world-two-programs-one-wasm`
+- `zig build check-world-universal-memory`
+- `zig build check-world-v0-negative`
+- `zig build check-world-v0`
+- `zig build world-universal-appliance-wasm`
+- `zig build check-world-universal-appliance-wasm`
+- actual Node/WebAssembly execution
+- zero-import inspection
+- ABI signature inspection
+- linear-memory bound inspection

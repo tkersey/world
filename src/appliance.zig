@@ -374,7 +374,6 @@ pub fn Appliance(comptime World: type) type {
             pub fn forManifest(profile: Profile, actuation_binding_count: usize) @This() {
                 var flags = fromProfile(profile);
                 flags.actuation = actuation_binding_count != 0;
-                if (actuation_binding_count != 0) flags.replay_evidence = false;
                 return flags;
             }
         };
@@ -433,7 +432,7 @@ pub fn Appliance(comptime World: type) type {
                 if (actuation_binding_count != 0) {
                     if (profile.kind != .replay_only) {
                         modes.fresh = true;
-                        modes.replay = false;
+                        modes.replay = profile.enable_transcripts or profile.enable_archive_append;
                         modes.verify = false;
                         modes.audit = false;
                     }
@@ -564,7 +563,11 @@ pub fn Appliance(comptime World: type) type {
                 if (self.actuation_response_value_ref_fingerprints.len != 0 and self.actuation_descriptor_fingerprints.len != self.actuation_response_value_ref_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_classes.len) return error.InvalidFrameEncoding;
                 if (self.actuation_descriptor_fingerprints.len != self.actuation_allowed_response_statuses.len) return error.InvalidFrameEncoding;
-                if (self.actuation_binding_fingerprints.len != 0 and (!self.enabled_features.actuation or !self.required_host_capabilities.actuation or !self.supported_execution_modes.fresh or self.supported_execution_modes.replay or self.supported_execution_modes.verify or self.supported_execution_modes.audit or self.required_host_capabilities.replay_evidence)) return error.InvalidFrameEncoding;
+                if (self.actuation_binding_fingerprints.len != 0) {
+                    if (!self.enabled_features.actuation or !self.required_host_capabilities.actuation or !self.supported_execution_modes.fresh) return error.InvalidFrameEncoding;
+                    if (self.supported_execution_modes.verify or self.supported_execution_modes.audit) return error.InvalidFrameEncoding;
+                    if (self.supported_execution_modes.replay != self.required_host_capabilities.replay_evidence) return error.InvalidFrameEncoding;
+                }
                 for (self.provider_target_ref_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
@@ -650,6 +653,7 @@ pub fn Appliance(comptime World: type) type {
         pub const HostOutcomeStatus = enum(u8) { responded = 0, rejected = 1, failed = 2, pending = 3, deferred = 4, cancelled = 5 };
         pub const HostResponseKind = enum(u8) { none = 0, frame_value_image = 1, bytes = 2 };
         pub const TurnStatus = enum(u8) { needs_host = 0, completed = 1, failed = 2, blocked = 3, cancelled = 4, inspected = 5 };
+        pub const TurnClosureStatus = enum(u8) { needs_host = 0, yielded_budget = 1, completed = 2, failed = 3, cancelled = 4, inspected = 5 };
         pub const CoreState = enum(u8) { uninitialized = 0, runnable = 1, waiting_host = 2, completed = 3, failed = 4, cancelled = 5 };
         pub const ConformanceVectorKind = enum(u8) {
             one_port = 0,
@@ -1597,6 +1601,7 @@ pub fn Appliance(comptime World: type) type {
             status: TurnStatus,
             host_requests: []const HostRequest = &.{},
             finalized_actuation_receipt_fingerprints: []const u64 = &.{},
+            finalized_actuation_receipt_bytes: []const []const u8 = &.{},
             root_result_fingerprint: ?u64 = null,
             root_result_value_image_bytes: []const u8 = "",
             root_result_value_ref_fingerprint: ?u64 = null,
@@ -1613,6 +1618,7 @@ pub fn Appliance(comptime World: type) type {
             diagnostic_metadata: []const u8 = "",
             owns_host_requests: bool = false,
             owns_finalized_actuation_receipt_fingerprints: bool = false,
+            owns_finalized_actuation_receipt_bytes: bool = false,
             owns_checkpoint_payloads: bool = false,
             owns_turn_receipt_payloads: bool = false,
             owns_diagnostic_metadata: bool = false,
@@ -1627,6 +1633,7 @@ pub fn Appliance(comptime World: type) type {
                 status: TurnStatus,
                 host_requests: []const HostRequest = &.{},
                 finalized_actuation_receipt_fingerprints: []const u64 = &.{},
+                finalized_actuation_receipt_bytes: []const []const u8 = &.{},
                 root_result_fingerprint: ?u64 = null,
                 root_result_value_image_bytes: []const u8 = "",
                 root_result_value_ref_fingerprint: ?u64 = null,
@@ -1651,6 +1658,7 @@ pub fn Appliance(comptime World: type) type {
                     .status = args.status,
                     .host_requests = args.host_requests,
                     .finalized_actuation_receipt_fingerprints = args.finalized_actuation_receipt_fingerprints,
+                    .finalized_actuation_receipt_bytes = args.finalized_actuation_receipt_bytes,
                     .root_result_fingerprint = args.root_result_fingerprint,
                     .root_result_value_image_bytes = args.root_result_value_image_bytes,
                     .root_result_value_ref_fingerprint = args.root_result_value_ref_fingerprint,
@@ -1702,9 +1710,17 @@ pub fn Appliance(comptime World: type) type {
                 for (self.finalized_actuation_receipt_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
+                if (self.finalized_actuation_receipt_bytes.len != 0) {
+                    if (self.finalized_actuation_receipt_bytes.len != self.finalized_actuation_receipt_fingerprints.len) return error.InvalidFrameEncoding;
+                    for (self.finalized_actuation_receipt_bytes, self.finalized_actuation_receipt_fingerprints) |receipt_bytes, fingerprint| {
+                        if (receipt_bytes.len == 0 or receipt_bytes.len > capacity.max_output_bytes) return error.CapacityExceeded;
+                        try validateActuationReceiptBytes(allocator, receipt_bytes, fingerprint);
+                    }
+                }
+                const replay_receipts_without_host_replies = self.checkpoint.execution_mode == .replay and self.turn_receipt.applied_host_reply_fingerprints.len == 0;
                 if (self.status == .needs_host) {
                     if (self.finalized_actuation_receipt_fingerprints.len > self.turn_receipt.applied_host_reply_fingerprints.len) return error.InvalidFrameEncoding;
-                } else if (self.finalized_actuation_receipt_fingerprints.len != self.turn_receipt.applied_host_reply_fingerprints.len) {
+                } else if (!replay_receipts_without_host_replies and self.finalized_actuation_receipt_fingerprints.len != self.turn_receipt.applied_host_reply_fingerprints.len) {
                     return error.InvalidFrameEncoding;
                 }
                 try validateOptionalFingerprint(self.run_receipt_fingerprint);
@@ -1789,6 +1805,7 @@ pub fn Appliance(comptime World: type) type {
                 try writeU64(&out, allocator, @intCast(self.host_requests.len));
                 for (self.host_requests) |request| try request.encode(&out, allocator);
                 try writeU64Slice(&out, allocator, self.finalized_actuation_receipt_fingerprints);
+                try writeByteSlices(&out, allocator, self.finalized_actuation_receipt_bytes);
                 try writeOptionalU64(&out, allocator, self.root_result_fingerprint);
                 try writeBytes(&out, allocator, self.root_result_value_image_bytes);
                 try writeOptionalU64(&out, allocator, self.root_result_value_ref_fingerprint);
@@ -1828,6 +1845,620 @@ pub fn Appliance(comptime World: type) type {
             pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
                 freeTurnOutput(allocator, self);
             }
+        };
+
+        pub const TurnClosureLimits = struct {
+            max_closure_bytes: usize,
+            max_bundle_bytes: usize,
+            max_checkpoint_bytes: usize,
+            max_capsule_bytes: usize,
+            max_receipt_bytes: usize,
+            max_archive_append_bytes: usize,
+            max_host_request_bytes: usize,
+            max_result_bytes: usize,
+            max_metadata_bytes: usize,
+            max_diagnostic_bytes: usize,
+            max_items: usize,
+
+            pub const default = fromCapacity(Capacity.wasm_small);
+            pub const archive_decode = fromCapacity(Capacity.archive_decode);
+
+            pub fn fromCapacity(capacity: Capacity) @This() {
+                return .{
+                    .max_closure_bytes = capacity.max_output_bytes * 4,
+                    .max_bundle_bytes = capacity.max_output_bytes * 4,
+                    .max_checkpoint_bytes = capacity.max_output_bytes,
+                    .max_capsule_bytes = capacity.max_capsule_bytes,
+                    .max_receipt_bytes = capacity.max_output_bytes,
+                    .max_archive_append_bytes = capacity.max_archive_append_bytes,
+                    .max_host_request_bytes = capacity.max_output_bytes,
+                    .max_result_bytes = capacity.max_output_bytes,
+                    .max_metadata_bytes = capacity.max_metadata_bytes,
+                    .max_diagnostic_bytes = capacity.max_metadata_bytes,
+                    .max_items = capacity.max_host_requests_per_turn + capacity.max_actuation_records + capacity.max_fabric_invocations + 8,
+                };
+            }
+        };
+
+        pub const TurnClosureValidation = struct {
+            expected_executable_image_fingerprint: ?u64 = null,
+            expected_manifest_fingerprint: ?u64 = null,
+            expected_parent_closure_fingerprint: ?u64 = null,
+            limits: TurnClosureLimits = TurnClosureLimits.default,
+            bundle_options: World.Continuity.BundleOptions = .{},
+        };
+
+        pub const TurnClosureReport = struct {
+            report_fingerprint: u64 = 0,
+            valid: bool,
+            closure_fingerprint: u64,
+            blocker_count: usize,
+            warning_count: usize,
+
+            pub fn init(args: struct {
+                valid: bool,
+                closure_fingerprint: u64,
+                blocker_count: usize = 0,
+                warning_count: usize = 0,
+            }) @This() {
+                var result = @This(){
+                    .valid = args.valid,
+                    .closure_fingerprint = args.closure_fingerprint,
+                    .blocker_count = args.blocker_count,
+                    .warning_count = args.warning_count,
+                };
+                result.report_fingerprint = fingerprintTurnClosureReport(result);
+                return result;
+            }
+
+            pub fn validate(self: @This()) !void {
+                if (self.closure_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.valid and self.blocker_count != 0) return error.InvalidFrameEncoding;
+                if (!self.valid and self.blocker_count == 0) return error.InvalidFrameEncoding;
+                if (self.report_fingerprint != fingerprintTurnClosureReport(self)) return error.InvalidFrameEncoding;
+            }
+        };
+
+        pub const TurnClosure = struct {
+            closure_format_version: u32 = World.world_appliance_turn_closure_format_version,
+            closure_fingerprint_version: u32 = World.world_appliance_turn_closure_fingerprint_version,
+            closure_fingerprint: u64 = 0,
+            executable_image_fingerprint: u64,
+            appliance_manifest_fingerprint: u64,
+            parent_closure_fingerprint: ?u64 = null,
+            turn_sequence_number: u64,
+            parent_state_fingerprint: u64,
+            resulting_state_fingerprint: u64,
+            chronicle_parent_cursor_fingerprint: u64,
+            chronicle_resulting_cursor_fingerprint: u64,
+            archive_parent_moment_fingerprint: ?u64 = null,
+            archive_parent_seal_fingerprint: ?u64 = null,
+            archive_resulting_moment_fingerprint: ?u64 = null,
+            archive_resulting_seal_fingerprint: ?u64 = null,
+            checkpoint_fingerprint: u64,
+            checkpoint_bytes: []const u8,
+            capsule_fingerprint: u64,
+            capsule_bytes: []const u8,
+            turn_receipt_fingerprint: u64,
+            turn_receipt_bytes: []const u8,
+            evidence_bundle_bytes: []const u8,
+            archive_append_batch_fingerprint: ?u64 = null,
+            archive_append_batch_bytes: []const u8 = "",
+            pending_host_request_bytes: []const u8 = "",
+            root_result_fingerprint: ?u64 = null,
+            root_result_bytes: []const u8 = "",
+            root_result_value_ref_fingerprint: ?u64 = null,
+            run_receipt_fingerprint: ?u64 = null,
+            run_receipt_bytes: []const u8 = "",
+            finalized_actuation_receipt_fingerprints: []const u64 = &.{},
+            finalized_actuation_receipt_bytes: []const []const u8 = &.{},
+            replay_receipt_fingerprints: []const u64 = &.{},
+            replay_receipt_bytes: []const []const u8 = &.{},
+            verify_report_fingerprints: []const u64 = &.{},
+            blockers: []const u64 = &.{},
+            warnings: []const u64 = &.{},
+            diagnostics: []const u8 = "",
+            status: TurnClosureStatus,
+            owns_byte_payloads: bool = false,
+            owns_slices: bool = false,
+
+            pub fn init(args: struct {
+                executable_image_fingerprint: u64,
+                appliance_manifest_fingerprint: u64,
+                parent_closure_fingerprint: ?u64 = null,
+                turn_sequence_number: u64,
+                parent_state_fingerprint: u64,
+                resulting_state_fingerprint: u64,
+                chronicle_parent_cursor_fingerprint: u64,
+                chronicle_resulting_cursor_fingerprint: u64,
+                archive_parent_moment_fingerprint: ?u64 = null,
+                archive_parent_seal_fingerprint: ?u64 = null,
+                archive_resulting_moment_fingerprint: ?u64 = null,
+                archive_resulting_seal_fingerprint: ?u64 = null,
+                checkpoint_fingerprint: u64,
+                checkpoint_bytes: []const u8,
+                capsule_fingerprint: u64,
+                capsule_bytes: []const u8,
+                turn_receipt_fingerprint: u64,
+                turn_receipt_bytes: []const u8,
+                evidence_bundle_bytes: []const u8,
+                archive_append_batch_fingerprint: ?u64 = null,
+                archive_append_batch_bytes: []const u8 = "",
+                pending_host_request_bytes: []const u8 = "",
+                root_result_fingerprint: ?u64 = null,
+                root_result_bytes: []const u8 = "",
+                root_result_value_ref_fingerprint: ?u64 = null,
+                run_receipt_fingerprint: ?u64 = null,
+                run_receipt_bytes: []const u8 = "",
+                finalized_actuation_receipt_fingerprints: []const u64 = &.{},
+                finalized_actuation_receipt_bytes: []const []const u8 = &.{},
+                replay_receipt_fingerprints: []const u64 = &.{},
+                replay_receipt_bytes: []const []const u8 = &.{},
+                verify_report_fingerprints: []const u64 = &.{},
+                blockers: []const u64 = &.{},
+                warnings: []const u64 = &.{},
+                diagnostics: []const u8 = "",
+                status: TurnClosureStatus,
+            }) @This() {
+                var result = @This(){
+                    .executable_image_fingerprint = args.executable_image_fingerprint,
+                    .appliance_manifest_fingerprint = args.appliance_manifest_fingerprint,
+                    .parent_closure_fingerprint = args.parent_closure_fingerprint,
+                    .turn_sequence_number = args.turn_sequence_number,
+                    .parent_state_fingerprint = args.parent_state_fingerprint,
+                    .resulting_state_fingerprint = args.resulting_state_fingerprint,
+                    .chronicle_parent_cursor_fingerprint = args.chronicle_parent_cursor_fingerprint,
+                    .chronicle_resulting_cursor_fingerprint = args.chronicle_resulting_cursor_fingerprint,
+                    .archive_parent_moment_fingerprint = args.archive_parent_moment_fingerprint,
+                    .archive_parent_seal_fingerprint = args.archive_parent_seal_fingerprint,
+                    .archive_resulting_moment_fingerprint = args.archive_resulting_moment_fingerprint,
+                    .archive_resulting_seal_fingerprint = args.archive_resulting_seal_fingerprint,
+                    .checkpoint_fingerprint = args.checkpoint_fingerprint,
+                    .checkpoint_bytes = args.checkpoint_bytes,
+                    .capsule_fingerprint = args.capsule_fingerprint,
+                    .capsule_bytes = args.capsule_bytes,
+                    .turn_receipt_fingerprint = args.turn_receipt_fingerprint,
+                    .turn_receipt_bytes = args.turn_receipt_bytes,
+                    .evidence_bundle_bytes = args.evidence_bundle_bytes,
+                    .archive_append_batch_fingerprint = args.archive_append_batch_fingerprint,
+                    .archive_append_batch_bytes = args.archive_append_batch_bytes,
+                    .pending_host_request_bytes = args.pending_host_request_bytes,
+                    .root_result_fingerprint = args.root_result_fingerprint,
+                    .root_result_bytes = args.root_result_bytes,
+                    .root_result_value_ref_fingerprint = args.root_result_value_ref_fingerprint,
+                    .run_receipt_fingerprint = args.run_receipt_fingerprint,
+                    .run_receipt_bytes = args.run_receipt_bytes,
+                    .finalized_actuation_receipt_fingerprints = args.finalized_actuation_receipt_fingerprints,
+                    .finalized_actuation_receipt_bytes = args.finalized_actuation_receipt_bytes,
+                    .replay_receipt_fingerprints = args.replay_receipt_fingerprints,
+                    .replay_receipt_bytes = args.replay_receipt_bytes,
+                    .verify_report_fingerprints = args.verify_report_fingerprints,
+                    .blockers = args.blockers,
+                    .warnings = args.warnings,
+                    .diagnostics = args.diagnostics,
+                    .status = args.status,
+                };
+                result.closure_fingerprint = fingerprintTurnClosure(result);
+                return result;
+            }
+
+            pub fn validate(self: @This(), allocator: std.mem.Allocator, options: TurnClosureValidation) !void {
+                if (self.closure_format_version != World.world_appliance_turn_closure_format_version) return error.InvalidFrameEncoding;
+                if (self.closure_fingerprint_version != World.world_appliance_turn_closure_fingerprint_version) return error.InvalidFrameEncoding;
+                if (self.executable_image_fingerprint == 0 or self.appliance_manifest_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.parent_state_fingerprint == 0 or self.resulting_state_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.chronicle_parent_cursor_fingerprint == 0 or self.chronicle_resulting_cursor_fingerprint == 0) return error.InvalidFrameEncoding;
+                if (self.checkpoint_fingerprint == 0 or self.capsule_fingerprint == 0 or self.turn_receipt_fingerprint == 0) return error.InvalidFrameEncoding;
+                try validateOptionalFingerprint(self.parent_closure_fingerprint);
+                try validateOptionalFingerprint(self.archive_parent_moment_fingerprint);
+                try validateOptionalFingerprint(self.archive_parent_seal_fingerprint);
+                try validateOptionalFingerprint(self.archive_resulting_moment_fingerprint);
+                try validateOptionalFingerprint(self.archive_resulting_seal_fingerprint);
+                try validateArchiveAnchorPair(self.archive_parent_moment_fingerprint, self.archive_parent_seal_fingerprint);
+                try validateArchiveAnchorPair(self.archive_resulting_moment_fingerprint, self.archive_resulting_seal_fingerprint);
+                if (self.turn_sequence_number == 0) {
+                    if (self.parent_closure_fingerprint != null) return error.InvalidFrameEncoding;
+                } else if (self.parent_closure_fingerprint == null) {
+                    return error.InvalidFrameEncoding;
+                }
+                if (options.expected_executable_image_fingerprint) |expected| {
+                    if (self.executable_image_fingerprint != expected) return error.WrongExecutableImage;
+                }
+                if (options.expected_manifest_fingerprint) |expected| {
+                    if (self.appliance_manifest_fingerprint != expected) return error.WrongManifest;
+                }
+                if (options.expected_parent_closure_fingerprint) |expected| {
+                    if (self.parent_closure_fingerprint != expected) return error.InvalidFrameEncoding;
+                }
+                if (self.checkpoint_bytes.len == 0 or self.checkpoint_bytes.len > options.limits.max_checkpoint_bytes) return error.CapacityExceeded;
+                if (self.capsule_bytes.len == 0 or self.capsule_bytes.len > options.limits.max_capsule_bytes) return error.CapacityExceeded;
+                if (self.turn_receipt_bytes.len == 0 or self.turn_receipt_bytes.len > options.limits.max_receipt_bytes) return error.CapacityExceeded;
+                if (self.evidence_bundle_bytes.len == 0 or self.evidence_bundle_bytes.len > options.limits.max_bundle_bytes) return error.CapacityExceeded;
+                if (self.pending_host_request_bytes.len > options.limits.max_host_request_bytes) return error.CapacityExceeded;
+                if (self.root_result_bytes.len > options.limits.max_result_bytes) return error.CapacityExceeded;
+                if (self.run_receipt_bytes.len > options.limits.max_receipt_bytes) return error.CapacityExceeded;
+                if (self.archive_append_batch_bytes.len > options.limits.max_archive_append_bytes) return error.CapacityExceeded;
+                if (self.diagnostics.len > options.limits.max_diagnostic_bytes) return error.CapacityExceeded;
+                if (self.finalized_actuation_receipt_fingerprints.len > options.limits.max_items) return error.CapacityExceeded;
+                if (self.replay_receipt_fingerprints.len > options.limits.max_items) return error.CapacityExceeded;
+                if (self.verify_report_fingerprints.len > options.limits.max_items) return error.CapacityExceeded;
+                if (self.blockers.len > options.limits.max_items or self.warnings.len > options.limits.max_items) return error.CapacityExceeded;
+                if (self.finalized_actuation_receipt_bytes.len != self.finalized_actuation_receipt_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.replay_receipt_bytes.len != self.replay_receipt_fingerprints.len) return error.InvalidFrameEncoding;
+                try validateFingerprintSlice(self.finalized_actuation_receipt_fingerprints);
+                try validateFingerprintSlice(self.replay_receipt_fingerprints);
+                try validateFingerprintSlice(self.verify_report_fingerprints);
+                try validateFingerprintSlice(self.blockers);
+                try validateFingerprintSlice(self.warnings);
+                for (self.finalized_actuation_receipt_bytes, self.finalized_actuation_receipt_fingerprints) |receipt_bytes, fingerprint| {
+                    if (receipt_bytes.len == 0 or receipt_bytes.len > options.limits.max_receipt_bytes) return error.CapacityExceeded;
+                    try validateActuationReceiptBytes(allocator, receipt_bytes, fingerprint);
+                }
+                for (self.replay_receipt_bytes, self.replay_receipt_fingerprints) |receipt_bytes, fingerprint| {
+                    if (receipt_bytes.len == 0 or receipt_bytes.len > options.limits.max_receipt_bytes) return error.CapacityExceeded;
+                    try validateActuationReceiptBytes(allocator, receipt_bytes, fingerprint);
+                }
+                if (self.status == .needs_host and self.pending_host_request_bytes.len == 0) return error.InvalidFrameEncoding;
+                if (self.status != .needs_host and self.pending_host_request_bytes.len != 0) return error.InvalidFrameEncoding;
+                if (self.status == .completed) {
+                    if (self.root_result_fingerprint == null or self.root_result_bytes.len == 0) return error.InvalidFrameEncoding;
+                } else if (self.root_result_fingerprint != null or self.root_result_bytes.len != 0 or self.root_result_value_ref_fingerprint != null) {
+                    return error.InvalidFrameEncoding;
+                }
+                if (self.status == .failed and self.blockers.len == 0) return error.InvalidFrameEncoding;
+                if (self.status != .failed and self.blockers.len != 0) return error.InvalidFrameEncoding;
+                try validateCheckpointBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.checkpoint_bytes, self.checkpoint_fingerprint);
+                try validateTurnReceiptBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.turn_receipt_bytes, self.turn_receipt_fingerprint);
+                try validateRootResultBytesForClosure(self.root_result_bytes, self.root_result_fingerprint, self.root_result_value_ref_fingerprint);
+                try validateRunReceiptBytes(allocator, self.run_receipt_bytes, self.run_receipt_fingerprint);
+                try validateArchiveAppendBatchBytes(allocator, self.archive_append_batch_bytes, self.archive_append_batch_fingerprint);
+                var bundle_options = options.bundle_options;
+                bundle_options.allow_external_dependencies = true;
+                const bundle_report = try World.Continuity.Bundle.validate(allocator, self.evidence_bundle_bytes, bundle_options);
+                if (!bundle_report.valid) return error.InvalidFrameEncoding;
+                try validateTurnClosureBundleRoots(allocator, self);
+                if (self.closure_fingerprint != fingerprintTurnClosure(self)) return error.InvalidFrameEncoding;
+            }
+
+            pub fn validationReport(self: @This(), allocator: std.mem.Allocator, options: TurnClosureValidation) !TurnClosureReport {
+                self.validate(allocator, options) catch return TurnClosureReport.init(.{
+                    .valid = false,
+                    .closure_fingerprint = if (self.closure_fingerprint == 0) 1 else self.closure_fingerprint,
+                    .blocker_count = 1,
+                    .warning_count = self.warnings.len,
+                });
+                return TurnClosureReport.init(.{
+                    .valid = true,
+                    .closure_fingerprint = self.closure_fingerprint,
+                    .warning_count = self.warnings.len,
+                });
+            }
+
+            pub fn materializeCheckpoint(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+                if (self.checkpoint_bytes.len == 0) return error.InvalidFrameEncoding;
+                return allocator.dupe(u8, self.checkpoint_bytes);
+            }
+
+            pub fn materializeCapsule(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+                if (self.capsule_bytes.len == 0) return error.InvalidFrameEncoding;
+                return allocator.dupe(u8, self.capsule_bytes);
+            }
+
+            pub fn materializeReplaySource(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+                if (self.evidence_bundle_bytes.len == 0) return error.InvalidFrameEncoding;
+                return allocator.dupe(u8, self.evidence_bundle_bytes);
+            }
+
+            pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+                var out: std.ArrayList(u8) = .empty;
+                errdefer out.deinit(allocator);
+                try writeU32(&out, allocator, self.closure_format_version);
+                try writeU32(&out, allocator, self.closure_fingerprint_version);
+                try writeU64(&out, allocator, self.closure_fingerprint);
+                try writeU64(&out, allocator, self.executable_image_fingerprint);
+                try writeU64(&out, allocator, self.appliance_manifest_fingerprint);
+                try writeOptionalU64(&out, allocator, self.parent_closure_fingerprint);
+                try writeU64(&out, allocator, self.turn_sequence_number);
+                try writeU64(&out, allocator, self.parent_state_fingerprint);
+                try writeU64(&out, allocator, self.resulting_state_fingerprint);
+                try writeU64(&out, allocator, self.chronicle_parent_cursor_fingerprint);
+                try writeU64(&out, allocator, self.chronicle_resulting_cursor_fingerprint);
+                try writeOptionalU64(&out, allocator, self.archive_parent_moment_fingerprint);
+                try writeOptionalU64(&out, allocator, self.archive_parent_seal_fingerprint);
+                try writeOptionalU64(&out, allocator, self.archive_resulting_moment_fingerprint);
+                try writeOptionalU64(&out, allocator, self.archive_resulting_seal_fingerprint);
+                try writeU64(&out, allocator, self.checkpoint_fingerprint);
+                try writeBytes(&out, allocator, self.checkpoint_bytes);
+                try writeU64(&out, allocator, self.capsule_fingerprint);
+                try writeBytes(&out, allocator, self.capsule_bytes);
+                try writeU64(&out, allocator, self.turn_receipt_fingerprint);
+                try writeBytes(&out, allocator, self.turn_receipt_bytes);
+                try writeBytes(&out, allocator, self.evidence_bundle_bytes);
+                try writeOptionalU64(&out, allocator, self.archive_append_batch_fingerprint);
+                try writeBytes(&out, allocator, self.archive_append_batch_bytes);
+                try writeBytes(&out, allocator, self.pending_host_request_bytes);
+                try writeOptionalU64(&out, allocator, self.root_result_fingerprint);
+                try writeBytes(&out, allocator, self.root_result_bytes);
+                try writeOptionalU64(&out, allocator, self.root_result_value_ref_fingerprint);
+                try writeOptionalU64(&out, allocator, self.run_receipt_fingerprint);
+                try writeBytes(&out, allocator, self.run_receipt_bytes);
+                try writeU64Slice(&out, allocator, self.finalized_actuation_receipt_fingerprints);
+                try writeByteSlices(&out, allocator, self.finalized_actuation_receipt_bytes);
+                try writeU64Slice(&out, allocator, self.replay_receipt_fingerprints);
+                try writeByteSlices(&out, allocator, self.replay_receipt_bytes);
+                try writeU64Slice(&out, allocator, self.verify_report_fingerprints);
+                try writeU64Slice(&out, allocator, self.blockers);
+                try writeU64Slice(&out, allocator, self.warnings);
+                try writeBytes(&out, allocator, self.diagnostics);
+                try writeU8(&out, allocator, @intFromEnum(self.status));
+                return out.toOwnedSlice(allocator);
+            }
+
+            pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                var cursor: usize = 0;
+                var closure = try readTurnClosureOwned(allocator, bytes, &cursor);
+                errdefer closure.deinit(allocator);
+                if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                return closure;
+            }
+
+            pub fn decodeArchivePayload(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                var closure = try decode(allocator, bytes);
+                errdefer closure.deinit(allocator);
+                if (closure.closure_format_version != World.world_appliance_turn_closure_format_version) return error.InvalidFrameEncoding;
+                if (closure.closure_fingerprint_version != World.world_appliance_turn_closure_fingerprint_version) return error.InvalidFrameEncoding;
+                if (closure.closure_fingerprint == 0 or closure.closure_fingerprint != fingerprintTurnClosure(closure)) return error.InvalidFrameEncoding;
+                return closure;
+            }
+
+            pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                freeTurnClosure(allocator, self);
+            }
+        };
+
+        pub const Wire = struct {
+            pub const Operation = enum(u8) { boot = 0, restore = 1, @"continue" = 2, replay = 3, verify = 4, inspect = 5, cancel = 6, reset = 7 };
+            pub const ResolutionStatus = enum(u8) { responded = 0, rejected = 1, failed = 2, pending = 3, deferred = 4, cancelled = 5 };
+            pub const RetentionStatus = enum(u8) { retained = 0, pending = 1, failed = 2, unknown = 3 };
+            pub const EvidenceProfile = enum(u8) { minimal = 0, standard = 1, full = 2 };
+
+            pub const ResolutionInput = struct {
+                format_version: u32 = World.world_appliance_wire_resolution_input_format_version,
+                target_host_request_fingerprint: u64,
+                status: ResolutionStatus,
+                response_value_image_bytes: []const u8 = "",
+                host_claim_bytes: []const u8 = "",
+                attempt_number: u32 = 0,
+                metadata: []const u8 = "",
+                owns_payloads: bool = false,
+
+                pub fn init(args: struct {
+                    target_host_request_fingerprint: u64,
+                    status: ResolutionStatus,
+                    response_value_image_bytes: []const u8 = "",
+                    host_claim_bytes: []const u8 = "",
+                    attempt_number: u32 = 0,
+                    metadata: []const u8 = "",
+                }) @This() {
+                    return .{
+                        .target_host_request_fingerprint = args.target_host_request_fingerprint,
+                        .status = args.status,
+                        .response_value_image_bytes = args.response_value_image_bytes,
+                        .host_claim_bytes = args.host_claim_bytes,
+                        .attempt_number = args.attempt_number,
+                        .metadata = args.metadata,
+                    };
+                }
+
+                pub fn validate(self: @This(), limits: TurnClosureLimits) !void {
+                    if (self.format_version != World.world_appliance_wire_resolution_input_format_version) return error.InvalidFrameEncoding;
+                    if (self.target_host_request_fingerprint == 0) return error.InvalidFrameEncoding;
+                    if (self.response_value_image_bytes.len > limits.max_result_bytes) return error.CapacityExceeded;
+                    if (self.host_claim_bytes.len > limits.max_metadata_bytes) return error.CapacityExceeded;
+                    if (self.metadata.len > limits.max_metadata_bytes) return error.CapacityExceeded;
+                    if (self.status != .responded and self.response_value_image_bytes.len != 0) return error.InvalidFrameEncoding;
+                    if (self.status == .responded and self.response_value_image_bytes.len == 0) return error.InvalidFrameEncoding;
+                }
+
+                pub fn encode(self: @This(), out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+                    try writeU32(out, allocator, self.format_version);
+                    try writeU64(out, allocator, self.target_host_request_fingerprint);
+                    try writeU8(out, allocator, @intFromEnum(self.status));
+                    try writeBytes(out, allocator, self.response_value_image_bytes);
+                    try writeBytes(out, allocator, self.host_claim_bytes);
+                    try writeU32(out, allocator, self.attempt_number);
+                    try writeBytes(out, allocator, self.metadata);
+                }
+
+                pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                    if (self.owns_payloads) {
+                        allocator.free(self.response_value_image_bytes);
+                        allocator.free(self.host_claim_bytes);
+                        allocator.free(self.metadata);
+                    }
+                    self.* = undefined;
+                }
+            };
+
+            pub const RetentionInput = struct {
+                format_version: u32 = World.world_appliance_wire_retention_input_format_version,
+                prior_archive_append_batch_fingerprint: u64,
+                resulting_moment_fingerprint: u64,
+                resulting_seal_fingerprint: u64,
+                resulting_chronicle_cursor_fingerprint: u64,
+                host_retention_status: RetentionStatus,
+                metadata: []const u8 = "",
+                owns_metadata: bool = false,
+
+                pub fn init(args: struct {
+                    prior_archive_append_batch_fingerprint: u64,
+                    resulting_moment_fingerprint: u64,
+                    resulting_seal_fingerprint: u64,
+                    resulting_chronicle_cursor_fingerprint: u64,
+                    host_retention_status: RetentionStatus,
+                    metadata: []const u8 = "",
+                }) @This() {
+                    return .{
+                        .prior_archive_append_batch_fingerprint = args.prior_archive_append_batch_fingerprint,
+                        .resulting_moment_fingerprint = args.resulting_moment_fingerprint,
+                        .resulting_seal_fingerprint = args.resulting_seal_fingerprint,
+                        .resulting_chronicle_cursor_fingerprint = args.resulting_chronicle_cursor_fingerprint,
+                        .host_retention_status = args.host_retention_status,
+                        .metadata = args.metadata,
+                    };
+                }
+
+                pub fn validate(self: @This(), limits: TurnClosureLimits) !void {
+                    if (self.format_version != World.world_appliance_wire_retention_input_format_version) return error.InvalidFrameEncoding;
+                    if (self.prior_archive_append_batch_fingerprint == 0 or self.resulting_moment_fingerprint == 0) return error.InvalidFrameEncoding;
+                    if (self.resulting_seal_fingerprint == 0 or self.resulting_chronicle_cursor_fingerprint == 0) return error.InvalidFrameEncoding;
+                    if (self.metadata.len > limits.max_metadata_bytes) return error.CapacityExceeded;
+                }
+
+                pub fn encode(self: @This(), out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+                    try writeU32(out, allocator, self.format_version);
+                    try writeU64(out, allocator, self.prior_archive_append_batch_fingerprint);
+                    try writeU64(out, allocator, self.resulting_moment_fingerprint);
+                    try writeU64(out, allocator, self.resulting_seal_fingerprint);
+                    try writeU64(out, allocator, self.resulting_chronicle_cursor_fingerprint);
+                    try writeU8(out, allocator, @intFromEnum(self.host_retention_status));
+                    try writeBytes(out, allocator, self.metadata);
+                }
+
+                pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                    if (self.owns_metadata) allocator.free(self.metadata);
+                    self.* = undefined;
+                }
+            };
+
+            pub const TurnInput = struct {
+                wire_format_version: u32 = World.world_appliance_wire_turn_input_format_version,
+                operation: Operation,
+                appliance_manifest_fingerprint: u64,
+                expected_parent_closure_fingerprint: ?u64 = null,
+                expected_parent_state_fingerprint: ?u64 = null,
+                previous_turn_receipt_fingerprint: ?u64 = null,
+                turn_sequence_number: u64,
+                root_argument_images: []const []const u8 = &.{},
+                parent_turn_closure_bytes: []const u8 = "",
+                resolutions: []const ResolutionInput = &.{},
+                retention: ?RetentionInput = null,
+                deterministic_turn_budget: u64 = 0,
+                requested_evidence_profile: EvidenceProfile = .standard,
+                host_metadata: []const u8 = "",
+                owns_root_argument_images: bool = false,
+                owns_parent_turn_closure_bytes: bool = false,
+                owns_resolutions: bool = false,
+                owns_retention_metadata: bool = false,
+                owns_host_metadata: bool = false,
+
+                pub fn init(args: struct {
+                    operation: Operation,
+                    appliance_manifest_fingerprint: u64,
+                    expected_parent_closure_fingerprint: ?u64 = null,
+                    expected_parent_state_fingerprint: ?u64 = null,
+                    previous_turn_receipt_fingerprint: ?u64 = null,
+                    turn_sequence_number: u64,
+                    root_argument_images: []const []const u8 = &.{},
+                    parent_turn_closure_bytes: []const u8 = "",
+                    resolutions: []const ResolutionInput = &.{},
+                    retention: ?RetentionInput = null,
+                    deterministic_turn_budget: u64 = 0,
+                    requested_evidence_profile: EvidenceProfile = .standard,
+                    host_metadata: []const u8 = "",
+                }) @This() {
+                    return .{
+                        .operation = args.operation,
+                        .appliance_manifest_fingerprint = args.appliance_manifest_fingerprint,
+                        .expected_parent_closure_fingerprint = args.expected_parent_closure_fingerprint,
+                        .expected_parent_state_fingerprint = args.expected_parent_state_fingerprint,
+                        .previous_turn_receipt_fingerprint = args.previous_turn_receipt_fingerprint,
+                        .turn_sequence_number = args.turn_sequence_number,
+                        .root_argument_images = args.root_argument_images,
+                        .parent_turn_closure_bytes = args.parent_turn_closure_bytes,
+                        .resolutions = args.resolutions,
+                        .retention = args.retention,
+                        .deterministic_turn_budget = args.deterministic_turn_budget,
+                        .requested_evidence_profile = args.requested_evidence_profile,
+                        .host_metadata = args.host_metadata,
+                    };
+                }
+
+                pub fn validate(self: @This(), limits: TurnClosureLimits) !void {
+                    if (self.wire_format_version != World.world_appliance_wire_turn_input_format_version) return error.InvalidFrameEncoding;
+                    if (self.appliance_manifest_fingerprint == 0) return error.InvalidFrameEncoding;
+                    try validateOptionalFingerprint(self.expected_parent_closure_fingerprint);
+                    try validateOptionalFingerprint(self.expected_parent_state_fingerprint);
+                    try validateOptionalFingerprint(self.previous_turn_receipt_fingerprint);
+                    if (self.host_metadata.len > limits.max_metadata_bytes) return error.CapacityExceeded;
+                    if (self.root_argument_images.len > limits.max_items) return error.CapacityExceeded;
+                    if (self.resolutions.len > limits.max_items) return error.CapacityExceeded;
+                    if (self.parent_turn_closure_bytes.len > limits.max_closure_bytes) return error.CapacityExceeded;
+                    for (self.root_argument_images) |image| {
+                        if (image.len > limits.max_result_bytes) return error.CapacityExceeded;
+                    }
+                    for (self.resolutions, 0..) |resolution, index| {
+                        try resolution.validate(limits);
+                        for (self.resolutions[0..index]) |prior| {
+                            if (prior.target_host_request_fingerprint == resolution.target_host_request_fingerprint) return error.DuplicateHostReply;
+                        }
+                        if (index != 0 and self.resolutions[index - 1].target_host_request_fingerprint > resolution.target_host_request_fingerprint) return error.InvalidFrameEncoding;
+                    }
+                    if (self.retention) |retention| try retention.validate(limits);
+                    if (self.operation == .boot) {
+                        if (self.turn_sequence_number != 0 or self.parent_turn_closure_bytes.len != 0) return error.InvalidFrameEncoding;
+                        if (self.expected_parent_closure_fingerprint != null or self.previous_turn_receipt_fingerprint != null) return error.InvalidFrameEncoding;
+                    } else {
+                        if (self.turn_sequence_number == 0) return error.InvalidFrameEncoding;
+                    }
+                    if (self.operation == .restore and self.parent_turn_closure_bytes.len == 0) return error.InvalidFrameEncoding;
+                    if (self.operation != .boot and self.root_argument_images.len != 0) return error.InvalidFrameEncoding;
+                }
+
+                pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+                    var out: std.ArrayList(u8) = .empty;
+                    errdefer out.deinit(allocator);
+                    try writeU32(&out, allocator, self.wire_format_version);
+                    try writeU8(&out, allocator, @intFromEnum(self.operation));
+                    try writeU64(&out, allocator, self.appliance_manifest_fingerprint);
+                    try writeOptionalU64(&out, allocator, self.expected_parent_closure_fingerprint);
+                    try writeOptionalU64(&out, allocator, self.expected_parent_state_fingerprint);
+                    try writeOptionalU64(&out, allocator, self.previous_turn_receipt_fingerprint);
+                    try writeU64(&out, allocator, self.turn_sequence_number);
+                    try writeByteSlices(&out, allocator, self.root_argument_images);
+                    try writeBytes(&out, allocator, self.parent_turn_closure_bytes);
+                    try writeResolutionInputsCanonical(&out, allocator, self.resolutions);
+                    try writeOptionalWireRetentionInput(&out, allocator, self.retention);
+                    try writeU64(&out, allocator, self.deterministic_turn_budget);
+                    try writeU8(&out, allocator, @intFromEnum(self.requested_evidence_profile));
+                    try writeBytes(&out, allocator, self.host_metadata);
+                    return out.toOwnedSlice(allocator);
+                }
+
+                pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+                    var cursor: usize = 0;
+                    var input = try readWireTurnInputOwned(allocator, bytes, &cursor);
+                    errdefer input.deinit(allocator);
+                    if (cursor != bytes.len) return error.InvalidFrameEncoding;
+                    try canonicalizeWireResolutionOrder(@constCast(input.resolutions));
+                    try input.validate(TurnClosureLimits.default);
+                    return input;
+                }
+
+                pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                    if (self.owns_root_argument_images) freeByteSlices(allocator, self.root_argument_images);
+                    if (self.owns_parent_turn_closure_bytes) allocator.free(self.parent_turn_closure_bytes);
+                    if (self.owns_resolutions) freeWireResolutionInputs(allocator, self.resolutions);
+                    if (self.owns_retention_metadata) {
+                        if (self.retention) |retention| {
+                            var cleanup = retention;
+                            cleanup.deinit(allocator);
+                        }
+                    }
+                    if (self.owns_host_metadata) allocator.free(self.host_metadata);
+                    self.* = undefined;
+                }
+            };
         };
 
         pub const RetentionAck = struct {
@@ -1916,6 +2547,7 @@ pub fn Appliance(comptime World: type) type {
                     .status = archive_output.status,
                     .host_requests = archive_output.host_requests,
                     .finalized_actuation_receipt_fingerprints = archive_output.finalized_actuation_receipt_fingerprints,
+                    .finalized_actuation_receipt_bytes = archive_output.finalized_actuation_receipt_bytes,
                     .root_result_fingerprint = archive_output.root_result_fingerprint,
                     .root_result_value_image_bytes = archive_output.root_result_value_image_bytes,
                     .root_result_value_ref_fingerprint = archive_output.root_result_value_ref_fingerprint,
@@ -2250,9 +2882,122 @@ pub fn Appliance(comptime World: type) type {
             }
         };
 
+        pub const WorldV0Report = struct {
+            report_fingerprint_version: u32 = World.world_v0_report_fingerprint_version,
+            report_fingerprint: u64 = 0,
+            boundary_v0_5_0_portable_v2_baseline_passed: bool = false,
+            canonical_executable_image_passed: bool = false,
+            actual_universal_wasm_executed: bool = false,
+            genuinely_unrelated_images_executed: bool = false,
+            internal_loaded_provider_executed: bool = false,
+            multi_suspension_loaded_root_executed: bool = false,
+            active_loaded_fabric_restored: bool = false,
+            replay_completed_without_fresh_effect: bool = false,
+            deterministic_retry_passed: bool = false,
+            batched_request_reply_passed: bool = false,
+            independent_javascript_codec_passed: bool = false,
+            exact_root_result_bytes_passed: bool = false,
+            exact_receipt_bytes_passed: bool = false,
+            exact_capsule_bytes_passed: bool = false,
+            exact_archive_append_batch_bytes_passed: bool = false,
+            native_wasm_parity_passed: bool = false,
+            cold_warm_parity_passed: bool = false,
+            memory_bound_passed: bool = false,
+            malformed_input_suite_passed: bool = false,
+            regression_matrix_passed: bool = false,
+            blockers: []const u64 = &.{},
+            warnings: []const u64 = &.{},
+            passed: bool = false,
+
+            pub fn init(args: struct {
+                boundary_v0_5_0_portable_v2_baseline_passed: bool = false,
+                canonical_executable_image_passed: bool = false,
+                actual_universal_wasm_executed: bool = false,
+                genuinely_unrelated_images_executed: bool = false,
+                internal_loaded_provider_executed: bool = false,
+                multi_suspension_loaded_root_executed: bool = false,
+                active_loaded_fabric_restored: bool = false,
+                replay_completed_without_fresh_effect: bool = false,
+                deterministic_retry_passed: bool = false,
+                batched_request_reply_passed: bool = false,
+                independent_javascript_codec_passed: bool = false,
+                exact_root_result_bytes_passed: bool = false,
+                exact_receipt_bytes_passed: bool = false,
+                exact_capsule_bytes_passed: bool = false,
+                exact_archive_append_batch_bytes_passed: bool = false,
+                native_wasm_parity_passed: bool = false,
+                cold_warm_parity_passed: bool = false,
+                memory_bound_passed: bool = false,
+                malformed_input_suite_passed: bool = false,
+                regression_matrix_passed: bool = false,
+                blockers: []const u64 = &.{},
+                warnings: []const u64 = &.{},
+            }) @This() {
+                var result = @This(){
+                    .boundary_v0_5_0_portable_v2_baseline_passed = args.boundary_v0_5_0_portable_v2_baseline_passed,
+                    .canonical_executable_image_passed = args.canonical_executable_image_passed,
+                    .actual_universal_wasm_executed = args.actual_universal_wasm_executed,
+                    .genuinely_unrelated_images_executed = args.genuinely_unrelated_images_executed,
+                    .internal_loaded_provider_executed = args.internal_loaded_provider_executed,
+                    .multi_suspension_loaded_root_executed = args.multi_suspension_loaded_root_executed,
+                    .active_loaded_fabric_restored = args.active_loaded_fabric_restored,
+                    .replay_completed_without_fresh_effect = args.replay_completed_without_fresh_effect,
+                    .deterministic_retry_passed = args.deterministic_retry_passed,
+                    .batched_request_reply_passed = args.batched_request_reply_passed,
+                    .independent_javascript_codec_passed = args.independent_javascript_codec_passed,
+                    .exact_root_result_bytes_passed = args.exact_root_result_bytes_passed,
+                    .exact_receipt_bytes_passed = args.exact_receipt_bytes_passed,
+                    .exact_capsule_bytes_passed = args.exact_capsule_bytes_passed,
+                    .exact_archive_append_batch_bytes_passed = args.exact_archive_append_batch_bytes_passed,
+                    .native_wasm_parity_passed = args.native_wasm_parity_passed,
+                    .cold_warm_parity_passed = args.cold_warm_parity_passed,
+                    .memory_bound_passed = args.memory_bound_passed,
+                    .malformed_input_suite_passed = args.malformed_input_suite_passed,
+                    .regression_matrix_passed = args.regression_matrix_passed,
+                    .blockers = args.blockers,
+                    .warnings = args.warnings,
+                };
+                result.passed = result.allRequiredBooleansPassed() and result.blockers.len == 0;
+                result.report_fingerprint = fingerprintWorldV0Report(result);
+                return result;
+            }
+
+            pub fn validate(self: @This()) !void {
+                if (self.report_fingerprint_version != World.world_v0_report_fingerprint_version) return error.InvalidFrameEncoding;
+                try validateFingerprintSlice(self.blockers);
+                try validateFingerprintSlice(self.warnings);
+                if (self.passed != (self.allRequiredBooleansPassed() and self.blockers.len == 0)) return error.InvalidFrameEncoding;
+                if (self.report_fingerprint != fingerprintWorldV0Report(self)) return error.InvalidFrameEncoding;
+            }
+
+            pub fn allRequiredBooleansPassed(self: @This()) bool {
+                return self.boundary_v0_5_0_portable_v2_baseline_passed and
+                    self.canonical_executable_image_passed and
+                    self.actual_universal_wasm_executed and
+                    self.genuinely_unrelated_images_executed and
+                    self.internal_loaded_provider_executed and
+                    self.multi_suspension_loaded_root_executed and
+                    self.active_loaded_fabric_restored and
+                    self.replay_completed_without_fresh_effect and
+                    self.deterministic_retry_passed and
+                    self.batched_request_reply_passed and
+                    self.independent_javascript_codec_passed and
+                    self.exact_root_result_bytes_passed and
+                    self.exact_receipt_bytes_passed and
+                    self.exact_capsule_bytes_passed and
+                    self.exact_archive_append_batch_bytes_passed and
+                    self.native_wasm_parity_passed and
+                    self.cold_warm_parity_passed and
+                    self.memory_bound_passed and
+                    self.malformed_input_suite_passed and
+                    self.regression_matrix_passed;
+            }
+        };
+
         pub const Core = struct {
             state: CoreState = .uninitialized,
             allocator: std.mem.Allocator = std.heap.page_allocator,
+            executable_image_fingerprint: u64 = 0,
             manifest_value: Manifest,
             memory_plan_value: MemoryPlan,
             capacity_value: Capacity = Capacity.wasm_small,
@@ -2370,7 +3115,9 @@ pub fn Appliance(comptime World: type) type {
                 var manifest = try manifestFromExecutableImage(allocator, image, options.profile, capacity, options.metadata);
                 errdefer manifest.deinit(allocator);
                 const memory_plan = MemoryPlan.derive(capacity, options.profile);
-                return initWithCapacity(allocator, manifest, memory_plan, capacity);
+                var core = initWithCapacity(allocator, manifest, memory_plan, capacity);
+                core.executable_image_fingerprint = image.image_fingerprint;
+                return core;
             }
 
             pub fn deinit(self: *@This()) void {
@@ -2421,7 +3168,15 @@ pub fn Appliance(comptime World: type) type {
                 const status = self.statusForCommand(command);
                 const retention_ack = try effectiveRetentionAck(command);
                 const turn_sequence_number = if (command.kind == .inspect) self.current_turn_sequence_number else command.turn_sequence_number;
-                const capsule_fingerprint = fingerprintCoreCapsule(self.manifest_value.manifest_fingerprint, command, status);
+                const capsule_image_bytes = try coreCapsuleImageBytesOwned(self.allocator, self.manifest_value, command, status, turn_sequence_number);
+                defer self.allocator.free(capsule_image_bytes);
+                const capsule_ref = World.Continuity.ObjectRef.fromPayload(
+                    .capsule_image,
+                    World.Continuity.ObjectKind.capsule_image.defaultFormatVersion(),
+                    capsule_image_bytes,
+                    "capsule.image",
+                );
+                const capsule_fingerprint = capsule_ref.object_fingerprint;
                 const resets_core = command.kind == .reset;
                 const acknowledged_archive_moment = if (resets_core) null else if (retention_ack) |ack| ack.resulting_moment_fingerprint else self.latest_archive_moment_fingerprint;
                 const acknowledged_archive_seal = if (resets_core) null else if (retention_ack) |ack| ack.resulting_seal_fingerprint else self.latest_archive_seal_fingerprint;
@@ -2483,12 +3238,12 @@ pub fn Appliance(comptime World: type) type {
                     &.{};
                 const applied_host_reply_fingerprints = try hostReplyFingerprintsOwned(self.allocator, command.host_replies);
                 defer self.allocator.free(applied_host_reply_fingerprints);
-                const finalized_actuation_receipt_fingerprints = try finalizedActuationReceiptFingerprintsFor(
+                var finalized_actuation_receipt_evidence = try finalizedActuationReceiptEvidenceFor(
                     current_outstanding_host_requests,
                     command,
                     self.allocator,
                 );
-                defer self.allocator.free(finalized_actuation_receipt_fingerprints);
+                defer finalized_actuation_receipt_evidence.deinit(self.allocator);
                 const emitted_host_request_fingerprints = try hostRequestFingerprintsOwned(self.allocator, host_requests);
                 defer self.allocator.free(emitted_host_request_fingerprints);
                 const prior_checkpoint_fingerprint = if (command.restore_checkpoint) |checkpoint|
@@ -2542,6 +3297,7 @@ pub fn Appliance(comptime World: type) type {
                     .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
                     .turn_sequence_number = checkpoint_turn_sequence_number,
                     .capsule_fingerprint = capsule_fingerprint,
+                    .capsule_image_bytes = capsule_image_bytes,
                     .latest_archive_moment_fingerprint = acknowledged_archive_moment,
                     .latest_archive_seal_fingerprint = acknowledged_archive_seal,
                     .latest_chronicle_cursor_fingerprint = acknowledged_chronicle_cursor,
@@ -2582,7 +3338,8 @@ pub fn Appliance(comptime World: type) type {
                     .quiescence = quiescence,
                     .status = status,
                     .host_requests = host_requests,
-                    .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_fingerprints,
+                    .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_evidence.fingerprints,
+                    .finalized_actuation_receipt_bytes = finalized_actuation_receipt_evidence.bytes,
                     .root_result_fingerprint = root_result_fingerprint,
                     .root_result_value_image_bytes = root_result_value_image_bytes,
                     .root_result_value_ref_fingerprint = null,
@@ -2633,6 +3390,7 @@ pub fn Appliance(comptime World: type) type {
                         .manifest_fingerprint = self.manifest_value.manifest_fingerprint,
                         .turn_sequence_number = checkpoint_turn_sequence_number,
                         .capsule_fingerprint = capsule_fingerprint,
+                        .capsule_image_bytes = capsule_image_bytes,
                         .latest_archive_moment_fingerprint = acknowledged_archive_moment,
                         .latest_archive_seal_fingerprint = acknowledged_archive_seal,
                         .latest_chronicle_cursor_fingerprint = acknowledged_chronicle_cursor,
@@ -2662,7 +3420,8 @@ pub fn Appliance(comptime World: type) type {
                         .quiescence = quiescence,
                         .status = status,
                         .host_requests = host_requests,
-                        .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_fingerprints,
+                        .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_evidence.fingerprints,
+                        .finalized_actuation_receipt_bytes = finalized_actuation_receipt_evidence.bytes,
                         .root_result_fingerprint = root_result_fingerprint,
                         .root_result_value_image_bytes = root_result_value_image_bytes,
                         .root_result_value_ref_fingerprint = null,
@@ -2817,6 +3576,7 @@ pub fn Appliance(comptime World: type) type {
 
             fn validateCommandExecutionMode(self: @This(), command: Command) !void {
                 if (!self.manifest_value.supported_execution_modes.supports(command.execution_mode)) return error.InvalidCommand;
+                if (command.execution_mode == .replay and self.manifest_value.actuation_binding_fingerprints.len != 0 and !self.commandHasReplayEvidence(command)) return error.InvalidCommand;
             }
 
             fn validateCommandReplies(self: @This(), command: Command) !void {
@@ -3049,8 +3809,9 @@ pub fn Appliance(comptime World: type) type {
             }
 
             fn commandHasReplayEvidence(self: @This(), command: Command) bool {
-                if (command.receiver_evidence_fingerprints.len == 0) return false;
-                return command.receiver_evidence_fingerprints.len >= 1 + self.manifest_value.actuation_binding_fingerprints.len;
+                const expected_evidence_count = 1 + self.manifest_value.actuation_binding_fingerprints.len;
+                if (command.receiver_evidence_fingerprints.len != expected_evidence_count) return false;
+                return fingerprintsAreDistinct(command.receiver_evidence_fingerprints);
             }
 
             fn diagnosticMetadata(self: @This()) []const u8 {
@@ -3168,11 +3929,71 @@ pub fn Appliance(comptime World: type) type {
             core: Core,
             last_error_storage: [native_last_error_storage_bytes]u8 = [_]u8{0} ** native_last_error_storage_bytes,
             last_error_len: usize = 0,
+            last_closure_bytes: []const u8 = "",
+            last_closure_owned: bool = false,
 
             const native_last_error_storage_bytes: usize = 256;
 
             pub fn init(core: Core) @This() {
                 return .{ .core = core };
+            }
+
+            pub fn deinit(self: *@This()) void {
+                self.clearClosure();
+                self.core.deinit();
+                self.* = undefined;
+            }
+
+            pub fn submitTurn(self: *@This(), turn_input_bytes: []const u8) Abi.Status {
+                const allocator = self.core.allocator;
+                var input = Wire.TurnInput.decode(allocator, turn_input_bytes) catch |err| return self.setSubmitError(err);
+                defer input.deinit(allocator);
+                if (input.appliance_manifest_fingerprint != self.core.manifest_value.manifest_fingerprint) return self.setSubmitError(error.WrongManifest);
+
+                const host_replies = self.hostRepliesFromWireInput(input) catch |err| return self.setSubmitError(err);
+                defer freeHostReplies(allocator, host_replies);
+
+                var restore_checkpoint: ?Checkpoint = null;
+                if (input.operation == .restore) {
+                    var parent_closure = TurnClosure.decode(allocator, input.parent_turn_closure_bytes) catch |err| return self.setSubmitError(err);
+                    defer parent_closure.deinit(allocator);
+                    if (input.expected_parent_closure_fingerprint) |expected| {
+                        if (parent_closure.closure_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
+                    }
+                    const checkpoint_bytes = parent_closure.materializeCheckpoint(allocator) catch |err| return self.setSubmitError(err);
+                    defer allocator.free(checkpoint_bytes);
+                    restore_checkpoint = Checkpoint.decode(allocator, checkpoint_bytes, self.core.manifest_value.manifest_fingerprint, self.core.capacity_value) catch |err| return self.setSubmitError(err);
+                }
+                defer if (restore_checkpoint) |*checkpoint| checkpoint.deinit(allocator);
+
+                const root_argument_image = switch (input.root_argument_images.len) {
+                    0 => "",
+                    1 => input.root_argument_images[0],
+                    else => return self.setSubmitError(error.InvalidFrameEncoding),
+                };
+                const retention_ack = self.retentionAckFromWireInput(input) catch |err| return self.setSubmitError(err);
+                const command = Command.init(.{
+                    .kind = commandKindForWireOperation(input.operation),
+                    .manifest_fingerprint = input.appliance_manifest_fingerprint,
+                    .turn_sequence_number = input.turn_sequence_number,
+                    .previous_turn_receipt_fingerprint = input.previous_turn_receipt_fingerprint,
+                    .execution_mode = executionModeForWireOperation(input.operation),
+                    .root_argument_image = root_argument_image,
+                    .host_replies = host_replies,
+                    .retention_ack = retention_ack,
+                    .restore_checkpoint = restore_checkpoint,
+                    .metadata = input.host_metadata,
+                });
+                const command_bytes = command.encode(allocator) catch |err| return self.setSubmitError(err);
+                defer allocator.free(command_bytes);
+
+                const status = self.submitCommand(command_bytes);
+                if (!Abi.statusHasTurnOutput(status)) return status;
+                self.refreshClosureFromLastOutput(input) catch |err| {
+                    self.clearClosure();
+                    return self.setSubmitError(err);
+                };
+                return status;
             }
 
             pub fn submitCommand(self: *@This(), command_bytes: []const u8) Abi.Status {
@@ -3198,6 +4019,15 @@ pub fn Appliance(comptime World: type) type {
                 return required;
             }
 
+            pub fn closureLen(self: *@This()) usize {
+                return self.last_closure_bytes.len;
+            }
+
+            pub fn readClosure(self: *@This(), dest: []u8) usize {
+                if (dest.len >= self.last_closure_bytes.len) @memcpy(dest[0..self.last_closure_bytes.len], self.last_closure_bytes);
+                return self.last_closure_bytes.len;
+            }
+
             pub fn outputLen(self: *@This()) usize {
                 return self.core.readOutput().len;
             }
@@ -3215,6 +4045,12 @@ pub fn Appliance(comptime World: type) type {
                 self.core.last_output_status = null;
             }
 
+            pub fn clearClosure(self: *@This()) void {
+                if (self.last_closure_owned) self.core.allocator.free(self.last_closure_bytes);
+                self.last_closure_bytes = "";
+                self.last_closure_owned = false;
+            }
+
             pub fn lastErrorLen(self: @This()) usize {
                 return self.last_error_len;
             }
@@ -3230,6 +4066,7 @@ pub fn Appliance(comptime World: type) type {
 
             pub fn reset(self: *@This()) Abi.Status {
                 self.core.reset();
+                self.clearClosure();
                 self.clearLastError();
                 return .ok;
             }
@@ -3273,11 +4110,374 @@ pub fn Appliance(comptime World: type) type {
             fn clearLastError(self: *@This()) void {
                 self.last_error_len = 0;
             }
+
+            fn refreshClosureFromLastOutput(self: *@This(), input: Wire.TurnInput) !void {
+                const allocator = self.core.allocator;
+                var output = try TurnOutput.decode(allocator, self.core.readOutput(), self.core.manifest_value.manifest_fingerprint, self.core.capacity_value);
+                defer output.deinit(allocator);
+                const closure_bytes = try self.closureBytesFromTurnOutput(output, input);
+                errdefer allocator.free(closure_bytes);
+                self.clearClosure();
+                self.last_closure_bytes = closure_bytes;
+                self.last_closure_owned = true;
+            }
+
+            fn closureBytesFromTurnOutput(self: *@This(), output: TurnOutput, input: Wire.TurnInput) ![]const u8 {
+                const allocator = self.core.allocator;
+                const turn_receipt_bytes = try encodeTurnReceiptOwned(allocator, output.turn_receipt);
+                defer allocator.free(turn_receipt_bytes);
+                const pending_host_request_bytes = if (output.status == .needs_host)
+                    try encodeHostRequestsImageOwned(allocator, output.host_requests)
+                else
+                    "";
+                defer if (pending_host_request_bytes.len != 0) allocator.free(pending_host_request_bytes);
+                const evidence_bundle_bytes = try encodeTurnClosureEvidenceBundleOwned(allocator, output, turn_receipt_bytes);
+                defer allocator.free(evidence_bundle_bytes);
+                const capsule_bytes = if (output.checkpoint.capsule_image_bytes.len != 0) output.checkpoint.capsule_image_bytes else output.checkpoint_bytes;
+                const initial_cursor = World.Continuity.Chronicle.Cursor.initial().cursor_fingerprint;
+                const resulting_cursor = output.turn_receipt.resulting_chronicle_cursor_fingerprint orelse
+                    output.checkpoint.latest_chronicle_cursor_fingerprint orelse
+                    if (output.checkpoint.pending_archive_resulting_cursor) |cursor| cursor.cursor_fingerprint else initial_cursor;
+                const root_result_ref: ?World.Continuity.ObjectRef = if (output.root_result_fingerprint != null)
+                    World.Continuity.ObjectRef.fromPayload(.root_result, World.Continuity.ObjectKind.root_result.defaultFormatVersion(), output.root_result_value_image_bytes, "root.result")
+                else
+                    null;
+                const closure = TurnClosure.init(.{
+                    .executable_image_fingerprint = self.core.executable_image_fingerprint,
+                    .appliance_manifest_fingerprint = self.core.manifest_value.manifest_fingerprint,
+                    .parent_closure_fingerprint = input.expected_parent_closure_fingerprint,
+                    .turn_sequence_number = output.turn_sequence_number,
+                    .parent_state_fingerprint = output.source_state_fingerprint,
+                    .resulting_state_fingerprint = output.resulting_state_fingerprint,
+                    .chronicle_parent_cursor_fingerprint = initial_cursor,
+                    .chronicle_resulting_cursor_fingerprint = resulting_cursor,
+                    .archive_parent_moment_fingerprint = null,
+                    .archive_parent_seal_fingerprint = null,
+                    .archive_resulting_moment_fingerprint = output.turn_receipt.resulting_archive_moment_fingerprint,
+                    .archive_resulting_seal_fingerprint = output.turn_receipt.resulting_archive_seal_fingerprint,
+                    .checkpoint_fingerprint = output.checkpoint.checkpoint_fingerprint,
+                    .checkpoint_bytes = output.checkpoint_bytes,
+                    .capsule_fingerprint = output.checkpoint.capsule_fingerprint,
+                    .capsule_bytes = capsule_bytes,
+                    .turn_receipt_fingerprint = output.turn_receipt.receipt_fingerprint,
+                    .turn_receipt_bytes = turn_receipt_bytes,
+                    .evidence_bundle_bytes = evidence_bundle_bytes,
+                    .archive_append_batch_fingerprint = output.archive_append_batch_fingerprint,
+                    .archive_append_batch_bytes = output.archive_append_batch_bytes,
+                    .pending_host_request_bytes = pending_host_request_bytes,
+                    .root_result_fingerprint = if (root_result_ref) |ref| ref.object_fingerprint else null,
+                    .root_result_bytes = output.root_result_value_image_bytes,
+                    .root_result_value_ref_fingerprint = if (root_result_ref) |ref| ref.ref_fingerprint else null,
+                    .run_receipt_fingerprint = output.run_receipt_fingerprint,
+                    .run_receipt_bytes = output.run_receipt_bytes,
+                    .finalized_actuation_receipt_fingerprints = output.finalized_actuation_receipt_fingerprints,
+                    .finalized_actuation_receipt_bytes = output.finalized_actuation_receipt_bytes,
+                    .blockers = if (output.status == .failed or output.status == .blocked) &.{output.turn_receipt.receipt_fingerprint} else &.{},
+                    .warnings = &.{},
+                    .diagnostics = output.diagnostic_metadata,
+                    .status = closureStatusForTurnStatus(output.status),
+                });
+                return closure.encode(allocator);
+            }
+
+            fn hostRepliesFromWireInput(self: *@This(), input: Wire.TurnInput) ![]HostReply {
+                const allocator = self.core.allocator;
+                if (input.resolutions.len == 0) return allocator.alloc(HostReply, 0);
+                const replies = try allocator.alloc(HostReply, input.resolutions.len);
+                var initialized: usize = 0;
+                errdefer {
+                    freeHostReplies(allocator, replies[0..initialized]);
+                    allocator.free(replies);
+                }
+                for (input.resolutions, 0..) |resolution, index| {
+                    const request = try self.findOutstandingHostRequest(resolution.target_host_request_fingerprint);
+                    replies[index] = try hostReplyFromWireResolution(allocator, request, resolution);
+                    initialized += 1;
+                }
+                return replies;
+            }
+
+            fn retentionAckFromWireInput(self: *@This(), input: Wire.TurnInput) !?RetentionAck {
+                _ = self;
+                const retention = input.retention orelse return null;
+                const status: HostOutcomeStatus = switch (retention.host_retention_status) {
+                    .retained => .responded,
+                    .pending => .pending,
+                    .failed => .failed,
+                    .unknown => .deferred,
+                };
+                return RetentionAck.init(.{
+                    .append_batch_fingerprint = retention.prior_archive_append_batch_fingerprint,
+                    .resulting_moment_fingerprint = retention.resulting_moment_fingerprint,
+                    .resulting_seal_fingerprint = retention.resulting_seal_fingerprint,
+                    .resulting_chronicle_cursor_fingerprint = retention.resulting_chronicle_cursor_fingerprint,
+                    .host_claim_status = status,
+                    .metadata = retention.metadata,
+                });
+            }
+
+            fn findOutstandingHostRequest(self: *@This(), fingerprint: u64) !HostRequest {
+                for (self.core.outstanding_host_requests) |request| {
+                    if (request.request_fingerprint == fingerprint) return request;
+                }
+                if (self.core.outstanding_host_request) |request| {
+                    if (request.request_fingerprint == fingerprint) return request;
+                }
+                return error.UnknownRequest;
+            }
         };
+
+        fn commandKindForWireOperation(operation: Wire.Operation) CommandKind {
+            return switch (operation) {
+                .boot => .boot,
+                .restore => .restore,
+                .@"continue", .replay, .verify => .@"continue",
+                .inspect => .inspect,
+                .cancel => .cancel,
+                .reset => .reset,
+            };
+        }
+
+        fn executionModeForWireOperation(operation: Wire.Operation) ExecutionMode {
+            return switch (operation) {
+                .replay => .replay,
+                .verify => .verify,
+                .inspect => .audit,
+                else => .fresh,
+            };
+        }
+
+        fn closureStatusForTurnStatus(status: TurnStatus) TurnClosureStatus {
+            return switch (status) {
+                .needs_host => .needs_host,
+                .completed => .completed,
+                .failed => .failed,
+                .blocked => .yielded_budget,
+                .cancelled => .cancelled,
+                .inspected => .inspected,
+            };
+        }
+
+        fn hostOutcomeStatusForWireStatus(status: Wire.ResolutionStatus) HostOutcomeStatus {
+            return switch (status) {
+                .responded => .responded,
+                .rejected => .rejected,
+                .failed => .failed,
+                .pending => .pending,
+                .deferred => .deferred,
+                .cancelled => .cancelled,
+            };
+        }
+
+        fn hostReplyFromWireResolution(allocator: std.mem.Allocator, request: HostRequest, resolution: Wire.ResolutionInput) !HostReply {
+            const status = hostOutcomeStatusForWireStatus(resolution.status);
+            var response_fingerprint: ?u64 = null;
+            var response_kind: HostResponseKind = .none;
+            if (status == .responded) {
+                var response_image = try World.Frame.ValueImage.decode(allocator, resolution.response_value_image_bytes);
+                defer response_image.deinit(allocator);
+                response_fingerprint = response_image.value_image_fingerprint;
+                response_kind = .frame_value_image;
+            }
+            const outcome = HostOutcome.init(.{
+                .host_request_fingerprint = request.request_fingerprint,
+                .intent_fingerprint = request.intent_fingerprint,
+                .envelope_fingerprint = request.envelope_fingerprint,
+                .idempotency_key_fingerprint = request.idempotency_key_fingerprint,
+                .status = status,
+                .response_fingerprint = response_fingerprint,
+                .response_kind = response_kind,
+                .response_bytes = resolution.response_value_image_bytes,
+                .host_evidence_fingerprint = null,
+                .host_evidence_bytes = resolution.host_claim_bytes,
+                .attempt_number = resolution.attempt_number,
+                .metadata = resolution.metadata,
+            });
+            return HostReply.init(.{
+                .target_host_request_fingerprint = request.request_fingerprint,
+                .outcome = outcome,
+                .metadata = resolution.metadata,
+            });
+        }
+
+        fn encodeHostRequestsImageOwned(allocator: std.mem.Allocator, requests: []const HostRequest) ![]const u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(allocator);
+            try writeU64(&out, allocator, requests.len);
+            for (requests) |request| try request.encode(&out, allocator);
+            return out.toOwnedSlice(allocator);
+        }
+
+        fn appendClosureBundleObject(
+            allocator: std.mem.Allocator,
+            roots: *std.ArrayList(World.Continuity.ObjectRef),
+            envelopes: *std.ArrayList(World.Continuity.ObjectEnvelope),
+            kind: World.Continuity.ObjectKind,
+            semantic_fingerprint: u64,
+            payload: []const u8,
+            label: []const u8,
+        ) !void {
+            if (semantic_fingerprint == 0 or payload.len == 0) return;
+            const envelope = World.Continuity.ObjectEnvelope.init(.{
+                .kind = kind,
+                .object_format_version = kind.defaultFormatVersion(),
+                .payload_bytes = payload,
+                .label = label,
+            });
+            try envelopes.append(allocator, envelope);
+            try roots.append(allocator, envelope.objectRef());
+        }
+
+        fn appendClosureBundleReceiptObjects(
+            allocator: std.mem.Allocator,
+            roots: *std.ArrayList(World.Continuity.ObjectRef),
+            envelopes: *std.ArrayList(World.Continuity.ObjectEnvelope),
+            dependency_ref_slices: *std.ArrayList([]World.Continuity.ObjectRef),
+            fingerprints: []const u64,
+            byte_payloads: []const []const u8,
+            label: []const u8,
+        ) !void {
+            if (fingerprints.len != byte_payloads.len) return error.InvalidFrameEncoding;
+            for (fingerprints, byte_payloads, 0..) |fingerprint, payload, index| {
+                for (fingerprints[0..index]) |prior| {
+                    if (fingerprint == prior) return error.InvalidFrameEncoding;
+                }
+                var receipt = World.Actuation.Receipt.decode(allocator, payload) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.InvalidFrameEncoding,
+                };
+                defer receipt.deinit(allocator);
+                if (receipt.receipt_fingerprint != fingerprint) return error.InvalidFrameEncoding;
+                const dependency_refs = try actuationReceiptDependencyRefsOwned(allocator, receipt);
+                errdefer freeContinuityObjectRefs(allocator, dependency_refs);
+                try dependency_ref_slices.append(allocator, dependency_refs);
+                const envelope = World.Continuity.ObjectEnvelope.init(.{
+                    .kind = .actuation_receipt,
+                    .object_format_version = World.Continuity.ObjectKind.actuation_receipt.defaultFormatVersion(),
+                    .dependency_refs = dependency_refs,
+                    .payload_bytes = payload,
+                    .label = label,
+                });
+                try envelopes.append(allocator, envelope);
+                try roots.append(allocator, envelope.objectRef());
+            }
+        }
+
+        fn actuationReceiptDependencyRefsOwned(allocator: std.mem.Allocator, receipt: World.Actuation.Receipt) ![]World.Continuity.ObjectRef {
+            var dependency_buffer: [16]World.Actuation.DependencyRef = undefined;
+            const dependencies = try World.Actuation.dependenciesForReceipt(receipt, dependency_buffer[0..]);
+            var refs: std.ArrayList(World.Continuity.ObjectRef) = .empty;
+            errdefer freeContinuityObjectRefList(allocator, &refs);
+            for (dependencies) |dependency| {
+                const kind = continuityKindForActuationDependency(dependency.kind) orelse continue;
+                try appendUniqueContinuitySemanticRef(allocator, &refs, kind, dependency.fingerprint);
+            }
+            if (receipt.response_value_image_fingerprint) |fingerprint| {
+                try appendUniqueContinuitySemanticRef(allocator, &refs, .value_image, fingerprint);
+            }
+            return refs.toOwnedSlice(allocator);
+        }
+
+        fn appendUniqueContinuitySemanticRef(
+            allocator: std.mem.Allocator,
+            refs: *std.ArrayList(World.Continuity.ObjectRef),
+            kind: World.Continuity.ObjectKind,
+            fingerprint: u64,
+        ) !void {
+            const ref = World.Continuity.ObjectRef.init(.{
+                .kind = kind,
+                .object_fingerprint = fingerprint,
+                .byte_len = 0,
+            });
+            for (refs.items) |existing| {
+                if (existing.eql(ref)) return;
+            }
+            try refs.append(allocator, ref);
+        }
+
+        fn freeContinuityObjectRefList(allocator: std.mem.Allocator, refs: *std.ArrayList(World.Continuity.ObjectRef)) void {
+            for (refs.items) |*ref| ref.deinit(allocator);
+            refs.deinit(allocator);
+        }
+
+        fn freeContinuityObjectRefs(allocator: std.mem.Allocator, refs: []World.Continuity.ObjectRef) void {
+            for (refs) |*ref| ref.deinit(allocator);
+            allocator.free(refs);
+        }
+
+        fn continuityKindForActuationDependency(kind: World.Actuation.DependencyKind) ?World.Continuity.ObjectKind {
+            return switch (kind) {
+                .actuator_ref => .actuator_ref,
+                .descriptor => .actuation_descriptor,
+                .binding => .actuation_binding,
+                .policy => .actuation_policy,
+                .idempotency_key => .actuation_idempotency_key,
+                .intent => .actuation_intent,
+                .envelope => .actuation_envelope,
+                .decision => .actuation_decision,
+                .commit => .actuation_commit,
+                .response => .actuation_response,
+                .receipt => .actuation_receipt,
+                .journal => .actuation_journal,
+                .verify_report => .actuation_verify_report,
+                .run_permit => .run_permit,
+                .environment_certificate => .environment_certificate,
+                .run_receipt => .run_receipt,
+                .capsule => .capsule_image,
+                .replay_source,
+                .pending_port,
+                => null,
+            };
+        }
+
+        fn encodeTurnClosureEvidenceBundleOwned(allocator: std.mem.Allocator, output: TurnOutput, turn_receipt_bytes: []const u8) ![]const u8 {
+            var roots: std.ArrayList(World.Continuity.ObjectRef) = .empty;
+            defer roots.deinit(allocator);
+            var envelopes: std.ArrayList(World.Continuity.ObjectEnvelope) = .empty;
+            defer envelopes.deinit(allocator);
+            var dependency_ref_slices: std.ArrayList([]World.Continuity.ObjectRef) = .empty;
+            defer {
+                for (dependency_ref_slices.items) |refs| freeContinuityObjectRefs(allocator, refs);
+                dependency_ref_slices.deinit(allocator);
+            }
+
+            const capsule_bytes = if (output.checkpoint.capsule_image_bytes.len != 0) output.checkpoint.capsule_image_bytes else output.checkpoint_bytes;
+            try appendClosureBundleObject(allocator, &roots, &envelopes, .appliance_checkpoint, output.checkpoint.checkpoint_fingerprint, output.checkpoint_bytes, "appliance.checkpoint");
+            try appendClosureBundleObject(allocator, &roots, &envelopes, .appliance_turn_receipt, output.turn_receipt.receipt_fingerprint, turn_receipt_bytes, "appliance.turn_receipt");
+            try appendClosureBundleObject(allocator, &roots, &envelopes, .capsule_image, output.checkpoint.capsule_fingerprint, capsule_bytes, "capsule.image");
+            if (output.root_result_fingerprint) |fingerprint| {
+                _ = fingerprint;
+                const root_result_ref = World.Continuity.ObjectRef.fromPayload(.root_result, World.Continuity.ObjectKind.root_result.defaultFormatVersion(), output.root_result_value_image_bytes, "root.result");
+                try appendClosureBundleObject(allocator, &roots, &envelopes, .root_result, root_result_ref.object_fingerprint, output.root_result_value_image_bytes, "root.result");
+            }
+            if (output.archive_append_batch_fingerprint) |fingerprint| {
+                try appendClosureBundleObject(allocator, &roots, &envelopes, .archive_append_batch, fingerprint, output.archive_append_batch_bytes, "archive.append_batch");
+            }
+            try appendClosureBundleReceiptObjects(
+                allocator,
+                &roots,
+                &envelopes,
+                &dependency_ref_slices,
+                output.finalized_actuation_receipt_fingerprints,
+                output.finalized_actuation_receipt_bytes,
+                "actuation.receipt.finalized",
+            );
+            const manifest = World.Continuity.BundleManifest.init(.{
+                .roots = roots.items,
+                .object_count = envelopes.items.len,
+            });
+            const bundle = World.Continuity.Bundle{
+                .allocator = allocator,
+                .manifest = manifest,
+                .envelopes = envelopes.items,
+                .owns_memory = false,
+            };
+            return bundle.toBytes(allocator);
+        }
 
         pub const Abi = struct {
             pub const version: u32 = World.world_appliance_abi_version;
-            pub const universal_version: u32 = 2;
+            pub const universal_version: u32 = 3;
             pub const Status = enum(u32) {
                 ok = 0,
                 output_ready = 1,
@@ -3394,9 +4594,9 @@ pub fn Appliance(comptime World: type) type {
                 "world_appliance_unload_executable",
                 "world_appliance_manifest_len",
                 "world_appliance_read_manifest",
-                "world_appliance_submit_command",
-                "world_appliance_output_len",
-                "world_appliance_read_output",
+                "world_appliance_submit_turn",
+                "world_appliance_closure_len",
+                "world_appliance_read_closure",
                 "world_appliance_last_error_len",
                 "world_appliance_read_last_error",
                 "world_appliance_reset",
@@ -5834,6 +7034,7 @@ pub fn Appliance(comptime World: type) type {
             hashU64(&hasher, @intFromEnum(output.status));
             for (output.host_requests) |request| hashU64(&hasher, request.request_fingerprint);
             hashU64Slice(&hasher, output.finalized_actuation_receipt_fingerprints);
+            hashByteSlices(&hasher, output.finalized_actuation_receipt_bytes);
             hashOptionalU64(&hasher, output.root_result_fingerprint);
             hashBytes(&hasher, output.root_result_value_image_bytes);
             hashOptionalU64(&hasher, output.root_result_value_ref_fingerprint);
@@ -5848,6 +7049,60 @@ pub fn Appliance(comptime World: type) type {
             hashU64(&hasher, output.blocker_count);
             hashU64(&hasher, output.warning_count);
             hashBytes(&hasher, output.diagnostic_metadata);
+            return nonzero(hasher.final());
+        }
+
+        fn fingerprintTurnClosure(closure: TurnClosure) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.appliance.turn_closure.fingerprint");
+            hashU64(&hasher, closure.closure_format_version);
+            hashU64(&hasher, closure.closure_fingerprint_version);
+            hashU64(&hasher, closure.executable_image_fingerprint);
+            hashU64(&hasher, closure.appliance_manifest_fingerprint);
+            hashOptionalU64(&hasher, closure.parent_closure_fingerprint);
+            hashU64(&hasher, closure.turn_sequence_number);
+            hashU64(&hasher, closure.parent_state_fingerprint);
+            hashU64(&hasher, closure.resulting_state_fingerprint);
+            hashU64(&hasher, closure.chronicle_parent_cursor_fingerprint);
+            hashU64(&hasher, closure.chronicle_resulting_cursor_fingerprint);
+            hashOptionalU64(&hasher, closure.archive_parent_moment_fingerprint);
+            hashOptionalU64(&hasher, closure.archive_parent_seal_fingerprint);
+            hashOptionalU64(&hasher, closure.archive_resulting_moment_fingerprint);
+            hashOptionalU64(&hasher, closure.archive_resulting_seal_fingerprint);
+            hashU64(&hasher, closure.checkpoint_fingerprint);
+            hashBytes(&hasher, closure.checkpoint_bytes);
+            hashU64(&hasher, closure.capsule_fingerprint);
+            hashBytes(&hasher, closure.capsule_bytes);
+            hashU64(&hasher, closure.turn_receipt_fingerprint);
+            hashBytes(&hasher, closure.turn_receipt_bytes);
+            hashBytes(&hasher, closure.evidence_bundle_bytes);
+            hashOptionalU64(&hasher, closure.archive_append_batch_fingerprint);
+            hashBytes(&hasher, closure.archive_append_batch_bytes);
+            hashBytes(&hasher, closure.pending_host_request_bytes);
+            hashOptionalU64(&hasher, closure.root_result_fingerprint);
+            hashBytes(&hasher, closure.root_result_bytes);
+            hashOptionalU64(&hasher, closure.root_result_value_ref_fingerprint);
+            hashOptionalU64(&hasher, closure.run_receipt_fingerprint);
+            hashBytes(&hasher, closure.run_receipt_bytes);
+            hashU64Slice(&hasher, closure.finalized_actuation_receipt_fingerprints);
+            hashByteSlices(&hasher, closure.finalized_actuation_receipt_bytes);
+            hashU64Slice(&hasher, closure.replay_receipt_fingerprints);
+            hashByteSlices(&hasher, closure.replay_receipt_bytes);
+            hashU64Slice(&hasher, closure.verify_report_fingerprints);
+            hashU64Slice(&hasher, closure.blockers);
+            hashU64Slice(&hasher, closure.warnings);
+            hashBytes(&hasher, closure.diagnostics);
+            hashU64(&hasher, @intFromEnum(closure.status));
+            return nonzero(hasher.final());
+        }
+
+        fn fingerprintTurnClosureReport(report: TurnClosureReport) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.appliance.turn_closure_report.fingerprint");
+            hashBool(&hasher, report.valid);
+            hashU64(&hasher, report.closure_fingerprint);
+            hashU64(&hasher, report.blocker_count);
+            hashU64(&hasher, report.warning_count);
             return nonzero(hasher.final());
         }
 
@@ -6102,24 +7357,63 @@ pub fn Appliance(comptime World: type) type {
             return fingerprints;
         }
 
-        fn finalizedActuationReceiptFingerprintsFor(requests: []const HostRequest, command: Command, allocator: std.mem.Allocator) ![]u64 {
+        const ActuationReceiptEvidence = struct {
+            fingerprints: []u64,
+            bytes: []const []const u8,
+
+            fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                allocator.free(self.fingerprints);
+                freeByteSlices(allocator, self.bytes);
+                self.* = undefined;
+            }
+        };
+
+        fn finalizedActuationReceiptEvidenceFor(requests: []const HostRequest, command: Command, allocator: std.mem.Allocator) !ActuationReceiptEvidence {
+            if (command.execution_mode == .replay and command.host_replies.len == 0) {
+                if (command.receiver_evidence_fingerprints.len <= 1) return .{
+                    .fingerprints = try allocator.alloc(u64, 0),
+                    .bytes = try allocator.alloc([]const u8, 0),
+                };
+                const replay_receipts = command.receiver_evidence_fingerprints[1..];
+                const fingerprints = try allocator.alloc(u64, replay_receipts.len);
+                errdefer allocator.free(fingerprints);
+                @memcpy(fingerprints, replay_receipts);
+                return .{
+                    .fingerprints = fingerprints,
+                    .bytes = try allocator.alloc([]const u8, 0),
+                };
+            }
             var finalized_count: usize = 0;
             for (command.host_replies) |reply| {
                 if (hostOutcomeStatusIsTerminal(reply.outcome.status)) finalized_count += 1;
             }
             const fingerprints = try allocator.alloc(u64, finalized_count);
             errdefer allocator.free(fingerprints);
+            const bytes = try allocator.alloc([]const u8, finalized_count);
+            var initialized_bytes: usize = 0;
+            errdefer {
+                for (bytes[0..initialized_bytes]) |receipt_bytes| allocator.free(receipt_bytes);
+                allocator.free(bytes);
+            }
             var index: usize = 0;
             for (command.host_replies) |reply| {
                 if (!hostOutcomeStatusIsTerminal(reply.outcome.status)) continue;
                 const finalized_request = findHostRequest(requests, reply.target_host_request_fingerprint) orelse return error.UnknownRequest;
-                fingerprints[index] = try finalizedActuationReceiptFingerprintFor(finalized_request, reply);
+                const receipt = try finalizedActuationReceiptFor(finalized_request, reply);
+                const receipt_bytes = try receipt.encode(allocator);
+                errdefer allocator.free(receipt_bytes);
+                fingerprints[index] = receipt.receipt_fingerprint;
+                bytes[index] = receipt_bytes;
+                initialized_bytes += 1;
                 index += 1;
             }
-            return fingerprints;
+            return .{
+                .fingerprints = fingerprints,
+                .bytes = bytes,
+            };
         }
 
-        fn finalizedActuationReceiptFingerprintFor(request: HostRequest, reply: HostReply) !u64 {
+        fn finalizedActuationReceiptFor(request: HostRequest, reply: HostReply) !World.Actuation.Receipt {
             const status = actuationStatusForHostOutcome(reply.outcome.status);
             const commit_value = World.Actuation.Commit.init(.{
                 .intent_fingerprint = request.intent_fingerprint,
@@ -6171,7 +7465,7 @@ pub fn Appliance(comptime World: type) type {
                 .receipt = receipt,
             });
             try finalized.validate();
-            return finalized.receipt.receipt_fingerprint;
+            return finalized.receipt;
         }
 
         fn hostOutcomeStatusIsTerminal(status: HostOutcomeStatus) bool {
@@ -6212,9 +7506,41 @@ pub fn Appliance(comptime World: type) type {
             }
         }
 
+        fn fingerprintsAreDistinct(fingerprints: []const u64) bool {
+            for (fingerprints, 0..) |fingerprint, index| {
+                for (fingerprints[index + 1 ..]) |other| {
+                    if (fingerprint == other) return false;
+                }
+            }
+            return true;
+        }
+
         fn writeU64Slice(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const u64) !void {
             try writeU64(out, allocator, @intCast(values.len));
             for (values) |value| try writeU64(out, allocator, value);
+        }
+
+        fn writeByteSlices(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const []const u8) !void {
+            try writeU64(out, allocator, @intCast(values.len));
+            for (values) |value| try writeBytes(out, allocator, value);
+        }
+
+        fn writeResolutionInputsCanonical(out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const Wire.ResolutionInput) !void {
+            const sorted = try allocator.alloc(Wire.ResolutionInput, values.len);
+            defer allocator.free(sorted);
+            @memcpy(sorted, values);
+            try canonicalizeWireResolutionOrder(sorted);
+            try writeU64(out, allocator, @intCast(sorted.len));
+            for (sorted) |value| try value.encode(out, allocator);
+        }
+
+        fn writeOptionalWireRetentionInput(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: ?Wire.RetentionInput) !void {
+            if (value) |actual| {
+                try writeU8(out, allocator, 1);
+                try actual.encode(out, allocator);
+            } else {
+                try writeU8(out, allocator, 0);
+            }
         }
 
         fn writeResponseStatusSet(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: World.Actuation.ResponseStatusSet) !void {
@@ -6230,6 +7556,24 @@ pub fn Appliance(comptime World: type) type {
             const values = try allocator.alloc(u64, value_count);
             errdefer allocator.free(values);
             for (values) |*value| value.* = try readU64(bytes, cursor);
+            return values;
+        }
+
+        fn readByteSlicesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]const []const u8 {
+            const count = try readU64(bytes, cursor);
+            if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
+            if (count > bytes.len) return error.InvalidFrameEncoding;
+            const value_count: usize = @intCast(count);
+            const values = try allocator.alloc([]const u8, value_count);
+            var initialized: usize = 0;
+            errdefer {
+                for (values[0..initialized]) |value| allocator.free(value);
+                allocator.free(values);
+            }
+            for (values) |*value| {
+                value.* = try readBytesOwned(allocator, bytes, cursor);
+                initialized += 1;
+            }
             return values;
         }
 
@@ -6594,6 +7938,8 @@ pub fn Appliance(comptime World: type) type {
             errdefer freeHostRequests(allocator, host_requests);
             const finalized_actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
             errdefer allocator.free(finalized_actuation_receipt_fingerprints);
+            const finalized_actuation_receipt_bytes = try readByteSlicesOwned(allocator, bytes, cursor);
+            errdefer freeByteSlices(allocator, finalized_actuation_receipt_bytes);
             const root_result_fingerprint = try readOptionalU64(bytes, cursor);
             const root_result_value_image_bytes = try readBytesOwned(allocator, bytes, cursor);
             errdefer allocator.free(root_result_value_image_bytes);
@@ -6633,6 +7979,7 @@ pub fn Appliance(comptime World: type) type {
                 .status = status,
                 .host_requests = host_requests,
                 .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_fingerprints,
+                .finalized_actuation_receipt_bytes = finalized_actuation_receipt_bytes,
                 .root_result_fingerprint = root_result_fingerprint,
                 .root_result_value_image_bytes = root_result_value_image_bytes,
                 .root_result_value_ref_fingerprint = root_result_value_ref_fingerprint,
@@ -6649,10 +7996,226 @@ pub fn Appliance(comptime World: type) type {
                 .diagnostic_metadata = diagnostic_metadata,
                 .owns_host_requests = true,
                 .owns_finalized_actuation_receipt_fingerprints = true,
+                .owns_finalized_actuation_receipt_bytes = true,
                 .owns_checkpoint_payloads = true,
                 .owns_turn_receipt_payloads = true,
                 .owns_diagnostic_metadata = true,
                 .owns_byte_payloads = true,
+            };
+        }
+
+        fn readTurnClosureOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !TurnClosure {
+            const closure_format_version = try readU32(bytes, cursor);
+            const closure_fingerprint_version = try readU32(bytes, cursor);
+            const closure_fingerprint = try readU64(bytes, cursor);
+            const executable_image_fingerprint = try readU64(bytes, cursor);
+            const appliance_manifest_fingerprint = try readU64(bytes, cursor);
+            const parent_closure_fingerprint = try readOptionalU64(bytes, cursor);
+            const turn_sequence_number = try readU64(bytes, cursor);
+            const parent_state_fingerprint = try readU64(bytes, cursor);
+            const resulting_state_fingerprint = try readU64(bytes, cursor);
+            const chronicle_parent_cursor_fingerprint = try readU64(bytes, cursor);
+            const chronicle_resulting_cursor_fingerprint = try readU64(bytes, cursor);
+            const archive_parent_moment_fingerprint = try readOptionalU64(bytes, cursor);
+            const archive_parent_seal_fingerprint = try readOptionalU64(bytes, cursor);
+            const archive_resulting_moment_fingerprint = try readOptionalU64(bytes, cursor);
+            const archive_resulting_seal_fingerprint = try readOptionalU64(bytes, cursor);
+            const checkpoint_fingerprint = try readU64(bytes, cursor);
+            const checkpoint_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(checkpoint_bytes);
+            const capsule_fingerprint = try readU64(bytes, cursor);
+            const capsule_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(capsule_bytes);
+            const turn_receipt_fingerprint = try readU64(bytes, cursor);
+            const turn_receipt_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(turn_receipt_bytes);
+            const evidence_bundle_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(evidence_bundle_bytes);
+            const archive_append_batch_fingerprint = try readOptionalU64(bytes, cursor);
+            const archive_append_batch_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(archive_append_batch_bytes);
+            const pending_host_request_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(pending_host_request_bytes);
+            const root_result_fingerprint = try readOptionalU64(bytes, cursor);
+            const root_result_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(root_result_bytes);
+            const root_result_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
+            const run_receipt_fingerprint = try readOptionalU64(bytes, cursor);
+            const run_receipt_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(run_receipt_bytes);
+            const finalized_actuation_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(finalized_actuation_receipt_fingerprints);
+            const finalized_actuation_receipt_bytes = try readByteSlicesOwned(allocator, bytes, cursor);
+            errdefer freeByteSlices(allocator, finalized_actuation_receipt_bytes);
+            const replay_receipt_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(replay_receipt_fingerprints);
+            const replay_receipt_bytes = try readByteSlicesOwned(allocator, bytes, cursor);
+            errdefer freeByteSlices(allocator, replay_receipt_bytes);
+            const verify_report_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(verify_report_fingerprints);
+            const blockers = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(blockers);
+            const warnings = try readU64SliceOwned(allocator, bytes, cursor);
+            errdefer allocator.free(warnings);
+            const diagnostics = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(diagnostics);
+            const status = try enumFromByte(TurnClosureStatus, try readU8(bytes, cursor));
+            return .{
+                .closure_format_version = closure_format_version,
+                .closure_fingerprint_version = closure_fingerprint_version,
+                .closure_fingerprint = closure_fingerprint,
+                .executable_image_fingerprint = executable_image_fingerprint,
+                .appliance_manifest_fingerprint = appliance_manifest_fingerprint,
+                .parent_closure_fingerprint = parent_closure_fingerprint,
+                .turn_sequence_number = turn_sequence_number,
+                .parent_state_fingerprint = parent_state_fingerprint,
+                .resulting_state_fingerprint = resulting_state_fingerprint,
+                .chronicle_parent_cursor_fingerprint = chronicle_parent_cursor_fingerprint,
+                .chronicle_resulting_cursor_fingerprint = chronicle_resulting_cursor_fingerprint,
+                .archive_parent_moment_fingerprint = archive_parent_moment_fingerprint,
+                .archive_parent_seal_fingerprint = archive_parent_seal_fingerprint,
+                .archive_resulting_moment_fingerprint = archive_resulting_moment_fingerprint,
+                .archive_resulting_seal_fingerprint = archive_resulting_seal_fingerprint,
+                .checkpoint_fingerprint = checkpoint_fingerprint,
+                .checkpoint_bytes = checkpoint_bytes,
+                .capsule_fingerprint = capsule_fingerprint,
+                .capsule_bytes = capsule_bytes,
+                .turn_receipt_fingerprint = turn_receipt_fingerprint,
+                .turn_receipt_bytes = turn_receipt_bytes,
+                .evidence_bundle_bytes = evidence_bundle_bytes,
+                .archive_append_batch_fingerprint = archive_append_batch_fingerprint,
+                .archive_append_batch_bytes = archive_append_batch_bytes,
+                .pending_host_request_bytes = pending_host_request_bytes,
+                .root_result_fingerprint = root_result_fingerprint,
+                .root_result_bytes = root_result_bytes,
+                .root_result_value_ref_fingerprint = root_result_value_ref_fingerprint,
+                .run_receipt_fingerprint = run_receipt_fingerprint,
+                .run_receipt_bytes = run_receipt_bytes,
+                .finalized_actuation_receipt_fingerprints = finalized_actuation_receipt_fingerprints,
+                .finalized_actuation_receipt_bytes = finalized_actuation_receipt_bytes,
+                .replay_receipt_fingerprints = replay_receipt_fingerprints,
+                .replay_receipt_bytes = replay_receipt_bytes,
+                .verify_report_fingerprints = verify_report_fingerprints,
+                .blockers = blockers,
+                .warnings = warnings,
+                .diagnostics = diagnostics,
+                .status = status,
+                .owns_byte_payloads = true,
+                .owns_slices = true,
+            };
+        }
+
+        fn readWireResolutionInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Wire.ResolutionInput {
+            const format_version = try readU32(bytes, cursor);
+            const target_host_request_fingerprint = try readU64(bytes, cursor);
+            const status = try enumFromByte(Wire.ResolutionStatus, try readU8(bytes, cursor));
+            const response_value_image_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(response_value_image_bytes);
+            const host_claim_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(host_claim_bytes);
+            const attempt_number = try readU32(bytes, cursor);
+            const metadata = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(metadata);
+            return .{
+                .format_version = format_version,
+                .target_host_request_fingerprint = target_host_request_fingerprint,
+                .status = status,
+                .response_value_image_bytes = response_value_image_bytes,
+                .host_claim_bytes = host_claim_bytes,
+                .attempt_number = attempt_number,
+                .metadata = metadata,
+                .owns_payloads = true,
+            };
+        }
+
+        fn readWireResolutionInputsOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]Wire.ResolutionInput {
+            const count = try readUsize(bytes, cursor);
+            if (count > Capacity.archive_decode.max_host_replies_per_turn + Capacity.archive_decode.max_actuation_records) return error.InvalidFrameEncoding;
+            const values = try allocator.alloc(Wire.ResolutionInput, count);
+            var initialized: usize = 0;
+            errdefer {
+                for (values[0..initialized]) |*value| value.deinit(allocator);
+                allocator.free(values);
+            }
+            for (values) |*value| {
+                value.* = try readWireResolutionInputOwned(allocator, bytes, cursor);
+                initialized += 1;
+            }
+            return values;
+        }
+
+        fn readWireRetentionInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Wire.RetentionInput {
+            const format_version = try readU32(bytes, cursor);
+            const prior_archive_append_batch_fingerprint = try readU64(bytes, cursor);
+            const resulting_moment_fingerprint = try readU64(bytes, cursor);
+            const resulting_seal_fingerprint = try readU64(bytes, cursor);
+            const resulting_chronicle_cursor_fingerprint = try readU64(bytes, cursor);
+            const host_retention_status = try enumFromByte(Wire.RetentionStatus, try readU8(bytes, cursor));
+            const metadata = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(metadata);
+            return .{
+                .format_version = format_version,
+                .prior_archive_append_batch_fingerprint = prior_archive_append_batch_fingerprint,
+                .resulting_moment_fingerprint = resulting_moment_fingerprint,
+                .resulting_seal_fingerprint = resulting_seal_fingerprint,
+                .resulting_chronicle_cursor_fingerprint = resulting_chronicle_cursor_fingerprint,
+                .host_retention_status = host_retention_status,
+                .metadata = metadata,
+                .owns_metadata = true,
+            };
+        }
+
+        fn readOptionalWireRetentionInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?Wire.RetentionInput {
+            return switch (try readU8(bytes, cursor)) {
+                0 => null,
+                1 => try readWireRetentionInputOwned(allocator, bytes, cursor),
+                else => error.InvalidFrameEncoding,
+            };
+        }
+
+        fn readWireTurnInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Wire.TurnInput {
+            const wire_format_version = try readU32(bytes, cursor);
+            const operation = try enumFromByte(Wire.Operation, try readU8(bytes, cursor));
+            const appliance_manifest_fingerprint = try readU64(bytes, cursor);
+            const expected_parent_closure_fingerprint = try readOptionalU64(bytes, cursor);
+            const expected_parent_state_fingerprint = try readOptionalU64(bytes, cursor);
+            const previous_turn_receipt_fingerprint = try readOptionalU64(bytes, cursor);
+            const turn_sequence_number = try readU64(bytes, cursor);
+            const root_argument_images = try readByteSlicesOwned(allocator, bytes, cursor);
+            errdefer freeByteSlices(allocator, root_argument_images);
+            const parent_turn_closure_bytes = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(parent_turn_closure_bytes);
+            const resolutions = try readWireResolutionInputsOwned(allocator, bytes, cursor);
+            errdefer freeWireResolutionInputs(allocator, resolutions);
+            const retention = try readOptionalWireRetentionInputOwned(allocator, bytes, cursor);
+            errdefer if (retention) |value| {
+                var cleanup = value;
+                cleanup.deinit(allocator);
+            };
+            const deterministic_turn_budget = try readU64(bytes, cursor);
+            const requested_evidence_profile = try enumFromByte(Wire.EvidenceProfile, try readU8(bytes, cursor));
+            const host_metadata = try readBytesOwned(allocator, bytes, cursor);
+            errdefer allocator.free(host_metadata);
+            return .{
+                .wire_format_version = wire_format_version,
+                .operation = operation,
+                .appliance_manifest_fingerprint = appliance_manifest_fingerprint,
+                .expected_parent_closure_fingerprint = expected_parent_closure_fingerprint,
+                .expected_parent_state_fingerprint = expected_parent_state_fingerprint,
+                .previous_turn_receipt_fingerprint = previous_turn_receipt_fingerprint,
+                .turn_sequence_number = turn_sequence_number,
+                .root_argument_images = root_argument_images,
+                .parent_turn_closure_bytes = parent_turn_closure_bytes,
+                .resolutions = resolutions,
+                .retention = retention,
+                .deterministic_turn_budget = deterministic_turn_budget,
+                .requested_evidence_profile = requested_evidence_profile,
+                .host_metadata = host_metadata,
+                .owns_root_argument_images = true,
+                .owns_parent_turn_closure_bytes = true,
+                .owns_resolutions = true,
+                .owns_retention_metadata = retention != null,
+                .owns_host_metadata = true,
             };
         }
 
@@ -6836,6 +8399,7 @@ pub fn Appliance(comptime World: type) type {
         fn freeTurnOutput(allocator: std.mem.Allocator, output: *TurnOutput) void {
             if (output.owns_host_requests) freeHostRequests(allocator, output.host_requests);
             if (output.owns_finalized_actuation_receipt_fingerprints) allocator.free(output.finalized_actuation_receipt_fingerprints);
+            if (output.owns_finalized_actuation_receipt_bytes) freeByteSlices(allocator, output.finalized_actuation_receipt_bytes);
             if (output.owns_checkpoint_payloads) freeCheckpoint(allocator, &output.checkpoint);
             if (output.owns_turn_receipt_payloads) freeTurnReceipt(allocator, &output.turn_receipt);
             if (output.owns_diagnostic_metadata) allocator.free(output.diagnostic_metadata);
@@ -6846,6 +8410,55 @@ pub fn Appliance(comptime World: type) type {
                 allocator.free(output.archive_append_batch_bytes);
                 output.owns_byte_payloads = false;
             }
+        }
+
+        fn freeTurnClosure(allocator: std.mem.Allocator, closure: *TurnClosure) void {
+            if (closure.owns_byte_payloads) {
+                allocator.free(closure.checkpoint_bytes);
+                allocator.free(closure.capsule_bytes);
+                allocator.free(closure.turn_receipt_bytes);
+                allocator.free(closure.evidence_bundle_bytes);
+                allocator.free(closure.archive_append_batch_bytes);
+                allocator.free(closure.pending_host_request_bytes);
+                allocator.free(closure.root_result_bytes);
+                allocator.free(closure.run_receipt_bytes);
+                allocator.free(closure.diagnostics);
+                closure.owns_byte_payloads = false;
+            }
+            if (closure.owns_slices) {
+                allocator.free(closure.finalized_actuation_receipt_fingerprints);
+                freeByteSlices(allocator, closure.finalized_actuation_receipt_bytes);
+                allocator.free(closure.replay_receipt_fingerprints);
+                freeByteSlices(allocator, closure.replay_receipt_bytes);
+                allocator.free(closure.verify_report_fingerprints);
+                allocator.free(closure.blockers);
+                allocator.free(closure.warnings);
+                closure.owns_slices = false;
+            }
+        }
+
+        fn freeByteSlices(allocator: std.mem.Allocator, values: []const []const u8) void {
+            for (values) |value| allocator.free(value);
+            allocator.free(values);
+        }
+
+        fn freeWireResolutionInputs(allocator: std.mem.Allocator, values: []const Wire.ResolutionInput) void {
+            for (values) |value| {
+                var cleanup = value;
+                cleanup.deinit(allocator);
+            }
+            allocator.free(values);
+        }
+
+        fn canonicalizeWireResolutionOrder(values: []Wire.ResolutionInput) !void {
+            std.mem.sort(Wire.ResolutionInput, values, {}, wireResolutionLessThan);
+            for (values, 0..) |value, index| {
+                if (index != 0 and values[index - 1].target_host_request_fingerprint == value.target_host_request_fingerprint) return error.DuplicateHostReply;
+            }
+        }
+
+        fn wireResolutionLessThan(_: void, lhs: Wire.ResolutionInput, rhs: Wire.ResolutionInput) bool {
+            return lhs.target_host_request_fingerprint < rhs.target_host_request_fingerprint;
         }
 
         fn fingerprintCoreHostIntent(manifest_fingerprint: u64, command_fingerprint: u64, binding_fingerprint: u64, turn_sequence_number: u64) u64 {
@@ -6903,6 +8516,36 @@ pub fn Appliance(comptime World: type) type {
             return nonzero(hasher.final());
         }
 
+        fn coreCapsuleImageBytesOwned(
+            allocator: std.mem.Allocator,
+            manifest: Manifest,
+            command: Command,
+            status: TurnStatus,
+            turn_sequence_number: u64,
+        ) ![]const u8 {
+            const synthetic_capsule_fingerprint = fingerprintCoreCapsule(manifest.manifest_fingerprint, command, status);
+            const capsule_manifest = World.Capsule.Manifest.init(.{
+                .kind = .reference_only,
+                .root_target_ref_fingerprint = manifest.root_target_ref_fingerprint,
+                .root_module_ref_fingerprint = null,
+                .pending_port_count = 0,
+                .normal_form = .quiescent_completed,
+                .metadata = "appliance-core-capsule",
+            });
+            const runspace_image = World.Capsule.RunspaceImage.init(.{
+                .runspace_fingerprint = synthetic_capsule_fingerprint,
+                .runspace_report_fingerprint = nonzero(synthetic_capsule_fingerprint ^ turn_sequence_number ^ manifest.manifest_fingerprint),
+                .metadata = "appliance-core-runspace",
+            });
+            const image = World.Capsule.Image.init(.{
+                .manifest = capsule_manifest,
+                .runspace_image = runspace_image,
+                .metadata = "appliance-core-image",
+            });
+            try image.validate(.{});
+            return image.encode(allocator);
+        }
+
         fn defaultCapsuleImageRef(capsule_fingerprint: u64) ?u64 {
             if (capsule_fingerprint == 0) return null;
             var hasher = std.hash.Wyhash.init(0);
@@ -6928,6 +8571,10 @@ pub fn Appliance(comptime World: type) type {
             if (archive_anchor_count != 0 and archive_anchor_count != 3) return error.InvalidFrameEncoding;
         }
 
+        fn validateArchiveAnchorPair(moment_fingerprint: ?u64, seal_fingerprint: ?u64) !void {
+            if ((moment_fingerprint == null) != (seal_fingerprint == null)) return error.InvalidFrameEncoding;
+        }
+
         fn encodeCheckpointOwned(allocator: std.mem.Allocator, checkpoint: Checkpoint) ![]const u8 {
             var out: std.ArrayList(u8) = .empty;
             errdefer out.deinit(allocator);
@@ -6945,6 +8592,15 @@ pub fn Appliance(comptime World: type) type {
             if (decoded.checkpoint_fingerprint != checkpoint.checkpoint_fingerprint) return error.InvalidFrameEncoding;
         }
 
+        fn validateCheckpointBytesForClosure(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, bytes: []const u8, expected_fingerprint: u64) !void {
+            var decoded = Checkpoint.decode(allocator, bytes, expected_manifest_fingerprint, Capacity.archive_decode) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
+            defer decoded.deinit(allocator);
+            if (decoded.checkpoint_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
+        }
+
         fn validateDecodedCheckpointBytes(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, capacity: Capacity, bytes: []const u8, checkpoint: Checkpoint) !void {
             if (bytes.len == 0) return error.InvalidFrameEncoding;
             try validateCheckpointBytes(allocator, expected_manifest_fingerprint, capacity, bytes, checkpoint);
@@ -6955,6 +8611,24 @@ pub fn Appliance(comptime World: type) type {
             errdefer out.deinit(allocator);
             try receipt.encode(&out, allocator);
             return out.toOwnedSlice(allocator);
+        }
+
+        fn validateTurnReceiptBytesForClosure(allocator: std.mem.Allocator, expected_manifest_fingerprint: u64, bytes: []const u8, expected_fingerprint: u64) !void {
+            var receipt = TurnReceipt.decode(allocator, bytes, expected_manifest_fingerprint) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
+            defer receipt.deinit(allocator);
+            if (receipt.receipt_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
+        }
+
+        fn validateActuationReceiptBytes(allocator: std.mem.Allocator, bytes: []const u8, expected_fingerprint: u64) !void {
+            var receipt = World.Actuation.Receipt.decode(allocator, bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
+            defer receipt.deinit(allocator);
+            if (receipt.receipt_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
         }
 
         fn encodeFingerprintImageOwned(allocator: std.mem.Allocator, label: []const u8, fingerprint: u64) ![]const u8 {
@@ -6976,6 +8650,50 @@ pub fn Appliance(comptime World: type) type {
             const actual = try readU64(bytes, &cursor);
             if (actual != fingerprint) return error.InvalidFrameEncoding;
             if (cursor != bytes.len) return error.InvalidFrameEncoding;
+        }
+
+        fn validateRootResultBytesForClosure(bytes: []const u8, expected_fingerprint: ?u64, expected_ref_fingerprint: ?u64) !void {
+            const fingerprint = expected_fingerprint orelse {
+                if (bytes.len != 0 or expected_ref_fingerprint != null) return error.InvalidFrameEncoding;
+                return;
+            };
+            if (bytes.len == 0) return error.InvalidFrameEncoding;
+            const ref = World.Continuity.ObjectRef.fromPayload(.root_result, World.Continuity.ObjectKind.root_result.defaultFormatVersion(), bytes, "root.result");
+            if (ref.object_fingerprint != fingerprint) return error.InvalidFrameEncoding;
+            if (expected_ref_fingerprint) |expected_ref| {
+                if (ref.ref_fingerprint != expected_ref) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn validateTurnClosureBundleRoots(allocator: std.mem.Allocator, closure: TurnClosure) !void {
+            var bundle = World.Continuity.Bundle.decode(allocator, closure.evidence_bundle_bytes, .{}) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
+            defer bundle.deinit();
+            try requireBundleRoot(allocator, bundle, .appliance_checkpoint, closure.checkpoint_fingerprint);
+            try requireBundleRoot(allocator, bundle, .appliance_turn_receipt, closure.turn_receipt_fingerprint);
+            try requireBundleRoot(allocator, bundle, .capsule_image, closure.capsule_fingerprint);
+            if (closure.root_result_fingerprint) |fingerprint| try requireBundleRoot(allocator, bundle, .root_result, fingerprint);
+            if (closure.archive_append_batch_fingerprint) |fingerprint| try requireBundleRoot(allocator, bundle, .archive_append_batch, fingerprint);
+            for (closure.finalized_actuation_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
+            for (closure.replay_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
+            for (closure.verify_report_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_verify_report, fingerprint);
+        }
+
+        fn requireBundleRoot(allocator: std.mem.Allocator, bundle: World.Continuity.Bundle, kind: World.Continuity.ObjectKind, fingerprint: u64) !void {
+            const semantic_ref = World.Continuity.ObjectRef.init(.{
+                .kind = kind,
+                .object_fingerprint = fingerprint,
+                .byte_len = 0,
+            });
+            for (bundle.manifest.roots) |root| {
+                for (bundle.envelopes) |envelope| {
+                    if (!(try World.Continuity.objectEnvelopeRefMatches(allocator, envelope, root))) continue;
+                    if (try World.Continuity.objectEnvelopeRefMatches(allocator, envelope, semantic_ref)) return;
+                }
+            }
+            return error.ObjectMissing;
         }
 
         fn validateRunReceiptBytes(allocator: std.mem.Allocator, bytes: []const u8, expected_fingerprint: ?u64) !void {
@@ -7313,6 +9031,7 @@ pub fn Appliance(comptime World: type) type {
                 .status = output.status,
                 .host_requests = output.host_requests,
                 .finalized_actuation_receipt_fingerprints = output.finalized_actuation_receipt_fingerprints,
+                .finalized_actuation_receipt_bytes = output.finalized_actuation_receipt_bytes,
                 .root_result_fingerprint = output.root_result_fingerprint,
                 .root_result_value_image_bytes = output.root_result_value_image_bytes,
                 .root_result_value_ref_fingerprint = output.root_result_value_ref_fingerprint,
@@ -7428,6 +9147,36 @@ pub fn Appliance(comptime World: type) type {
             return nonzero(hasher.final());
         }
 
+        fn fingerprintWorldV0Report(report: WorldV0Report) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.v0_report.fingerprint");
+            hashU64(&hasher, report.report_fingerprint_version);
+            hashBool(&hasher, report.boundary_v0_5_0_portable_v2_baseline_passed);
+            hashBool(&hasher, report.canonical_executable_image_passed);
+            hashBool(&hasher, report.actual_universal_wasm_executed);
+            hashBool(&hasher, report.genuinely_unrelated_images_executed);
+            hashBool(&hasher, report.internal_loaded_provider_executed);
+            hashBool(&hasher, report.multi_suspension_loaded_root_executed);
+            hashBool(&hasher, report.active_loaded_fabric_restored);
+            hashBool(&hasher, report.replay_completed_without_fresh_effect);
+            hashBool(&hasher, report.deterministic_retry_passed);
+            hashBool(&hasher, report.batched_request_reply_passed);
+            hashBool(&hasher, report.independent_javascript_codec_passed);
+            hashBool(&hasher, report.exact_root_result_bytes_passed);
+            hashBool(&hasher, report.exact_receipt_bytes_passed);
+            hashBool(&hasher, report.exact_capsule_bytes_passed);
+            hashBool(&hasher, report.exact_archive_append_batch_bytes_passed);
+            hashBool(&hasher, report.native_wasm_parity_passed);
+            hashBool(&hasher, report.cold_warm_parity_passed);
+            hashBool(&hasher, report.memory_bound_passed);
+            hashBool(&hasher, report.malformed_input_suite_passed);
+            hashBool(&hasher, report.regression_matrix_passed);
+            hashU64Slice(&hasher, report.blockers);
+            hashU64Slice(&hasher, report.warnings);
+            hashBool(&hasher, report.passed);
+            return nonzero(hasher.final());
+        }
+
         fn fingerprintCoreCapsule(manifest_fingerprint: u64, command: Command, status: TurnStatus) u64 {
             var hasher = std.hash.Wyhash.init(0);
             hashBytes(&hasher, "world.appliance.core_shell.capsule.fingerprint");
@@ -7463,6 +9212,11 @@ pub fn Appliance(comptime World: type) type {
         fn hashU64Slice(hasher: *std.hash.Wyhash, values: []const u64) void {
             hashU64(hasher, values.len);
             for (values) |value| hashU64(hasher, value);
+        }
+
+        fn hashByteSlices(hasher: *std.hash.Wyhash, values: []const []const u8) void {
+            hashU64(hasher, values.len);
+            for (values) |value| hashBytes(hasher, value);
         }
 
         fn hashTurnStatusSlice(hasher: *std.hash.Wyhash, values: []const TurnStatus) void {

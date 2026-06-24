@@ -2,28 +2,41 @@
 import { runConformance } from './world_universal_appliance_host.mjs';
 
 async function main() {
-  const [replyHelperPath, wasmPath, imageAPath, commandAPath, imageBPath, commandBPath] = process.argv.slice(2);
-  if (!commandBPath) {
-    throw new Error('usage: world_universal_appliance_conformance.mjs <reply-helper> <wasm> <image-a> <command-a> <image-b> <command-b>');
+  const [wasmPath, imageAPath, commandAPath, imageBPath, commandBPath, proofPath] = process.argv.slice(2);
+  if (!proofPath) {
+    throw new Error('usage: world_universal_appliance_conformance.mjs <wasm> <image-a> <command-a> <image-b> <command-b> <proof>');
   }
 
-  const result = await runConformance({ replyHelperPath, wasmPath, imageAPath, commandAPath, imageBPath, commandBPath });
+  const result = await runConformance({ wasmPath, imageAPath, commandAPath, imageBPath, commandBPath, proofPath });
   const runs = [result.resultA, result.resultB, result.freshA, result.freshB];
   if (runs.some((run) => !run.loaded)) throw new Error(`canonical executable image was not loaded: ${JSON.stringify(runs)}`);
   if (runs.some((run) => !run.manifestPresent)) throw new Error('canonical manifest was not exposed');
   if (runs.some((run) => !run.outputReady)) throw new Error('canonical command did not produce TurnOutput bytes');
-  if (runs.some((run) => !run.hostRequestReady)) throw new Error('canonical host request was not exposed');
+  if (!result.resultA.hostRequestReady || !result.freshA.hostRequestReady) throw new Error('image A host request was not exposed');
+  if (result.resultB.hostRequestReady || result.freshB.hostRequestReady) throw new Error('image B unexpectedly emitted an external host request');
   if (runs.some((run) => !run.completed)) throw new Error(`canonical reply did not complete execution: ${JSON.stringify(runs)}`);
   if (runs.some((run) => !run.rootResultReady)) throw new Error('completed output missing root result bytes');
   if (runs.some((run) => !run.archiveAppendReady)) throw new Error('completed output missing Archive.AppendBatch bytes');
   if (!sameCompletedOutput(result.resultA, result.freshA)) throw new Error('image A completed output is not deterministic across fresh instances');
   if (!sameCompletedOutput(result.resultB, result.freshB)) throw new Error('image B completed output is not deterministic across fresh instances');
+  if (!result.proof.programPlanANotEqualB) throw new Error('image A and image B ProgramPlan hashes match');
+  if (!result.proof.rootModuleANotEqualB) throw new Error('image A and image B root module fingerprints match');
+  if (!result.proof.dispatchANotEqualB) throw new Error('image A and image B dispatch fingerprints match');
+  if (!result.proof.manifestANotEqualB) throw new Error('image A and image B manifest fingerprints match');
+  if (!result.proof.imageAOnePort || !result.proof.imageBLoadedProvider) throw new Error(`unexpected fixture shape: ${JSON.stringify(result.proof)}`);
   if (!result.rejectedTextEnvelope) throw new Error('text envelope was accepted');
   if (!result.submitWithoutImageRejected) throw new Error('submit without image was not rejected');
+  if (result.nativeHelperUsed) throw new Error('native reply helper was used');
+  if (!result.javascriptCodecIndependent) throw new Error('javascript codec did not run independently');
 
   console.log('actual_external_runtime_executed=true');
   console.log('compiled_once=true');
   console.log('empty_imports=true');
+  console.log('native_helper_used=false');
+  console.log('javascript_codec_independent=true');
+  console.log('two_program_plans_one_wasm=true');
+  console.log('program_plan_a_not_equal_b=true');
+  console.log('loaded_internal_provider_executed=true');
   console.log('image_a_loaded=true');
   console.log('image_b_loaded=true');
   console.log('same_instance_a_then_b=true');

@@ -12994,12 +12994,35 @@ test "capsule active fabric restore rejects mutation without fabric state image"
     }));
     var image = try world.Capsule.freezeRunspace(&source, .{ .allow_active_fabric_parked = true });
     defer image.deinit(allocator);
+    const missing_fabric_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .link_image = image.link_image,
+        .fabric_image = null,
+        .admission_refs = image.admission_refs,
+        .environment_refs = image.environment_refs,
+        .supervision_refs = image.supervision_refs,
+        .guest_conformance_refs = image.guest_conformance_refs,
+        .transcript_image_refs = image.transcript_image_refs,
+        .run_image_refs = image.run_image_refs,
+        .value_image_refs = image.value_image_refs,
+        .actuation_intent_refs = image.actuation_intent_refs,
+        .actuation_receipt_refs = image.actuation_receipt_refs,
+        .actuation_journal_refs = image.actuation_journal_refs,
+        .transcript_images = image.transcript_images,
+        .run_images = image.run_images,
+        .value_images = image.value_images,
+        .dependency_refs = image.dependency_refs,
+        .object_refs = image.object_refs,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_fabric_image.validate(.{}));
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
-    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3a03, .{ .mode = .restore_parked });
-    defer restore.deinit(allocator);
-    try std.testing.expect(!restore.accepted);
-    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, restore.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(missing_fabric_image, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3a03, .{
+        .mode = .restore_parked,
+        .require_link_match = false,
+    }));
     try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
     try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
     try std.testing.expectEqual(@as(usize, 0), receiver.fabric_invocations.items.len);
@@ -41829,6 +41852,15 @@ test "Loaded Fabric installs provider from sealed executable image route" {
 
     _ = try runspace.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(runspace.slots.items[1].handle)).status);
+    const active_invocation = runspace.fabric_invocations.items[invocation.sequence];
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_running, active_invocation.status);
+    const event = try runspace.respondFromFabric(active_invocation);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.parent_responded, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(root_handle)).status);
 }
 
 test "Loaded Run rejects response frame fingerprint mismatch" {

@@ -24,7 +24,8 @@ pub fn main(init: std.process.Init) !void {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
     var source = world.Runspace.init(allocator, .{});
-    defer source.deinit();
+    var source_destroyed = false;
+    defer if (!source_destroyed) source.deinit();
 
     const parent_handle = world.RunHandle.init(.{
         .runspace_fingerprint = source.runspace_fingerprint,
@@ -102,9 +103,7 @@ pub fn main(init: std.process.Init) !void {
     const mapping = world.Fabric.ValueMapping.init(.{
         .kind = .provider_result_to_parent_response,
         .parent_response_value_table_id = root_import.response_value_table_id,
-        .parent_response_value_fingerprint = root_import.response_value_ref_fingerprint,
         .provider_result_value_table_id = root_import.response_value_table_id,
-        .provider_result_value_fingerprint = root_import.response_value_ref_fingerprint,
     });
     const route = world.Fabric.Route.init(.{
         .route_id = 0x5150_a003,
@@ -145,15 +144,34 @@ pub fn main(init: std.process.Init) !void {
 
     var capsule = try world.Capsule.freezeRunspace(&source, .{ .allow_active_fabric_parked = true });
     defer capsule.deinit(allocator);
+    source.deinit();
+    source_destroyed = true;
+
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
-    var restore = try world.Capsule.thawIntoRunspace(capsule, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_c002, .{ .mode = .restore_parked });
+    var restore = try world.Capsule.thawIntoRunspace(capsule, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_c002, .{
+        .mode = .restore_parked,
+        .require_local_permit = false,
+        .require_link_match = false,
+    });
     defer restore.deinit(allocator);
 
-    try stdout.print("active_fabric_invocation_fingerprint={x}\n", .{invocation.invocation_fingerprint});
-    try stdout.print("pending_provider_port_fingerprint={x}\n", .{provider_pending.pending_port_fingerprint});
-    try stdout.print("restore_report_fingerprint={x}\n", .{restore.restore_report_fingerprint});
+    var restored_provider_mailbox_id: ?u64 = null;
+    for (receiver.slots.items) |slot| {
+        if (slot.parent_run_handle_fingerprint != null) {
+            restored_provider_mailbox_id = slot.pending_mailbox_id;
+            break;
+        }
+    }
+    const provider_event = try receiver.respondActiveFabricProviderValue(restored_provider_mailbox_id orelse return error.ExpectedPendingRequestFrame, @as(i32, 1));
+    const restored_invocation = receiver.fabric_invocations.items[0];
+    const root_event = try receiver.respondFromFabric(restored_invocation);
+
+    try stdout.print("provider_parked={}\n", .{provider_pending.pending_port_fingerprint != 0});
+    try stdout.print("source_destroyed={}\n", .{source_destroyed});
     try stdout.print("restore_accepted={}\n", .{restore.accepted});
-    try stdout.print("final_result=active-fabric-restore-denied\n", .{});
+    try stdout.print("active_fabric_restore_accepted={}\n", .{restore.accepted});
+    try stdout.print("provider_completed={}\n", .{provider_event.kind == .run_completed});
+    try stdout.print("root_completed={}\n", .{root_event.kind == .run_completed});
     try stdout.flush();
 }

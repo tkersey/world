@@ -12,18 +12,22 @@ const guest_memory_bytes: usize = 1024 * 1024;
 const max_image_bytes: usize = 128 * 1024;
 const max_command_bytes: usize = 64 * 1024;
 const max_output_bytes: usize = 128 * 1024;
+const max_turn_input_bytes: usize = max_command_bytes;
+const max_closure_bytes: usize = 256 * 1024;
 const max_modules: usize = 8;
 const max_provider_depth: usize = 8;
 const max_external_bindings: usize = 16;
 const max_mailbox_entries: usize = 1024;
-const max_linear_memory_pages: usize = 2048;
+const max_linear_memory_pages: usize = 1024;
 const max_error_bytes: usize = 160;
-const slot_heap_bytes: usize = 40 * 1024 * 1024;
+const loaded_image_arena_bytes: usize = 16 * 1024 * 1024;
+const staging_arena_bytes: usize = 16 * 1024 * 1024;
+const turn_scratch_bytes: usize = 4 * 1024 * 1024;
 var guest_memory: [guest_memory_bytes]u8 align(16) = [_]u8{0} ** guest_memory_bytes;
 var bump: usize = 16;
 
-var slot0_bytes: [slot_heap_bytes]u8 align(16) = [_]u8{0} ** slot_heap_bytes;
-var slot1_bytes: [slot_heap_bytes]u8 align(16) = [_]u8{0} ** slot_heap_bytes;
+var slot0_bytes: [loaded_image_arena_bytes]u8 align(16) = [_]u8{0} ** loaded_image_arena_bytes;
+var slot1_bytes: [staging_arena_bytes]u8 align(16) = [_]u8{0} ** staging_arena_bytes;
 var slot0_fba = std.heap.FixedBufferAllocator.init(&slot0_bytes);
 var slot1_fba = std.heap.FixedBufferAllocator.init(&slot1_bytes);
 
@@ -35,7 +39,7 @@ var last_error: [max_error_bytes]u8 = [_]u8{0} ** max_error_bytes;
 var last_error_len_value: usize = 0;
 
 pub const executable_runtime_profile = world.Executable.RuntimeProfile.init(.{
-    .supports_internal_providers = false,
+    .supports_internal_providers = true,
     .max_modules = max_modules,
     .max_provider_depth = max_provider_depth,
     .max_external_bindings = max_external_bindings,
@@ -47,7 +51,8 @@ pub const executable_runtime_profile = world.Executable.RuntimeProfile.init(.{
 });
 
 const runtime_manifest =
-    "world.universal_appliance.runtime.v2\n" ++
+    "world.universal_appliance.runtime.v3\n" ++
+    "abi=3\n" ++
     "imports=0\n" ++
     "wasi=false\n" ++
     "target_specific_boundary_type=false\n" ++
@@ -64,7 +69,19 @@ const runtime_manifest =
     std.fmt.comptimePrint("max_image_bytes={d}\n", .{executable_runtime_profile.max_image_bytes}) ++
     std.fmt.comptimePrint("max_command_bytes={d}\n", .{executable_runtime_profile.max_command_bytes}) ++
     std.fmt.comptimePrint("max_output_bytes={d}\n", .{executable_runtime_profile.max_output_bytes}) ++
+    std.fmt.comptimePrint("max_turn_input_bytes={d}\n", .{max_turn_input_bytes}) ++
+    std.fmt.comptimePrint("max_closure_bytes={d}\n", .{max_closure_bytes}) ++
     std.fmt.comptimePrint("max_linear_memory_pages={d}\n", .{executable_runtime_profile.max_linear_memory_pages}) ++
+    std.fmt.comptimePrint("encoded_image_bytes_limit={d}\n", .{max_image_bytes}) ++
+    std.fmt.comptimePrint("decoded_immutable_bytes_limit={d}\n", .{loaded_image_arena_bytes}) ++
+    std.fmt.comptimePrint("staging_high_water_limit={d}\n", .{staging_arena_bytes}) ++
+    std.fmt.comptimePrint("execution_high_water_limit={d}\n", .{turn_scratch_bytes}) ++
+    std.fmt.comptimePrint("runspace_slots={d}\n", .{max_modules}) ++
+    std.fmt.comptimePrint("loaded_frames={d}\n", .{max_modules}) ++
+    std.fmt.comptimePrint("mailbox_entries={d}\n", .{max_mailbox_entries}) ++
+    std.fmt.comptimePrint("fabric_invocations={d}\n", .{max_provider_depth}) ++
+    std.fmt.comptimePrint("linear_memory_initial_limit_bytes={d}\n", .{max_linear_memory_pages * 64 * 1024}) ++
+    std.fmt.comptimePrint("linear_memory_max_limit_bytes={d}\n", .{max_linear_memory_pages * 64 * 1024}) ++
     std.fmt.comptimePrint("runtime_profile_metadata={s}\n", .{executable_runtime_profile.metadata});
 
 pub const abi_capacity = blk: {
@@ -137,13 +154,19 @@ pub export fn world_appliance_load_executable(ptr: usize, len: usize) u32 {
 }
 
 fn imageSupportedByUniversalAppliance(image: Image) bool {
-    if (image.module_set.modules.len != 1) return false;
+    if (image.module_set.modules.len == 0 or image.module_set.modules.len > max_modules) return false;
+    var root_count: usize = 0;
     for (image.module_set.modules) |module| {
-        if (module.role != .root) return false;
+        switch (module.role) {
+            .root => root_count += 1,
+            .provider => {},
+        }
     }
-    return image.dispatch_image.route_ids.len == 0 and
-        image.dispatch_image.fabric_plan_fingerprints.len == 0 and
-        image.dispatch_image.route_provider_module_fingerprints.len == 0;
+    if (root_count != 1) return false;
+    if (image.dispatch_image.route_ids.len > max_provider_depth) return false;
+    if (image.dispatch_image.fabric_plan_fingerprints.len > max_provider_depth) return false;
+    if (image.dispatch_image.route_provider_module_fingerprints.len > max_provider_depth) return false;
+    return true;
 }
 
 pub export fn world_appliance_unload_executable() u32 {
@@ -176,11 +199,9 @@ pub export fn world_appliance_read_manifest(ptr: usize, cap: usize) usize {
 pub export fn world_appliance_submit_command(ptr: usize, len: usize) u32 {
     const current = activeNative() orelse return setErrorStatus(.invalid_command, "no executable image loaded");
     if (len == 0 or len > max_command_bytes) {
-        current.clearOutput();
         return setErrorStatus(.capacity_exceeded, "invalid command length");
     }
     const command = guestRange(ptr, len) orelse {
-        current.clearOutput();
         return setErrorStatus(.invalid_command, "command outside appliance memory");
     };
     const status = current.submitCommand(command);
@@ -191,6 +212,43 @@ pub export fn world_appliance_submit_command(ptr: usize, len: usize) u32 {
         setSubmitError(status, current.lastErrorBytes());
     }
     return @intFromEnum(status);
+}
+
+pub export fn world_appliance_submit_turn(ptr: usize, len: usize) u32 {
+    const current = activeNative() orelse return setErrorStatus(.invalid_command, "no executable image loaded");
+    if (len == 0 or len > max_turn_input_bytes) {
+        return setErrorStatus(.capacity_exceeded, "invalid turn input length");
+    }
+    const turn_input = guestRange(ptr, len) orelse {
+        return setErrorStatus(.invalid_command, "turn input outside appliance memory");
+    };
+    const status = current.submitTurn(turn_input);
+    if (Abi.statusHasTurnOutput(status)) {
+        clearError();
+    } else {
+        setSubmitError(status, current.lastErrorBytes());
+    }
+    return @intFromEnum(status);
+}
+
+pub export fn world_appliance_closure_len() usize {
+    const current = activeNative() orelse return 0;
+    return current.closureLen();
+}
+
+pub export fn world_appliance_read_closure(ptr: usize, cap: usize) usize {
+    const current = activeNative() orelse return 0;
+    const out = guestRange(ptr, cap) orelse {
+        _ = setErrorStatus(.buffer_too_small, "buffer outside appliance memory");
+        return current.closureLen();
+    };
+    const required = current.readClosure(out);
+    if (cap < required) {
+        _ = setErrorStatus(.buffer_too_small, "buffer too small");
+    } else {
+        clearError();
+    }
+    return required;
 }
 
 pub export fn world_appliance_output_len() usize {
@@ -273,7 +331,7 @@ fn clearLoaded() void {
         resetSlot(active_slot);
         return;
     }
-    native.core.deinit();
+    native.deinit();
     loaded = false;
     resetSlot(active_slot);
 }
@@ -328,7 +386,7 @@ fn setLoadErrorForSlot(err: anyerror, slot: u1) u32 {
         const message = std.fmt.bufPrint(&buffer, "OutOfMemory slot={d} used={d} cap={d}", .{
             slot,
             slotAllocatorEndIndex(slot),
-            slot_heap_bytes,
+            slotCapacity(slot),
         }) catch "OutOfMemory";
         return setErrorStatus(Abi.statusForError(err), message);
     }
@@ -339,6 +397,13 @@ fn slotAllocatorEndIndex(slot: u1) usize {
     return switch (slot) {
         0 => slot0_fba.end_index,
         1 => slot1_fba.end_index,
+    };
+}
+
+fn slotCapacity(slot: u1) usize {
+    return switch (slot) {
+        0 => loaded_image_arena_bytes,
+        1 => staging_arena_bytes,
     };
 }
 
@@ -363,7 +428,7 @@ fn setSubmitError(status: Abi.Status, detail: []const u8) void {
         appendLastError(" used=");
         appendLastErrorUsize(slotAllocatorEndIndex(active_slot));
         appendLastError(" cap=");
-        appendLastErrorUsize(slot_heap_bytes);
+        appendLastErrorUsize(slotCapacity(active_slot));
     }
 }
 

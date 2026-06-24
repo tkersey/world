@@ -52,7 +52,7 @@ pub const AgentAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
     .metadata = "example-agent",
 });
 
-pub const agent_wasm_manifest_fingerprint: u64 = 0x7f96cca39e26a407;
+pub const agent_wasm_manifest_fingerprint: u64 = 0x41e65768a81fa118;
 pub const agent_wasm_capacity_fingerprint: u64 = AgentAppliance.capacity_value.fingerprint();
 pub const agent_wasm_memory_plan_fingerprint: u64 = AgentAppliance.memoryPlan().plan_fingerprint;
 pub const agent_wasm_required_memory_bytes: usize = AgentAppliance.requiredMemoryBytes();
@@ -184,4 +184,70 @@ pub fn hostReplyWithStatusFor(
 
 pub fn bytesFingerprint(bytes: []const u8) u64 {
     return std.hash.Wyhash.hash(0, bytes);
+}
+
+pub fn readClosureOwned(allocator: std.mem.Allocator, native: *world.Appliance.Native) ![]u8 {
+    const len = native.closureLen();
+    if (len == 0) return error.ExpectedClosureBytes;
+    const bytes = try allocator.alloc(u8, len);
+    errdefer allocator.free(bytes);
+    if (native.readClosure(bytes) != len) return error.ClosureReadMismatch;
+    return bytes;
+}
+
+pub fn readOutputOwned(allocator: std.mem.Allocator, native: *world.Appliance.Native) ![]u8 {
+    const len = native.outputLen();
+    if (len == 0) return error.ExpectedOutputBytes;
+    const bytes = try allocator.alloc(u8, len);
+    errdefer allocator.free(bytes);
+    if (native.readOutput(bytes) != len) return error.OutputReadMismatch;
+    return bytes;
+}
+
+pub fn decodeNativeOutput(
+    allocator: std.mem.Allocator,
+    manifest: world.Appliance.Manifest,
+    capacity: world.Appliance.Capacity,
+    native: *world.Appliance.Native,
+) !world.Appliance.TurnOutput {
+    const bytes = try readOutputOwned(allocator, native);
+    defer allocator.free(bytes);
+    return world.Appliance.TurnOutput.decode(allocator, bytes, manifest.manifest_fingerprint, capacity);
+}
+
+pub fn responseValueImageBytes(
+    allocator: std.mem.Allocator,
+    request: world.Appliance.HostRequest,
+    response_fingerprint: u64,
+) ![]const u8 {
+    var image = try world.Frame.ValueImage.fromCanonicalBytes(
+        allocator,
+        null,
+        request.expected_response_value_ref_fingerprint,
+        request.expected_response_schema_ref_fingerprint,
+        std.mem.asBytes(&response_fingerprint),
+        false,
+    );
+    defer image.deinit(allocator);
+    return image.encode(allocator);
+}
+
+pub fn wireResolutionFor(
+    allocator: std.mem.Allocator,
+    request: world.Appliance.HostRequest,
+    status: world.Appliance.Wire.ResolutionStatus,
+    response_fingerprint: u64,
+) !world.Appliance.Wire.ResolutionInput {
+    const response_bytes = if (status == .responded)
+        try responseValueImageBytes(allocator, request, response_fingerprint)
+    else
+        "";
+    return world.Appliance.Wire.ResolutionInput.init(.{
+        .target_host_request_fingerprint = request.request_fingerprint,
+        .status = status,
+        .response_value_image_bytes = response_bytes,
+        .host_claim_bytes = "host-claim:turn-closure-example",
+        .attempt_number = 1,
+        .metadata = "fixture-resolution",
+    });
 }

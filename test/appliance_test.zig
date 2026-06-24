@@ -1112,7 +1112,7 @@ fn buildMinimalApplianceWasmWithOptions(
 }
 
 test "appliance static contract exposes root namespace and versions" {
-    try std.testing.expectEqual(@as(u32, 1), world.world_appliance_abi_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_abi_version);
     try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_format_version);
     try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_memory_plan_fingerprint_version);
@@ -1123,7 +1123,7 @@ test "appliance static contract exposes root namespace and versions" {
     try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_checkpoint_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_receipt_format_version);
-    try std.testing.expectEqual(@as(u32, 1), world.Appliance.Abi.version);
+    try std.testing.expectEqual(@as(u32, 3), world.Appliance.Abi.version);
     try std.testing.expectEqual(world.Appliance.Abi.Status.buffer_too_small, @as(world.Appliance.Abi.Status, @enumFromInt(15)));
     try std.testing.expectEqual(@as(usize, 8), world.Appliance.Abi.metadata_exports.len);
     try std.testing.expect(world.Appliance.Abi.statusHasTurnOutput(.needs_host));
@@ -2062,15 +2062,15 @@ test "appliance manifest derives supported execution modes from profile" {
 
     const actuated_small = ActuatedSmallAppliance.manifest();
     try std.testing.expect(actuated_small.supported_execution_modes.supports(.fresh));
-    try std.testing.expect(!actuated_small.supported_execution_modes.supports(.replay));
-    try std.testing.expect(!actuated_small.required_host_capabilities.replay_evidence);
+    try std.testing.expect(actuated_small.supported_execution_modes.supports(.replay));
+    try std.testing.expect(actuated_small.required_host_capabilities.replay_evidence);
 
     const actuated_full = ActuatedFullAppliance.manifest();
     try std.testing.expect(actuated_full.supported_execution_modes.supports(.fresh));
-    try std.testing.expect(!actuated_full.supported_execution_modes.supports(.replay));
+    try std.testing.expect(actuated_full.supported_execution_modes.supports(.replay));
     try std.testing.expect(!actuated_full.supported_execution_modes.supports(.verify));
     try std.testing.expect(!actuated_full.supported_execution_modes.supports(.audit));
-    try std.testing.expect(!actuated_full.required_host_capabilities.replay_evidence);
+    try std.testing.expect(actuated_full.required_host_capabilities.replay_evidence);
 
     const replay_only_with_binding_modes = world.Appliance.ExecutionModeSet.forManifest(world.Appliance.Profile.replay_only, 1);
     try std.testing.expect(!replay_only_with_binding_modes.supports(.fresh));
@@ -4836,15 +4836,15 @@ test "appliance Core applies HostReply RetentionAck before archive-gated advance
     try std.testing.expectEqual(@as(?u64, terminal_archive_ack.resulting_chronicle_cursor_fingerprint), restore_core.latest_chronicle_cursor_fingerprint);
 }
 
-test "appliance Core rejects replay evidence without verified transcript support" {
+test "appliance Core accepts replay evidence with verified transcript support" {
     const ReplayAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
         .capacity = world.Appliance.Capacity.tiny_one_port,
         .actuation_bindings = .{ApplianceActuationBinding},
     });
     const manifest = ReplayAppliance.manifest();
-    try std.testing.expect(!manifest.supported_execution_modes.supports(.replay));
-    try std.testing.expect(!manifest.required_host_capabilities.replay_evidence);
+    try std.testing.expect(manifest.supported_execution_modes.supports(.replay));
+    try std.testing.expect(manifest.required_host_capabilities.replay_evidence);
 
     var fresh_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -4931,7 +4931,7 @@ test "appliance Core rejects replay evidence without verified transcript support
     defer replay_core.reset();
     const replay_evidence = [_]u64{
         terminal_output.turn_receipt.receipt_fingerprint,
-        terminal_output.turn_receipt.applied_host_reply_fingerprints[0],
+        terminal_output.finalized_actuation_receipt_fingerprints[0],
     };
     const replay_boot = world.Appliance.Command.init(.{
         .kind = .boot,
@@ -4942,26 +4942,44 @@ test "appliance Core rejects replay evidence without verified transcript support
     });
     const replay_boot_bytes = try replay_boot.encode(std.testing.allocator);
     defer std.testing.allocator.free(replay_boot_bytes);
-    try std.testing.expectError(error.InvalidCommand, replay_core.submit(replay_boot_bytes));
+    try replay_core.submit(replay_boot_bytes);
+    try replay_core.executeTurn();
+    var replay_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        replay_core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer replay_output.deinit(std.testing.allocator);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, replay_output.status);
+    try std.testing.expectEqual(@as(usize, 0), replay_output.host_requests.len);
+    try std.testing.expectEqual(@as(usize, 0), replay_output.turn_receipt.emitted_host_request_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 0), replay_output.turn_receipt.applied_host_reply_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), replay_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(terminal_output.finalized_actuation_receipt_fingerprints[0], replay_output.finalized_actuation_receipt_fingerprints[0]);
+    try std.testing.expect(replay_output.root_result_fingerprint != null);
 
-    var arbitrary_replay_core = world.Appliance.Core.initWithCapacity(
+    var duplicate_replay_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
         manifest,
         ReplayAppliance.memoryPlan(),
         world.Appliance.Capacity.tiny_one_port,
     );
-    defer arbitrary_replay_core.reset();
-    const arbitrary_replay_evidence = [_]u64{ 0xD5F0, 0xD5F1 };
-    const arbitrary_replay_boot = world.Appliance.Command.init(.{
+    defer duplicate_replay_core.reset();
+    const duplicate_replay_evidence = [_]u64{
+        terminal_output.turn_receipt.receipt_fingerprint,
+        terminal_output.turn_receipt.receipt_fingerprint,
+    };
+    const duplicate_replay_boot = world.Appliance.Command.init(.{
         .kind = .boot,
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 0,
         .execution_mode = .replay,
-        .receiver_evidence_fingerprints = &arbitrary_replay_evidence,
+        .receiver_evidence_fingerprints = &duplicate_replay_evidence,
     });
-    const arbitrary_replay_boot_bytes = try arbitrary_replay_boot.encode(std.testing.allocator);
-    defer std.testing.allocator.free(arbitrary_replay_boot_bytes);
-    try std.testing.expectError(error.InvalidCommand, arbitrary_replay_core.submit(arbitrary_replay_boot_bytes));
+    const duplicate_replay_boot_bytes = try duplicate_replay_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(duplicate_replay_boot_bytes);
+    try std.testing.expectError(error.InvalidCommand, duplicate_replay_core.submit(duplicate_replay_boot_bytes));
 
     var missing_evidence_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -4987,6 +5005,7 @@ test "appliance Core rejects replay evidence without verified transcript support
         .metadata = "actuated-full-evidence-replay-rejected",
     });
     const full_manifest = FullEvidenceAppliance.manifest();
+    try std.testing.expect(full_manifest.supported_execution_modes.supports(.replay));
     try std.testing.expect(!full_manifest.supported_execution_modes.supports(.verify));
     try std.testing.expect(!full_manifest.supported_execution_modes.supports(.audit));
     var verify_core = world.Appliance.Core.initWithCapacity(
@@ -7889,7 +7908,7 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     try std.testing.expectError(error.InvalidFrameEncoding, zero_default_permit_manifest.validate());
 
     var replay_modes = manifest.supported_execution_modes;
-    replay_modes.replay = true;
+    replay_modes.replay = false;
     const replay_advertised_manifest = applianceManifestVariant(manifest, .{
         .supported_execution_modes = replay_modes,
     });
@@ -7917,7 +7936,7 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     try std.testing.expectError(error.InvalidFrameEncoding, no_fresh_manifest.validate());
 
     var replay_evidence_capabilities = manifest.required_host_capabilities;
-    replay_evidence_capabilities.replay_evidence = true;
+    replay_evidence_capabilities.replay_evidence = false;
     const replay_evidence_manifest = applianceManifestVariant(manifest, .{
         .required_host_capabilities = replay_evidence_capabilities,
     });
@@ -7959,6 +7978,362 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     try std.testing.expectError(error.InvalidFrameEncoding, reserved_capabilities_manifest.validate());
 }
 
+fn applianceTestCapsuleBytes(allocator: std.mem.Allocator, metadata: []const u8) ![]const u8 {
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .reference_only,
+        .root_target_ref_fingerprint = 0xC105_0001,
+        .normal_form = .quiescent_completed,
+        .metadata = metadata,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0xC105_0002,
+        .runspace_report_fingerprint = 0xC105_0003,
+        .metadata = metadata,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .metadata = metadata,
+    });
+    try image.validate(.{});
+    return image.encode(allocator);
+}
+
+fn applianceTurnClosureFixture(allocator: std.mem.Allocator) !struct {
+    closure: world.Appliance.TurnClosure,
+    capsule_bytes: []const u8,
+    checkpoint_bytes: []const u8,
+    turn_receipt_bytes: []const u8,
+    actuation_receipt_fingerprints: []const u64,
+    actuation_receipt_byte_slices: []const []const u8,
+    actuation_receipt_bytes: []const u8,
+    root_result_bytes: []const u8,
+    bundle_bytes: []const u8,
+} {
+    const manifest_fingerprint: u64 = 0xD7C1;
+    const executable_fingerprint: u64 = 0xE7C1;
+    const root_result_bytes = try allocator.dupe(u8, "final=closure");
+    errdefer allocator.free(root_result_bytes);
+    const root_result_ref = world.Continuity.ObjectRef.fromPayload(.root_result, world.Continuity.ObjectKind.root_result.defaultFormatVersion(), root_result_bytes, "root.result");
+    const root_result_fingerprint = root_result_ref.object_fingerprint;
+
+    const capsule_bytes = try applianceTestCapsuleBytes(allocator, "turn-closure");
+    errdefer allocator.free(capsule_bytes);
+    const capsule_ref = world.Continuity.ObjectRef.fromPayload(.capsule_image, world.world_capsule_image_format_version, capsule_bytes, "capsule.image");
+
+    const receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .command_fingerprint = 0xD7C2,
+        .resulting_capsule_fingerprint = capsule_ref.object_fingerprint,
+        .root_result_fingerprint = root_result_fingerprint,
+        .status = .completed,
+    });
+    var receipt_payload: std.ArrayList(u8) = .empty;
+    defer receipt_payload.deinit(allocator);
+    try receipt.encode(&receipt_payload, allocator);
+    const turn_receipt_bytes = try allocator.dupe(u8, receipt_payload.items);
+    errdefer allocator.free(turn_receipt_bytes);
+
+    const actuation_receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = 0xA7C1,
+        .envelope_fingerprint = 0xA7C2,
+        .decision_fingerprint = 0xA7C3,
+        .commit_fingerprint = 0xA7C4,
+        .response_fingerprint = 0xA7C5,
+        .frame_response_fingerprint = 0xA7C6,
+        .actuator_ref_fingerprint = 0xA7C7,
+        .idempotency_key_fingerprint = 0xA7C8,
+        .request_fingerprint = 0xA7C9,
+        .target_ref_fingerprint = 0xA7CA,
+        .world_surface_fingerprint = 0xA7CB,
+        .world_port_id = 1,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const actuation_receipt_bytes = try actuation_receipt.encode(allocator);
+    errdefer allocator.free(actuation_receipt_bytes);
+    const actuation_receipt_fingerprints = try allocator.alloc(u64, 1);
+    errdefer allocator.free(actuation_receipt_fingerprints);
+    actuation_receipt_fingerprints[0] = actuation_receipt.receipt_fingerprint;
+    const actuation_receipt_byte_slices = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(actuation_receipt_byte_slices);
+    actuation_receipt_byte_slices[0] = actuation_receipt_bytes;
+
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .capsule_fingerprint = capsule_ref.object_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+    });
+    var checkpoint_payload: std.ArrayList(u8) = .empty;
+    defer checkpoint_payload.deinit(allocator);
+    try checkpoint.encode(&checkpoint_payload, allocator);
+    const checkpoint_bytes = try allocator.dupe(u8, checkpoint_payload.items);
+    errdefer allocator.free(checkpoint_bytes);
+
+    const checkpoint_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_checkpoint,
+        .payload_bytes = checkpoint_bytes,
+        .label = "checkpoint",
+    });
+    const receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_receipt,
+        .payload_bytes = turn_receipt_bytes,
+        .label = "receipt",
+    });
+    const capsule_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = world.world_capsule_image_format_version,
+        .payload_bytes = capsule_bytes,
+        .label = "capsule",
+    });
+    const root_result_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .root_result,
+        .payload_bytes = root_result_bytes,
+        .label = "root-result",
+    });
+    const actuation_receipt_envelope_without_deps = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .payload_bytes = actuation_receipt_bytes,
+        .label = "actuation-receipt",
+    });
+    const actuation_receipt_deps = try world.Continuity.objectEnvelopeRequiredDependencyRefs(allocator, actuation_receipt_envelope_without_deps);
+    defer allocator.free(actuation_receipt_deps);
+    const actuation_receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .dependency_refs = actuation_receipt_deps,
+        .payload_bytes = actuation_receipt_bytes,
+        .label = "actuation-receipt",
+    });
+    const roots = [_]world.Continuity.ObjectRef{
+        checkpoint_envelope.objectRef(),
+        receipt_envelope.objectRef(),
+        capsule_envelope.objectRef(),
+        root_result_envelope.objectRef(),
+        actuation_receipt_envelope.objectRef(),
+    };
+    var envelopes = [_]world.Continuity.ObjectEnvelope{
+        checkpoint_envelope,
+        receipt_envelope,
+        capsule_envelope,
+        root_result_envelope,
+        actuation_receipt_envelope,
+    };
+    const bundle = world.Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = world.Continuity.BundleManifest.init(.{ .roots = &roots, .object_count = envelopes.len }),
+        .envelopes = &envelopes,
+    };
+    const bundle_bytes = try bundle.toBytes(allocator);
+    errdefer allocator.free(bundle_bytes);
+
+    const closure = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = executable_fingerprint,
+        .appliance_manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .parent_state_fingerprint = world.Appliance.coreStateFingerprint(.uninitialized, 0, null),
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 0, receipt.receipt_fingerprint),
+        .chronicle_parent_cursor_fingerprint = 0xD7C3,
+        .chronicle_resulting_cursor_fingerprint = 0xD7C4,
+        .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint,
+        .checkpoint_bytes = checkpoint_bytes,
+        .capsule_fingerprint = capsule_ref.object_fingerprint,
+        .capsule_bytes = capsule_bytes,
+        .turn_receipt_fingerprint = receipt.receipt_fingerprint,
+        .turn_receipt_bytes = turn_receipt_bytes,
+        .evidence_bundle_bytes = bundle_bytes,
+        .root_result_fingerprint = root_result_fingerprint,
+        .root_result_bytes = root_result_bytes,
+        .root_result_value_ref_fingerprint = root_result_ref.ref_fingerprint,
+        .finalized_actuation_receipt_fingerprints = actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = actuation_receipt_byte_slices,
+        .status = .completed,
+    });
+    return .{
+        .closure = closure,
+        .capsule_bytes = capsule_bytes,
+        .checkpoint_bytes = checkpoint_bytes,
+        .turn_receipt_bytes = turn_receipt_bytes,
+        .actuation_receipt_fingerprints = actuation_receipt_fingerprints,
+        .actuation_receipt_byte_slices = actuation_receipt_byte_slices,
+        .actuation_receipt_bytes = actuation_receipt_bytes,
+        .root_result_bytes = root_result_bytes,
+        .bundle_bytes = bundle_bytes,
+    };
+}
+
+test "appliance TurnClosure complete one-port closure validates" {
+    const allocator = std.testing.allocator;
+    const fixture = try applianceTurnClosureFixture(allocator);
+    defer allocator.free(fixture.capsule_bytes);
+    defer allocator.free(fixture.checkpoint_bytes);
+    defer allocator.free(fixture.turn_receipt_bytes);
+    defer allocator.free(fixture.actuation_receipt_fingerprints);
+    defer allocator.free(fixture.actuation_receipt_byte_slices);
+    defer allocator.free(fixture.actuation_receipt_bytes);
+    defer allocator.free(fixture.root_result_bytes);
+    defer allocator.free(fixture.bundle_bytes);
+
+    try fixture.closure.validate(allocator, .{
+        .expected_executable_image_fingerprint = fixture.closure.executable_image_fingerprint,
+        .expected_manifest_fingerprint = fixture.closure.appliance_manifest_fingerprint,
+        .limits = .archive_decode,
+    });
+    const report = try fixture.closure.validationReport(allocator, .{ .limits = .archive_decode });
+    try report.validate();
+    try std.testing.expect(report.valid);
+
+    const encoded = try fixture.closure.encode(allocator);
+    defer allocator.free(encoded);
+    var decoded = try world.Appliance.TurnClosure.decode(allocator, encoded);
+    defer decoded.deinit(allocator);
+    try decoded.validate(allocator, .{ .limits = .archive_decode });
+    try std.testing.expectEqual(fixture.closure.closure_fingerprint, decoded.closure_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), decoded.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), decoded.finalized_actuation_receipt_bytes.len);
+    var actuation_receipt = try world.Actuation.Receipt.decode(allocator, decoded.finalized_actuation_receipt_bytes[0]);
+    defer actuation_receipt.deinit(allocator);
+    try std.testing.expectEqual(decoded.finalized_actuation_receipt_fingerprints[0], actuation_receipt.receipt_fingerprint);
+
+    const materialized_checkpoint = try decoded.materializeCheckpoint(allocator);
+    defer allocator.free(materialized_checkpoint);
+    try std.testing.expectEqualSlices(u8, fixture.checkpoint_bytes, materialized_checkpoint);
+    const materialized_capsule = try decoded.materializeCapsule(allocator);
+    defer allocator.free(materialized_capsule);
+    try std.testing.expectEqualSlices(u8, fixture.capsule_bytes, materialized_capsule);
+}
+
+test "appliance TurnClosure rejects mismatched required bytes and unresolved roots" {
+    const allocator = std.testing.allocator;
+    const fixture = try applianceTurnClosureFixture(allocator);
+    defer allocator.free(fixture.capsule_bytes);
+    defer allocator.free(fixture.checkpoint_bytes);
+    defer allocator.free(fixture.turn_receipt_bytes);
+    defer allocator.free(fixture.actuation_receipt_fingerprints);
+    defer allocator.free(fixture.actuation_receipt_byte_slices);
+    defer allocator.free(fixture.actuation_receipt_bytes);
+    defer allocator.free(fixture.root_result_bytes);
+    defer allocator.free(fixture.bundle_bytes);
+
+    var wrong_checkpoint = fixture.closure;
+    wrong_checkpoint.checkpoint_fingerprint +%= 1;
+    wrong_checkpoint.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = wrong_checkpoint.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = wrong_checkpoint.appliance_manifest_fingerprint,
+        .turn_sequence_number = wrong_checkpoint.turn_sequence_number,
+        .parent_state_fingerprint = wrong_checkpoint.parent_state_fingerprint,
+        .resulting_state_fingerprint = wrong_checkpoint.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = wrong_checkpoint.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = wrong_checkpoint.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = wrong_checkpoint.checkpoint_fingerprint,
+        .checkpoint_bytes = wrong_checkpoint.checkpoint_bytes,
+        .capsule_fingerprint = wrong_checkpoint.capsule_fingerprint,
+        .capsule_bytes = wrong_checkpoint.capsule_bytes,
+        .turn_receipt_fingerprint = wrong_checkpoint.turn_receipt_fingerprint,
+        .turn_receipt_bytes = wrong_checkpoint.turn_receipt_bytes,
+        .evidence_bundle_bytes = wrong_checkpoint.evidence_bundle_bytes,
+        .root_result_fingerprint = wrong_checkpoint.root_result_fingerprint,
+        .root_result_bytes = wrong_checkpoint.root_result_bytes,
+        .root_result_value_ref_fingerprint = wrong_checkpoint.root_result_value_ref_fingerprint,
+        .status = wrong_checkpoint.status,
+    }).closure_fingerprint;
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_checkpoint.validate(allocator, .{ .limits = .archive_decode }));
+
+    var missing_receipt_bytes = fixture.closure;
+    missing_receipt_bytes.finalized_actuation_receipt_bytes = &.{};
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, .{ .limits = .archive_decode }));
+
+    const tampered_payload = try allocator.dupe(u8, fixture.actuation_receipt_bytes);
+    defer allocator.free(tampered_payload);
+    tampered_payload[tampered_payload.len - 1] ^= 0x01;
+    var tampered_receipt_bytes = fixture.closure;
+    tampered_receipt_bytes.finalized_actuation_receipt_bytes = &.{tampered_payload};
+    try std.testing.expectError(error.InvalidFrameEncoding, tampered_receipt_bytes.validate(allocator, .{ .limits = .archive_decode }));
+
+    var missing_root = fixture.closure;
+    missing_root.capsule_fingerprint +%= 1;
+    missing_root.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = missing_root.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = missing_root.appliance_manifest_fingerprint,
+        .turn_sequence_number = missing_root.turn_sequence_number,
+        .parent_state_fingerprint = missing_root.parent_state_fingerprint,
+        .resulting_state_fingerprint = missing_root.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = missing_root.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = missing_root.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = missing_root.checkpoint_fingerprint,
+        .checkpoint_bytes = missing_root.checkpoint_bytes,
+        .capsule_fingerprint = missing_root.capsule_fingerprint,
+        .capsule_bytes = missing_root.capsule_bytes,
+        .turn_receipt_fingerprint = missing_root.turn_receipt_fingerprint,
+        .turn_receipt_bytes = missing_root.turn_receipt_bytes,
+        .evidence_bundle_bytes = missing_root.evidence_bundle_bytes,
+        .root_result_fingerprint = missing_root.root_result_fingerprint,
+        .root_result_bytes = missing_root.root_result_bytes,
+        .root_result_value_ref_fingerprint = missing_root.root_result_value_ref_fingerprint,
+        .status = missing_root.status,
+    }).closure_fingerprint;
+    try std.testing.expectError(error.ObjectMissing, missing_root.validate(allocator, .{ .limits = .archive_decode }));
+}
+
+test "appliance Wire TurnInput canonicalizes resolution input order" {
+    const allocator = std.testing.allocator;
+    const first = world.Appliance.Wire.ResolutionInput.init(.{
+        .target_host_request_fingerprint = 0xA001,
+        .status = .responded,
+        .response_value_image_bytes = "one",
+        .host_claim_bytes = "claim-one",
+        .attempt_number = 1,
+    });
+    const second = world.Appliance.Wire.ResolutionInput.init(.{
+        .target_host_request_fingerprint = 0xA002,
+        .status = .failed,
+        .host_claim_bytes = "claim-two",
+        .attempt_number = 2,
+    });
+    const sorted = [_]world.Appliance.Wire.ResolutionInput{ first, second };
+    const reversed = [_]world.Appliance.Wire.ResolutionInput{ second, first };
+    const sorted_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA010,
+        .expected_parent_closure_fingerprint = 0xA011,
+        .previous_turn_receipt_fingerprint = 0xA012,
+        .turn_sequence_number = 1,
+        .resolutions = &sorted,
+    });
+    const reversed_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA010,
+        .expected_parent_closure_fingerprint = 0xA011,
+        .previous_turn_receipt_fingerprint = 0xA012,
+        .turn_sequence_number = 1,
+        .resolutions = &reversed,
+    });
+    const sorted_bytes = try sorted_input.encode(allocator);
+    defer allocator.free(sorted_bytes);
+    const reversed_bytes = try reversed_input.encode(allocator);
+    defer allocator.free(reversed_bytes);
+    try std.testing.expectEqualSlices(u8, sorted_bytes, reversed_bytes);
+
+    var decoded = try world.Appliance.Wire.TurnInput.decode(allocator, reversed_bytes);
+    defer decoded.deinit(allocator);
+    try decoded.validate(.default);
+    try std.testing.expectEqual(@as(u64, 0xA001), decoded.resolutions[0].target_host_request_fingerprint);
+    try std.testing.expectEqual(@as(u64, 0xA002), decoded.resolutions[1].target_host_request_fingerprint);
+
+    const duplicate = [_]world.Appliance.Wire.ResolutionInput{ first, first };
+    const duplicate_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA010,
+        .expected_parent_closure_fingerprint = 0xA011,
+        .previous_turn_receipt_fingerprint = 0xA012,
+        .turn_sequence_number = 1,
+        .resolutions = &duplicate,
+    });
+    try std.testing.expectError(error.DuplicateHostReply, duplicate_input.encode(allocator));
+}
+
 test "appliance Continuity object kinds are canonical evidence kinds" {
     try std.testing.expectEqual(world.world_appliance_manifest_format_version, world.Continuity.ObjectKind.appliance_manifest.defaultFormatVersion());
     try std.testing.expectEqual(world.world_appliance_command_format_version, world.Continuity.ObjectKind.appliance_command.defaultFormatVersion());
@@ -7967,6 +8342,9 @@ test "appliance Continuity object kinds are canonical evidence kinds" {
     try std.testing.expectEqual(world.world_appliance_turn_output_format_version, world.Continuity.ObjectKind.appliance_turn_output.defaultFormatVersion());
     try std.testing.expectEqual(world.world_appliance_checkpoint_format_version, world.Continuity.ObjectKind.appliance_checkpoint.defaultFormatVersion());
     try std.testing.expectEqual(world.world_appliance_turn_receipt_format_version, world.Continuity.ObjectKind.appliance_turn_receipt.defaultFormatVersion());
+    try std.testing.expectEqual(world.world_appliance_turn_closure_format_version, world.Continuity.ObjectKind.appliance_turn_closure.defaultFormatVersion());
+    try std.testing.expectEqual(@as(u32, 1), world.Continuity.ObjectKind.archive_append_batch.defaultFormatVersion());
+    try std.testing.expectEqual(@as(u32, 1), world.Continuity.ObjectKind.root_result.defaultFormatVersion());
 
     const ref = world.Continuity.ObjectRef.fromPayload(.appliance_manifest, world.world_appliance_manifest_format_version, "manifest", "appliance manifest");
     try ref.validate();
@@ -8944,6 +9322,90 @@ test "World Seed Replay accepts batched host replies for independent requests" {
     try std.testing.expect(output.root_result_value_image_bytes.len != 0);
     try std.testing.expectEqual(@as(?u64, null), output.root_result_value_ref_fingerprint);
     try std.testing.expect(output.checkpoint_bytes.len != 0);
+}
+
+test "WorldV0Report requires every positive completion proof" {
+    const report = world.Appliance.WorldV0Report.init(.{
+        .boundary_v0_5_0_portable_v2_baseline_passed = true,
+        .canonical_executable_image_passed = true,
+        .actual_universal_wasm_executed = true,
+        .genuinely_unrelated_images_executed = true,
+        .internal_loaded_provider_executed = true,
+        .multi_suspension_loaded_root_executed = true,
+        .active_loaded_fabric_restored = true,
+        .replay_completed_without_fresh_effect = true,
+        .deterministic_retry_passed = true,
+        .batched_request_reply_passed = true,
+        .independent_javascript_codec_passed = true,
+        .exact_root_result_bytes_passed = true,
+        .exact_receipt_bytes_passed = true,
+        .exact_capsule_bytes_passed = true,
+        .exact_archive_append_batch_bytes_passed = true,
+        .native_wasm_parity_passed = true,
+        .cold_warm_parity_passed = true,
+        .memory_bound_passed = true,
+        .malformed_input_suite_passed = true,
+        .regression_matrix_passed = true,
+    });
+    try report.validate();
+    try std.testing.expect(report.passed);
+    try std.testing.expect(report.allRequiredBooleansPassed());
+
+    const missing_active_restore = world.Appliance.WorldV0Report.init(.{
+        .boundary_v0_5_0_portable_v2_baseline_passed = true,
+        .canonical_executable_image_passed = true,
+        .actual_universal_wasm_executed = true,
+        .genuinely_unrelated_images_executed = true,
+        .internal_loaded_provider_executed = true,
+        .multi_suspension_loaded_root_executed = true,
+        .active_loaded_fabric_restored = false,
+        .replay_completed_without_fresh_effect = true,
+        .deterministic_retry_passed = true,
+        .batched_request_reply_passed = true,
+        .independent_javascript_codec_passed = true,
+        .exact_root_result_bytes_passed = true,
+        .exact_receipt_bytes_passed = true,
+        .exact_capsule_bytes_passed = true,
+        .exact_archive_append_batch_bytes_passed = true,
+        .native_wasm_parity_passed = true,
+        .cold_warm_parity_passed = true,
+        .memory_bound_passed = true,
+        .malformed_input_suite_passed = true,
+        .regression_matrix_passed = true,
+    });
+    try missing_active_restore.validate();
+    try std.testing.expect(!missing_active_restore.passed);
+
+    const blocked = world.Appliance.WorldV0Report.init(.{
+        .boundary_v0_5_0_portable_v2_baseline_passed = true,
+        .canonical_executable_image_passed = true,
+        .actual_universal_wasm_executed = true,
+        .genuinely_unrelated_images_executed = true,
+        .internal_loaded_provider_executed = true,
+        .multi_suspension_loaded_root_executed = true,
+        .active_loaded_fabric_restored = true,
+        .replay_completed_without_fresh_effect = true,
+        .deterministic_retry_passed = true,
+        .batched_request_reply_passed = true,
+        .independent_javascript_codec_passed = true,
+        .exact_root_result_bytes_passed = true,
+        .exact_receipt_bytes_passed = true,
+        .exact_capsule_bytes_passed = true,
+        .exact_archive_append_batch_bytes_passed = true,
+        .native_wasm_parity_passed = true,
+        .cold_warm_parity_passed = true,
+        .memory_bound_passed = true,
+        .malformed_input_suite_passed = true,
+        .regression_matrix_passed = true,
+        .blockers = &.{0xF00D},
+    });
+    try blocked.validate();
+    try std.testing.expect(blocked.allRequiredBooleansPassed());
+    try std.testing.expect(!blocked.passed);
+
+    var forged = report;
+    forged.active_loaded_fabric_restored = false;
+    try std.testing.expectError(error.InvalidFrameEncoding, forged.validate());
 }
 
 const ApplianceActuationFixture = struct {
