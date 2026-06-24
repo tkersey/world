@@ -8669,7 +8669,7 @@ test "appliance Wire TurnInput canonicalizes resolution input order" {
     try std.testing.expectError(error.DuplicateHostReply, duplicate_input.encode(allocator));
 }
 
-test "appliance Wire TurnInput rejects over-limit resolution count before reading entries" {
+test "appliance Wire TurnInput rejects over-limit counts before reading entries" {
     const allocator = std.testing.allocator;
     const input = world.Appliance.Wire.TurnInput.init(.{
         .operation = .boot,
@@ -8680,6 +8680,17 @@ test "appliance Wire TurnInput rejects over-limit resolution count before readin
     defer allocator.free(bytes);
 
     const limits = world.Appliance.TurnClosureLimits.fromCapacity(world.Appliance.Capacity.tiny_one_port);
+    const root_argument_count_offset =
+        @sizeOf(u32) +
+        @sizeOf(u8) +
+        @sizeOf(u64) +
+        3 * @sizeOf(u8) +
+        @sizeOf(u64);
+    var malformed_roots = try allocator.dupe(u8, bytes);
+    defer allocator.free(malformed_roots);
+    std.mem.writeInt(u64, malformed_roots[root_argument_count_offset..][0..8], limits.max_items + 1, .little);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, malformed_roots, limits));
+
     const resolution_count_offset =
         @sizeOf(u32) +
         @sizeOf(u8) +
@@ -8693,6 +8704,12 @@ test "appliance Wire TurnInput rejects over-limit resolution count before readin
     std.mem.writeInt(u64, malformed[resolution_count_offset..][0..8], limits.max_resolution_inputs + 1, .little);
 
     try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, malformed, limits));
+
+    const receiver_evidence_count_offset = resolution_count_offset + @sizeOf(u64);
+    var malformed_receiver_evidence = try allocator.dupe(u8, bytes);
+    defer allocator.free(malformed_receiver_evidence);
+    std.mem.writeInt(u64, malformed_receiver_evidence[receiver_evidence_count_offset..][0..8], limits.max_items + 1, .little);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, malformed_receiver_evidence, limits));
 }
 
 test "appliance Wire turn input decodes against active capacity limits" {

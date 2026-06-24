@@ -7650,11 +7650,43 @@ pub fn Appliance(comptime World: type) type {
             return values;
         }
 
+        fn readU64SliceOwnedLimited(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]u64 {
+            const count = try readU64(bytes, cursor);
+            if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
+            if (count > bytes.len) return error.InvalidFrameEncoding;
+            if (count > World.world_max_decoded_byte_field_len / @sizeOf(u64)) return error.InvalidFrameEncoding;
+            const value_count: usize = @intCast(count);
+            if (value_count > max_count) return error.CapacityExceeded;
+            const values = try allocator.alloc(u64, value_count);
+            errdefer allocator.free(values);
+            for (values) |*value| value.* = try readU64(bytes, cursor);
+            return values;
+        }
+
         fn readByteSlicesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]const []const u8 {
             const count = try readU64(bytes, cursor);
             if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
             if (count > bytes.len) return error.InvalidFrameEncoding;
             const value_count: usize = @intCast(count);
+            const values = try allocator.alloc([]const u8, value_count);
+            var initialized: usize = 0;
+            errdefer {
+                for (values[0..initialized]) |value| allocator.free(value);
+                allocator.free(values);
+            }
+            for (values) |*value| {
+                value.* = try readBytesOwned(allocator, bytes, cursor);
+                initialized += 1;
+            }
+            return values;
+        }
+
+        fn readByteSlicesOwnedLimited(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]const []const u8 {
+            const count = try readU64(bytes, cursor);
+            if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
+            if (count > bytes.len) return error.InvalidFrameEncoding;
+            const value_count: usize = @intCast(count);
+            if (value_count > max_count) return error.CapacityExceeded;
             const values = try allocator.alloc([]const u8, value_count);
             var initialized: usize = 0;
             errdefer {
@@ -8272,13 +8304,13 @@ pub fn Appliance(comptime World: type) type {
             const expected_parent_state_fingerprint = try readOptionalU64(bytes, cursor);
             const previous_turn_receipt_fingerprint = try readOptionalU64(bytes, cursor);
             const turn_sequence_number = try readU64(bytes, cursor);
-            const root_argument_images = try readByteSlicesOwned(allocator, bytes, cursor);
+            const root_argument_images = try readByteSlicesOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer freeByteSlices(allocator, root_argument_images);
             const parent_turn_closure_bytes = try readBytesOwned(allocator, bytes, cursor);
             errdefer allocator.free(parent_turn_closure_bytes);
             const resolutions = try readWireResolutionInputsOwned(allocator, bytes, cursor, limits);
             errdefer freeWireResolutionInputs(allocator, resolutions);
-            const receiver_evidence_fingerprints = try readU64SliceOwned(allocator, bytes, cursor);
+            const receiver_evidence_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(receiver_evidence_fingerprints);
             const retention = try readOptionalWireRetentionInputOwned(allocator, bytes, cursor);
             errdefer if (retention) |value| {
