@@ -8608,7 +8608,7 @@ test "appliance TurnClosure complete one-port closure validates" {
     try std.testing.expectEqualSlices(u8, fixture.capsule_bytes, materialized_capsule);
 }
 
-test "appliance TurnClosure rejects receipt byte counts before allocation" {
+test "appliance TurnClosure rejects over-limit byte payloads before allocation" {
     const allocator = std.testing.allocator;
     const fixture = try applianceTurnClosureFixture(allocator);
     defer allocator.free(fixture.capsule_bytes);
@@ -8635,6 +8635,16 @@ test "appliance TurnClosure rejects receipt byte counts before allocation" {
     const first_receipt_len_offset = count_offset + @sizeOf(u64);
     std.mem.writeInt(u32, oversized_receipt[first_receipt_len_offset..][0..4], @intCast(limits.max_receipt_bytes + 1), .little);
     try std.testing.expectError(error.CapacityExceeded, world.Appliance.TurnClosure.decode(allocator, oversized_receipt));
+
+    const oversized_checkpoint = try allocator.alloc(u8, limits.max_checkpoint_bytes + 1);
+    defer allocator.free(oversized_checkpoint);
+    @memset(oversized_checkpoint, 'c');
+    var oversized_checkpoint_closure = fixture.closure;
+    oversized_checkpoint_closure.checkpoint_bytes = oversized_checkpoint;
+    oversized_checkpoint_closure = applianceTestRecomputedTurnClosure(oversized_checkpoint_closure);
+    const oversized_checkpoint_encoded = try oversized_checkpoint_closure.encode(allocator);
+    defer allocator.free(oversized_checkpoint_encoded);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.TurnClosure.decode(allocator, oversized_checkpoint_encoded));
 }
 
 test "appliance TurnClosure rejects mismatched required bytes and unresolved roots" {

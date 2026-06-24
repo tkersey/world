@@ -8173,17 +8173,17 @@ pub fn Appliance(comptime World: type) type {
             const finalized_actuation_receipt_bytes = try readByteSlicesOwnedWithByteLimit(allocator, bytes, cursor, limits.max_items, limits.max_receipt_bytes);
             errdefer freeByteSlices(allocator, finalized_actuation_receipt_bytes);
             const root_result_fingerprint = try readOptionalU64(bytes, cursor);
-            const root_result_value_image_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const root_result_value_image_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_result_bytes);
             errdefer allocator.free(root_result_value_image_bytes);
             const root_result_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
             const run_receipt_fingerprint = try readOptionalU64(bytes, cursor);
-            const run_receipt_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const run_receipt_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_receipt_bytes);
             errdefer allocator.free(run_receipt_bytes);
             const archive_append_batch_fingerprint = try readOptionalU64(bytes, cursor);
             const archive_append_batch_ref_fingerprint = try readOptionalU64(bytes, cursor);
-            const checkpoint_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const checkpoint_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_checkpoint_bytes);
             errdefer allocator.free(checkpoint_bytes);
-            const archive_append_batch_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const archive_append_batch_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_archive_append_bytes);
             errdefer allocator.free(archive_append_batch_bytes);
             const checkpoint = try readCheckpointOwned(allocator, bytes, cursor);
             errdefer {
@@ -8197,7 +8197,7 @@ pub fn Appliance(comptime World: type) type {
             }
             const blocker_count = try readUsize(bytes, cursor);
             const warning_count = try readUsize(bytes, cursor);
-            const diagnostic_metadata = try readBytesOwned(allocator, bytes, cursor);
+            const diagnostic_metadata = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_diagnostic_bytes);
             errdefer allocator.free(diagnostic_metadata);
             return .{
                 .output_format_version = output_format_version,
@@ -8253,27 +8253,27 @@ pub fn Appliance(comptime World: type) type {
             const archive_resulting_moment_fingerprint = try readOptionalU64(bytes, cursor);
             const archive_resulting_seal_fingerprint = try readOptionalU64(bytes, cursor);
             const checkpoint_fingerprint = try readU64(bytes, cursor);
-            const checkpoint_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const checkpoint_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_checkpoint_bytes);
             errdefer allocator.free(checkpoint_bytes);
             const capsule_fingerprint = try readU64(bytes, cursor);
-            const capsule_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const capsule_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_capsule_bytes);
             errdefer allocator.free(capsule_bytes);
             const turn_receipt_fingerprint = try readU64(bytes, cursor);
-            const turn_receipt_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const turn_receipt_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_receipt_bytes);
             errdefer allocator.free(turn_receipt_bytes);
-            const evidence_bundle_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const evidence_bundle_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_bundle_bytes);
             errdefer allocator.free(evidence_bundle_bytes);
             const archive_append_batch_fingerprint = try readOptionalU64(bytes, cursor);
-            const archive_append_batch_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const archive_append_batch_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_archive_append_bytes);
             errdefer allocator.free(archive_append_batch_bytes);
-            const pending_host_request_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const pending_host_request_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_host_request_bytes);
             errdefer allocator.free(pending_host_request_bytes);
             const root_result_fingerprint = try readOptionalU64(bytes, cursor);
-            const root_result_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const root_result_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_result_bytes);
             errdefer allocator.free(root_result_bytes);
             const root_result_value_ref_fingerprint = try readOptionalU64(bytes, cursor);
             const run_receipt_fingerprint = try readOptionalU64(bytes, cursor);
-            const run_receipt_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const run_receipt_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_receipt_bytes);
             errdefer allocator.free(run_receipt_bytes);
             const finalized_actuation_receipt_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(finalized_actuation_receipt_fingerprints);
@@ -8289,7 +8289,7 @@ pub fn Appliance(comptime World: type) type {
             errdefer allocator.free(blockers);
             const warnings = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(warnings);
-            const diagnostics = try readBytesOwned(allocator, bytes, cursor);
+            const diagnostics = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_diagnostic_bytes);
             errdefer allocator.free(diagnostics);
             const status = try enumFromByte(TurnClosureStatus, try readU8(bytes, cursor));
             return .{
