@@ -6849,6 +6849,27 @@ test "appliance TurnOutput binds root result through receipt parity" {
         .turn_receipt = wrong_capsule_receipt,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, wrong_capsule_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const replay_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .capsule_fingerprint = capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+        .execution_mode = .replay,
+    });
+    const replay_fingerprint_only_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .source_state_fingerprint = 0xD284,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 7, receipt.receipt_fingerprint),
+        .quiescence = output.quiescence,
+        .status = .completed,
+        .finalized_actuation_receipt_fingerprints = &.{0xD286},
+        .root_result_fingerprint = root_result_fingerprint,
+        .checkpoint = replay_checkpoint,
+        .turn_receipt = receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, replay_fingerprint_only_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 }
 
 test "appliance TurnOutput deinit does not free borrowed init slices" {

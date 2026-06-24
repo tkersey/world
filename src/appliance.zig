@@ -1717,6 +1717,7 @@ pub fn Appliance(comptime World: type) type {
                     }
                 }
                 const replay_receipts_without_host_replies = self.checkpoint.execution_mode == .replay and self.turn_receipt.applied_host_reply_fingerprints.len == 0;
+                if (replay_receipts_without_host_replies and self.finalized_actuation_receipt_bytes.len == 0 and self.finalized_actuation_receipt_fingerprints.len != 0) return error.InvalidFrameEncoding;
                 if (self.status == .needs_host) {
                     if (self.finalized_actuation_receipt_fingerprints.len > self.turn_receipt.applied_host_reply_fingerprints.len) return error.InvalidFrameEncoding;
                 } else if (!replay_receipts_without_host_replies and self.finalized_actuation_receipt_fingerprints.len != self.turn_receipt.applied_host_reply_fingerprints.len) {
