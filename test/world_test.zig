@@ -10384,6 +10384,34 @@ test "capsule freeze active fabric requires parked allowance" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_witness_image.validate(.{}));
 
+    const wrong_route_plan_fingerprint = plan.plan_fingerprint ^ 0x5150_00FF;
+    const route_plan_fingerprints = [_]u64{wrong_route_plan_fingerprint};
+    const fabric_plan_fingerprints = [_]u64{ plan.plan_fingerprint, wrong_route_plan_fingerprint };
+    const mismatched_route_plan_edge = world.Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = &fabric_plan_fingerprints,
+        .active_invocation_fingerprints = image.fabric_image.?.active_invocation_fingerprints,
+        .completed_receipt_fingerprints = image.fabric_image.?.completed_receipt_fingerprints,
+        .parent_pending_port_refs = image.fabric_image.?.parent_pending_port_refs,
+        .provider_run_refs = image.fabric_image.?.provider_run_refs,
+        .provider_state_summary_fingerprints = image.fabric_image.?.provider_state_summary_fingerprints,
+        .route_fingerprints = image.fabric_image.?.route_fingerprints,
+        .route_plan_fingerprints = &route_plan_fingerprints,
+        .value_mapping_fingerprints = image.fabric_image.?.value_mapping_fingerprints,
+        .active_invocations = image.fabric_image.?.active_invocations,
+        .route_witnesses = image.fabric_image.?.route_witnesses,
+        .value_mapping_witnesses = image.fabric_image.?.value_mapping_witnesses,
+        .depth_route_stack = image.fabric_image.?.depth_route_stack,
+        .status_summary_fingerprint = image.fabric_image.?.status_summary_fingerprint,
+    });
+    const mismatched_route_plan_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .fabric_image = mismatched_route_plan_edge,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_route_plan_image.validate(.{}));
+
     const missing_fabric_image = world.Capsule.Image.init(.{
         .manifest = image.manifest,
         .runspace_image = image.runspace_image,

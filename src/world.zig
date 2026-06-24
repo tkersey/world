@@ -24955,11 +24955,13 @@ pub const Capsule = struct {
                 if (self.provider_run_refs.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.provider_state_summary_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.route_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
+                if (self.route_plan_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.value_mapping_fingerprints.len < self.active_invocation_fingerprints.len) return error.InvalidFrameEncoding;
                 for (self.active_invocation_fingerprints, 0..) |invocation, index| {
                     if (self.active_invocations[index].invocation_fingerprint != invocation) return error.InvalidFrameEncoding;
                     if (!isActiveFabricStatus(self.active_invocations[index].status)) return error.InvalidFrameEncoding;
                     if (self.active_invocations[index].route_fingerprint != self.route_fingerprints[index]) return error.InvalidFrameEncoding;
+                    if (self.active_invocations[index].plan_fingerprint != self.route_plan_fingerprints[index]) return error.InvalidFrameEncoding;
                     if (self.active_invocations[index].provider_run_handle_fingerprint != self.provider_run_refs[index]) return error.InvalidFrameEncoding;
                     if (self.active_invocations[index].parent_pending_port_fingerprint != self.parent_pending_port_refs[index]) return error.InvalidFrameEncoding;
                     if (self.depth_route_stack[index] != fingerprintFabricActiveInvocationWitness(
