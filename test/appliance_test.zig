@@ -8575,10 +8575,12 @@ fn applianceTurnClosureFixture(allocator: std.mem.Allocator) !struct {
     errdefer allocator.free(capsule_bytes);
     const capsule_ref = world.Continuity.ObjectRef.fromPayload(.capsule_image, world.world_capsule_image_format_version, capsule_bytes, "capsule.image");
 
+    const applied_host_reply_fingerprints = [_]u64{0xA7C0};
     const receipt = world.Appliance.TurnReceipt.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 0,
         .command_fingerprint = 0xD7C2,
+        .applied_host_reply_fingerprints = applied_host_reply_fingerprints[0..],
         .resulting_capsule_fingerprint = capsule_ref.object_fingerprint,
         .root_result_fingerprint = root_result_value_fingerprint,
         .status = .completed,
@@ -8995,6 +8997,12 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
     var missing_receipt_bytes = fixture.closure;
     missing_receipt_bytes.finalized_actuation_receipt_bytes = &.{};
     try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, external_dependency_options));
+
+    var missing_finalized_evidence = fixture.closure;
+    missing_finalized_evidence.finalized_actuation_receipt_fingerprints = &.{};
+    missing_finalized_evidence.finalized_actuation_receipt_bytes = &.{};
+    missing_finalized_evidence = applianceTestRecomputedTurnClosure(missing_finalized_evidence);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_finalized_evidence.validate(allocator, external_dependency_options));
 
     const forged_warnings = [_]u64{0xD7C4};
     var forged_warning_count = fixture.closure;

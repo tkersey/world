@@ -8926,6 +8926,12 @@ pub fn Appliance(comptime World: type) type {
                 if (request.request_fingerprint != emitted_fingerprint) return error.InvalidFrameEncoding;
             }
             if (closure.archive_append_batch_fingerprint != null and closure.archive_append_batch_fingerprint != checkpoint.pending_archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
+            const replay_receipts_without_host_replies = checkpoint.execution_mode == .replay and receipt.applied_host_reply_fingerprints.len == 0;
+            if (receipt.status == .needs_host) {
+                if (closure.finalized_actuation_receipt_fingerprints.len > receipt.applied_host_reply_fingerprints.len) return error.InvalidFrameEncoding;
+            } else if (!replay_receipts_without_host_replies and closure.finalized_actuation_receipt_fingerprints.len != receipt.applied_host_reply_fingerprints.len) {
+                return error.InvalidFrameEncoding;
+            }
             const initial_cursor = World.Continuity.Chronicle.Cursor.initial().cursor_fingerprint;
             const expected_resulting_cursor = receipt.resulting_chronicle_cursor_fingerprint orelse
                 checkpoint.latest_chronicle_cursor_fingerprint orelse
