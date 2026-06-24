@@ -8950,6 +8950,77 @@ test "appliance Wire TurnInput rejects over-limit counts before reading entries"
     try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, malformed_receiver_evidence, limits));
 }
 
+test "appliance Wire TurnInput rejects over-limit byte fields during decode" {
+    const allocator = std.testing.allocator;
+    const limits = world.Appliance.TurnClosureLimits.fromCapacity(world.Appliance.Capacity.tiny_one_port);
+
+    const root_argument = try allocator.alloc(u8, limits.max_result_bytes + 1);
+    defer allocator.free(root_argument);
+    @memset(root_argument, 'r');
+    const root_argument_images = [_][]const u8{root_argument};
+    const boot_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = 0xA030,
+        .turn_sequence_number = 0,
+        .root_argument_images = &root_argument_images,
+    });
+    const boot_bytes = try boot_input.encode(allocator);
+    defer allocator.free(boot_bytes);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, boot_bytes, limits));
+
+    const parent_closure = try allocator.alloc(u8, limits.max_closure_bytes + 1);
+    defer allocator.free(parent_closure);
+    @memset(parent_closure, 'p');
+    const restore_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .restore,
+        .appliance_manifest_fingerprint = 0xA031,
+        .turn_sequence_number = 1,
+        .parent_turn_closure_bytes = parent_closure,
+    });
+    const restore_bytes = try restore_input.encode(allocator);
+    defer allocator.free(restore_bytes);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, restore_bytes, limits));
+
+    const response_value = try allocator.alloc(u8, limits.max_result_bytes + 1);
+    defer allocator.free(response_value);
+    @memset(response_value, 'v');
+    const resolution = world.Appliance.Wire.ResolutionInput.init(.{
+        .target_host_request_fingerprint = 0xA032,
+        .status = .responded,
+        .response_value_image_bytes = response_value,
+    });
+    const resolution_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA033,
+        .turn_sequence_number = 1,
+        .resolutions = &.{resolution},
+    });
+    const resolution_bytes = try resolution_input.encode(allocator);
+    defer allocator.free(resolution_bytes);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, resolution_bytes, limits));
+
+    const retention_metadata = try allocator.alloc(u8, limits.max_metadata_bytes + 1);
+    defer allocator.free(retention_metadata);
+    @memset(retention_metadata, 'm');
+    const retention = world.Appliance.Wire.RetentionInput.init(.{
+        .prior_archive_append_batch_fingerprint = 0xA034,
+        .resulting_moment_fingerprint = 0xA035,
+        .resulting_seal_fingerprint = 0xA036,
+        .resulting_chronicle_cursor_fingerprint = 0xA037,
+        .host_retention_status = .retained,
+        .metadata = retention_metadata,
+    });
+    const retention_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA038,
+        .turn_sequence_number = 1,
+        .retention = retention,
+    });
+    const retention_bytes = try retention_input.encode(allocator);
+    defer allocator.free(retention_bytes);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, retention_bytes, limits));
+}
+
 test "appliance Wire turn input decodes against active capacity limits" {
     const allocator = std.testing.allocator;
     const metadata = try allocator.alloc(u8, world.Appliance.Capacity.wasm_small.max_metadata_bytes + 1);

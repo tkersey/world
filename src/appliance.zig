@@ -7780,6 +7780,25 @@ pub fn Appliance(comptime World: type) type {
             return values;
         }
 
+        fn readByteSlicesOwnedWithByteLimit(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize, max_bytes: usize) ![]const []const u8 {
+            const count = try readU64(bytes, cursor);
+            if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
+            if (count > bytes.len) return error.InvalidFrameEncoding;
+            const value_count: usize = @intCast(count);
+            if (value_count > max_count) return error.CapacityExceeded;
+            const values = try allocator.alloc([]const u8, value_count);
+            var initialized: usize = 0;
+            errdefer {
+                for (values[0..initialized]) |value| allocator.free(value);
+                allocator.free(values);
+            }
+            for (values) |*value| {
+                value.* = try readBytesOwnedLimited(allocator, bytes, cursor, max_bytes);
+                initialized += 1;
+            }
+            return values;
+        }
+
         fn readActuationClassSliceOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]World.Actuation.Class {
             const count = try readU64(bytes, cursor);
             if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
@@ -8308,16 +8327,16 @@ pub fn Appliance(comptime World: type) type {
             };
         }
 
-        fn readWireResolutionInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Wire.ResolutionInput {
+        fn readWireResolutionInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: TurnClosureLimits) !Wire.ResolutionInput {
             const format_version = try readU32(bytes, cursor);
             const target_host_request_fingerprint = try readU64(bytes, cursor);
             const status = try enumFromByte(Wire.ResolutionStatus, try readU8(bytes, cursor));
-            const response_value_image_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const response_value_image_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_result_bytes);
             errdefer allocator.free(response_value_image_bytes);
-            const host_claim_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const host_claim_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_metadata_bytes);
             errdefer allocator.free(host_claim_bytes);
             const attempt_number = try readU32(bytes, cursor);
-            const metadata = try readBytesOwned(allocator, bytes, cursor);
+            const metadata = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_metadata_bytes);
             errdefer allocator.free(metadata);
             return .{
                 .format_version = format_version,
@@ -8341,20 +8360,20 @@ pub fn Appliance(comptime World: type) type {
                 allocator.free(values);
             }
             for (values) |*value| {
-                value.* = try readWireResolutionInputOwned(allocator, bytes, cursor);
+                value.* = try readWireResolutionInputOwned(allocator, bytes, cursor, limits);
                 initialized += 1;
             }
             return values;
         }
 
-        fn readWireRetentionInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !Wire.RetentionInput {
+        fn readWireRetentionInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: TurnClosureLimits) !Wire.RetentionInput {
             const format_version = try readU32(bytes, cursor);
             const prior_archive_append_batch_fingerprint = try readU64(bytes, cursor);
             const resulting_moment_fingerprint = try readU64(bytes, cursor);
             const resulting_seal_fingerprint = try readU64(bytes, cursor);
             const resulting_chronicle_cursor_fingerprint = try readU64(bytes, cursor);
             const host_retention_status = try enumFromByte(Wire.RetentionStatus, try readU8(bytes, cursor));
-            const metadata = try readBytesOwned(allocator, bytes, cursor);
+            const metadata = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_metadata_bytes);
             errdefer allocator.free(metadata);
             return .{
                 .format_version = format_version,
@@ -8368,10 +8387,10 @@ pub fn Appliance(comptime World: type) type {
             };
         }
 
-        fn readOptionalWireRetentionInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) !?Wire.RetentionInput {
+        fn readOptionalWireRetentionInputOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, limits: TurnClosureLimits) !?Wire.RetentionInput {
             return switch (try readU8(bytes, cursor)) {
                 0 => null,
-                1 => try readWireRetentionInputOwned(allocator, bytes, cursor),
+                1 => try readWireRetentionInputOwned(allocator, bytes, cursor, limits),
                 else => error.InvalidFrameEncoding,
             };
         }
@@ -8384,22 +8403,22 @@ pub fn Appliance(comptime World: type) type {
             const expected_parent_state_fingerprint = try readOptionalU64(bytes, cursor);
             const previous_turn_receipt_fingerprint = try readOptionalU64(bytes, cursor);
             const turn_sequence_number = try readU64(bytes, cursor);
-            const root_argument_images = try readByteSlicesOwnedLimited(allocator, bytes, cursor, limits.max_items);
+            const root_argument_images = try readByteSlicesOwnedWithByteLimit(allocator, bytes, cursor, limits.max_items, limits.max_result_bytes);
             errdefer freeByteSlices(allocator, root_argument_images);
-            const parent_turn_closure_bytes = try readBytesOwned(allocator, bytes, cursor);
+            const parent_turn_closure_bytes = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_closure_bytes);
             errdefer allocator.free(parent_turn_closure_bytes);
             const resolutions = try readWireResolutionInputsOwned(allocator, bytes, cursor, limits);
             errdefer freeWireResolutionInputs(allocator, resolutions);
             const receiver_evidence_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(receiver_evidence_fingerprints);
-            const retention = try readOptionalWireRetentionInputOwned(allocator, bytes, cursor);
+            const retention = try readOptionalWireRetentionInputOwned(allocator, bytes, cursor, limits);
             errdefer if (retention) |value| {
                 var cleanup = value;
                 cleanup.deinit(allocator);
             };
             const deterministic_turn_budget = try readU64(bytes, cursor);
             const requested_evidence_profile = try enumFromByte(Wire.EvidenceProfile, try readU8(bytes, cursor));
-            const host_metadata = try readBytesOwned(allocator, bytes, cursor);
+            const host_metadata = try readBytesOwnedLimited(allocator, bytes, cursor, limits.max_metadata_bytes);
             errdefer allocator.free(host_metadata);
             return .{
                 .wire_format_version = wire_format_version,
@@ -9671,6 +9690,16 @@ pub fn Appliance(comptime World: type) type {
         fn readBytesOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]const u8 {
             const len = try readU32(bytes, cursor);
             if (len > World.world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (cursor.* > bytes.len or len > bytes.len - cursor.*) return error.InvalidFrameEncoding;
+            const result = try allocator.dupe(u8, bytes[cursor.* .. cursor.* + len]);
+            cursor.* += len;
+            return result;
+        }
+
+        fn readBytesOwnedLimited(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_len: usize) ![]const u8 {
+            const len = try readU32(bytes, cursor);
+            if (len > World.world_max_decoded_byte_field_len) return error.InvalidFrameEncoding;
+            if (len > max_len) return error.CapacityExceeded;
             if (cursor.* > bytes.len or len > bytes.len - cursor.*) return error.InvalidFrameEncoding;
             const result = try allocator.dupe(u8, bytes[cursor.* .. cursor.* + len]);
             cursor.* += len;
