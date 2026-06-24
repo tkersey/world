@@ -38,6 +38,10 @@ test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded m
     try expectManifestLine(runtime_manifest, "linear_memory_initial_limit_bytes=67108864\n");
     try expectManifestLine(runtime_manifest, "linear_memory_max_limit_bytes=67108864\n");
     try expectManifestLine(runtime_manifest, "runtime_profile_metadata=\n");
+    try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_unload_executable());
+    try std.testing.expect(universal.world_appliance_alloc(589824) != 0);
+    try std.testing.expect(universal.world_appliance_alloc(524288) != 0);
+    try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_unload_executable());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_manifest_len());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_read_manifest(0, 0));
 
