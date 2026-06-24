@@ -8171,7 +8171,7 @@ pub fn Appliance(comptime World: type) type {
             errdefer freeHostRequests(allocator, host_requests);
             const finalized_actuation_receipt_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(finalized_actuation_receipt_fingerprints);
-            const finalized_actuation_receipt_bytes = try readByteSlicesOwnedLimited(allocator, bytes, cursor, limits.max_items);
+            const finalized_actuation_receipt_bytes = try readByteSlicesOwnedWithByteLimit(allocator, bytes, cursor, limits.max_items, limits.max_receipt_bytes);
             errdefer freeByteSlices(allocator, finalized_actuation_receipt_bytes);
             const root_result_fingerprint = try readOptionalU64(bytes, cursor);
             const root_result_value_image_bytes = try readBytesOwned(allocator, bytes, cursor);
@@ -8278,11 +8278,11 @@ pub fn Appliance(comptime World: type) type {
             errdefer allocator.free(run_receipt_bytes);
             const finalized_actuation_receipt_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(finalized_actuation_receipt_fingerprints);
-            const finalized_actuation_receipt_bytes = try readByteSlicesOwnedLimited(allocator, bytes, cursor, limits.max_items);
+            const finalized_actuation_receipt_bytes = try readByteSlicesOwnedWithByteLimit(allocator, bytes, cursor, limits.max_items, limits.max_receipt_bytes);
             errdefer freeByteSlices(allocator, finalized_actuation_receipt_bytes);
             const replay_receipt_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(replay_receipt_fingerprints);
-            const replay_receipt_bytes = try readByteSlicesOwnedLimited(allocator, bytes, cursor, limits.max_items);
+            const replay_receipt_bytes = try readByteSlicesOwnedWithByteLimit(allocator, bytes, cursor, limits.max_items, limits.max_receipt_bytes);
             errdefer freeByteSlices(allocator, replay_receipt_bytes);
             const verify_report_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(verify_report_fingerprints);

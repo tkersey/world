@@ -8618,6 +8618,13 @@ test "appliance TurnClosure rejects receipt byte counts before allocation" {
     std.mem.writeInt(u64, malformed[count_offset..][0..8], world.Appliance.TurnClosureLimits.default.max_items + 1, .little);
 
     try std.testing.expectError(error.CapacityExceeded, world.Appliance.TurnClosure.decode(allocator, malformed));
+
+    const limits = world.Appliance.TurnClosureLimits.default;
+    var oversized_receipt = try allocator.dupe(u8, encoded);
+    defer allocator.free(oversized_receipt);
+    const first_receipt_len_offset = count_offset + @sizeOf(u64);
+    std.mem.writeInt(u32, oversized_receipt[first_receipt_len_offset..][0..4], @intCast(limits.max_receipt_bytes + 1), .little);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.TurnClosure.decode(allocator, oversized_receipt));
 }
 
 test "appliance TurnClosure rejects mismatched required bytes and unresolved roots" {
