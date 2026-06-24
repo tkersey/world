@@ -224,10 +224,14 @@ test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded m
     try completed_closure.validate(std.testing.allocator, .{
         .expected_manifest_fingerprint = manifest.manifest_fingerprint,
         .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
     });
     var missing_archive_closure = completed_closure;
     missing_archive_closure.archive_append_batch_bytes = "";
-    try std.testing.expectError(error.InvalidFrameEncoding, missing_archive_closure.validate(std.testing.allocator, .{ .limits = .archive_decode }));
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_archive_closure.validate(std.testing.allocator, .{
+        .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    }));
     const completed_output_len = universal.world_appliance_output_len();
     try std.testing.expect(completed_output_len > 0);
     const completed_output_ptr = universal.world_appliance_alloc(completed_output_len);

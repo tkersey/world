@@ -2087,8 +2087,9 @@ pub fn Appliance(comptime World: type) type {
                 if (self.blockers.len > options.limits.max_items or self.warnings.len > options.limits.max_items) return error.CapacityExceeded;
                 var checkpoint = try decodeCheckpointBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.checkpoint_bytes, self.checkpoint_fingerprint);
                 defer checkpoint.deinit(allocator);
-                const replay_receipts_without_payloads = checkpoint.execution_mode == .replay and self.finalized_actuation_receipt_bytes.len == 0;
-                if (!replay_receipts_without_payloads and self.finalized_actuation_receipt_bytes.len != self.finalized_actuation_receipt_fingerprints.len) return error.InvalidFrameEncoding;
+                if (checkpoint.execution_mode == .replay and self.finalized_actuation_receipt_bytes.len == 0) {
+                    if (self.finalized_actuation_receipt_fingerprints.len != 0) return error.InvalidFrameEncoding;
+                } else if (self.finalized_actuation_receipt_bytes.len != self.finalized_actuation_receipt_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.replay_receipt_bytes.len != self.replay_receipt_fingerprints.len) return error.InvalidFrameEncoding;
                 try validateFingerprintSlice(self.finalized_actuation_receipt_fingerprints);
                 try validateFingerprintSlice(self.replay_receipt_fingerprints);
@@ -2123,11 +2124,9 @@ pub fn Appliance(comptime World: type) type {
                 try validateRunReceiptBytes(allocator, self.run_receipt_bytes, self.run_receipt_fingerprint);
                 if (self.archive_append_batch_fingerprint != null and self.archive_append_batch_bytes.len == 0) return error.InvalidFrameEncoding;
                 try validateArchiveAppendBatchBytes(allocator, self.archive_append_batch_bytes, self.archive_append_batch_fingerprint);
-                var bundle_options = options.bundle_options;
-                bundle_options.allow_external_dependencies = true;
-                const bundle_report = try World.Continuity.Bundle.validate(allocator, self.evidence_bundle_bytes, bundle_options);
+                const bundle_report = try World.Continuity.Bundle.validate(allocator, self.evidence_bundle_bytes, options.bundle_options);
                 if (!bundle_report.valid) return error.InvalidFrameEncoding;
-                try validateTurnClosureBundleRoots(allocator, self, replay_receipts_without_payloads);
+                try validateTurnClosureBundleRoots(allocator, self);
                 if (self.closure_fingerprint != fingerprintTurnClosure(self)) return error.InvalidFrameEncoding;
             }
 
@@ -8799,7 +8798,7 @@ pub fn Appliance(comptime World: type) type {
             }
         }
 
-        fn validateTurnClosureBundleRoots(allocator: std.mem.Allocator, closure: TurnClosure, replay_receipts_without_payloads: bool) !void {
+        fn validateTurnClosureBundleRoots(allocator: std.mem.Allocator, closure: TurnClosure) !void {
             var bundle = World.Continuity.Bundle.decode(allocator, closure.evidence_bundle_bytes, .{}) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.InvalidFrameEncoding,
@@ -8810,9 +8809,7 @@ pub fn Appliance(comptime World: type) type {
             try requireBundleRoot(allocator, bundle, .capsule_image, closure.capsule_fingerprint);
             if (closure.root_result_fingerprint) |fingerprint| try requireBundleRoot(allocator, bundle, .root_result, fingerprint);
             if (closure.archive_append_batch_fingerprint) |fingerprint| try requireBundleRoot(allocator, bundle, .archive_append_batch, fingerprint);
-            if (!replay_receipts_without_payloads) {
-                for (closure.finalized_actuation_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
-            }
+            for (closure.finalized_actuation_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
             for (closure.replay_receipt_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_receipt, fingerprint);
             for (closure.verify_report_fingerprints) |fingerprint| try requireBundleRoot(allocator, bundle, .actuation_verify_report, fingerprint);
         }

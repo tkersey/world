@@ -8297,12 +8297,18 @@ test "appliance TurnClosure complete one-port closure validates" {
     defer allocator.free(fixture.root_result_bytes);
     defer allocator.free(fixture.bundle_bytes);
 
+    const external_dependency_options = world.Appliance.TurnClosureValidation{
+        .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    };
+    try std.testing.expectError(error.InvalidFrameEncoding, fixture.closure.validate(allocator, .{ .limits = .archive_decode }));
     try fixture.closure.validate(allocator, .{
         .expected_executable_image_fingerprint = fixture.closure.executable_image_fingerprint,
         .expected_manifest_fingerprint = fixture.closure.appliance_manifest_fingerprint,
         .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
     });
-    const report = try fixture.closure.validationReport(allocator, .{ .limits = .archive_decode });
+    const report = try fixture.closure.validationReport(allocator, external_dependency_options);
     try report.validate();
     try std.testing.expect(report.valid);
 
@@ -8310,7 +8316,7 @@ test "appliance TurnClosure complete one-port closure validates" {
     defer allocator.free(encoded);
     var decoded = try world.Appliance.TurnClosure.decode(allocator, encoded);
     defer decoded.deinit(allocator);
-    try decoded.validate(allocator, .{ .limits = .archive_decode });
+    try decoded.validate(allocator, external_dependency_options);
     try std.testing.expectEqual(fixture.closure.closure_fingerprint, decoded.closure_fingerprint);
     try std.testing.expectEqual(@as(usize, 1), decoded.finalized_actuation_receipt_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 1), decoded.finalized_actuation_receipt_bytes.len);
@@ -8360,7 +8366,11 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
         .root_result_value_ref_fingerprint = wrong_checkpoint.root_result_value_ref_fingerprint,
         .status = wrong_checkpoint.status,
     }).closure_fingerprint;
-    try std.testing.expectError(error.InvalidFrameEncoding, wrong_checkpoint.validate(allocator, .{ .limits = .archive_decode }));
+    const external_dependency_options = world.Appliance.TurnClosureValidation{
+        .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    };
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_checkpoint.validate(allocator, external_dependency_options));
 
     var wrong_resulting_state = fixture.closure;
     wrong_resulting_state.resulting_state_fingerprint +%= 1;
@@ -8386,7 +8396,7 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
         .finalized_actuation_receipt_bytes = wrong_resulting_state.finalized_actuation_receipt_bytes,
         .status = wrong_resulting_state.status,
     }).closure_fingerprint;
-    try std.testing.expectError(error.InvalidFrameEncoding, wrong_resulting_state.validate(allocator, .{ .limits = .archive_decode }));
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_resulting_state.validate(allocator, external_dependency_options));
 
     const tampered_capsule = try allocator.dupe(u8, fixture.capsule_bytes);
     defer allocator.free(tampered_capsule);
@@ -8415,18 +8425,36 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
         .finalized_actuation_receipt_bytes = wrong_capsule_bytes.finalized_actuation_receipt_bytes,
         .status = wrong_capsule_bytes.status,
     }).closure_fingerprint;
-    try std.testing.expectError(error.InvalidFrameEncoding, wrong_capsule_bytes.validate(allocator, .{ .limits = .archive_decode }));
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_capsule_bytes.validate(allocator, external_dependency_options));
 
     var missing_receipt_bytes = fixture.closure;
     missing_receipt_bytes.finalized_actuation_receipt_bytes = &.{};
-    try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, .{ .limits = .archive_decode }));
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, external_dependency_options));
+
+    const replay_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = fixture.closure.appliance_manifest_fingerprint,
+        .turn_sequence_number = fixture.closure.turn_sequence_number,
+        .capsule_fingerprint = fixture.closure.capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = fixture.closure.turn_receipt_fingerprint,
+        .execution_mode = .replay,
+    });
+    var replay_checkpoint_payload: std.ArrayList(u8) = .empty;
+    defer replay_checkpoint_payload.deinit(allocator);
+    try replay_checkpoint.encode(&replay_checkpoint_payload, allocator);
+    const replay_checkpoint_bytes = try allocator.dupe(u8, replay_checkpoint_payload.items);
+    defer allocator.free(replay_checkpoint_bytes);
+    var replay_missing_receipt_payloads = fixture.closure;
+    replay_missing_receipt_payloads.checkpoint_fingerprint = replay_checkpoint.checkpoint_fingerprint;
+    replay_missing_receipt_payloads.checkpoint_bytes = replay_checkpoint_bytes;
+    replay_missing_receipt_payloads.finalized_actuation_receipt_bytes = &.{};
+    try std.testing.expectError(error.InvalidFrameEncoding, replay_missing_receipt_payloads.validate(allocator, external_dependency_options));
 
     const tampered_payload = try allocator.dupe(u8, fixture.actuation_receipt_bytes);
     defer allocator.free(tampered_payload);
     tampered_payload[tampered_payload.len - 1] ^= 0x01;
     var tampered_receipt_bytes = fixture.closure;
     tampered_receipt_bytes.finalized_actuation_receipt_bytes = &.{tampered_payload};
-    try std.testing.expectError(error.InvalidFrameEncoding, tampered_receipt_bytes.validate(allocator, .{ .limits = .archive_decode }));
+    try std.testing.expectError(error.InvalidFrameEncoding, tampered_receipt_bytes.validate(allocator, external_dependency_options));
 
     var receipt = try world.Appliance.TurnReceipt.decodeArchivePayload(allocator, fixture.turn_receipt_bytes);
     defer receipt.deinit(allocator);
@@ -8469,7 +8497,7 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
         .finalized_actuation_receipt_bytes = forged_root_result.finalized_actuation_receipt_bytes,
         .status = forged_root_result.status,
     }).closure_fingerprint;
-    try std.testing.expectError(error.InvalidFrameEncoding, forged_root_result.validate(allocator, .{ .limits = .archive_decode }));
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_root_result.validate(allocator, external_dependency_options));
 
     var missing_root = fixture.closure;
     missing_root.capsule_fingerprint +%= 1;
@@ -8493,7 +8521,7 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
         .root_result_value_ref_fingerprint = missing_root.root_result_value_ref_fingerprint,
         .status = missing_root.status,
     }).closure_fingerprint;
-    try std.testing.expectError(error.InvalidFrameEncoding, missing_root.validate(allocator, .{ .limits = .archive_decode }));
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_root.validate(allocator, external_dependency_options));
 }
 
 test "appliance Wire TurnInput canonicalizes resolution input order" {
