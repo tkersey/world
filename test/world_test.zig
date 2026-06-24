@@ -9838,6 +9838,16 @@ test "fabric image captures active invocation completed receipt and witnesses" {
         .local_run_id = 1,
         .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
     });
+    const parent_handle_2 = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 2,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    const provider_handle_2 = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 3,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
     const request = testRunspaceRequestFrame();
     const parent_state = world.RunState.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -9863,12 +9873,34 @@ test "fabric image captures active invocation completed receipt and witnesses" {
         .pending_mailbox_id = 1,
         .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
     }));
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = parent_handle_2,
+        .target_ref = parent_ref,
+        .current_state = parent_state,
+        .status = .parked_on_port,
+        .pending_mailbox_id = 2,
+    }));
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = provider_handle_2,
+        .target_ref = provider_ref,
+        .current_state = provider_state,
+        .status = .parked_on_port,
+        .pending_mailbox_id = 3,
+        .parent_run_handle_fingerprint = parent_handle_2.handle_fingerprint,
+    }));
     const pending = try runspace.mailbox.push(.{
         .run_handle = parent_handle,
         .mailbox_id = 0,
         .request = request,
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
         .inserted_event_index = 0,
+    });
+    const pending_2 = try runspace.mailbox.push(.{
+        .run_handle = parent_handle_2,
+        .mailbox_id = 2,
+        .request = request,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .inserted_event_index = 1,
     });
     const mapping = fabricTestMapping(.payload_to_provider_args);
     const route = fabricTestRoute(.target_export, provider_ref.target_ref_fingerprint);
@@ -9882,6 +9914,7 @@ test "fabric image captures active invocation completed receipt and witnesses" {
     });
     try runspace.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try runspace.fabric_routes.append(allocator, route);
+    try runspace.fabric_route_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try runspace.fabric_value_mappings.append(allocator, mapping);
     const invocation = world.Fabric.Invocation.init(.{
         .plan_fingerprint = plan.plan_fingerprint,
@@ -9896,6 +9929,19 @@ test "fabric image captures active invocation completed receipt and witnesses" {
         .status = .provider_parked,
     });
     try runspace.fabric_invocations.append(allocator, invocation);
+    const invocation_2 = world.Fabric.Invocation.init(.{
+        .plan_fingerprint = plan.plan_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_run_handle_fingerprint = parent_handle_2.handle_fingerprint,
+        .parent_pending_port_fingerprint = pending_2.pending_port_fingerprint,
+        .parent_mailbox_id = 2,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle_2.handle_fingerprint,
+        .depth = 1,
+        .sequence = 1,
+        .status = .provider_parked,
+    });
+    try runspace.fabric_invocations.append(allocator, invocation_2);
     const receipt = world.Fabric.Receipt.init(.{
         .invocation_fingerprint = invocation.invocation_fingerprint,
         .route_fingerprint = route.route_fingerprint,
@@ -9910,16 +9956,23 @@ test "fabric image captures active invocation completed receipt and witnesses" {
     defer image.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), image.fabric_plan_fingerprints.len);
     try std.testing.expectEqual(plan.plan_fingerprint, image.fabric_plan_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 1), image.active_invocation_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 2), image.active_invocation_fingerprints.len);
     try std.testing.expectEqual(invocation.invocation_fingerprint, image.active_invocation_fingerprints[0]);
+    try std.testing.expectEqual(invocation_2.invocation_fingerprint, image.active_invocation_fingerprints[1]);
     try std.testing.expectEqual(@as(usize, 1), image.completed_receipt_fingerprints.len);
     try std.testing.expectEqual(receipt.receipt_fingerprint, image.completed_receipt_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 1), image.route_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 2), image.route_fingerprints.len);
     try std.testing.expectEqual(route.route_fingerprint, image.route_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 1), image.value_mapping_fingerprints.len);
+    try std.testing.expectEqual(route.route_fingerprint, image.route_fingerprints[1]);
+    try std.testing.expectEqual(@as(usize, 2), image.route_plan_fingerprints.len);
+    try std.testing.expectEqual(plan.plan_fingerprint, image.route_plan_fingerprints[0]);
+    try std.testing.expectEqual(plan.plan_fingerprint, image.route_plan_fingerprints[1]);
+    try std.testing.expectEqual(@as(usize, 2), image.value_mapping_fingerprints.len);
     try std.testing.expectEqual(mapping.mapping_fingerprint, image.value_mapping_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 1), image.provider_run_refs.len);
+    try std.testing.expectEqual(mapping.mapping_fingerprint, image.value_mapping_fingerprints[1]);
+    try std.testing.expectEqual(@as(usize, 2), image.provider_run_refs.len);
     try std.testing.expectEqual(provider_handle.handle_fingerprint, image.provider_run_refs[0]);
+    try std.testing.expectEqual(provider_handle_2.handle_fingerprint, image.provider_run_refs[1]);
 }
 
 test "fabric image rejects missing active route witness" {
@@ -10268,6 +10321,7 @@ test "capsule freeze active fabric requires parked allowance" {
     });
     try runspace.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try runspace.fabric_routes.append(allocator, route);
+    try runspace.fabric_route_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try runspace.fabric_value_mappings.append(allocator, mapping);
     const invocation = world.Fabric.Invocation.init(.{
         .plan_fingerprint = plan.plan_fingerprint,
@@ -10294,6 +10348,7 @@ test "capsule freeze active fabric requires parked allowance" {
         .active_invocation_fingerprints = image.fabric_image.?.active_invocation_fingerprints,
         .completed_receipt_fingerprints = image.fabric_image.?.completed_receipt_fingerprints,
         .route_fingerprints = image.fabric_image.?.route_fingerprints,
+        .route_plan_fingerprints = image.fabric_image.?.route_plan_fingerprints,
         .value_mapping_fingerprints = image.fabric_image.?.value_mapping_fingerprints,
         .status_summary_fingerprint = image.fabric_image.?.status_summary_fingerprint,
     });
@@ -10315,6 +10370,7 @@ test "capsule freeze active fabric requires parked allowance" {
         .provider_run_refs = image.fabric_image.?.provider_run_refs,
         .provider_state_summary_fingerprints = image.fabric_image.?.provider_state_summary_fingerprints,
         .route_fingerprints = image.fabric_image.?.route_fingerprints,
+        .route_plan_fingerprints = image.fabric_image.?.route_plan_fingerprints,
         .value_mapping_fingerprints = &wrong_mapping_refs,
         .depth_route_stack = image.fabric_image.?.depth_route_stack,
         .status_summary_fingerprint = image.fabric_image.?.status_summary_fingerprint,
@@ -12977,9 +13033,23 @@ test "capsule active fabric restore rejects mutation without fabric state image"
         .routes = &.{route},
         .value_mappings = &.{mapping},
     });
+    const inactive_mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const inactive_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{ mapping, inactive_mapping },
+    });
     try source.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
+    try source.fabric_plan_fingerprints.append(allocator, inactive_plan.plan_fingerprint);
     try source.fabric_routes.append(allocator, route);
+    try source.fabric_route_plan_fingerprints.append(allocator, plan.plan_fingerprint);
+    try source.fabric_routes.append(allocator, route);
+    try source.fabric_route_plan_fingerprints.append(allocator, inactive_plan.plan_fingerprint);
     try source.fabric_value_mappings.append(allocator, mapping);
+    try source.fabric_value_mappings.append(allocator, inactive_mapping);
     try source.fabric_invocations.append(allocator, world.Fabric.Invocation.init(.{
         .plan_fingerprint = plan.plan_fingerprint,
         .route_fingerprint = route.route_fingerprint,
@@ -12994,6 +13064,13 @@ test "capsule active fabric restore rejects mutation without fabric state image"
     }));
     var image = try world.Capsule.freezeRunspace(&source, .{ .allow_active_fabric_parked = true });
     defer image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), image.fabric_image.?.route_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 2), image.fabric_image.?.route_plan_fingerprints.len);
+    try std.testing.expectEqual(route.route_fingerprint, image.fabric_image.?.route_fingerprints[0]);
+    try std.testing.expectEqual(route.route_fingerprint, image.fabric_image.?.route_fingerprints[1]);
+    try std.testing.expectEqual(plan.plan_fingerprint, image.fabric_image.?.route_plan_fingerprints[0]);
+    try std.testing.expectEqual(inactive_plan.plan_fingerprint, image.fabric_image.?.route_plan_fingerprints[1]);
+    try std.testing.expectEqual(@as(usize, 1), image.fabric_image.?.route_witnesses.len);
     const missing_fabric_image = world.Capsule.Image.init(.{
         .manifest = image.manifest,
         .runspace_image = image.runspace_image,
@@ -13026,6 +13103,30 @@ test "capsule active fabric restore rejects mutation without fabric state image"
     try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
     try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
     try std.testing.expectEqual(@as(usize, 0), receiver.fabric_invocations.items.len);
+
+    var restored_receiver = world.Runspace.init(allocator, .{});
+    defer restored_receiver.deinit();
+    var restored = try world.Capsule.thawIntoRunspace(image, &restored_receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3a06, .{
+        .mode = .restore_parked,
+        .require_link_match = false,
+    });
+    defer restored.deinit(allocator);
+    try std.testing.expect(restored.accepted);
+    try std.testing.expectEqual(@as(usize, 2), restored_receiver.fabric_routes.items.len);
+    var saw_active_route = false;
+    var saw_inactive_route = false;
+    for (restored_receiver.fabric_routes.items, restored_receiver.fabric_route_plan_fingerprints.items) |restored_route, plan_fingerprint| {
+        if (restored_route.route_fingerprint != route.route_fingerprint) continue;
+        if (plan_fingerprint == plan.plan_fingerprint) {
+            saw_active_route = true;
+        } else if (plan_fingerprint == inactive_plan.plan_fingerprint) {
+            saw_inactive_route = true;
+        } else {
+            return error.InvalidFrameEncoding;
+        }
+    }
+    try std.testing.expect(saw_active_route);
+    try std.testing.expect(saw_inactive_route);
 }
 
 test "capsule agent transfer preserves residual external import" {

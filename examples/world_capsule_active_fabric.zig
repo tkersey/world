@@ -127,6 +127,7 @@ pub fn main(init: std.process.Init) !void {
     });
     try source.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try source.fabric_routes.append(allocator, route);
+    try source.fabric_route_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try source.fabric_value_mappings.append(allocator, mapping);
     const invocation = world.Fabric.Invocation.init(.{
         .plan_fingerprint = plan.plan_fingerprint,

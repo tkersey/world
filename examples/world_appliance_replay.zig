@@ -69,9 +69,9 @@ pub fn main(init: std.process.Init) !void {
     });
     var replay_output = try common.submitAndDecodeWithCapacity(&replay_core, allocator, manifest, capacity, replay_boot);
     defer replay_output.deinit(allocator);
-    if (replay_output.status != .completed) return error.ExpectedReplayCompleted;
+    if (replay_output.status != .blocked) return error.ExpectedReplayBlocked;
     if (replay_output.host_requests.len != 0) return error.ExpectedNoReplayHostRequests;
-    if (replay_output.finalized_actuation_receipt_fingerprints.len != 1) return error.ExpectedReplayReceipt;
+    if (replay_output.finalized_actuation_receipt_fingerprints.len != 0) return error.ExpectedNoReplayReceipt;
 
     const replay_supported = manifest.supported_execution_modes.supports(.replay);
     const replay_fresh_called = replay_output.turn_receipt.applied_host_reply_fingerprints.len != 0;

@@ -3826,7 +3826,6 @@ pub fn Appliance(comptime World: type) type {
                         .inspected => unreachable,
                     }
                 }
-                if (command.execution_mode == .replay and self.commandHasReplayEvidence(command)) return .completed;
                 if (commandLeavesOutstandingHostRequests(current_outstanding_host_requests, command)) return .needs_host;
                 if (self.commandIsTerminalArchiveAckOnly(command)) return .completed;
                 if (self.manifest_value.actuation_binding_fingerprints.len == 0) return .completed;
@@ -7438,20 +7437,10 @@ pub fn Appliance(comptime World: type) type {
         };
 
         fn finalizedActuationReceiptEvidenceFor(requests: []const HostRequest, command: Command, allocator: std.mem.Allocator) !ActuationReceiptEvidence {
-            if (command.execution_mode == .replay and command.host_replies.len == 0) {
-                if (command.receiver_evidence_fingerprints.len <= 1) return .{
-                    .fingerprints = try allocator.alloc(u64, 0),
-                    .bytes = try allocator.alloc([]const u8, 0),
-                };
-                const replay_receipts = command.receiver_evidence_fingerprints[1..];
-                const fingerprints = try allocator.alloc(u64, replay_receipts.len);
-                errdefer allocator.free(fingerprints);
-                @memcpy(fingerprints, replay_receipts);
-                return .{
-                    .fingerprints = fingerprints,
-                    .bytes = try allocator.alloc([]const u8, 0),
-                };
-            }
+            if (command.execution_mode == .replay and command.host_replies.len == 0) return .{
+                .fingerprints = try allocator.alloc(u64, 0),
+                .bytes = try allocator.alloc([]const u8, 0),
+            };
             var finalized_count: usize = 0;
             for (command.host_replies) |reply| {
                 if (hostOutcomeStatusIsTerminal(reply.outcome.status)) finalized_count += 1;

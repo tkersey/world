@@ -320,7 +320,7 @@ pub const world_capsule_runspace_image_fingerprint_version: u32 = 1;
 pub const world_capsule_run_slot_image_fingerprint_version: u32 = 1;
 pub const world_capsule_pending_port_image_fingerprint_version: u32 = 4;
 pub const world_capsule_mailbox_image_fingerprint_version: u32 = 1;
-pub const world_capsule_fabric_image_fingerprint_version: u32 = 1;
+pub const world_capsule_fabric_image_fingerprint_version: u32 = 2;
 pub const world_capsule_link_image_fingerprint_version: u32 = 1;
 pub const world_capsule_image_format_version: u32 = 3;
 pub const world_capsule_image_fingerprint_version: u32 = 1;
@@ -384,7 +384,7 @@ pub const world_appliance_host_outcome_format_version: u32 = 1;
 pub const world_appliance_host_outcome_fingerprint_version: u32 = 1;
 pub const world_appliance_host_reply_format_version: u32 = 1;
 pub const world_appliance_host_reply_fingerprint_version: u32 = 1;
-pub const world_appliance_turn_output_format_version: u32 = 2;
+pub const world_appliance_turn_output_format_version: u32 = 3;
 pub const world_appliance_turn_output_fingerprint_version: u32 = 2;
 pub const world_appliance_checkpoint_format_version: u32 = 1;
 pub const world_appliance_checkpoint_fingerprint_version: u32 = 1;
@@ -10243,6 +10243,7 @@ pub const Runspace = struct {
         import_set: ImportSet,
         imports: []ImportRequirement,
         executable_image_fingerprint: u64,
+        result_value_ref_fingerprint: ?u64,
         executable_fabric_plan_fingerprint: ?u64 = null,
         executable_fabric_route_parent_world_port_ids: []const u32 = &.{},
         executable_fabric_route_kinds: []const Fabric.RouteKind = &.{},
@@ -10291,6 +10292,7 @@ pub const Runspace = struct {
                 .import_set = module.import_set,
                 .imports = imports,
                 .executable_image_fingerprint = executable_image_fingerprint,
+                .result_value_ref_fingerprint = module.export_summary.result_value_ref_fingerprint,
                 .executable_fabric_plan_fingerprint = dispatch_coverage.fabric_plan_fingerprint,
                 .executable_fabric_route_parent_world_port_ids = route_parent_world_port_ids,
                 .executable_fabric_route_kinds = route_kinds,
@@ -10534,6 +10536,11 @@ pub const Runspace = struct {
             return self.resultImageMatchesLoadedRef(expected_ref, image);
         }
 
+        fn resultImageMatchesExpectedDeclaredRef(self: *@This(), image: Frame.ValueImage, expected: u64) !bool {
+            if (self.result_value_ref_fingerprint == null or self.result_value_ref_fingerprint.? != expected) return false;
+            return self.resultImageMatchesDeclaredRef(image);
+        }
+
         fn resultImageMatchesPortableRef(
             self: *@This(),
             expected_ref: Executable.Boundary.LoadedExecution.LoadedValueRef,
@@ -10684,7 +10691,7 @@ pub const Runspace = struct {
             beforeBranch: *const fn (*anyopaque, usize) anyerror!void,
             cloneSupervisor: *const fn (*anyopaque, std.mem.Allocator) anyerror!?Supervision.Supervisor,
             restoreSupervisor: *const fn (*anyopaque, std.mem.Allocator, ?Supervision.Supervisor) void,
-            loadedResultImageMatchesDeclaredRef: *const fn (*anyopaque, Frame.ValueImage) anyerror!bool,
+            loadedResultImageMatchesDeclaredRef: *const fn (*anyopaque, Frame.ValueImage, u64) anyerror!bool,
             hasSupervisor: *const fn (*anyopaque) bool,
             supervisorWarningCount: *const fn (*anyopaque) usize,
             supervisorBlockerCount: *const fn (*anyopaque) usize,
@@ -10797,8 +10804,8 @@ pub const Runspace = struct {
             self.vtable.restoreSupervisor(self.ptr, allocator, supervisor);
         }
 
-        fn loadedResultImageMatchesDeclaredRef(self: @This(), image: Frame.ValueImage) !bool {
-            return self.vtable.loadedResultImageMatchesDeclaredRef(self.ptr, image);
+        fn loadedResultImageMatchesDeclaredRef(self: @This(), image: Frame.ValueImage, expected: u64) !bool {
+            return self.vtable.loadedResultImageMatchesDeclaredRef(self.ptr, image, expected);
         }
 
         fn hasSupervisor(self: @This()) bool {
@@ -10943,9 +10950,9 @@ pub const Runspace = struct {
                     if (active.supervisor) |*current| current.deinit();
                     active.supervisor = supervisor;
                 }
-                fn loadedResultImageMatchesDeclaredRefFn(ptr: *anyopaque, image: Frame.ValueImage) anyerror!bool {
+                fn loadedResultImageMatchesDeclaredRefFn(ptr: *anyopaque, image: Frame.ValueImage, expected: u64) anyerror!bool {
                     const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
-                    return active.resultImageMatchesDeclaredRef(image);
+                    return active.resultImageMatchesExpectedDeclaredRef(image, expected);
                 }
                 fn loadedHasSupervisor(ptr: *anyopaque) bool {
                     const active: *LoadedSessionDriver = @ptrCast(@alignCast(ptr));
@@ -11255,7 +11262,7 @@ pub const Runspace = struct {
                     _ = allocator;
                 }
 
-                fn runLoadedResultImageMatchesDeclaredRef(_: *anyopaque, _: Frame.ValueImage) anyerror!bool {
+                fn runLoadedResultImageMatchesDeclaredRef(_: *anyopaque, _: Frame.ValueImage, _: u64) anyerror!bool {
                     return false;
                 }
 
@@ -14481,7 +14488,7 @@ pub const Runspace = struct {
         if (provider_result.boundary_value_fingerprint == expected) return true;
         if (route.kind == .loaded_module_export) {
             const driver = provider_slot.driver orelse return false;
-            return driver.loadedResultImageMatchesDeclaredRef(provider_result);
+            return driver.loadedResultImageMatchesDeclaredRef(provider_result, expected);
         }
         return false;
     }
@@ -24873,6 +24880,7 @@ pub const Capsule = struct {
         provider_run_refs: []const u64 = &.{},
         provider_state_summary_fingerprints: []const u64 = &.{},
         route_fingerprints: []const u64 = &.{},
+        route_plan_fingerprints: []const u64 = &.{},
         value_mapping_fingerprints: []const u64 = &.{},
         active_invocations: []const Fabric.Invocation = &.{},
         route_witnesses: []const Fabric.Route = &.{},
@@ -24890,6 +24898,7 @@ pub const Capsule = struct {
             provider_run_refs: []const u64 = &.{},
             provider_state_summary_fingerprints: []const u64 = &.{},
             route_fingerprints: []const u64 = &.{},
+            route_plan_fingerprints: []const u64 = &.{},
             value_mapping_fingerprints: []const u64 = &.{},
             active_invocations: []const Fabric.Invocation = &.{},
             route_witnesses: []const Fabric.Route = &.{},
@@ -24907,6 +24916,7 @@ pub const Capsule = struct {
                 .provider_run_refs = args.provider_run_refs,
                 .provider_state_summary_fingerprints = args.provider_state_summary_fingerprints,
                 .route_fingerprints = args.route_fingerprints,
+                .route_plan_fingerprints = args.route_plan_fingerprints,
                 .value_mapping_fingerprints = args.value_mapping_fingerprints,
                 .active_invocations = args.active_invocations,
                 .route_witnesses = args.route_witnesses,
@@ -24928,6 +24938,7 @@ pub const Capsule = struct {
             if (self.provider_run_refs.len > options.max_run_slots) return error.InvalidFrameEncoding;
             if (self.provider_state_summary_fingerprints.len > options.max_run_slots) return error.InvalidFrameEncoding;
             if (self.route_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
+            if (self.route_plan_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.value_mapping_fingerprints.len > options.max_dependencies) return error.InvalidFrameEncoding;
             if (self.active_invocations.len > options.max_fabric_invocations) return error.InvalidFrameEncoding;
             if (self.route_witnesses.len > options.max_dependencies) return error.InvalidFrameEncoding;
@@ -24958,6 +24969,10 @@ pub const Capsule = struct {
                     )) return error.InvalidFrameEncoding;
                 }
             }
+            if (self.route_plan_fingerprints.len != self.route_fingerprints.len) return error.InvalidFrameEncoding;
+            for (self.route_plan_fingerprints) |plan_fingerprint| {
+                if (!containsU64(self.fabric_plan_fingerprints, plan_fingerprint)) return error.InvalidFrameEncoding;
+            }
             for (self.route_fingerprints) |fingerprint| {
                 if (!fabricImageContainsRouteWitness(self.route_witnesses, fingerprint)) return error.InvalidFrameEncoding;
             }
@@ -24976,6 +24991,7 @@ pub const Capsule = struct {
                 allocator.free(self.provider_run_refs);
                 allocator.free(self.provider_state_summary_fingerprints);
                 allocator.free(self.route_fingerprints);
+                allocator.free(self.route_plan_fingerprints);
                 allocator.free(self.value_mapping_fingerprints);
                 allocator.free(self.active_invocations);
                 for (self.route_witnesses) |route| allocator.free(route.metadata);
@@ -26255,6 +26271,8 @@ pub const Capsule = struct {
         errdefer depth_route_stack.deinit(allocator);
         var route_refs: std.ArrayList(u64) = .empty;
         errdefer route_refs.deinit(allocator);
+        var route_plan_refs: std.ArrayList(u64) = .empty;
+        errdefer route_plan_refs.deinit(allocator);
         var mapping_refs: std.ArrayList(u64) = .empty;
         errdefer mapping_refs.deinit(allocator);
         var active_invocations: std.ArrayList(Fabric.Invocation) = .empty;
@@ -26285,7 +26303,10 @@ pub const Capsule = struct {
                 try parent_pending_refs.append(allocator, invocation.parent_pending_port_fingerprint);
                 try provider_run_refs.append(allocator, provider_handle);
                 try provider_state_refs.append(allocator, provider_state);
-                try route_refs.append(allocator, route.route_fingerprint);
+                try route_refs.ensureUnusedCapacity(allocator, 1);
+                try route_plan_refs.ensureUnusedCapacity(allocator, 1);
+                route_refs.appendAssumeCapacity(route.route_fingerprint);
+                route_plan_refs.appendAssumeCapacity(invocation.plan_fingerprint);
                 try mapping_refs.append(allocator, mapping_fingerprint);
                 try active_invocations.append(allocator, invocation);
                 try depth_route_stack.append(allocator, fingerprintFabricActiveInvocationWitness(
@@ -26314,9 +26335,9 @@ pub const Capsule = struct {
             }
         }
 
-        for (runspace.fabric_routes.items) |route| {
+        for (runspace.fabric_routes.items, runspace.fabric_route_plan_fingerprints.items) |route, plan_fingerprint| {
             try route.validate();
-            try appendUniqueU64(&route_refs, allocator, route.route_fingerprint);
+            try appendFabricRoutePlanEdge(&route_refs, &route_plan_refs, allocator, route.route_fingerprint, plan_fingerprint);
             if (!fabricImageContainsRouteWitness(route_witnesses.items, route.route_fingerprint)) {
                 try route_witnesses.append(allocator, try cloneFabricRouteWitness(allocator, route));
             }
@@ -26344,6 +26365,8 @@ pub const Capsule = struct {
         errdefer allocator.free(provider_state_slice);
         const route_slice = try route_refs.toOwnedSlice(allocator);
         errdefer allocator.free(route_slice);
+        const route_plan_slice = try route_plan_refs.toOwnedSlice(allocator);
+        errdefer allocator.free(route_plan_slice);
         const mapping_slice = try mapping_refs.toOwnedSlice(allocator);
         errdefer allocator.free(mapping_slice);
         const active_invocation_slice = try active_invocations.toOwnedSlice(allocator);
@@ -26369,6 +26392,7 @@ pub const Capsule = struct {
             .provider_run_refs = provider_slice,
             .provider_state_summary_fingerprints = provider_state_slice,
             .route_fingerprints = route_slice,
+            .route_plan_fingerprints = route_plan_slice,
             .value_mapping_fingerprints = mapping_slice,
             .active_invocations = active_invocation_slice,
             .route_witnesses = route_witness_slice,
@@ -26826,7 +26850,7 @@ pub const Capsule = struct {
         var mailbox_mappings: std.ArrayList(u64) = .empty;
         errdefer mailbox_mappings.deinit(allocator);
         var pending_mailbox_id_mappings: std.ArrayList(u64) = .empty;
-        errdefer pending_mailbox_id_mappings.deinit(allocator);
+        defer pending_mailbox_id_mappings.deinit(allocator);
         var fabric_mappings: std.ArrayList(u64) = .empty;
         errdefer fabric_mappings.deinit(allocator);
 
@@ -27386,6 +27410,27 @@ pub const Capsule = struct {
             if (route.route_fingerprint == fingerprint) return true;
         }
         return false;
+    }
+
+    fn fabricImageContainsRoutePlanEdge(route_fingerprints: []const u64, route_plan_fingerprints: []const u64, route_fingerprint: u64, plan_fingerprint: u64) bool {
+        for (route_fingerprints, route_plan_fingerprints) |existing_route, existing_plan| {
+            if (existing_route == route_fingerprint and existing_plan == plan_fingerprint) return true;
+        }
+        return false;
+    }
+
+    fn appendFabricRoutePlanEdge(
+        route_refs: *std.ArrayList(u64),
+        route_plan_refs: *std.ArrayList(u64),
+        allocator: std.mem.Allocator,
+        route_fingerprint: u64,
+        plan_fingerprint: u64,
+    ) !void {
+        if (fabricImageContainsRoutePlanEdge(route_refs.items, route_plan_refs.items, route_fingerprint, plan_fingerprint)) return;
+        try route_refs.ensureUnusedCapacity(allocator, 1);
+        try route_plan_refs.ensureUnusedCapacity(allocator, 1);
+        route_refs.appendAssumeCapacity(route_fingerprint);
+        route_plan_refs.appendAssumeCapacity(plan_fingerprint);
     }
 
     fn fabricImageContainsValueMappingWitness(mappings: []const Fabric.ValueMapping, fingerprint: u64) bool {
@@ -27985,9 +28030,9 @@ pub const Capsule = struct {
         return false;
     }
 
-    fn runspaceHasFabricRouteFingerprint(runspace: *const Runspace, route_fingerprint: u64) bool {
-        for (runspace.fabric_routes.items) |route| {
-            if (route.route_fingerprint == route_fingerprint) return true;
+    fn runspaceHasFabricRoutePlanEdge(runspace: *const Runspace, expected_route_fingerprint: u64, expected_plan_fingerprint: u64) bool {
+        for (runspace.fabric_routes.items, runspace.fabric_route_plan_fingerprints.items) |route, plan_fingerprint| {
+            if (route.route_fingerprint == expected_route_fingerprint and plan_fingerprint == expected_plan_fingerprint) return true;
         }
         return false;
     }
@@ -27999,11 +28044,10 @@ pub const Capsule = struct {
         return false;
     }
 
-    fn fabricPlanForRouteWitness(fabric: FabricImage, route_fingerprint: u64) !u64 {
-        for (fabric.active_invocations) |invocation| {
-            if (invocation.route_fingerprint == route_fingerprint) return invocation.plan_fingerprint;
+    fn fabricRouteWitnessForFingerprint(fabric: FabricImage, route_fingerprint: u64) !Fabric.Route {
+        for (fabric.route_witnesses) |route| {
+            if (route.route_fingerprint == route_fingerprint) return route;
         }
-        if (fabric.fabric_plan_fingerprints.len == 1) return fabric.fabric_plan_fingerprints[0];
         return error.InvalidFrameEncoding;
     }
 
@@ -28040,16 +28084,17 @@ pub const Capsule = struct {
             runspace.fabric_value_mappings.appendAssumeCapacity(mapping);
         }
 
-        try runspace.fabric_routes.ensureUnusedCapacity(runspace.allocator, fabric.route_witnesses.len);
-        try runspace.fabric_route_plan_fingerprints.ensureUnusedCapacity(runspace.allocator, fabric.route_witnesses.len);
-        try runspace.fabric_route_owned_metadata.ensureUnusedCapacity(runspace.allocator, fabric.route_witnesses.len);
-        for (fabric.route_witnesses) |route| {
+        try runspace.fabric_routes.ensureUnusedCapacity(runspace.allocator, fabric.route_fingerprints.len);
+        try runspace.fabric_route_plan_fingerprints.ensureUnusedCapacity(runspace.allocator, fabric.route_fingerprints.len);
+        try runspace.fabric_route_owned_metadata.ensureUnusedCapacity(runspace.allocator, fabric.route_fingerprints.len);
+        for (fabric.route_fingerprints, fabric.route_plan_fingerprints) |route_fingerprint, plan_fingerprint| {
+            if (runspaceHasFabricRoutePlanEdge(runspace, route_fingerprint, plan_fingerprint)) continue;
+            const route = try fabricRouteWitnessForFingerprint(fabric, route_fingerprint);
             try route.validate();
-            if (runspaceHasFabricRouteFingerprint(runspace, route.route_fingerprint)) continue;
             const restored_route = try cloneFabricRouteWitness(runspace.allocator, route);
             runspace.fabric_route_owned_metadata.appendAssumeCapacity(restored_route.metadata);
             runspace.fabric_routes.appendAssumeCapacity(restored_route);
-            runspace.fabric_route_plan_fingerprints.appendAssumeCapacity(try fabricPlanForRouteWitness(fabric, route.route_fingerprint));
+            runspace.fabric_route_plan_fingerprints.appendAssumeCapacity(plan_fingerprint);
         }
 
         try runspace.fabric_invocations.ensureUnusedCapacity(runspace.allocator, fabric.active_invocations.len);
@@ -28607,6 +28652,7 @@ pub const Capsule = struct {
         hashU64Slice(&hasher, image.provider_run_refs);
         hashU64Slice(&hasher, image.provider_state_summary_fingerprints);
         hashU64Slice(&hasher, image.route_fingerprints);
+        hashU64Slice(&hasher, image.route_plan_fingerprints);
         hashU64Slice(&hasher, image.value_mapping_fingerprints);
         hashU64(&hasher, image.active_invocations.len);
         for (image.active_invocations) |invocation| {
@@ -30027,6 +30073,7 @@ pub const Capsule = struct {
         try writeU64Slice(out, allocator, image.provider_run_refs);
         try writeU64Slice(out, allocator, image.provider_state_summary_fingerprints);
         try writeU64Slice(out, allocator, image.route_fingerprints);
+        try writeU64Slice(out, allocator, image.route_plan_fingerprints);
         try writeU64Slice(out, allocator, image.value_mapping_fingerprints);
         try writeFabricInvocationSlice(out, allocator, image.active_invocations);
         try writeFabricRouteSlice(out, allocator, image.route_witnesses);
@@ -30060,6 +30107,9 @@ pub const Capsule = struct {
         const route_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
         var route_fingerprints_owned = true;
         errdefer if (route_fingerprints_owned) allocator.free(route_fingerprints);
+        const route_plan_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
+        var route_plan_fingerprints_owned = true;
+        errdefer if (route_plan_fingerprints_owned) allocator.free(route_plan_fingerprints);
         const value_mapping_fingerprints = try readU64SliceOwned(allocator, bytes, cursor, options.max_dependencies);
         var value_mapping_fingerprints_owned = true;
         errdefer if (value_mapping_fingerprints_owned) allocator.free(value_mapping_fingerprints);
@@ -30092,6 +30142,7 @@ pub const Capsule = struct {
             .provider_run_refs = provider_run_refs,
             .provider_state_summary_fingerprints = provider_state_summary_fingerprints,
             .route_fingerprints = route_fingerprints,
+            .route_plan_fingerprints = route_plan_fingerprints,
             .value_mapping_fingerprints = value_mapping_fingerprints,
             .active_invocations = active_invocations,
             .route_witnesses = route_witnesses,
@@ -30108,6 +30159,7 @@ pub const Capsule = struct {
         provider_run_refs_owned = false;
         provider_state_summary_fingerprints_owned = false;
         route_fingerprints_owned = false;
+        route_plan_fingerprints_owned = false;
         value_mapping_fingerprints_owned = false;
         active_invocations_owned = false;
         route_witnesses_owned = false;
@@ -51308,6 +51360,7 @@ test "capsule fabric image captures active invocation and completed receipt" {
         .provider_run_refs = image.provider_run_refs,
         .provider_state_summary_fingerprints = image.provider_state_summary_fingerprints,
         .route_fingerprints = image.route_fingerprints,
+        .route_plan_fingerprints = image.route_plan_fingerprints,
         .value_mapping_fingerprints = image.value_mapping_fingerprints,
         .depth_route_stack = image.depth_route_stack,
         .replay_cursor_state_refs = image.replay_cursor_state_refs,
@@ -51329,6 +51382,7 @@ test "capsule fabric image captures active invocation and completed receipt" {
         .provider_run_refs = &forged_provider_refs,
         .provider_state_summary_fingerprints = image.provider_state_summary_fingerprints,
         .route_fingerprints = image.route_fingerprints,
+        .route_plan_fingerprints = image.route_plan_fingerprints,
         .value_mapping_fingerprints = image.value_mapping_fingerprints,
         .depth_route_stack = image.depth_route_stack,
         .replay_cursor_state_refs = image.replay_cursor_state_refs,
@@ -51350,6 +51404,7 @@ test "capsule fabric image captures active invocation and completed receipt" {
         .provider_run_refs = image.provider_run_refs,
         .provider_state_summary_fingerprints = &forged_provider_state_refs,
         .route_fingerprints = image.route_fingerprints,
+        .route_plan_fingerprints = image.route_plan_fingerprints,
         .value_mapping_fingerprints = image.value_mapping_fingerprints,
         .depth_route_stack = image.depth_route_stack,
         .replay_cursor_state_refs = image.replay_cursor_state_refs,

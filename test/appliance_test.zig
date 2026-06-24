@@ -1119,7 +1119,7 @@ test "appliance static contract exposes root namespace and versions" {
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_command_format_version);
     try std.testing.expectEqual(@as(u32, 4), world.world_appliance_host_request_format_version);
     try std.testing.expectEqual(@as(u32, 4), world.world_appliance_host_request_fingerprint_version);
-    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_format_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_turn_output_format_version);
     try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_checkpoint_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_receipt_format_version);
@@ -4951,13 +4951,12 @@ test "appliance Core accepts replay evidence with verified transcript support" {
         world.Appliance.Capacity.tiny_one_port,
     );
     defer replay_output.deinit(std.testing.allocator);
-    try std.testing.expectEqual(world.Appliance.TurnStatus.completed, replay_output.status);
+    try std.testing.expectEqual(world.Appliance.TurnStatus.blocked, replay_output.status);
     try std.testing.expectEqual(@as(usize, 0), replay_output.host_requests.len);
     try std.testing.expectEqual(@as(usize, 0), replay_output.turn_receipt.emitted_host_request_fingerprints.len);
     try std.testing.expectEqual(@as(usize, 0), replay_output.turn_receipt.applied_host_reply_fingerprints.len);
-    try std.testing.expectEqual(@as(usize, 1), replay_output.finalized_actuation_receipt_fingerprints.len);
-    try std.testing.expectEqual(terminal_output.finalized_actuation_receipt_fingerprints[0], replay_output.finalized_actuation_receipt_fingerprints[0]);
-    try std.testing.expect(replay_output.root_result_fingerprint != null);
+    try std.testing.expectEqual(@as(usize, 0), replay_output.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(?u64, null), replay_output.root_result_fingerprint);
 
     var replay_native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -4998,7 +4997,7 @@ test "appliance Core accepts replay evidence with verified transcript support" {
     });
     const replay_wire_continue_bytes = try replay_wire_continue.encode(std.testing.allocator);
     defer std.testing.allocator.free(replay_wire_continue_bytes);
-    try std.testing.expectEqual(world.Appliance.Abi.Status.completed, replay_native.submitTurn(replay_wire_continue_bytes));
+    try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, replay_native.submitTurn(replay_wire_continue_bytes));
 
     var duplicate_replay_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
