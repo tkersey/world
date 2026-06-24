@@ -7837,8 +7837,13 @@ pub fn Appliance(comptime World: type) type {
         }
 
         fn readHostRequestsOwned(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize) ![]HostRequest {
+            return readHostRequestsOwnedLimited(allocator, bytes, cursor, std.math.maxInt(usize));
+        }
+
+        fn readHostRequestsOwnedLimited(allocator: std.mem.Allocator, bytes: []const u8, cursor: *usize, max_count: usize) ![]HostRequest {
             const count = try readU64(bytes, cursor);
             if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
+            if (count > max_count) return error.CapacityExceeded;
             if (count > bytes.len) return error.InvalidFrameEncoding;
             if (count > World.world_max_decoded_byte_field_len / @sizeOf(HostRequest)) return error.InvalidFrameEncoding;
             const request_count: usize = @intCast(count);
@@ -8169,7 +8174,7 @@ pub fn Appliance(comptime World: type) type {
             const resulting_state_fingerprint = try readU64(bytes, cursor);
             const quiescence = try readQuiescenceReport(bytes, cursor);
             const status = try enumFromByte(TurnStatus, try readU8(bytes, cursor));
-            const host_requests = try readHostRequestsOwned(allocator, bytes, cursor);
+            const host_requests = try readHostRequestsOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer freeHostRequests(allocator, host_requests);
             const finalized_actuation_receipt_fingerprints = try readU64SliceOwnedLimited(allocator, bytes, cursor, limits.max_items);
             errdefer allocator.free(finalized_actuation_receipt_fingerprints);
@@ -8877,8 +8882,9 @@ pub fn Appliance(comptime World: type) type {
         fn decodePendingHostRequestsForClosure(allocator: std.mem.Allocator, bytes: []const u8, limits: TurnClosureLimits) ![]HostRequest {
             if (bytes.len == 0) return allocator.alloc(HostRequest, 0);
             var cursor: usize = 0;
-            const requests = readHostRequestsOwned(allocator, bytes, &cursor) catch |err| switch (err) {
+            const requests = readHostRequestsOwnedLimited(allocator, bytes, &cursor, limits.max_items) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
+                error.CapacityExceeded => return error.CapacityExceeded,
                 else => return error.InvalidFrameEncoding,
             };
             errdefer freeHostRequests(allocator, requests);

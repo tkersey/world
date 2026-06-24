@@ -8758,6 +8758,17 @@ test "appliance TurnClosure rejects over-limit byte payloads before allocation" 
     const oversized_checkpoint_encoded = try oversized_checkpoint_closure.encode(allocator);
     defer allocator.free(oversized_checkpoint_encoded);
     try std.testing.expectError(error.CapacityExceeded, world.Appliance.TurnClosure.decode(allocator, oversized_checkpoint_encoded));
+
+    var overlimit_pending_count_bytes: [@sizeOf(u64)]u8 = undefined;
+    std.mem.writeInt(u64, &overlimit_pending_count_bytes, limits.max_items + 1, .little);
+    var overlimit_pending_closure = fixture.closure;
+    overlimit_pending_closure.pending_host_request_bytes = &overlimit_pending_count_bytes;
+    overlimit_pending_closure.status = .needs_host;
+    overlimit_pending_closure = applianceTestRecomputedTurnClosure(overlimit_pending_closure);
+    try std.testing.expectError(error.CapacityExceeded, overlimit_pending_closure.validate(allocator, .{
+        .limits = limits,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    }));
 }
 
 test "appliance TurnClosure rejects mismatched required bytes and unresolved roots" {

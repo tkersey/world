@@ -11552,6 +11552,37 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expect(completed_admission.accepted);
     try std.testing.expectEqual(restore.restore_report_fingerprint, completed_admission.capsule_restore_report_fingerprint.?);
     try std.testing.expectEqual(@as(usize, imported.runspace_image.run_slots.len * 2), restore.restored_run_handle_mappings.len);
+    const forged_mailbox_id_mappings = [_]u64{ 0x5150_e201, 0x5150_e202 };
+    const forged_mailbox_id_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restore.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restore.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restore.restored_local_run_id_start,
+        .restored_run_handle_mappings = restore.restored_run_handle_mappings,
+        .restored_root_run_handles = restore.restored_root_run_handles,
+        .restored_provider_run_handles = restore.restored_provider_run_handles,
+        .restored_pending_port_mappings = restore.restored_pending_port_mappings,
+        .restored_pending_mailbox_id_mappings = &forged_mailbox_id_mappings,
+        .restored_fabric_invocation_mappings = restore.restored_fabric_invocation_mappings,
+        .guest_conformance_refs = restore.guest_conformance_refs,
+        .restored_actuation_receipt_refs = restore.restored_actuation_receipt_refs,
+        .replayed_sender_actuation_receipt_refs = restore.replayed_sender_actuation_receipt_refs,
+        .receiver_local_actuation_receipt_refs = restore.receiver_local_actuation_receipt_refs,
+        .environment_certificate_fingerprint = restore.environment_certificate_fingerprint,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restore.warnings,
+        .summary = "forged mailbox id mappings",
+    });
+    const forged_mailbox_id_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = forged_mailbox_id_restore,
+    });
+    try std.testing.expect(!forged_mailbox_id_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_mailbox_id_admission.blockers[0]);
     const forged_environment_refs = [_]u64{0x5150_e001};
     const environment_manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,

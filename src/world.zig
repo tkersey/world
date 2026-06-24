@@ -2906,7 +2906,42 @@ pub const Admission = struct {
     }
 
     fn capsuleRestoreReportPendingMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
-        const refs = if (image.runspace_image.mailbox_image) |mailbox| mailbox.pending_port_fingerprints else &.{};
+        const mailbox = image.runspace_image.mailbox_image orelse {
+            return report.restored_pending_port_mappings.len == 0 and report.restored_pending_mailbox_id_mappings.len == 0;
+        };
+        if (mailbox.pending_port_entries.len != 0) {
+            const port_mappings = report.restored_pending_port_mappings;
+            const mailbox_id_mappings = report.restored_pending_mailbox_id_mappings;
+            if (port_mappings.len != mailbox.pending_port_entries.len * 2) return false;
+            if (mailbox_id_mappings.len != mailbox.pending_port_entries.len * 2) return false;
+            for (mailbox.pending_port_entries, 0..) |pending, index| {
+                pending.validateForRunspaceImageFormat(image.runspace_image.format_version) catch return false;
+                const mapped_original = port_mappings[index * 2];
+                const mapped_restored = port_mappings[index * 2 + 1];
+                const mailbox_original = mailbox_id_mappings[index * 2];
+                const restored_mailbox_id = mailbox_id_mappings[index * 2 + 1];
+                if (mapped_original != pending.pending_port_fingerprint) return false;
+                if (mailbox_original != pending.pending_port_fingerprint) return false;
+                if (mapped_restored == 0) return false;
+                const restored_handle = capsuleRestoreReportMappedU64(report.restored_run_handle_mappings, pending.original_run_handle_fingerprint) catch return false;
+                const expected_restored = restoredPendingPortFingerprintFromImage(
+                    image.runspace_image.format_version,
+                    pending,
+                    restored_handle,
+                    restored_mailbox_id,
+                    report.receiver_run_permit_fingerprint,
+                );
+                if (mapped_restored != expected_restored) return false;
+                var previous_index: usize = 0;
+                while (previous_index < index) : (previous_index += 1) {
+                    if (port_mappings[previous_index * 2 + 1] == mapped_restored) return false;
+                    if (mailbox_id_mappings[previous_index * 2 + 1] == restored_mailbox_id) return false;
+                }
+            }
+            return true;
+        }
+        if (report.restored_pending_mailbox_id_mappings.len != 0) return false;
+        const refs = mailbox.pending_port_fingerprints;
         const mappings = report.restored_pending_port_mappings;
         if (mappings.len != refs.len * 2) return false;
         for (refs, 0..) |pending, index| {
@@ -2929,6 +2964,79 @@ pub const Admission = struct {
             if (mappings[index] == original) return mappings[index + 1];
         }
         return error.StaleRunHandle;
+    }
+
+    fn restoredPendingPortFingerprintFromImage(runspace_image_format_version: u32, image: Capsule.PendingPortImage, restored_handle_fingerprint: u64, restored_mailbox_id: u64, receiver_run_permit_fingerprint: ?u64) u64 {
+        const run_permit_fingerprint = receiver_run_permit_fingerprint orelse image.run_permit_fingerprint;
+        if (runspace_image_format_version == 1) {
+            return fingerprintPendingPortFieldsV1(.{
+                .handle_fingerprint = restored_handle_fingerprint,
+                .mailbox_id = restored_mailbox_id,
+                .world_surface_fingerprint = image.request_frame.world_surface_fingerprint,
+                .target_certificate_fingerprint = image.request_frame.target_certificate_fingerprint,
+                .world_port_id = image.request_frame.world_port_id,
+                .request_fingerprint = image.request_frame.request_fingerprint,
+                .request_frame_fingerprint = image.request_frame.frame_fingerprint,
+                .expected_response_kind = image.expected_response_kind,
+                .expected_response_value_table_id = image.expected_response_value_table_id,
+                .residual_site_index = image.request_frame.residual_site_index,
+                .residual_site_fingerprint = image.request_frame.residual_site_fingerprint,
+                .target_ref_fingerprint = image.target_ref_fingerprint,
+                .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
+                .run_permit_fingerprint = run_permit_fingerprint,
+                .turn_index = image.request_frame.turn_index,
+                .inserted_event_index = image.inserted_event_index,
+                .status = image.status,
+            });
+        }
+        if (runspace_image_format_version == 2) {
+            return fingerprintPendingPortFieldsV2(.{
+                .handle_fingerprint = restored_handle_fingerprint,
+                .mailbox_id = restored_mailbox_id,
+                .world_surface_fingerprint = image.request_frame.world_surface_fingerprint,
+                .target_certificate_fingerprint = image.request_frame.target_certificate_fingerprint,
+                .world_port_id = image.request_frame.world_port_id,
+                .request_fingerprint = image.request_frame.request_fingerprint,
+                .request_frame_fingerprint = image.request_frame.frame_fingerprint,
+                .expected_response_kind = image.expected_response_kind,
+                .expected_response_value_table_id = image.expected_response_value_table_id,
+                .residual_site_index = image.request_frame.residual_site_index,
+                .residual_site_fingerprint = image.request_frame.residual_site_fingerprint,
+                .target_ref_fingerprint = image.target_ref_fingerprint,
+                .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
+                .run_permit_fingerprint = run_permit_fingerprint,
+                .pending_actuation_intent_fingerprint = image.pending_actuation_intent_fingerprint,
+                .pending_actuation_receipt_fingerprint = image.pending_actuation_receipt_fingerprint,
+                .turn_index = image.request_frame.turn_index,
+                .inserted_event_index = image.inserted_event_index,
+                .status = image.status,
+            });
+        }
+        return fingerprintPendingPortFields(.{
+            .handle_fingerprint = restored_handle_fingerprint,
+            .mailbox_id = restored_mailbox_id,
+            .world_surface_fingerprint = image.request_frame.world_surface_fingerprint,
+            .target_certificate_fingerprint = image.request_frame.target_certificate_fingerprint,
+            .world_port_id = image.request_frame.world_port_id,
+            .request_fingerprint = image.request_frame.request_fingerprint,
+            .request_frame_fingerprint = image.request_frame.frame_fingerprint,
+            .expected_response_kind = image.expected_response_kind,
+            .expected_response_value_table_id = image.expected_response_value_table_id,
+            .residual_site_index = image.request_frame.residual_site_index,
+            .residual_site_fingerprint = image.request_frame.residual_site_fingerprint,
+            .target_ref_fingerprint = image.target_ref_fingerprint,
+            .environment_certificate_fingerprint = image.environment_certificate_fingerprint,
+            .run_permit_fingerprint = run_permit_fingerprint,
+            .actuation_binding_fingerprint = image.actuation_binding_fingerprint,
+            .actuation_descriptor_fingerprint = image.actuation_descriptor_fingerprint,
+            .actuator_ref_fingerprint = image.actuator_ref_fingerprint,
+            .pending_actuation_intent_fingerprint = image.pending_actuation_intent_fingerprint,
+            .pending_actuation_receipt_fingerprint = image.pending_actuation_receipt_fingerprint,
+            .committed_actuation_receipt = image.committed_actuation_receipt,
+            .turn_index = image.request_frame.turn_index,
+            .inserted_event_index = image.inserted_event_index,
+            .status = image.status,
+        });
     }
 
     fn capsuleRestoreReportFabricMappingsMatchImage(image: Capsule.Image, report: Capsule.RestoreReport) bool {
