@@ -254,20 +254,20 @@ test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded m
     try std.testing.expect(completed_output.archive_append_batch_fingerprint != null);
     try std.testing.expect(completed_output.archive_append_batch_bytes.len > 0);
 
-    try std.testing.expectEqual(@as(u32, 12), universal.world_appliance_submit_command(turn_input_ptr, 0));
-    try std.testing.expect(universal.world_appliance_last_error_len() > 0);
-    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
-    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_closure_len());
-
     try std.testing.expectEqual(@as(u32, 8), universal.world_appliance_submit_turn(continue_turn_ptr, continue_turn_bytes.len));
     try std.testing.expect(universal.world_appliance_last_error_len() > 0);
-    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_closure_len());
+    try std.testing.expectEqual(completed_closure_len, universal.world_appliance_closure_len());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
 
     try std.testing.expectEqual(@as(u32, 12), universal.world_appliance_submit_turn(turn_input_ptr, 0));
     try std.testing.expect(universal.world_appliance_last_error_len() > 0);
-    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_closure_len());
+    try std.testing.expectEqual(completed_closure_len, universal.world_appliance_closure_len());
     try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
+
+    try std.testing.expectEqual(@as(u32, 12), universal.world_appliance_submit_command(turn_input_ptr, 0));
+    try std.testing.expect(universal.world_appliance_last_error_len() > 0);
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_output_len());
+    try std.testing.expectEqual(@as(usize, 0), universal.world_appliance_closure_len());
 
     try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_reset());
     try std.testing.expectEqual(manifest_len, universal.world_appliance_manifest_len());
