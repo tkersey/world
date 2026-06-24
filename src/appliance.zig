@@ -2465,7 +2465,11 @@ pub fn Appliance(comptime World: type) type {
                     } else {
                         if (self.turn_sequence_number == 0) return error.InvalidFrameEncoding;
                     }
-                    if (self.operation == .restore and self.parent_turn_closure_bytes.len == 0) return error.InvalidFrameEncoding;
+                    if (self.operation == .restore) {
+                        if (self.parent_turn_closure_bytes.len == 0) return error.InvalidFrameEncoding;
+                    } else if (self.parent_turn_closure_bytes.len != 0) {
+                        return error.InvalidFrameEncoding;
+                    }
                     if (self.operation != .boot and self.root_argument_images.len != 0) return error.InvalidFrameEncoding;
                 }
 

@@ -8892,6 +8892,21 @@ test "appliance Wire TurnInput canonicalizes resolution input order" {
     try std.testing.expectError(error.DuplicateHostReply, duplicate_input.encode(allocator));
 }
 
+test "appliance Wire TurnInput rejects ignored parent closure bytes" {
+    const allocator = std.testing.allocator;
+    const input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA010,
+        .expected_parent_closure_fingerprint = 0xA011,
+        .previous_turn_receipt_fingerprint = 0xA012,
+        .turn_sequence_number = 1,
+        .parent_turn_closure_bytes = "ignored-parent-closure",
+    });
+    const bytes = try input.encode(allocator);
+    defer allocator.free(bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Wire.TurnInput.decode(allocator, bytes));
+}
+
 test "appliance Wire TurnInput rejects over-limit counts before reading entries" {
     const allocator = std.testing.allocator;
     const input = world.Appliance.Wire.TurnInput.init(.{
