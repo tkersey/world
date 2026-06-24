@@ -29,8 +29,8 @@ test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded m
     try expectManifestLine(runtime_manifest, "max_image_bytes=131072\n");
     try expectManifestLine(runtime_manifest, "max_command_bytes=65536\n");
     try expectManifestLine(runtime_manifest, "max_output_bytes=131072\n");
-    try expectManifestLine(runtime_manifest, "max_turn_input_bytes=65536\n");
-    try expectManifestLine(runtime_manifest, "max_closure_bytes=262144\n");
+    try expectManifestLine(runtime_manifest, "max_turn_input_bytes=589824\n");
+    try expectManifestLine(runtime_manifest, "max_closure_bytes=524288\n");
     try expectManifestLine(runtime_manifest, "max_linear_memory_pages=1024\n");
     try expectManifestLine(runtime_manifest, "decoded_immutable_bytes_limit=16777216\n");
     try expectManifestLine(runtime_manifest, "staging_high_water_limit=16777216\n");
@@ -115,6 +115,25 @@ test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded m
     defer no_host_output.deinit(std.testing.allocator);
     try std.testing.expectEqual(world.Appliance.TurnStatus.completed, no_host_output.status);
     try std.testing.expectEqual(@as(usize, 0), no_host_output.host_requests.len);
+
+    const restore_parent_closure_bytes = try std.testing.allocator.alloc(u8, 65 * 1024);
+    defer std.testing.allocator.free(restore_parent_closure_bytes);
+    @memset(restore_parent_closure_bytes, 0xA5);
+    const oversized_restore_turn = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .restore,
+        .appliance_manifest_fingerprint = no_host_manifest.manifest_fingerprint,
+        .expected_parent_closure_fingerprint = 0xABCD_0001,
+        .turn_sequence_number = 1,
+        .parent_turn_closure_bytes = restore_parent_closure_bytes,
+        .host_metadata = "native-universal-test.restore-large-parent",
+    });
+    const oversized_restore_turn_bytes = try oversized_restore_turn.encode(std.testing.allocator);
+    defer std.testing.allocator.free(oversized_restore_turn_bytes);
+    try std.testing.expect(oversized_restore_turn_bytes.len > 64 * 1024);
+    const oversized_restore_turn_ptr = try writeGuest(oversized_restore_turn_bytes);
+    try std.testing.expectEqual(@as(u32, 7), universal.world_appliance_submit_turn(oversized_restore_turn_ptr, oversized_restore_turn_bytes.len));
+    try std.testing.expect(universal.world_appliance_last_error_len() > 0);
+
     try std.testing.expectEqual(@as(u32, 0), universal.world_appliance_unload_executable());
 
     var image = try buildExecutableImage(std.testing.allocator, "universal.test.image", "universal.test.binding");

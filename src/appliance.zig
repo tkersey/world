@@ -2117,7 +2117,7 @@ pub fn Appliance(comptime World: type) type {
                 var turn_receipt = try decodeTurnReceiptBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.turn_receipt_bytes, self.turn_receipt_fingerprint);
                 defer turn_receipt.deinit(allocator);
                 try validateTurnClosurePayloadBindings(self, checkpoint, turn_receipt, pending_host_requests);
-                try validateRootResultBytesForClosure(self.root_result_bytes, self.root_result_fingerprint, self.root_result_value_ref_fingerprint);
+                try validateRootResultBytesForClosure(self.root_result_bytes, self.root_result_fingerprint, self.root_result_value_ref_fingerprint, turn_receipt.root_result_fingerprint);
                 try validateRunReceiptBytes(allocator, self.run_receipt_bytes, self.run_receipt_fingerprint);
                 try validateArchiveAppendBatchBytes(allocator, self.archive_append_batch_bytes, self.archive_append_batch_fingerprint);
                 var bundle_options = options.bundle_options;
@@ -8791,12 +8791,14 @@ pub fn Appliance(comptime World: type) type {
             if (cursor != bytes.len) return error.InvalidFrameEncoding;
         }
 
-        fn validateRootResultBytesForClosure(bytes: []const u8, expected_fingerprint: ?u64, expected_ref_fingerprint: ?u64) !void {
+        fn validateRootResultBytesForClosure(bytes: []const u8, expected_fingerprint: ?u64, expected_ref_fingerprint: ?u64, expected_value_fingerprint: ?u64) !void {
             const fingerprint = expected_fingerprint orelse {
-                if (bytes.len != 0 or expected_ref_fingerprint != null) return error.InvalidFrameEncoding;
+                if (bytes.len != 0 or expected_ref_fingerprint != null or expected_value_fingerprint != null) return error.InvalidFrameEncoding;
                 return;
             };
+            const value_fingerprint = expected_value_fingerprint orelse return error.InvalidFrameEncoding;
             if (bytes.len == 0) return error.InvalidFrameEncoding;
+            try validateRootResultValueImageBytes(bytes, value_fingerprint);
             const ref = World.Continuity.ObjectRef.fromPayload(.root_result, World.Continuity.ObjectKind.root_result.defaultFormatVersion(), bytes, "root.result");
             if (ref.object_fingerprint != fingerprint) return error.InvalidFrameEncoding;
             if (expected_ref_fingerprint) |expected_ref| {

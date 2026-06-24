@@ -8040,80 +8040,40 @@ fn applianceTestCapsuleBytes(allocator: std.mem.Allocator, metadata: []const u8)
     return image.encode(allocator);
 }
 
-fn applianceTurnClosureFixture(allocator: std.mem.Allocator) !struct {
-    closure: world.Appliance.TurnClosure,
-    capsule_bytes: []const u8,
+fn applianceTestWriteU32(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u32) !void {
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, value, .little);
+    try out.appendSlice(allocator, &bytes);
+}
+
+fn applianceTestWriteU64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u64) !void {
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &bytes, value, .little);
+    try out.appendSlice(allocator, &bytes);
+}
+
+fn applianceTestWriteBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []const u8) !void {
+    if (bytes.len > std.math.maxInt(u32)) return error.CapacityExceeded;
+    try applianceTestWriteU32(out, allocator, @intCast(bytes.len));
+    try out.appendSlice(allocator, bytes);
+}
+
+fn applianceTestRootResultValueImageBytes(allocator: std.mem.Allocator, fingerprint: u64) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try applianceTestWriteBytes(&out, allocator, "world.appliance.root_result.value_image");
+    try applianceTestWriteU64(&out, allocator, fingerprint);
+    return out.toOwnedSlice(allocator);
+}
+
+fn applianceTestClosureBundleBytes(
+    allocator: std.mem.Allocator,
     checkpoint_bytes: []const u8,
     turn_receipt_bytes: []const u8,
-    actuation_receipt_fingerprints: []const u64,
-    actuation_receipt_byte_slices: []const []const u8,
-    actuation_receipt_bytes: []const u8,
+    capsule_bytes: []const u8,
     root_result_bytes: []const u8,
-    bundle_bytes: []const u8,
-} {
-    const manifest_fingerprint: u64 = 0xD7C1;
-    const executable_fingerprint: u64 = 0xE7C1;
-    const root_result_bytes = try allocator.dupe(u8, "final=closure");
-    errdefer allocator.free(root_result_bytes);
-    const root_result_ref = world.Continuity.ObjectRef.fromPayload(.root_result, world.Continuity.ObjectKind.root_result.defaultFormatVersion(), root_result_bytes, "root.result");
-    const root_result_fingerprint = root_result_ref.object_fingerprint;
-
-    const capsule_bytes = try applianceTestCapsuleBytes(allocator, "turn-closure");
-    errdefer allocator.free(capsule_bytes);
-    const capsule_ref = world.Continuity.ObjectRef.fromPayload(.capsule_image, world.world_capsule_image_format_version, capsule_bytes, "capsule.image");
-
-    const receipt = world.Appliance.TurnReceipt.init(.{
-        .manifest_fingerprint = manifest_fingerprint,
-        .turn_sequence_number = 0,
-        .command_fingerprint = 0xD7C2,
-        .resulting_capsule_fingerprint = capsule_ref.object_fingerprint,
-        .root_result_fingerprint = root_result_fingerprint,
-        .status = .completed,
-    });
-    var receipt_payload: std.ArrayList(u8) = .empty;
-    defer receipt_payload.deinit(allocator);
-    try receipt.encode(&receipt_payload, allocator);
-    const turn_receipt_bytes = try allocator.dupe(u8, receipt_payload.items);
-    errdefer allocator.free(turn_receipt_bytes);
-
-    const actuation_receipt = world.Actuation.Receipt.init(.{
-        .intent_fingerprint = 0xA7C1,
-        .envelope_fingerprint = 0xA7C2,
-        .decision_fingerprint = 0xA7C3,
-        .commit_fingerprint = 0xA7C4,
-        .response_fingerprint = 0xA7C5,
-        .frame_response_fingerprint = 0xA7C6,
-        .actuator_ref_fingerprint = 0xA7C7,
-        .idempotency_key_fingerprint = 0xA7C8,
-        .request_fingerprint = 0xA7C9,
-        .target_ref_fingerprint = 0xA7CA,
-        .world_surface_fingerprint = 0xA7CB,
-        .world_port_id = 1,
-        .class = .deterministic_fixture,
-        .mode = .fresh,
-        .fresh_called = true,
-    });
-    const actuation_receipt_bytes = try actuation_receipt.encode(allocator);
-    errdefer allocator.free(actuation_receipt_bytes);
-    const actuation_receipt_fingerprints = try allocator.alloc(u64, 1);
-    errdefer allocator.free(actuation_receipt_fingerprints);
-    actuation_receipt_fingerprints[0] = actuation_receipt.receipt_fingerprint;
-    const actuation_receipt_byte_slices = try allocator.alloc([]const u8, 1);
-    errdefer allocator.free(actuation_receipt_byte_slices);
-    actuation_receipt_byte_slices[0] = actuation_receipt_bytes;
-
-    const checkpoint = world.Appliance.Checkpoint.init(.{
-        .manifest_fingerprint = manifest_fingerprint,
-        .turn_sequence_number = 0,
-        .capsule_fingerprint = capsule_ref.object_fingerprint,
-        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
-    });
-    var checkpoint_payload: std.ArrayList(u8) = .empty;
-    defer checkpoint_payload.deinit(allocator);
-    try checkpoint.encode(&checkpoint_payload, allocator);
-    const checkpoint_bytes = try allocator.dupe(u8, checkpoint_payload.items);
-    errdefer allocator.free(checkpoint_bytes);
-
+    actuation_receipt_bytes: []const u8,
+) ![]const u8 {
     const checkpoint_envelope = world.Continuity.ObjectEnvelope.init(.{
         .kind = .appliance_checkpoint,
         .payload_bytes = checkpoint_bytes,
@@ -8167,7 +8127,85 @@ fn applianceTurnClosureFixture(allocator: std.mem.Allocator) !struct {
         .manifest = world.Continuity.BundleManifest.init(.{ .roots = &roots, .object_count = envelopes.len }),
         .envelopes = &envelopes,
     };
-    const bundle_bytes = try bundle.toBytes(allocator);
+    return bundle.toBytes(allocator);
+}
+
+fn applianceTurnClosureFixture(allocator: std.mem.Allocator) !struct {
+    closure: world.Appliance.TurnClosure,
+    capsule_bytes: []const u8,
+    checkpoint_bytes: []const u8,
+    turn_receipt_bytes: []const u8,
+    actuation_receipt_fingerprints: []const u64,
+    actuation_receipt_byte_slices: []const []const u8,
+    actuation_receipt_bytes: []const u8,
+    root_result_bytes: []const u8,
+    bundle_bytes: []const u8,
+} {
+    const manifest_fingerprint: u64 = 0xD7C1;
+    const executable_fingerprint: u64 = 0xE7C1;
+    const root_result_value_fingerprint: u64 = 0xD7C3;
+    const root_result_bytes = try applianceTestRootResultValueImageBytes(allocator, root_result_value_fingerprint);
+    errdefer allocator.free(root_result_bytes);
+    const root_result_ref = world.Continuity.ObjectRef.fromPayload(.root_result, world.Continuity.ObjectKind.root_result.defaultFormatVersion(), root_result_bytes, "root.result");
+    const root_result_fingerprint = root_result_ref.object_fingerprint;
+
+    const capsule_bytes = try applianceTestCapsuleBytes(allocator, "turn-closure");
+    errdefer allocator.free(capsule_bytes);
+    const capsule_ref = world.Continuity.ObjectRef.fromPayload(.capsule_image, world.world_capsule_image_format_version, capsule_bytes, "capsule.image");
+
+    const receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .command_fingerprint = 0xD7C2,
+        .resulting_capsule_fingerprint = capsule_ref.object_fingerprint,
+        .root_result_fingerprint = root_result_value_fingerprint,
+        .status = .completed,
+    });
+    var receipt_payload: std.ArrayList(u8) = .empty;
+    defer receipt_payload.deinit(allocator);
+    try receipt.encode(&receipt_payload, allocator);
+    const turn_receipt_bytes = try allocator.dupe(u8, receipt_payload.items);
+    errdefer allocator.free(turn_receipt_bytes);
+
+    const actuation_receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = 0xA7C1,
+        .envelope_fingerprint = 0xA7C2,
+        .decision_fingerprint = 0xA7C3,
+        .commit_fingerprint = 0xA7C4,
+        .response_fingerprint = 0xA7C5,
+        .frame_response_fingerprint = 0xA7C6,
+        .actuator_ref_fingerprint = 0xA7C7,
+        .idempotency_key_fingerprint = 0xA7C8,
+        .request_fingerprint = 0xA7C9,
+        .target_ref_fingerprint = 0xA7CA,
+        .world_surface_fingerprint = 0xA7CB,
+        .world_port_id = 1,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const actuation_receipt_bytes = try actuation_receipt.encode(allocator);
+    errdefer allocator.free(actuation_receipt_bytes);
+    const actuation_receipt_fingerprints = try allocator.alloc(u64, 1);
+    errdefer allocator.free(actuation_receipt_fingerprints);
+    actuation_receipt_fingerprints[0] = actuation_receipt.receipt_fingerprint;
+    const actuation_receipt_byte_slices = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(actuation_receipt_byte_slices);
+    actuation_receipt_byte_slices[0] = actuation_receipt_bytes;
+
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .capsule_fingerprint = capsule_ref.object_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+    });
+    var checkpoint_payload: std.ArrayList(u8) = .empty;
+    defer checkpoint_payload.deinit(allocator);
+    try checkpoint.encode(&checkpoint_payload, allocator);
+    const checkpoint_bytes = try allocator.dupe(u8, checkpoint_payload.items);
+    errdefer allocator.free(checkpoint_bytes);
+
+    const bundle_bytes = try applianceTestClosureBundleBytes(allocator, checkpoint_bytes, turn_receipt_bytes, capsule_bytes, root_result_bytes, actuation_receipt_bytes);
     errdefer allocator.free(bundle_bytes);
 
     const initial_cursor_fingerprint = world.Continuity.Chronicle.Cursor.initial().cursor_fingerprint;
@@ -8348,6 +8386,49 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
     var tampered_receipt_bytes = fixture.closure;
     tampered_receipt_bytes.finalized_actuation_receipt_bytes = &.{tampered_payload};
     try std.testing.expectError(error.InvalidFrameEncoding, tampered_receipt_bytes.validate(allocator, .{ .limits = .archive_decode }));
+
+    var receipt = try world.Appliance.TurnReceipt.decodeArchivePayload(allocator, fixture.turn_receipt_bytes);
+    defer receipt.deinit(allocator);
+    const forged_root_result_bytes = try applianceTestRootResultValueImageBytes(allocator, receipt.root_result_fingerprint.? +% 1);
+    defer allocator.free(forged_root_result_bytes);
+    const forged_root_result_ref = world.Continuity.ObjectRef.fromPayload(.root_result, world.Continuity.ObjectKind.root_result.defaultFormatVersion(), forged_root_result_bytes, "root.result");
+    const forged_bundle_bytes = try applianceTestClosureBundleBytes(
+        allocator,
+        fixture.checkpoint_bytes,
+        fixture.turn_receipt_bytes,
+        fixture.capsule_bytes,
+        forged_root_result_bytes,
+        fixture.actuation_receipt_bytes,
+    );
+    defer allocator.free(forged_bundle_bytes);
+    var forged_root_result = fixture.closure;
+    forged_root_result.root_result_fingerprint = forged_root_result_ref.object_fingerprint;
+    forged_root_result.root_result_value_ref_fingerprint = forged_root_result_ref.ref_fingerprint;
+    forged_root_result.root_result_bytes = forged_root_result_bytes;
+    forged_root_result.evidence_bundle_bytes = forged_bundle_bytes;
+    forged_root_result.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = forged_root_result.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = forged_root_result.appliance_manifest_fingerprint,
+        .turn_sequence_number = forged_root_result.turn_sequence_number,
+        .parent_state_fingerprint = forged_root_result.parent_state_fingerprint,
+        .resulting_state_fingerprint = forged_root_result.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = forged_root_result.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = forged_root_result.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = forged_root_result.checkpoint_fingerprint,
+        .checkpoint_bytes = forged_root_result.checkpoint_bytes,
+        .capsule_fingerprint = forged_root_result.capsule_fingerprint,
+        .capsule_bytes = forged_root_result.capsule_bytes,
+        .turn_receipt_fingerprint = forged_root_result.turn_receipt_fingerprint,
+        .turn_receipt_bytes = forged_root_result.turn_receipt_bytes,
+        .evidence_bundle_bytes = forged_root_result.evidence_bundle_bytes,
+        .root_result_fingerprint = forged_root_result.root_result_fingerprint,
+        .root_result_bytes = forged_root_result.root_result_bytes,
+        .root_result_value_ref_fingerprint = forged_root_result.root_result_value_ref_fingerprint,
+        .finalized_actuation_receipt_fingerprints = forged_root_result.finalized_actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = forged_root_result.finalized_actuation_receipt_bytes,
+        .status = forged_root_result.status,
+    }).closure_fingerprint;
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_root_result.validate(allocator, .{ .limits = .archive_decode }));
 
     var missing_root = fixture.closure;
     missing_root.capsule_fingerprint +%= 1;
