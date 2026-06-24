@@ -2090,6 +2090,7 @@ pub fn Appliance(comptime World: type) type {
                 try validateFingerprintSlice(self.verify_report_fingerprints);
                 try validateFingerprintSlice(self.blockers);
                 try validateFingerprintSlice(self.warnings);
+                try validateCapsuleBytesForClosure(allocator, self.capsule_bytes, self.capsule_fingerprint);
                 for (self.finalized_actuation_receipt_bytes, self.finalized_actuation_receipt_fingerprints) |receipt_bytes, fingerprint| {
                     if (receipt_bytes.len == 0 or receipt_bytes.len > options.limits.max_receipt_bytes) return error.CapacityExceeded;
                     try validateActuationReceiptBytes(allocator, receipt_bytes, fingerprint);
@@ -2100,6 +2101,8 @@ pub fn Appliance(comptime World: type) type {
                 }
                 if (self.status == .needs_host and self.pending_host_request_bytes.len == 0) return error.InvalidFrameEncoding;
                 if (self.status != .needs_host and self.pending_host_request_bytes.len != 0) return error.InvalidFrameEncoding;
+                const pending_host_requests = try decodePendingHostRequestsForClosure(allocator, self.pending_host_request_bytes, options.limits);
+                defer freeHostRequests(allocator, pending_host_requests);
                 if (self.status == .completed) {
                     if (self.root_result_fingerprint == null or self.root_result_bytes.len == 0) return error.InvalidFrameEncoding;
                 } else if (self.root_result_fingerprint != null or self.root_result_bytes.len != 0 or self.root_result_value_ref_fingerprint != null) {
@@ -2112,7 +2115,7 @@ pub fn Appliance(comptime World: type) type {
                 defer checkpoint.deinit(allocator);
                 var turn_receipt = try decodeTurnReceiptBytesForClosure(allocator, self.appliance_manifest_fingerprint, self.turn_receipt_bytes, self.turn_receipt_fingerprint);
                 defer turn_receipt.deinit(allocator);
-                try validateTurnClosurePayloadBindings(self, checkpoint, turn_receipt);
+                try validateTurnClosurePayloadBindings(self, checkpoint, turn_receipt, pending_host_requests);
                 try validateRootResultBytesForClosure(self.root_result_bytes, self.root_result_fingerprint, self.root_result_value_ref_fingerprint);
                 try validateRunReceiptBytes(allocator, self.run_receipt_bytes, self.run_receipt_fingerprint);
                 try validateArchiveAppendBatchBytes(allocator, self.archive_append_batch_bytes, self.archive_append_batch_fingerprint);
@@ -4019,7 +4022,11 @@ pub fn Appliance(comptime World: type) type {
                 defer allocator.free(command_bytes);
 
                 const status = self.submitCommand(command_bytes);
-                if (!Abi.statusHasTurnOutput(status)) return status;
+                if (!Abi.statusHasTurnOutput(status)) {
+                    self.clearOutput();
+                    self.clearClosure();
+                    return status;
+                }
                 self.refreshClosureFromLastOutput(parent_closure_for_lineage) catch |err| {
                     self.clearClosure();
                     return self.setSubmitError(err);
@@ -8661,10 +8668,36 @@ pub fn Appliance(comptime World: type) type {
             return receipt;
         }
 
-        fn validateTurnClosurePayloadBindings(closure: TurnClosure, checkpoint: Checkpoint, receipt: TurnReceipt) !void {
+        fn validateCapsuleBytesForClosure(allocator: std.mem.Allocator, bytes: []const u8, expected_fingerprint: u64) !void {
+            var image = World.Capsule.Image.decode(allocator, bytes) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
+            defer image.deinit(allocator);
+            image.validate(.{}) catch return error.InvalidFrameEncoding;
+            const ref = World.Continuity.ObjectRef.fromPayload(.capsule_image, World.Continuity.ObjectKind.capsule_image.defaultFormatVersion(), bytes, "capsule.image");
+            if (ref.object_fingerprint != expected_fingerprint) return error.InvalidFrameEncoding;
+        }
+
+        fn decodePendingHostRequestsForClosure(allocator: std.mem.Allocator, bytes: []const u8, limits: TurnClosureLimits) ![]HostRequest {
+            if (bytes.len == 0) return allocator.alloc(HostRequest, 0);
+            var cursor: usize = 0;
+            const requests = readHostRequestsOwned(allocator, bytes, &cursor) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidFrameEncoding,
+            };
+            errdefer freeHostRequests(allocator, requests);
+            if (cursor != bytes.len) return error.InvalidFrameEncoding;
+            if (requests.len > limits.max_items) return error.CapacityExceeded;
+            for (requests) |request| request.validate(Capacity.archive_decode) catch return error.InvalidFrameEncoding;
+            return requests;
+        }
+
+        fn validateTurnClosurePayloadBindings(closure: TurnClosure, checkpoint: Checkpoint, receipt: TurnReceipt, pending_host_requests: []const HostRequest) !void {
             if (checkpoint.turn_sequence_number != closure.turn_sequence_number and !(checkpoint.core_state == .uninitialized and checkpoint.turn_sequence_number == 0)) return error.InvalidFrameEncoding;
             if (receipt.turn_sequence_number != closure.turn_sequence_number) return error.InvalidFrameEncoding;
             if (checkpoint.capsule_fingerprint != closure.capsule_fingerprint) return error.InvalidFrameEncoding;
+            if (checkpoint.capsule_image_bytes.len != 0 and !std.mem.eql(u8, checkpoint.capsule_image_bytes, closure.capsule_bytes)) return error.InvalidFrameEncoding;
             if (receipt.resulting_capsule_fingerprint != closure.capsule_fingerprint) return error.InvalidFrameEncoding;
             if (closureStatusForTurnStatus(receipt.status) != closure.status) return error.InvalidFrameEncoding;
             if (receipt.run_receipt_fingerprint != closure.run_receipt_fingerprint) return error.InvalidFrameEncoding;
@@ -8675,6 +8708,12 @@ pub fn Appliance(comptime World: type) type {
             if (receipt.status == .inspected and checkpoint.core_state == .runnable) return error.InvalidFrameEncoding;
             if (receipt.status != .inspected and checkpoint.core_state != stateForStatus(receipt.status)) {
                 if (!(receipt.status == .cancelled and checkpoint.core_state == .uninitialized)) return error.InvalidFrameEncoding;
+            }
+            if (checkpoint.outstanding_host_requests.len != pending_host_requests.len) return error.InvalidFrameEncoding;
+            if (receipt.emitted_host_request_fingerprints.len != pending_host_requests.len) return error.InvalidFrameEncoding;
+            for (pending_host_requests, checkpoint.outstanding_host_requests, receipt.emitted_host_request_fingerprints) |request, checkpoint_request, emitted_fingerprint| {
+                if (request.request_fingerprint != checkpoint_request.request_fingerprint) return error.InvalidFrameEncoding;
+                if (request.request_fingerprint != emitted_fingerprint) return error.InvalidFrameEncoding;
             }
             if (closure.archive_append_batch_fingerprint != null and closure.archive_append_batch_fingerprint != checkpoint.pending_archive_append_batch_fingerprint) return error.InvalidFrameEncoding;
             const initial_cursor = World.Continuity.Chronicle.Cursor.initial().cursor_fingerprint;

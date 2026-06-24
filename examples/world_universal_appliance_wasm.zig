@@ -217,15 +217,21 @@ pub export fn world_appliance_submit_command(ptr: usize, len: usize) u32 {
 pub export fn world_appliance_submit_turn(ptr: usize, len: usize) u32 {
     const current = activeNative() orelse return setErrorStatus(.invalid_command, "no executable image loaded");
     if (len == 0 or len > max_turn_input_bytes) {
+        current.clearOutput();
+        current.clearClosure();
         return setErrorStatus(.capacity_exceeded, "invalid turn input length");
     }
     const turn_input = guestRange(ptr, len) orelse {
+        current.clearOutput();
+        current.clearClosure();
         return setErrorStatus(.invalid_command, "turn input outside appliance memory");
     };
     const status = current.submitTurn(turn_input);
     if (Abi.statusHasTurnOutput(status)) {
         clearError();
     } else {
+        current.clearOutput();
+        current.clearClosure();
         setSubmitError(status, current.lastErrorBytes());
     }
     return @intFromEnum(status);

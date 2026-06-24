@@ -8268,6 +8268,35 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
     }).closure_fingerprint;
     try std.testing.expectError(error.InvalidFrameEncoding, wrong_resulting_state.validate(allocator, .{ .limits = .archive_decode }));
 
+    const tampered_capsule = try allocator.dupe(u8, fixture.capsule_bytes);
+    defer allocator.free(tampered_capsule);
+    tampered_capsule[tampered_capsule.len - 1] ^= 0x01;
+    var wrong_capsule_bytes = fixture.closure;
+    wrong_capsule_bytes.capsule_bytes = tampered_capsule;
+    wrong_capsule_bytes.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = wrong_capsule_bytes.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = wrong_capsule_bytes.appliance_manifest_fingerprint,
+        .turn_sequence_number = wrong_capsule_bytes.turn_sequence_number,
+        .parent_state_fingerprint = wrong_capsule_bytes.parent_state_fingerprint,
+        .resulting_state_fingerprint = wrong_capsule_bytes.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = wrong_capsule_bytes.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = wrong_capsule_bytes.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = wrong_capsule_bytes.checkpoint_fingerprint,
+        .checkpoint_bytes = wrong_capsule_bytes.checkpoint_bytes,
+        .capsule_fingerprint = wrong_capsule_bytes.capsule_fingerprint,
+        .capsule_bytes = wrong_capsule_bytes.capsule_bytes,
+        .turn_receipt_fingerprint = wrong_capsule_bytes.turn_receipt_fingerprint,
+        .turn_receipt_bytes = wrong_capsule_bytes.turn_receipt_bytes,
+        .evidence_bundle_bytes = wrong_capsule_bytes.evidence_bundle_bytes,
+        .root_result_fingerprint = wrong_capsule_bytes.root_result_fingerprint,
+        .root_result_bytes = wrong_capsule_bytes.root_result_bytes,
+        .root_result_value_ref_fingerprint = wrong_capsule_bytes.root_result_value_ref_fingerprint,
+        .finalized_actuation_receipt_fingerprints = wrong_capsule_bytes.finalized_actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = wrong_capsule_bytes.finalized_actuation_receipt_bytes,
+        .status = wrong_capsule_bytes.status,
+    }).closure_fingerprint;
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_capsule_bytes.validate(allocator, .{ .limits = .archive_decode }));
+
     var missing_receipt_bytes = fixture.closure;
     missing_receipt_bytes.finalized_actuation_receipt_bytes = &.{};
     try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, .{ .limits = .archive_decode }));
