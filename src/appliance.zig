@@ -374,6 +374,7 @@ pub fn Appliance(comptime World: type) type {
             pub fn forManifest(profile: Profile, actuation_binding_count: usize) @This() {
                 var flags = fromProfile(profile);
                 flags.actuation = actuation_binding_count != 0;
+                if (actuation_binding_count != 0) flags.replay_evidence = false;
                 return flags;
             }
         };
@@ -430,12 +431,10 @@ pub fn Appliance(comptime World: type) type {
             pub fn forManifest(profile: Profile, actuation_binding_count: usize) @This() {
                 var modes = fromProfile(profile);
                 if (actuation_binding_count != 0) {
-                    if (profile.kind != .replay_only) {
-                        modes.fresh = true;
-                        modes.replay = profile.enable_transcripts or profile.enable_archive_append;
-                        modes.verify = false;
-                        modes.audit = false;
-                    }
+                    modes.fresh = profile.kind != .replay_only;
+                    modes.replay = false;
+                    modes.verify = false;
+                    modes.audit = false;
                 }
                 return modes;
             }

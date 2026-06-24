@@ -771,8 +771,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Seed migration example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=a454bd6eac351c63
-            \\restored_output=a454bd6eac351c63
+            \\resident_output=e98011dfecc4b9d2
+            \\restored_output=e98011dfecc4b9d2
             \\
             ,
         },
@@ -798,7 +798,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Seed replay example.",
             .expected_stdout =
             \\fresh_host_requests=1
-            \\replay_supported=true
+            \\replay_supported=false
             \\actuated_replay_rejected=true
             \\
             ,
@@ -1472,7 +1472,7 @@ pub fn build(b: *std.Build) void {
             \\actuation_bindings=1
             \\checkpoint_every_turn=true
             \\output_bytes=9000
-            \\turn_receipt=be52f725716aafe2
+            \\turn_receipt=c3168933c0844302
             \\
             ,
         },
@@ -1499,8 +1499,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=a454bd6eac351c63
-            \\restored_output=a454bd6eac351c63
+            \\resident_output=e98011dfecc4b9d2
+            \\restored_output=e98011dfecc4b9d2
             \\
             ,
         },
@@ -1525,7 +1525,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance replay example.",
             .expected_stdout =
             \\fresh_host_requests=1
-            \\replay_supported=true
+            \\replay_supported=false
             \\actuated_replay_rejected=true
             \\
             ,
@@ -1577,10 +1577,10 @@ pub fn build(b: *std.Build) void {
             .name = "world-turn-closure-replay",
             .path = "examples/world_turn_closure_replay.zig",
             .step = "run-world-turn-closure-replay",
-            .desc = "Run the World Turn Closure positive replay example.",
+            .desc = "Run the World Turn Closure actuated replay rejection example.",
             .expected_stdout =
             \\fresh_host_requests=1
-            \\replay_supported=true
+            \\replay_supported=false
             \\actuated_replay_rejected=true
             \\
             ,
@@ -1661,7 +1661,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance WASM probe example.",
             .expected_stdout =
             \\appliance_abi_version=3
-            \\manifest=41e65768a81fa118
+            \\manifest=4ac36f0580a2e703
             \\capacity=5fcf964fbaa4a66b
             \\memory_plan=ed1c9222ab3bed1d
             \\required_exports=9

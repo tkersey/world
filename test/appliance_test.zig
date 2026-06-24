@@ -2062,20 +2062,20 @@ test "appliance manifest derives supported execution modes from profile" {
 
     const actuated_small = ActuatedSmallAppliance.manifest();
     try std.testing.expect(actuated_small.supported_execution_modes.supports(.fresh));
-    try std.testing.expect(actuated_small.supported_execution_modes.supports(.replay));
-    try std.testing.expect(actuated_small.required_host_capabilities.replay_evidence);
+    try std.testing.expect(!actuated_small.supported_execution_modes.supports(.replay));
+    try std.testing.expect(!actuated_small.required_host_capabilities.replay_evidence);
 
     const actuated_full = ActuatedFullAppliance.manifest();
     try std.testing.expect(actuated_full.supported_execution_modes.supports(.fresh));
-    try std.testing.expect(actuated_full.supported_execution_modes.supports(.replay));
+    try std.testing.expect(!actuated_full.supported_execution_modes.supports(.replay));
     try std.testing.expect(!actuated_full.supported_execution_modes.supports(.verify));
     try std.testing.expect(!actuated_full.supported_execution_modes.supports(.audit));
-    try std.testing.expect(actuated_full.required_host_capabilities.replay_evidence);
+    try std.testing.expect(!actuated_full.required_host_capabilities.replay_evidence);
 
     const replay_only_with_binding_modes = world.Appliance.ExecutionModeSet.forManifest(world.Appliance.Profile.replay_only, 1);
     try std.testing.expect(!replay_only_with_binding_modes.supports(.fresh));
-    try std.testing.expect(replay_only_with_binding_modes.supports(.replay));
-    try std.testing.expect(replay_only_with_binding_modes.supports(.verify));
+    try std.testing.expect(!replay_only_with_binding_modes.supports(.replay));
+    try std.testing.expect(!replay_only_with_binding_modes.supports(.verify));
     try std.testing.expect(!replay_only_with_binding_modes.supports(.audit));
 }
 
@@ -4843,8 +4843,8 @@ test "appliance Core accepts replay evidence with verified transcript support" {
         .actuation_bindings = .{ApplianceActuationBinding},
     });
     const manifest = ReplayAppliance.manifest();
-    try std.testing.expect(manifest.supported_execution_modes.supports(.replay));
-    try std.testing.expect(manifest.required_host_capabilities.replay_evidence);
+    try std.testing.expect(!manifest.supported_execution_modes.supports(.replay));
+    try std.testing.expect(!manifest.required_host_capabilities.replay_evidence);
 
     var fresh_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -5067,7 +5067,7 @@ test "appliance Core accepts replay evidence with verified transcript support" {
         .metadata = "actuated-full-evidence-replay-rejected",
     });
     const full_manifest = FullEvidenceAppliance.manifest();
-    try std.testing.expect(full_manifest.supported_execution_modes.supports(.replay));
+    try std.testing.expect(!full_manifest.supported_execution_modes.supports(.replay));
     try std.testing.expect(!full_manifest.supported_execution_modes.supports(.verify));
     try std.testing.expect(!full_manifest.supported_execution_modes.supports(.audit));
     var verify_core = world.Appliance.Core.initWithCapacity(
@@ -8106,7 +8106,7 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     try std.testing.expectError(error.InvalidFrameEncoding, zero_default_permit_manifest.validate());
 
     var replay_modes = manifest.supported_execution_modes;
-    replay_modes.replay = false;
+    replay_modes.replay = true;
     const replay_advertised_manifest = applianceManifestVariant(manifest, .{
         .supported_execution_modes = replay_modes,
     });
@@ -8134,7 +8134,7 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     try std.testing.expectError(error.InvalidFrameEncoding, no_fresh_manifest.validate());
 
     var replay_evidence_capabilities = manifest.required_host_capabilities;
-    replay_evidence_capabilities.replay_evidence = false;
+    replay_evidence_capabilities.replay_evidence = true;
     const replay_evidence_manifest = applianceManifestVariant(manifest, .{
         .required_host_capabilities = replay_evidence_capabilities,
     });
