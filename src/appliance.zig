@@ -3953,16 +3953,25 @@ pub fn Appliance(comptime World: type) type {
                 const host_replies = self.hostRepliesFromWireInput(input) catch |err| return self.setSubmitError(err);
                 defer freeHostReplies(allocator, host_replies);
 
+                var parent_closure_for_lineage: ?TurnClosure = null;
+                defer if (parent_closure_for_lineage) |*closure| closure.deinit(allocator);
                 var restore_checkpoint: ?Checkpoint = null;
                 if (input.operation == .restore) {
-                    var parent_closure = TurnClosure.decode(allocator, input.parent_turn_closure_bytes) catch |err| return self.setSubmitError(err);
-                    defer parent_closure.deinit(allocator);
+                    parent_closure_for_lineage = TurnClosure.decode(allocator, input.parent_turn_closure_bytes) catch |err| return self.setSubmitError(err);
+                    const parent_closure = parent_closure_for_lineage.?;
                     if (input.expected_parent_closure_fingerprint) |expected| {
                         if (parent_closure.closure_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
                     }
                     const checkpoint_bytes = parent_closure.materializeCheckpoint(allocator) catch |err| return self.setSubmitError(err);
                     defer allocator.free(checkpoint_bytes);
                     restore_checkpoint = Checkpoint.decode(allocator, checkpoint_bytes, self.core.manifest_value.manifest_fingerprint, self.core.capacity_value) catch |err| return self.setSubmitError(err);
+                } else if (input.operation != .boot) {
+                    if (self.last_closure_bytes.len == 0) return self.setSubmitError(error.StaleTurn);
+                    parent_closure_for_lineage = TurnClosure.decode(allocator, self.last_closure_bytes) catch |err| return self.setSubmitError(err);
+                    const parent_closure = parent_closure_for_lineage.?;
+                    if (input.expected_parent_closure_fingerprint) |expected| {
+                        if (parent_closure.closure_fingerprint != expected) return self.setSubmitError(error.StaleTurn);
+                    }
                 }
                 defer if (restore_checkpoint) |*checkpoint| checkpoint.deinit(allocator);
 
@@ -3989,7 +3998,7 @@ pub fn Appliance(comptime World: type) type {
 
                 const status = self.submitCommand(command_bytes);
                 if (!Abi.statusHasTurnOutput(status)) return status;
-                self.refreshClosureFromLastOutput(input) catch |err| {
+                self.refreshClosureFromLastOutput(parent_closure_for_lineage) catch |err| {
                     self.clearClosure();
                     return self.setSubmitError(err);
                 };
@@ -4111,18 +4120,18 @@ pub fn Appliance(comptime World: type) type {
                 self.last_error_len = 0;
             }
 
-            fn refreshClosureFromLastOutput(self: *@This(), input: Wire.TurnInput) !void {
+            fn refreshClosureFromLastOutput(self: *@This(), parent_closure: ?TurnClosure) !void {
                 const allocator = self.core.allocator;
                 var output = try TurnOutput.decode(allocator, self.core.readOutput(), self.core.manifest_value.manifest_fingerprint, self.core.capacity_value);
                 defer output.deinit(allocator);
-                const closure_bytes = try self.closureBytesFromTurnOutput(output, input);
+                const closure_bytes = try self.closureBytesFromTurnOutput(output, parent_closure);
                 errdefer allocator.free(closure_bytes);
                 self.clearClosure();
                 self.last_closure_bytes = closure_bytes;
                 self.last_closure_owned = true;
             }
 
-            fn closureBytesFromTurnOutput(self: *@This(), output: TurnOutput, input: Wire.TurnInput) ![]const u8 {
+            fn closureBytesFromTurnOutput(self: *@This(), output: TurnOutput, parent_closure: ?TurnClosure) ![]const u8 {
                 const allocator = self.core.allocator;
                 const turn_receipt_bytes = try encodeTurnReceiptOwned(allocator, output.turn_receipt);
                 defer allocator.free(turn_receipt_bytes);
@@ -4135,6 +4144,7 @@ pub fn Appliance(comptime World: type) type {
                 defer allocator.free(evidence_bundle_bytes);
                 const capsule_bytes = if (output.checkpoint.capsule_image_bytes.len != 0) output.checkpoint.capsule_image_bytes else output.checkpoint_bytes;
                 const initial_cursor = World.Continuity.Chronicle.Cursor.initial().cursor_fingerprint;
+                const parent_cursor = if (parent_closure) |closure| closure.chronicle_resulting_cursor_fingerprint else initial_cursor;
                 const resulting_cursor = output.turn_receipt.resulting_chronicle_cursor_fingerprint orelse
                     output.checkpoint.latest_chronicle_cursor_fingerprint orelse
                     if (output.checkpoint.pending_archive_resulting_cursor) |cursor| cursor.cursor_fingerprint else initial_cursor;
@@ -4145,14 +4155,14 @@ pub fn Appliance(comptime World: type) type {
                 const closure = TurnClosure.init(.{
                     .executable_image_fingerprint = self.core.executable_image_fingerprint,
                     .appliance_manifest_fingerprint = self.core.manifest_value.manifest_fingerprint,
-                    .parent_closure_fingerprint = input.expected_parent_closure_fingerprint,
+                    .parent_closure_fingerprint = if (parent_closure) |closure_parent| closure_parent.closure_fingerprint else null,
                     .turn_sequence_number = output.turn_sequence_number,
                     .parent_state_fingerprint = output.source_state_fingerprint,
                     .resulting_state_fingerprint = output.resulting_state_fingerprint,
-                    .chronicle_parent_cursor_fingerprint = initial_cursor,
+                    .chronicle_parent_cursor_fingerprint = parent_cursor,
                     .chronicle_resulting_cursor_fingerprint = resulting_cursor,
-                    .archive_parent_moment_fingerprint = null,
-                    .archive_parent_seal_fingerprint = null,
+                    .archive_parent_moment_fingerprint = if (parent_closure) |closure_parent| closure_parent.archive_resulting_moment_fingerprint else null,
+                    .archive_parent_seal_fingerprint = if (parent_closure) |closure_parent| closure_parent.archive_resulting_seal_fingerprint else null,
                     .archive_resulting_moment_fingerprint = output.turn_receipt.resulting_archive_moment_fingerprint,
                     .archive_resulting_seal_fingerprint = output.turn_receipt.resulting_archive_seal_fingerprint,
                     .checkpoint_fingerprint = output.checkpoint.checkpoint_fingerprint,

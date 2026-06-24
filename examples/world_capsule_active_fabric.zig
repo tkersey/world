@@ -155,6 +155,12 @@ pub fn main(init: std.process.Init) !void {
         .require_link_match = false,
     });
     defer restore.deinit(allocator);
+    if (!restore.accepted) return error.ExpectedRestoreAccepted;
+    if (receiver.fabric_routes.items.len != 1) return error.ExpectedRestoredFabricRoute;
+    const source_route_metadata = capsule.fabric_image.?.route_witnesses[0].metadata;
+    if (receiver.fabric_routes.items[0].metadata.ptr == source_route_metadata.ptr) return error.BorrowedRestoredFabricRouteMetadata;
+    @constCast(source_route_metadata)[0] = 'X';
+    if (!std.mem.eql(u8, receiver.fabric_routes.items[0].metadata, "capsule-active-fabric")) return error.RestoredFabricRouteMetadataMutated;
 
     var restored_provider_mailbox_id: ?u64 = null;
     for (receiver.slots.items) |slot| {

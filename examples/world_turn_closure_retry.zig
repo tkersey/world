@@ -67,7 +67,10 @@ fn nativeFromClosure(
     core.executable_image_fingerprint = executable_image_fingerprint;
     errdefer core.deinit();
     try core.restore(checkpoint);
-    return Native.init(core);
+    var native = Native.init(core);
+    native.last_closure_bytes = try allocator.dupe(u8, closure_bytes);
+    native.last_closure_owned = true;
+    return native;
 }
 
 fn submitBootClosure(

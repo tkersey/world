@@ -10126,6 +10126,7 @@ pub const Runspace = struct {
     fabric_plan_assembly_fingerprints: std.ArrayList(?u64) = .empty,
     fabric_routes: std.ArrayList(Fabric.Route) = .empty,
     fabric_route_plan_fingerprints: std.ArrayList(u64) = .empty,
+    fabric_route_owned_metadata: std.ArrayList([]const u8) = .empty,
     fabric_value_mappings: std.ArrayList(Fabric.ValueMapping) = .empty,
     fabric_invocations: std.ArrayList(Fabric.Invocation) = .empty,
     fabric_receipts: std.ArrayList(Fabric.Receipt) = .empty,
@@ -12065,6 +12066,8 @@ pub const Runspace = struct {
         self.fabric_plan_link_plan_fingerprints.deinit(self.allocator);
         self.fabric_plan_linker_certificate_fingerprints.deinit(self.allocator);
         self.fabric_plan_assembly_fingerprints.deinit(self.allocator);
+        for (self.fabric_route_owned_metadata.items) |metadata| self.allocator.free(metadata);
+        self.fabric_route_owned_metadata.deinit(self.allocator);
         self.fabric_routes.deinit(self.allocator);
         self.fabric_route_plan_fingerprints.deinit(self.allocator);
         self.fabric_value_mappings.deinit(self.allocator);
@@ -16166,6 +16169,11 @@ pub const Runspace = struct {
         self.next_run_id = next_run_id;
         self.next_mailbox_id = next_mailbox_id;
         self.next_event_index = next_event_index;
+    }
+
+    fn rollbackOwnedFabricRouteMetadata(self: *@This(), metadata_count: usize) void {
+        for (self.fabric_route_owned_metadata.items[metadata_count..]) |metadata| self.allocator.free(metadata);
+        self.fabric_route_owned_metadata.shrinkRetainingCapacity(metadata_count);
     }
 
     fn rollbackSlotResponseMutation(
@@ -25751,6 +25759,7 @@ pub const Capsule = struct {
         next_mailbox_id_before: u64,
         fabric_plan_count_before: usize,
         fabric_route_count_before: usize,
+        fabric_route_owned_metadata_count_before: usize,
         fabric_value_mapping_count_before: usize,
         fabric_invocation_count_before: usize,
         committed: bool = false,
@@ -25772,6 +25781,7 @@ pub const Capsule = struct {
                 .next_mailbox_id_before = runspace.next_mailbox_id,
                 .fabric_plan_count_before = runspace.fabric_plan_fingerprints.items.len,
                 .fabric_route_count_before = runspace.fabric_routes.items.len,
+                .fabric_route_owned_metadata_count_before = runspace.fabric_route_owned_metadata.items.len,
                 .fabric_value_mapping_count_before = runspace.fabric_value_mappings.items.len,
                 .fabric_invocation_count_before = runspace.fabric_invocations.items.len,
             };
@@ -25808,6 +25818,7 @@ pub const Capsule = struct {
             self.runspace.fabric_plan_link_plan_fingerprints.shrinkRetainingCapacity(self.fabric_plan_count_before);
             self.runspace.fabric_plan_linker_certificate_fingerprints.shrinkRetainingCapacity(self.fabric_plan_count_before);
             self.runspace.fabric_plan_assembly_fingerprints.shrinkRetainingCapacity(self.fabric_plan_count_before);
+            self.runspace.rollbackOwnedFabricRouteMetadata(self.fabric_route_owned_metadata_count_before);
             self.runspace.fabric_routes.shrinkRetainingCapacity(self.fabric_route_count_before);
             self.runspace.fabric_route_plan_fingerprints.shrinkRetainingCapacity(self.fabric_route_count_before);
             self.runspace.fabric_value_mappings.shrinkRetainingCapacity(self.fabric_value_mapping_count_before);
@@ -27944,10 +27955,13 @@ pub const Capsule = struct {
 
         try runspace.fabric_routes.ensureUnusedCapacity(runspace.allocator, fabric.route_witnesses.len);
         try runspace.fabric_route_plan_fingerprints.ensureUnusedCapacity(runspace.allocator, fabric.route_witnesses.len);
+        try runspace.fabric_route_owned_metadata.ensureUnusedCapacity(runspace.allocator, fabric.route_witnesses.len);
         for (fabric.route_witnesses) |route| {
             try route.validate();
             if (runspaceHasFabricRouteFingerprint(runspace, route.route_fingerprint)) continue;
-            runspace.fabric_routes.appendAssumeCapacity(route);
+            const restored_route = try cloneFabricRouteWitness(runspace.allocator, route);
+            runspace.fabric_route_owned_metadata.appendAssumeCapacity(restored_route.metadata);
+            runspace.fabric_routes.appendAssumeCapacity(restored_route);
             runspace.fabric_route_plan_fingerprints.appendAssumeCapacity(try fabricPlanForRouteWitness(fabric, route.route_fingerprint));
         }
 

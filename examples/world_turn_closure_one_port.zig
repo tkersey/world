@@ -54,7 +54,6 @@ pub fn main(init: std.process.Init) !void {
     const continue_turn = world.Appliance.Wire.TurnInput.init(.{
         .operation = .@"continue",
         .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
-        .expected_parent_closure_fingerprint = boot_closure.closure_fingerprint,
         .previous_turn_receipt_fingerprint = boot_output.turn_receipt.receipt_fingerprint,
         .turn_sequence_number = 1,
         .resolutions = &.{resolution},
