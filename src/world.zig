@@ -37462,6 +37462,7 @@ pub const Continuity = struct {
                     else => break :blk null,
                 };
                 defer closure.deinit(allocator);
+                if (!try validApplianceTurnClosurePayload(allocator, closure)) break :blk null;
                 break :blk closure.closure_fingerprint;
             },
             .appliance_checkpoint => blk: {
@@ -37706,6 +37707,14 @@ pub const Continuity = struct {
         return checkpoint.checkpoint_fingerprint == output.checkpoint.checkpoint_fingerprint;
     }
 
+    fn validApplianceTurnClosurePayload(allocator: std.mem.Allocator, closure: Appliance.TurnClosure) error{OutOfMemory}!bool {
+        closure.validate(allocator, .{ .limits = .archive_decode }) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        return true;
+    }
+
     fn validAdmissionReceiptPayload(receipt: Admission.AdmissionReceipt) bool {
         if (receipt.format_version != world_admission_receipt_format_version) return false;
         if (receipt.fingerprint_version != world_admission_receipt_fingerprint_version) return false;
@@ -37911,6 +37920,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer closure.deinit(allocator);
+                if (!try validApplianceTurnClosurePayload(allocator, closure)) break :blk false;
                 break :blk closure.closure_format_version == envelope.object_format_version;
             },
             .appliance_reconstruction_report => blk: {
@@ -38188,6 +38198,7 @@ pub const Continuity = struct {
                     else => break :blk false,
                 };
                 defer closure.deinit(allocator);
+                if (!try validApplianceTurnClosurePayload(allocator, closure)) break :blk false;
                 break :blk try bundleApplianceTurnClosureDependencyPayloadsValid(allocator, envelopes, closure);
             },
             .appliance_reconstruction_report => blk: {
@@ -44095,6 +44106,47 @@ test "bundle validation rejects malformed typed payloads" {
     try std.testing.expectError(error.InvalidFrameEncoding, vault.put(malformed_actuation_envelope));
     try std.testing.expectEqual(@as(usize, 0), vault.objectCount());
     try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, malformed_actuation_bytes, .{}));
+
+    const malformed_closure = Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = 0x3295_0001,
+        .appliance_manifest_fingerprint = 0x3295_0002,
+        .turn_sequence_number = 0,
+        .parent_state_fingerprint = 0x3295_0003,
+        .resulting_state_fingerprint = 0x3295_0004,
+        .chronicle_parent_cursor_fingerprint = 0x3295_0005,
+        .chronicle_resulting_cursor_fingerprint = 0x3295_0006,
+        .checkpoint_fingerprint = 0x3295_0007,
+        .checkpoint_bytes = "not a checkpoint",
+        .capsule_fingerprint = 0x3295_0008,
+        .capsule_bytes = "not a capsule",
+        .turn_receipt_fingerprint = 0x3295_0009,
+        .turn_receipt_bytes = "not a turn receipt",
+        .evidence_bundle_bytes = "not a bundle",
+        .blockers = &.{0x3295_0010},
+        .status = .failed,
+    });
+    const malformed_closure_payload = try malformed_closure.encode(allocator);
+    defer allocator.free(malformed_closure_payload);
+    const malformed_closure_envelope = Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_closure,
+        .object_format_version = world_appliance_turn_closure_format_version,
+        .payload_bytes = malformed_closure_payload,
+    });
+    var malformed_closure_bundle = Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = Continuity.BundleManifest.init(.{
+            .roots = &.{malformed_closure_envelope.objectRef()},
+            .object_count = 1,
+        }),
+        .envelopes = @constCast(&[_]Continuity.ObjectEnvelope{malformed_closure_envelope}),
+    };
+    const malformed_closure_bytes = try malformed_closure_bundle.toBytes(allocator);
+    defer allocator.free(malformed_closure_bytes);
+
+    const malformed_closure_report = try Continuity.Bundle.validate(allocator, malformed_closure_bytes, .{});
+    try std.testing.expect(!malformed_closure_report.valid);
+    try std.testing.expectEqual(Continuity.ObjectValidationReport.Blocker.DecodeFailed, malformed_closure_report.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, Continuity.Bundle.importIntoVault(&vault, malformed_closure_bytes, .{}));
 
     const opaque_envelope = Continuity.ObjectEnvelope.init(.{
         .kind = .linker_certificate,
