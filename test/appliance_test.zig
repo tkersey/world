@@ -7040,6 +7040,48 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
     zero_finalized_ref.finalized_actuation_receipt_fingerprints = &.{0};
     try std.testing.expectError(error.InvalidFrameEncoding, zero_finalized_ref.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
+    const duplicate_applied_reply_fingerprints = [_]u64{ applied_reply_fingerprint, applied_reply_fingerprint ^ 0x11 };
+    const duplicate_finalized_ref_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 8,
+        .command_fingerprint = 0xD295,
+        .applied_host_reply_fingerprints = &duplicate_applied_reply_fingerprints,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
+        .archive_append_batch_fingerprint = archive_append_fingerprint,
+        .status = .blocked,
+        .run_receipt_fingerprint = run_receipt_fingerprint,
+        .blocker_count = 1,
+        .warning_count = 1,
+    });
+    const duplicate_finalized_ref_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 8,
+        .capsule_fingerprint = capsule_fingerprint,
+        .pending_archive_append_batch_fingerprint = archive_append_fingerprint,
+        .pending_archive_resulting_cursor = archive_resulting_cursor,
+        .core_state = .failed,
+        .previous_turn_receipt_fingerprint = duplicate_finalized_ref_receipt.receipt_fingerprint,
+    });
+    const duplicate_finalized_refs = [_]u64{ finalized_receipt_fingerprint, finalized_receipt_fingerprint };
+    const duplicate_finalized_ref_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 8,
+        .source_state_fingerprint = 0xD296,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.failed, 8, duplicate_finalized_ref_receipt.receipt_fingerprint),
+        .quiescence = output.quiescence,
+        .status = .blocked,
+        .finalized_actuation_receipt_fingerprints = &duplicate_finalized_refs,
+        .run_receipt_fingerprint = run_receipt_fingerprint,
+        .run_receipt_bytes = run_receipt_bytes,
+        .archive_append_batch_fingerprint = archive_append_fingerprint,
+        .checkpoint = duplicate_finalized_ref_checkpoint,
+        .turn_receipt = duplicate_finalized_ref_receipt,
+        .blocker_count = 1,
+        .warning_count = 1,
+        .diagnostic_metadata = "blocked-by-host",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicate_finalized_ref_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
     const missing_finalized_ref = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest_fingerprint,
         .turn_sequence_number = 8,
@@ -9003,6 +9045,90 @@ test "appliance TurnClosure rejects mismatched required bytes and unresolved roo
     missing_finalized_evidence.finalized_actuation_receipt_bytes = &.{};
     missing_finalized_evidence = applianceTestRecomputedTurnClosure(missing_finalized_evidence);
     try std.testing.expectError(error.InvalidFrameEncoding, missing_finalized_evidence.validate(allocator, external_dependency_options));
+
+    var duplicate_base_receipt = try world.Appliance.TurnReceipt.decodeArchivePayload(allocator, fixture.turn_receipt_bytes);
+    defer duplicate_base_receipt.deinit(allocator);
+    const duplicate_applied_replies = [_]u64{
+        duplicate_base_receipt.applied_host_reply_fingerprints[0],
+        duplicate_base_receipt.applied_host_reply_fingerprints[0] ^ 0xD1,
+    };
+    const duplicate_turn_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = duplicate_base_receipt.manifest_fingerprint,
+        .turn_sequence_number = duplicate_base_receipt.turn_sequence_number,
+        .command_fingerprint = duplicate_base_receipt.command_fingerprint,
+        .prior_checkpoint_fingerprint = duplicate_base_receipt.prior_checkpoint_fingerprint,
+        .applied_host_reply_fingerprints = &duplicate_applied_replies,
+        .emitted_host_request_fingerprints = duplicate_base_receipt.emitted_host_request_fingerprints,
+        .source_capsule_fingerprint = duplicate_base_receipt.source_capsule_fingerprint,
+        .resulting_capsule_fingerprint = duplicate_base_receipt.resulting_capsule_fingerprint,
+        .archive_append_batch_fingerprint = duplicate_base_receipt.archive_append_batch_fingerprint,
+        .resulting_archive_moment_fingerprint = duplicate_base_receipt.resulting_archive_moment_fingerprint,
+        .resulting_archive_seal_fingerprint = duplicate_base_receipt.resulting_archive_seal_fingerprint,
+        .resulting_chronicle_cursor_fingerprint = duplicate_base_receipt.resulting_chronicle_cursor_fingerprint,
+        .root_result_fingerprint = duplicate_base_receipt.root_result_fingerprint,
+        .status = duplicate_base_receipt.status,
+        .run_receipt_fingerprint = duplicate_base_receipt.run_receipt_fingerprint,
+        .blocker_count = duplicate_base_receipt.blocker_count,
+        .warning_count = duplicate_base_receipt.warning_count,
+    });
+    var duplicate_turn_receipt_payload: std.ArrayList(u8) = .empty;
+    defer duplicate_turn_receipt_payload.deinit(allocator);
+    try duplicate_turn_receipt.encode(&duplicate_turn_receipt_payload, allocator);
+    const duplicate_turn_receipt_bytes = try allocator.dupe(u8, duplicate_turn_receipt_payload.items);
+    defer allocator.free(duplicate_turn_receipt_bytes);
+    var duplicate_base_checkpoint = try world.Appliance.Checkpoint.decodeArchivePayload(allocator, fixture.checkpoint_bytes);
+    defer duplicate_base_checkpoint.deinit(allocator);
+    const duplicate_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = duplicate_base_checkpoint.manifest_fingerprint,
+        .turn_sequence_number = duplicate_base_checkpoint.turn_sequence_number,
+        .capsule_fingerprint = duplicate_base_checkpoint.capsule_fingerprint,
+        .capsule_image_ref_fingerprint = duplicate_base_checkpoint.capsule_image_ref_fingerprint,
+        .capsule_image_bytes = duplicate_base_checkpoint.capsule_image_bytes,
+        .latest_archive_moment_fingerprint = duplicate_base_checkpoint.latest_archive_moment_fingerprint,
+        .latest_archive_seal_fingerprint = duplicate_base_checkpoint.latest_archive_seal_fingerprint,
+        .latest_chronicle_cursor_fingerprint = duplicate_base_checkpoint.latest_chronicle_cursor_fingerprint,
+        .pending_archive_append_batch_fingerprint = duplicate_base_checkpoint.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = duplicate_base_checkpoint.pending_archive_resulting_cursor,
+        .latest_archive_cursor = duplicate_base_checkpoint.latest_archive_cursor,
+        .core_state = duplicate_base_checkpoint.core_state,
+        .previous_turn_receipt_fingerprint = duplicate_turn_receipt.receipt_fingerprint,
+        .outstanding_host_requests = duplicate_base_checkpoint.outstanding_host_requests,
+        .execution_mode = duplicate_base_checkpoint.execution_mode,
+        .metadata = duplicate_base_checkpoint.metadata,
+    });
+    var duplicate_checkpoint_payload: std.ArrayList(u8) = .empty;
+    defer duplicate_checkpoint_payload.deinit(allocator);
+    try duplicate_checkpoint.encode(&duplicate_checkpoint_payload, allocator);
+    const duplicate_checkpoint_bytes = try allocator.dupe(u8, duplicate_checkpoint_payload.items);
+    defer allocator.free(duplicate_checkpoint_bytes);
+    const duplicate_finalized_receipts = [_]u64{
+        fixture.actuation_receipt_fingerprints[0],
+        fixture.actuation_receipt_fingerprints[0],
+    };
+    const duplicate_finalized_receipt_bytes = [_][]const u8{
+        fixture.actuation_receipt_bytes,
+        fixture.actuation_receipt_bytes,
+    };
+    const duplicate_finalized_bundle = try applianceTestClosureBundleBytes(
+        allocator,
+        duplicate_checkpoint_bytes,
+        duplicate_turn_receipt_bytes,
+        fixture.capsule_bytes,
+        fixture.root_result_bytes,
+        fixture.actuation_receipt_bytes,
+    );
+    defer allocator.free(duplicate_finalized_bundle);
+    var duplicate_finalized_evidence = fixture.closure;
+    duplicate_finalized_evidence.checkpoint_fingerprint = duplicate_checkpoint.checkpoint_fingerprint;
+    duplicate_finalized_evidence.checkpoint_bytes = duplicate_checkpoint_bytes;
+    duplicate_finalized_evidence.turn_receipt_fingerprint = duplicate_turn_receipt.receipt_fingerprint;
+    duplicate_finalized_evidence.turn_receipt_bytes = duplicate_turn_receipt_bytes;
+    duplicate_finalized_evidence.evidence_bundle_bytes = duplicate_finalized_bundle;
+    duplicate_finalized_evidence.resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, fixture.closure.turn_sequence_number, duplicate_turn_receipt.receipt_fingerprint);
+    duplicate_finalized_evidence.finalized_actuation_receipt_fingerprints = &duplicate_finalized_receipts;
+    duplicate_finalized_evidence.finalized_actuation_receipt_bytes = &duplicate_finalized_receipt_bytes;
+    duplicate_finalized_evidence = applianceTestRecomputedTurnClosure(duplicate_finalized_evidence);
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicate_finalized_evidence.validate(allocator, external_dependency_options));
 
     const forged_warnings = [_]u64{0xD7C4};
     var forged_warning_count = fixture.closure;

@@ -1709,6 +1709,7 @@ pub fn Appliance(comptime World: type) type {
                 for (self.finalized_actuation_receipt_fingerprints) |fingerprint| {
                     if (fingerprint == 0) return error.InvalidFrameEncoding;
                 }
+                try validateDistinctFingerprintSlice(self.finalized_actuation_receipt_fingerprints);
                 if (self.finalized_actuation_receipt_bytes.len != 0) {
                     if (self.finalized_actuation_receipt_bytes.len != self.finalized_actuation_receipt_fingerprints.len) return error.InvalidFrameEncoding;
                     for (self.finalized_actuation_receipt_bytes, self.finalized_actuation_receipt_fingerprints) |receipt_bytes, fingerprint| {
@@ -2116,6 +2117,7 @@ pub fn Appliance(comptime World: type) type {
                 } else if (self.finalized_actuation_receipt_bytes.len != self.finalized_actuation_receipt_fingerprints.len) return error.InvalidFrameEncoding;
                 if (self.replay_receipt_bytes.len != self.replay_receipt_fingerprints.len) return error.InvalidFrameEncoding;
                 try validateFingerprintSlice(self.finalized_actuation_receipt_fingerprints);
+                try validateDistinctFingerprintSlice(self.finalized_actuation_receipt_fingerprints);
                 try validateFingerprintSlice(self.replay_receipt_fingerprints);
                 try validateFingerprintSlice(self.verify_report_fingerprints);
                 try validateFingerprintSlice(self.blockers);
@@ -9577,6 +9579,14 @@ pub fn Appliance(comptime World: type) type {
         fn validateFingerprintSlice(values: []const u64) !void {
             for (values) |value| {
                 if (value == 0) return error.InvalidFrameEncoding;
+            }
+        }
+
+        fn validateDistinctFingerprintSlice(values: []const u64) !void {
+            for (values, 0..) |value, index| {
+                for (values[0..index]) |prior| {
+                    if (value == prior) return error.InvalidFrameEncoding;
+                }
             }
         }
 
