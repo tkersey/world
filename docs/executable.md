@@ -76,8 +76,9 @@ The closeout gates are:
 - `zig build check-world-universal`: runs the native universal runtime, replay, generic universal Appliance WASM inspection, and Node WebAssembly conformance lanes.
 - `zig build check-world-universal-appliance-node`: uses installed Node and the built-in ECMAScript `WebAssembly` API to compile `world_universal_appliance.wasm` once, instantiate with `{}`, run two unrelated canonical `Executable.Image` byte images through one instance, repeat them in a fresh instance of the same bytes, and compare exact canonical output.
 - `zig build check-world-runtime-closure`: aggregates loaded Runspace, Admission, Fabric, Capsule, migration, replay, native universal runtime, universal WASM, and Node proof lanes.
-- `zig build check-world-v0`: is the final completion gate over Runtime Closure, executable image validation, World Seed examples, malformed rejection, and WASM inspection.
+- `zig build check-world-v0`: is the final positive Turn Closure completion gate over Runtime Closure, executable image validation, unrelated programs, loaded providers, active Fabric restore, replay, deterministic retry, batched requests, independent JavaScript codec, bounded memory, and the `WorldV0Report`.
+- `zig build check-world-v0-negative`: keeps malformed-input and denial proofs required but separate from positive completion proof.
 
 The normal `zig build check` lane includes this external Node proof through `check-world-universal`; Node is a proof dependency for the generic artifact, not a runtime dependency of World.
 
-World can execute a sealed Certified Boundary program closure independently of the compiler that produced it.
+World can execute a sealed Certified Boundary program closure independently of the compiler that produced it, and a quiescent turn closure is the portable state boundary for destroying and recreating the runtime.

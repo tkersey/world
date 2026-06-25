@@ -1112,18 +1112,18 @@ fn buildMinimalApplianceWasmWithOptions(
 }
 
 test "appliance static contract exposes root namespace and versions" {
-    try std.testing.expectEqual(@as(u32, 1), world.world_appliance_abi_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_abi_version);
     try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_format_version);
     try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_memory_plan_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_command_format_version);
     try std.testing.expectEqual(@as(u32, 4), world.world_appliance_host_request_format_version);
     try std.testing.expectEqual(@as(u32, 4), world.world_appliance_host_request_fingerprint_version);
-    try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_format_version);
+    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_turn_output_format_version);
     try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_checkpoint_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_receipt_format_version);
-    try std.testing.expectEqual(@as(u32, 1), world.Appliance.Abi.version);
+    try std.testing.expectEqual(@as(u32, 3), world.Appliance.Abi.version);
     try std.testing.expectEqual(world.Appliance.Abi.Status.buffer_too_small, @as(world.Appliance.Abi.Status, @enumFromInt(15)));
     try std.testing.expectEqual(@as(usize, 8), world.Appliance.Abi.metadata_exports.len);
     try std.testing.expect(world.Appliance.Abi.statusHasTurnOutput(.needs_host));
@@ -2074,8 +2074,8 @@ test "appliance manifest derives supported execution modes from profile" {
 
     const replay_only_with_binding_modes = world.Appliance.ExecutionModeSet.forManifest(world.Appliance.Profile.replay_only, 1);
     try std.testing.expect(!replay_only_with_binding_modes.supports(.fresh));
-    try std.testing.expect(replay_only_with_binding_modes.supports(.replay));
-    try std.testing.expect(replay_only_with_binding_modes.supports(.verify));
+    try std.testing.expect(!replay_only_with_binding_modes.supports(.replay));
+    try std.testing.expect(!replay_only_with_binding_modes.supports(.verify));
     try std.testing.expect(!replay_only_with_binding_modes.supports(.audit));
 }
 
@@ -4836,7 +4836,7 @@ test "appliance Core applies HostReply RetentionAck before archive-gated advance
     try std.testing.expectEqual(@as(?u64, terminal_archive_ack.resulting_chronicle_cursor_fingerprint), restore_core.latest_chronicle_cursor_fingerprint);
 }
 
-test "appliance Core rejects replay evidence without verified transcript support" {
+test "appliance Core accepts replay evidence with verified transcript support" {
     const ReplayAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,
         .capacity = world.Appliance.Capacity.tiny_one_port,
@@ -4931,7 +4931,7 @@ test "appliance Core rejects replay evidence without verified transcript support
     defer replay_core.reset();
     const replay_evidence = [_]u64{
         terminal_output.turn_receipt.receipt_fingerprint,
-        terminal_output.turn_receipt.applied_host_reply_fingerprints[0],
+        terminal_output.finalized_actuation_receipt_fingerprints[0],
     };
     const replay_boot = world.Appliance.Command.init(.{
         .kind = .boot,
@@ -4944,24 +4944,104 @@ test "appliance Core rejects replay evidence without verified transcript support
     defer std.testing.allocator.free(replay_boot_bytes);
     try std.testing.expectError(error.InvalidCommand, replay_core.submit(replay_boot_bytes));
 
-    var arbitrary_replay_core = world.Appliance.Core.initWithCapacity(
+    var replay_native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        ReplayAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    ));
+    defer replay_native.deinit();
+    replay_native.core.executable_image_fingerprint = 0xD501_E001;
+    const native_wire_boot = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const native_wire_boot_bytes = try native_wire_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(native_wire_boot_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, replay_native.submitTurn(native_wire_boot_bytes));
+    var native_fresh_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        replay_native.core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer native_fresh_output.deinit(std.testing.allocator);
+    var native_parent_closure = try world.Appliance.TurnClosure.decode(std.testing.allocator, replay_native.last_closure_bytes);
+    defer native_parent_closure.deinit(std.testing.allocator);
+    try native_parent_closure.validate(std.testing.allocator, .{
+        .expected_executable_image_fingerprint = replay_native.core.executable_image_fingerprint,
+        .expected_manifest_fingerprint = manifest.manifest_fingerprint,
+        .limits = .archive_decode,
+    });
+    const native_replay_evidence = [_]u64{
+        native_fresh_output.turn_receipt.receipt_fingerprint,
+        manifest.actuation_binding_fingerprints[0],
+    };
+    const replay_wire_continue = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .replay,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = native_fresh_output.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = native_fresh_output.turn_receipt.receipt_fingerprint,
+        .receiver_evidence_fingerprints = &native_replay_evidence,
+    });
+    const replay_wire_continue_bytes = try replay_wire_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(replay_wire_continue_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.invalid_command, replay_native.submitTurn(replay_wire_continue_bytes));
+
+    var forged_replay_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
         manifest,
         ReplayAppliance.memoryPlan(),
         world.Appliance.Capacity.tiny_one_port,
     );
-    defer arbitrary_replay_core.reset();
-    const arbitrary_replay_evidence = [_]u64{ 0xD5F0, 0xD5F1 };
-    const arbitrary_replay_boot = world.Appliance.Command.init(.{
+    defer forged_replay_core.reset();
+    try forged_replay_core.submit(fresh_boot_bytes);
+    try forged_replay_core.executeTurn();
+    var forged_fresh_output = try world.Appliance.TurnOutput.decode(
+        std.testing.allocator,
+        forged_replay_core.readOutput(),
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer forged_fresh_output.deinit(std.testing.allocator);
+    const forged_replay_evidence = [_]u64{
+        forged_fresh_output.turn_receipt.receipt_fingerprint,
+        manifest.actuation_binding_fingerprints[0] +% 1,
+    };
+    const forged_replay = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = forged_fresh_output.turn_sequence_number + 1,
+        .previous_turn_receipt_fingerprint = forged_fresh_output.turn_receipt.receipt_fingerprint,
+        .execution_mode = .replay,
+        .receiver_evidence_fingerprints = &forged_replay_evidence,
+    });
+    const forged_replay_bytes = try forged_replay.encode(std.testing.allocator);
+    defer std.testing.allocator.free(forged_replay_bytes);
+    try std.testing.expectError(error.InvalidCommand, forged_replay_core.submit(forged_replay_bytes));
+
+    var duplicate_replay_core = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        ReplayAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer duplicate_replay_core.reset();
+    const duplicate_replay_evidence = [_]u64{
+        terminal_output.turn_receipt.receipt_fingerprint,
+        terminal_output.turn_receipt.receipt_fingerprint,
+    };
+    const duplicate_replay_boot = world.Appliance.Command.init(.{
         .kind = .boot,
         .manifest_fingerprint = manifest.manifest_fingerprint,
         .turn_sequence_number = 0,
         .execution_mode = .replay,
-        .receiver_evidence_fingerprints = &arbitrary_replay_evidence,
+        .receiver_evidence_fingerprints = &duplicate_replay_evidence,
     });
-    const arbitrary_replay_boot_bytes = try arbitrary_replay_boot.encode(std.testing.allocator);
-    defer std.testing.allocator.free(arbitrary_replay_boot_bytes);
-    try std.testing.expectError(error.InvalidCommand, arbitrary_replay_core.submit(arbitrary_replay_boot_bytes));
+    const duplicate_replay_boot_bytes = try duplicate_replay_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(duplicate_replay_boot_bytes);
+    try std.testing.expectError(error.InvalidCommand, duplicate_replay_core.submit(duplicate_replay_boot_bytes));
 
     var missing_evidence_core = world.Appliance.Core.initWithCapacity(
         std.testing.allocator,
@@ -4987,6 +5067,7 @@ test "appliance Core rejects replay evidence without verified transcript support
         .metadata = "actuated-full-evidence-replay-rejected",
     });
     const full_manifest = FullEvidenceAppliance.manifest();
+    try std.testing.expect(!full_manifest.supported_execution_modes.supports(.replay));
     try std.testing.expect(!full_manifest.supported_execution_modes.supports(.verify));
     try std.testing.expect(!full_manifest.supported_execution_modes.supports(.audit));
     var verify_core = world.Appliance.Core.initWithCapacity(
@@ -6768,6 +6849,27 @@ test "appliance TurnOutput binds root result through receipt parity" {
         .turn_receipt = wrong_capsule_receipt,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, wrong_capsule_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const replay_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .capsule_fingerprint = capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+        .execution_mode = .replay,
+    });
+    const replay_fingerprint_only_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 7,
+        .source_state_fingerprint = 0xD284,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 7, receipt.receipt_fingerprint),
+        .quiescence = output.quiescence,
+        .status = .completed,
+        .finalized_actuation_receipt_fingerprints = &.{0xD286},
+        .root_result_fingerprint = root_result_fingerprint,
+        .checkpoint = replay_checkpoint,
+        .turn_receipt = receipt,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, replay_fingerprint_only_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 }
 
 test "appliance TurnOutput deinit does not free borrowed init slices" {
@@ -6937,6 +7039,48 @@ test "appliance TurnOutput binds finalized evidence refs and diagnostics" {
     var zero_finalized_ref = output;
     zero_finalized_ref.finalized_actuation_receipt_fingerprints = &.{0};
     try std.testing.expectError(error.InvalidFrameEncoding, zero_finalized_ref.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
+
+    const duplicate_applied_reply_fingerprints = [_]u64{ applied_reply_fingerprint, applied_reply_fingerprint ^ 0x11 };
+    const duplicate_finalized_ref_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 8,
+        .command_fingerprint = 0xD295,
+        .applied_host_reply_fingerprints = &duplicate_applied_reply_fingerprints,
+        .resulting_capsule_fingerprint = capsule_fingerprint,
+        .archive_append_batch_fingerprint = archive_append_fingerprint,
+        .status = .blocked,
+        .run_receipt_fingerprint = run_receipt_fingerprint,
+        .blocker_count = 1,
+        .warning_count = 1,
+    });
+    const duplicate_finalized_ref_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 8,
+        .capsule_fingerprint = capsule_fingerprint,
+        .pending_archive_append_batch_fingerprint = archive_append_fingerprint,
+        .pending_archive_resulting_cursor = archive_resulting_cursor,
+        .core_state = .failed,
+        .previous_turn_receipt_fingerprint = duplicate_finalized_ref_receipt.receipt_fingerprint,
+    });
+    const duplicate_finalized_refs = [_]u64{ finalized_receipt_fingerprint, finalized_receipt_fingerprint };
+    const duplicate_finalized_ref_output = world.Appliance.TurnOutput.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 8,
+        .source_state_fingerprint = 0xD296,
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.failed, 8, duplicate_finalized_ref_receipt.receipt_fingerprint),
+        .quiescence = output.quiescence,
+        .status = .blocked,
+        .finalized_actuation_receipt_fingerprints = &duplicate_finalized_refs,
+        .run_receipt_fingerprint = run_receipt_fingerprint,
+        .run_receipt_bytes = run_receipt_bytes,
+        .archive_append_batch_fingerprint = archive_append_fingerprint,
+        .checkpoint = duplicate_finalized_ref_checkpoint,
+        .turn_receipt = duplicate_finalized_ref_receipt,
+        .blocker_count = 1,
+        .warning_count = 1,
+        .diagnostic_metadata = "blocked-by-host",
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicate_finalized_ref_output.validate(manifest_fingerprint, world.Appliance.Capacity.tiny_one_port));
 
     const missing_finalized_ref = world.Appliance.TurnOutput.init(.{
         .manifest_fingerprint = manifest_fingerprint,
@@ -7705,6 +7849,217 @@ test "appliance Native exposes ABI-shaped operations over canonical Core output"
     try std.testing.expectEqual(@as(usize, 0), native.lastErrorLen());
 }
 
+test "appliance Native legacy command clears stale turn closure cache" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{world.bindActuator(AppliancePortsDecl, ApplianceActuator)},
+        .metadata = "native-legacy-closure-clear",
+    });
+    const manifest = PortsAppliance.manifest();
+
+    var native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    ));
+    defer native.deinit();
+    try std.testing.expect(native.core.executable_image_fingerprint != 0);
+
+    const wire_boot = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const wire_boot_bytes = try wire_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wire_boot_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, native.submitTurn(wire_boot_bytes));
+    try std.testing.expect(native.closureLen() > 0);
+
+    const inspect = world.Appliance.Command.init(.{
+        .kind = .inspect,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = native.core.current_turn_sequence_number,
+        .previous_turn_receipt_fingerprint = native.core.previous_turn_receipt_fingerprint,
+    });
+    const inspect_bytes = try inspect.encode(std.testing.allocator);
+    defer std.testing.allocator.free(inspect_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.output_ready, native.submitCommand(inspect_bytes));
+    try std.testing.expectEqual(@as(usize, 0), native.closureLen());
+
+    try std.testing.expectEqual(world.Appliance.Abi.Status.invalid_command, native.submitCommand("bad"));
+    try std.testing.expectEqual(@as(usize, 0), native.closureLen());
+}
+
+test "appliance Native submitTurn preserves closure on command validation failure" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_agent,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{world.bindActuator(AppliancePortsDecl, ApplianceActuator)},
+        .metadata = "native-submit-turn-command-failure-rollback",
+    });
+    const manifest = PortsAppliance.manifest();
+
+    var native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    ));
+    defer native.deinit();
+
+    const wire_boot = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const wire_boot_bytes = try wire_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wire_boot_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, native.submitTurn(wire_boot_bytes));
+
+    const prior_turn_sequence_number = native.core.current_turn_sequence_number;
+    const prior_receipt = native.core.previous_turn_receipt_fingerprint;
+    const prior_output = try std.testing.allocator.dupe(u8, native.core.readOutput());
+    defer std.testing.allocator.free(prior_output);
+    const prior_closure = try std.testing.allocator.dupe(u8, native.last_closure_bytes);
+    defer std.testing.allocator.free(prior_closure);
+    const request = native.core.outstanding_host_request orelse return error.UnknownRequest;
+    var response_image = try world.Frame.ValueImage.fromCanonicalBytes(
+        std.testing.allocator,
+        null,
+        request.expected_response_value_ref_fingerprint,
+        request.expected_response_schema_ref_fingerprint,
+        "native-submit-turn-command-failure-response",
+        false,
+    );
+    defer response_image.deinit(std.testing.allocator);
+    const response_image_bytes = try response_image.encode(std.testing.allocator);
+    defer std.testing.allocator.free(response_image_bytes);
+    const resolution = world.Appliance.Wire.ResolutionInput.init(.{
+        .target_host_request_fingerprint = request.request_fingerprint,
+        .status = .responded,
+        .response_value_image_bytes = response_image_bytes,
+        .host_claim_bytes = "native-submit-turn-command-failure-host-claim",
+        .attempt_number = 1,
+    });
+    const bad_continue = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = prior_turn_sequence_number + 1,
+        .resolutions = &.{resolution},
+    });
+    const bad_continue_bytes = try bad_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(bad_continue_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.invalid_command, native.submitTurn(bad_continue_bytes));
+    try std.testing.expectEqualSlices(u8, prior_output, native.core.readOutput());
+    try std.testing.expectEqualSlices(u8, prior_closure, native.last_closure_bytes);
+
+    const good_continue = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .turn_sequence_number = prior_turn_sequence_number + 1,
+        .resolutions = &.{resolution},
+    });
+    const good_continue_bytes = try good_continue.encode(std.testing.allocator);
+    defer std.testing.allocator.free(good_continue_bytes);
+    try std.testing.expectEqual(world.Appliance.Abi.Status.completed, native.submitTurn(good_continue_bytes));
+}
+
+test "appliance Native submitTurn rolls back closure materialization failure" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_agent,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{world.bindActuator(AppliancePortsDecl, ApplianceActuator)},
+        .metadata = "native-submit-turn-rollback",
+    });
+    const manifest = PortsAppliance.manifest();
+
+    const wire_boot = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const wire_boot_bytes = try wire_boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(wire_boot_bytes);
+
+    var observed_closure_failure = false;
+    var observed_success = false;
+    var fail_offset: usize = 0;
+    while (fail_offset < 1024 and !(observed_closure_failure and observed_success)) : (fail_offset += 1) {
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = std.math.maxInt(usize),
+        });
+        var native = world.Appliance.Native.init(world.Appliance.Core.initWithCapacity(
+            failing_allocator.allocator(),
+            manifest,
+            PortsAppliance.memoryPlan(),
+            world.Appliance.Capacity.tiny_one_port,
+        ));
+        defer native.deinit();
+        try std.testing.expectEqual(world.Appliance.Abi.Status.needs_host, native.submitTurn(wire_boot_bytes));
+
+        const prior_turn_sequence_number = native.core.current_turn_sequence_number;
+        const prior_receipt = native.core.previous_turn_receipt_fingerprint;
+        const prior_state = native.core.state;
+        const prior_output = try std.testing.allocator.dupe(u8, native.core.readOutput());
+        defer std.testing.allocator.free(prior_output);
+        const prior_closure = try std.testing.allocator.dupe(u8, native.last_closure_bytes);
+        defer std.testing.allocator.free(prior_closure);
+        const request = native.core.outstanding_host_request orelse return error.UnknownRequest;
+        var response_image = try world.Frame.ValueImage.fromCanonicalBytes(
+            std.testing.allocator,
+            null,
+            request.expected_response_value_ref_fingerprint,
+            request.expected_response_schema_ref_fingerprint,
+            "native-submit-turn-response",
+            false,
+        );
+        defer response_image.deinit(std.testing.allocator);
+        const response_image_bytes = try response_image.encode(std.testing.allocator);
+        defer std.testing.allocator.free(response_image_bytes);
+        const resolution = world.Appliance.Wire.ResolutionInput.init(.{
+            .target_host_request_fingerprint = request.request_fingerprint,
+            .status = .responded,
+            .response_value_image_bytes = response_image_bytes,
+            .host_claim_bytes = "native-submit-turn-host-claim",
+            .attempt_number = 1,
+        });
+        const wire_continue = world.Appliance.Wire.TurnInput.init(.{
+            .operation = .@"continue",
+            .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+            .previous_turn_receipt_fingerprint = prior_receipt,
+            .turn_sequence_number = prior_turn_sequence_number + 1,
+            .resolutions = &.{resolution},
+        });
+        const wire_continue_bytes = try wire_continue.encode(std.testing.allocator);
+        defer std.testing.allocator.free(wire_continue_bytes);
+
+        failing_allocator.fail_index = failing_allocator.alloc_index + fail_offset;
+        const status = native.submitTurn(wire_continue_bytes);
+        if (status == .capacity_exceeded and std.mem.startsWith(u8, native.lastErrorBytes(), "submit.closure:")) {
+            observed_closure_failure = true;
+            try std.testing.expect(failing_allocator.has_induced_failure);
+            try std.testing.expectEqual(prior_state, native.core.state);
+            try std.testing.expectEqual(prior_turn_sequence_number, native.core.current_turn_sequence_number);
+            try std.testing.expectEqual(prior_receipt, native.core.previous_turn_receipt_fingerprint);
+            try std.testing.expectEqualSlices(u8, prior_output, native.core.readOutput());
+            try std.testing.expectEqualSlices(u8, prior_closure, native.last_closure_bytes);
+
+            failing_allocator.fail_index = std.math.maxInt(usize);
+            try std.testing.expectEqual(world.Appliance.Abi.Status.completed, native.submitTurn(wire_continue_bytes));
+            continue;
+        }
+        if (failing_allocator.has_induced_failure) continue;
+        try std.testing.expectEqual(world.Appliance.Abi.Status.completed, status);
+        observed_success = true;
+    }
+
+    try std.testing.expect(observed_closure_failure);
+    try std.testing.expect(observed_success);
+}
+
 test "appliance Native submit status preserves canonical TurnOutput status" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_agent,
@@ -7923,6 +8278,16 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     });
     try std.testing.expectError(error.InvalidFrameEncoding, replay_evidence_manifest.validate());
 
+    var actuated_replay_modes = manifest.supported_execution_modes;
+    actuated_replay_modes.replay = true;
+    var actuated_replay_capabilities = manifest.required_host_capabilities;
+    actuated_replay_capabilities.replay_evidence = true;
+    const actuated_replay_manifest = applianceManifestVariant(manifest, .{
+        .supported_execution_modes = actuated_replay_modes,
+        .required_host_capabilities = actuated_replay_capabilities,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, actuated_replay_manifest.validate());
+
     var hidden_actuation_capabilities = manifest.required_host_capabilities;
     hidden_actuation_capabilities.actuation = false;
     const hidden_actuation_manifest = applianceManifestVariant(manifest, .{
@@ -7959,6 +8324,1250 @@ test "appliance manifest rejects multiple runtime actuation bindings" {
     try std.testing.expectError(error.InvalidFrameEncoding, reserved_capabilities_manifest.validate());
 }
 
+fn applianceTestCapsuleBytes(allocator: std.mem.Allocator, metadata: []const u8) ![]const u8 {
+    const manifest = world.Capsule.Manifest.init(.{
+        .kind = .reference_only,
+        .root_target_ref_fingerprint = 0xC105_0001,
+        .normal_form = .quiescent_completed,
+        .metadata = metadata,
+    });
+    const runspace_image = world.Capsule.RunspaceImage.init(.{
+        .runspace_fingerprint = 0xC105_0002,
+        .runspace_report_fingerprint = 0xC105_0003,
+        .metadata = metadata,
+    });
+    const image = world.Capsule.Image.init(.{
+        .manifest = manifest,
+        .runspace_image = runspace_image,
+        .metadata = metadata,
+    });
+    try image.validate(.{});
+    return image.encode(allocator);
+}
+
+fn applianceTestWriteU32(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u32) !void {
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, value, .little);
+    try out.appendSlice(allocator, &bytes);
+}
+
+fn applianceTestWriteU64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, value: u64) !void {
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &bytes, value, .little);
+    try out.appendSlice(allocator, &bytes);
+}
+
+fn applianceTestWriteBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []const u8) !void {
+    if (bytes.len > std.math.maxInt(u32)) return error.CapacityExceeded;
+    try applianceTestWriteU32(out, allocator, @intCast(bytes.len));
+    try out.appendSlice(allocator, bytes);
+}
+
+fn applianceTestReadU8(bytes: []const u8, cursor: *usize) !u8 {
+    if (cursor.* + 1 > bytes.len) return error.InvalidFrameEncoding;
+    const value = bytes[cursor.*];
+    cursor.* += 1;
+    return value;
+}
+
+fn applianceTestReadU32(bytes: []const u8, cursor: *usize) !u32 {
+    if (cursor.* + 4 > bytes.len) return error.InvalidFrameEncoding;
+    const value = std.mem.readInt(u32, bytes[cursor.*..][0..4], .little);
+    cursor.* += 4;
+    return value;
+}
+
+fn applianceTestReadU64(bytes: []const u8, cursor: *usize) !u64 {
+    if (cursor.* + 8 > bytes.len) return error.InvalidFrameEncoding;
+    const value = std.mem.readInt(u64, bytes[cursor.*..][0..8], .little);
+    cursor.* += 8;
+    return value;
+}
+
+fn applianceTestSkipOptionalU64(bytes: []const u8, cursor: *usize) !void {
+    switch (try applianceTestReadU8(bytes, cursor)) {
+        0 => {},
+        1 => _ = try applianceTestReadU64(bytes, cursor),
+        else => return error.InvalidFrameEncoding,
+    }
+}
+
+fn applianceTestSkipBytes(bytes: []const u8, cursor: *usize) !void {
+    const len = try applianceTestReadU32(bytes, cursor);
+    if (cursor.* + len > bytes.len) return error.InvalidFrameEncoding;
+    cursor.* += len;
+}
+
+fn applianceTestSkipU64Slice(bytes: []const u8, cursor: *usize) !void {
+    const count = try applianceTestReadU64(bytes, cursor);
+    if (count > std.math.maxInt(usize)) return error.InvalidFrameEncoding;
+    const byte_len = try std.math.mul(usize, @as(usize, @intCast(count)), @sizeOf(u64));
+    if (cursor.* + byte_len > bytes.len) return error.InvalidFrameEncoding;
+    cursor.* += byte_len;
+}
+
+fn applianceTestTurnClosureFinalizedReceiptBytesCountOffset(bytes: []const u8) !usize {
+    var cursor: usize = 0;
+    _ = try applianceTestReadU32(bytes, &cursor);
+    _ = try applianceTestReadU32(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    _ = try applianceTestReadU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipOptionalU64(bytes, &cursor);
+    try applianceTestSkipBytes(bytes, &cursor);
+    try applianceTestSkipU64Slice(bytes, &cursor);
+    return cursor;
+}
+
+fn applianceTestRootResultValueImageBytes(allocator: std.mem.Allocator, fingerprint: u64) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try applianceTestWriteBytes(&out, allocator, "world.appliance.root_result.value_image");
+    try applianceTestWriteU64(&out, allocator, fingerprint);
+    return out.toOwnedSlice(allocator);
+}
+
+fn applianceTestClosureBundleBytes(
+    allocator: std.mem.Allocator,
+    checkpoint_bytes: []const u8,
+    turn_receipt_bytes: []const u8,
+    capsule_bytes: []const u8,
+    root_result_bytes: []const u8,
+    actuation_receipt_bytes: []const u8,
+) ![]const u8 {
+    const checkpoint_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_checkpoint,
+        .payload_bytes = checkpoint_bytes,
+        .label = "checkpoint",
+    });
+    const receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_receipt,
+        .payload_bytes = turn_receipt_bytes,
+        .label = "receipt",
+    });
+    const capsule_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = world.world_capsule_image_format_version,
+        .payload_bytes = capsule_bytes,
+        .label = "capsule",
+    });
+    const root_result_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .root_result,
+        .payload_bytes = root_result_bytes,
+        .label = "root-result",
+    });
+    const actuation_receipt_envelope_without_deps = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .payload_bytes = actuation_receipt_bytes,
+        .label = "actuation-receipt",
+    });
+    const actuation_receipt_deps = try world.Continuity.objectEnvelopeRequiredDependencyRefs(allocator, actuation_receipt_envelope_without_deps);
+    defer allocator.free(actuation_receipt_deps);
+    const actuation_receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .dependency_refs = actuation_receipt_deps,
+        .payload_bytes = actuation_receipt_bytes,
+        .label = "actuation-receipt",
+    });
+    const roots = [_]world.Continuity.ObjectRef{
+        checkpoint_envelope.objectRef(),
+        receipt_envelope.objectRef(),
+        capsule_envelope.objectRef(),
+        root_result_envelope.objectRef(),
+        actuation_receipt_envelope.objectRef(),
+    };
+    var envelopes = [_]world.Continuity.ObjectEnvelope{
+        checkpoint_envelope,
+        receipt_envelope,
+        capsule_envelope,
+        root_result_envelope,
+        actuation_receipt_envelope,
+    };
+    const bundle = world.Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = world.Continuity.BundleManifest.init(.{ .roots = &roots, .object_count = envelopes.len }),
+        .envelopes = &envelopes,
+    };
+    return bundle.toBytes(allocator);
+}
+
+fn applianceTestClosureBundleBytesWithRunReceipt(
+    allocator: std.mem.Allocator,
+    checkpoint_bytes: []const u8,
+    turn_receipt_bytes: []const u8,
+    capsule_bytes: []const u8,
+    root_result_bytes: []const u8,
+    actuation_receipt_bytes: []const u8,
+    run_receipt_bytes: []const u8,
+) ![]const u8 {
+    const checkpoint_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_checkpoint,
+        .payload_bytes = checkpoint_bytes,
+        .label = "checkpoint",
+    });
+    const receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_receipt,
+        .payload_bytes = turn_receipt_bytes,
+        .label = "receipt",
+    });
+    const capsule_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .capsule_image,
+        .object_format_version = world.world_capsule_image_format_version,
+        .payload_bytes = capsule_bytes,
+        .label = "capsule",
+    });
+    const root_result_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .root_result,
+        .payload_bytes = root_result_bytes,
+        .label = "root-result",
+    });
+    const actuation_receipt_envelope_without_deps = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .payload_bytes = actuation_receipt_bytes,
+        .label = "actuation-receipt",
+    });
+    const actuation_receipt_deps = try world.Continuity.objectEnvelopeRequiredDependencyRefs(allocator, actuation_receipt_envelope_without_deps);
+    defer allocator.free(actuation_receipt_deps);
+    const actuation_receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .actuation_receipt,
+        .dependency_refs = actuation_receipt_deps,
+        .payload_bytes = actuation_receipt_bytes,
+        .label = "actuation-receipt",
+    });
+    const run_receipt_envelope_without_deps = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .run_receipt,
+        .payload_bytes = run_receipt_bytes,
+        .label = "run-receipt",
+    });
+    const run_receipt_deps = try world.Continuity.objectEnvelopeRequiredDependencyRefs(allocator, run_receipt_envelope_without_deps);
+    defer allocator.free(run_receipt_deps);
+    const run_receipt_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .run_receipt,
+        .dependency_refs = run_receipt_deps,
+        .payload_bytes = run_receipt_bytes,
+        .label = "run-receipt",
+    });
+    const roots = [_]world.Continuity.ObjectRef{
+        checkpoint_envelope.objectRef(),
+        receipt_envelope.objectRef(),
+        capsule_envelope.objectRef(),
+        root_result_envelope.objectRef(),
+        actuation_receipt_envelope.objectRef(),
+        run_receipt_envelope.objectRef(),
+    };
+    var envelopes = [_]world.Continuity.ObjectEnvelope{
+        checkpoint_envelope,
+        receipt_envelope,
+        capsule_envelope,
+        root_result_envelope,
+        actuation_receipt_envelope,
+        run_receipt_envelope,
+    };
+    const bundle = world.Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = world.Continuity.BundleManifest.init(.{ .roots = &roots, .object_count = envelopes.len }),
+        .envelopes = &envelopes,
+    };
+    return bundle.toBytes(allocator);
+}
+
+fn applianceTurnClosureFixture(allocator: std.mem.Allocator) !struct {
+    closure: world.Appliance.TurnClosure,
+    capsule_bytes: []const u8,
+    checkpoint_bytes: []const u8,
+    turn_receipt_bytes: []const u8,
+    actuation_receipt_fingerprints: []const u64,
+    actuation_receipt_byte_slices: []const []const u8,
+    actuation_receipt_bytes: []const u8,
+    root_result_bytes: []const u8,
+    bundle_bytes: []const u8,
+} {
+    const manifest_fingerprint: u64 = 0xD7C1;
+    const executable_fingerprint: u64 = 0xE7C1;
+    const root_result_value_fingerprint: u64 = 0xD7C3;
+    const root_result_bytes = try applianceTestRootResultValueImageBytes(allocator, root_result_value_fingerprint);
+    errdefer allocator.free(root_result_bytes);
+    const root_result_ref = world.Continuity.ObjectRef.fromPayload(.root_result, world.Continuity.ObjectKind.root_result.defaultFormatVersion(), root_result_bytes, "root.result");
+    const root_result_fingerprint = root_result_ref.object_fingerprint;
+
+    const capsule_bytes = try applianceTestCapsuleBytes(allocator, "turn-closure");
+    errdefer allocator.free(capsule_bytes);
+    const capsule_ref = world.Continuity.ObjectRef.fromPayload(.capsule_image, world.world_capsule_image_format_version, capsule_bytes, "capsule.image");
+
+    const applied_host_reply_fingerprints = [_]u64{0xA7C0};
+    const receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .command_fingerprint = 0xD7C2,
+        .applied_host_reply_fingerprints = applied_host_reply_fingerprints[0..],
+        .resulting_capsule_fingerprint = capsule_ref.object_fingerprint,
+        .root_result_fingerprint = root_result_value_fingerprint,
+        .status = .completed,
+    });
+    var receipt_payload: std.ArrayList(u8) = .empty;
+    defer receipt_payload.deinit(allocator);
+    try receipt.encode(&receipt_payload, allocator);
+    const turn_receipt_bytes = try allocator.dupe(u8, receipt_payload.items);
+    errdefer allocator.free(turn_receipt_bytes);
+
+    const actuation_receipt = world.Actuation.Receipt.init(.{
+        .intent_fingerprint = 0xA7C1,
+        .envelope_fingerprint = 0xA7C2,
+        .decision_fingerprint = 0xA7C3,
+        .commit_fingerprint = 0xA7C4,
+        .response_fingerprint = 0xA7C5,
+        .frame_response_fingerprint = 0xA7C6,
+        .actuator_ref_fingerprint = 0xA7C7,
+        .idempotency_key_fingerprint = 0xA7C8,
+        .request_fingerprint = 0xA7C9,
+        .target_ref_fingerprint = 0xA7CA,
+        .world_surface_fingerprint = 0xA7CB,
+        .world_port_id = 1,
+        .class = .deterministic_fixture,
+        .mode = .fresh,
+        .fresh_called = true,
+    });
+    const actuation_receipt_bytes = try actuation_receipt.encode(allocator);
+    errdefer allocator.free(actuation_receipt_bytes);
+    const actuation_receipt_fingerprints = try allocator.alloc(u64, 1);
+    errdefer allocator.free(actuation_receipt_fingerprints);
+    actuation_receipt_fingerprints[0] = actuation_receipt.receipt_fingerprint;
+    const actuation_receipt_byte_slices = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(actuation_receipt_byte_slices);
+    actuation_receipt_byte_slices[0] = actuation_receipt_bytes;
+
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .capsule_fingerprint = capsule_ref.object_fingerprint,
+        .previous_turn_receipt_fingerprint = receipt.receipt_fingerprint,
+    });
+    var checkpoint_payload: std.ArrayList(u8) = .empty;
+    defer checkpoint_payload.deinit(allocator);
+    try checkpoint.encode(&checkpoint_payload, allocator);
+    const checkpoint_bytes = try allocator.dupe(u8, checkpoint_payload.items);
+    errdefer allocator.free(checkpoint_bytes);
+
+    const bundle_bytes = try applianceTestClosureBundleBytes(allocator, checkpoint_bytes, turn_receipt_bytes, capsule_bytes, root_result_bytes, actuation_receipt_bytes);
+    errdefer allocator.free(bundle_bytes);
+
+    const initial_cursor_fingerprint = world.Continuity.Chronicle.Cursor.initial().cursor_fingerprint;
+    const closure = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = executable_fingerprint,
+        .appliance_manifest_fingerprint = manifest_fingerprint,
+        .turn_sequence_number = 0,
+        .parent_state_fingerprint = world.Appliance.coreStateFingerprint(.uninitialized, 0, null),
+        .resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, 0, receipt.receipt_fingerprint),
+        .chronicle_parent_cursor_fingerprint = initial_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = initial_cursor_fingerprint,
+        .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint,
+        .checkpoint_bytes = checkpoint_bytes,
+        .capsule_fingerprint = capsule_ref.object_fingerprint,
+        .capsule_bytes = capsule_bytes,
+        .turn_receipt_fingerprint = receipt.receipt_fingerprint,
+        .turn_receipt_bytes = turn_receipt_bytes,
+        .evidence_bundle_bytes = bundle_bytes,
+        .root_result_fingerprint = root_result_fingerprint,
+        .root_result_bytes = root_result_bytes,
+        .root_result_value_ref_fingerprint = root_result_ref.ref_fingerprint,
+        .finalized_actuation_receipt_fingerprints = actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = actuation_receipt_byte_slices,
+        .status = .completed,
+    });
+    return .{
+        .closure = closure,
+        .capsule_bytes = capsule_bytes,
+        .checkpoint_bytes = checkpoint_bytes,
+        .turn_receipt_bytes = turn_receipt_bytes,
+        .actuation_receipt_fingerprints = actuation_receipt_fingerprints,
+        .actuation_receipt_byte_slices = actuation_receipt_byte_slices,
+        .actuation_receipt_bytes = actuation_receipt_bytes,
+        .root_result_bytes = root_result_bytes,
+        .bundle_bytes = bundle_bytes,
+    };
+}
+
+fn applianceTestRecomputedTurnClosure(closure: world.Appliance.TurnClosure) world.Appliance.TurnClosure {
+    return world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = closure.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = closure.appliance_manifest_fingerprint,
+        .parent_closure_fingerprint = closure.parent_closure_fingerprint,
+        .turn_sequence_number = closure.turn_sequence_number,
+        .parent_state_fingerprint = closure.parent_state_fingerprint,
+        .resulting_state_fingerprint = closure.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = closure.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = closure.chronicle_resulting_cursor_fingerprint,
+        .archive_parent_moment_fingerprint = closure.archive_parent_moment_fingerprint,
+        .archive_parent_seal_fingerprint = closure.archive_parent_seal_fingerprint,
+        .archive_resulting_moment_fingerprint = closure.archive_resulting_moment_fingerprint,
+        .archive_resulting_seal_fingerprint = closure.archive_resulting_seal_fingerprint,
+        .checkpoint_fingerprint = closure.checkpoint_fingerprint,
+        .checkpoint_bytes = closure.checkpoint_bytes,
+        .capsule_fingerprint = closure.capsule_fingerprint,
+        .capsule_bytes = closure.capsule_bytes,
+        .turn_receipt_fingerprint = closure.turn_receipt_fingerprint,
+        .turn_receipt_bytes = closure.turn_receipt_bytes,
+        .evidence_bundle_bytes = closure.evidence_bundle_bytes,
+        .archive_append_batch_fingerprint = closure.archive_append_batch_fingerprint,
+        .archive_append_batch_bytes = closure.archive_append_batch_bytes,
+        .pending_host_request_bytes = closure.pending_host_request_bytes,
+        .root_result_fingerprint = closure.root_result_fingerprint,
+        .root_result_bytes = closure.root_result_bytes,
+        .root_result_value_ref_fingerprint = closure.root_result_value_ref_fingerprint,
+        .run_receipt_fingerprint = closure.run_receipt_fingerprint,
+        .run_receipt_bytes = closure.run_receipt_bytes,
+        .finalized_actuation_receipt_fingerprints = closure.finalized_actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = closure.finalized_actuation_receipt_bytes,
+        .replay_receipt_fingerprints = closure.replay_receipt_fingerprints,
+        .replay_receipt_bytes = closure.replay_receipt_bytes,
+        .verify_report_fingerprints = closure.verify_report_fingerprints,
+        .blockers = closure.blockers,
+        .warnings = closure.warnings,
+        .diagnostics = closure.diagnostics,
+        .status = closure.status,
+    });
+}
+
+test "appliance TurnClosure complete one-port closure validates" {
+    const allocator = std.testing.allocator;
+    const fixture = try applianceTurnClosureFixture(allocator);
+    defer allocator.free(fixture.capsule_bytes);
+    defer allocator.free(fixture.checkpoint_bytes);
+    defer allocator.free(fixture.turn_receipt_bytes);
+    defer allocator.free(fixture.actuation_receipt_fingerprints);
+    defer allocator.free(fixture.actuation_receipt_byte_slices);
+    defer allocator.free(fixture.actuation_receipt_bytes);
+    defer allocator.free(fixture.root_result_bytes);
+    defer allocator.free(fixture.bundle_bytes);
+
+    const external_dependency_options = world.Appliance.TurnClosureValidation{
+        .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    };
+    try std.testing.expectError(error.InvalidFrameEncoding, fixture.closure.validate(allocator, .{ .limits = .archive_decode }));
+    try fixture.closure.validate(allocator, .{
+        .expected_executable_image_fingerprint = fixture.closure.executable_image_fingerprint,
+        .expected_manifest_fingerprint = fixture.closure.appliance_manifest_fingerprint,
+        .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    });
+    const report = try fixture.closure.validationReport(allocator, external_dependency_options);
+    try report.validate();
+    try std.testing.expect(report.valid);
+
+    const encoded = try fixture.closure.encode(allocator);
+    defer allocator.free(encoded);
+    var decoded = try world.Appliance.TurnClosure.decode(allocator, encoded);
+    defer decoded.deinit(allocator);
+    try decoded.validate(allocator, external_dependency_options);
+    var archived = try world.Appliance.TurnClosure.decodeArchivePayload(allocator, encoded);
+    defer archived.deinit(allocator);
+    const closure_envelope_without_deps = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_closure,
+        .payload_bytes = encoded,
+        .label = "turn-closure",
+    });
+    const closure_deps = try world.Continuity.objectEnvelopeRequiredDependencyRefs(allocator, closure_envelope_without_deps);
+    defer allocator.free(closure_deps);
+    var closure_envelope = world.Continuity.ObjectEnvelope.init(.{
+        .kind = .appliance_turn_closure,
+        .dependency_refs = closure_deps,
+        .payload_bytes = encoded,
+        .label = "turn-closure",
+    });
+    var closure_envelopes = [_]world.Continuity.ObjectEnvelope{closure_envelope};
+    var closure_bundle = world.Continuity.Bundle{
+        .allocator = allocator,
+        .manifest = world.Continuity.BundleManifest.init(.{
+            .roots = &.{closure_envelope.objectRef()},
+            .object_count = 1,
+        }),
+        .envelopes = &closure_envelopes,
+    };
+    const closure_bundle_bytes = try closure_bundle.toBytes(allocator);
+    defer allocator.free(closure_bundle_bytes);
+    const closure_bundle_report = try world.Continuity.Bundle.validate(allocator, closure_bundle_bytes, .{ .allow_external_dependencies = true });
+    try std.testing.expect(closure_bundle_report.valid);
+    try std.testing.expect(closure_bundle_report.missing_dependency_count != 0);
+    try std.testing.expectEqual(fixture.closure.closure_fingerprint, decoded.closure_fingerprint);
+    try std.testing.expectEqual(fixture.closure.closure_fingerprint, archived.closure_fingerprint);
+    try std.testing.expectEqual(@as(usize, 1), decoded.finalized_actuation_receipt_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 1), decoded.finalized_actuation_receipt_bytes.len);
+    var actuation_receipt = try world.Actuation.Receipt.decode(allocator, decoded.finalized_actuation_receipt_bytes[0]);
+    defer actuation_receipt.deinit(allocator);
+    try std.testing.expectEqual(decoded.finalized_actuation_receipt_fingerprints[0], actuation_receipt.receipt_fingerprint);
+
+    const materialized_checkpoint = try decoded.materializeCheckpoint(allocator);
+    defer allocator.free(materialized_checkpoint);
+    try std.testing.expectEqualSlices(u8, fixture.checkpoint_bytes, materialized_checkpoint);
+    const materialized_capsule = try decoded.materializeCapsule(allocator);
+    defer allocator.free(materialized_capsule);
+    try std.testing.expectEqualSlices(u8, fixture.capsule_bytes, materialized_capsule);
+
+    var child = fixture.closure;
+    child.parent_closure_fingerprint = fixture.closure.closure_fingerprint;
+    child.turn_sequence_number = fixture.closure.turn_sequence_number + 1;
+    child.parent_state_fingerprint = fixture.closure.resulting_state_fingerprint;
+    child.chronicle_parent_cursor_fingerprint = fixture.closure.chronicle_resulting_cursor_fingerprint;
+    child.archive_parent_moment_fingerprint = fixture.closure.archive_resulting_moment_fingerprint;
+    child.archive_parent_seal_fingerprint = fixture.closure.archive_resulting_seal_fingerprint;
+    child = applianceTestRecomputedTurnClosure(child);
+    try world.Appliance.validateTurnClosureParentContinuity(child, fixture.closure);
+
+    var wrong_manifest_parent = fixture.closure;
+    wrong_manifest_parent.appliance_manifest_fingerprint +%= 1;
+    wrong_manifest_parent = applianceTestRecomputedTurnClosure(wrong_manifest_parent);
+    var wrong_manifest_child = child;
+    wrong_manifest_child.parent_closure_fingerprint = wrong_manifest_parent.closure_fingerprint;
+    wrong_manifest_child.parent_state_fingerprint = wrong_manifest_parent.resulting_state_fingerprint;
+    wrong_manifest_child.chronicle_parent_cursor_fingerprint = wrong_manifest_parent.chronicle_resulting_cursor_fingerprint;
+    wrong_manifest_child = applianceTestRecomputedTurnClosure(wrong_manifest_child);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.validateTurnClosureParentContinuity(wrong_manifest_child, wrong_manifest_parent));
+
+    var skipped_turn_child = child;
+    skipped_turn_child.turn_sequence_number = fixture.closure.turn_sequence_number + 2;
+    skipped_turn_child = applianceTestRecomputedTurnClosure(skipped_turn_child);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.validateTurnClosureParentContinuity(skipped_turn_child, fixture.closure));
+}
+
+test "appliance TurnClosure validationReport preserves allocation failures" {
+    const allocator = std.testing.allocator;
+    const fixture = try applianceTurnClosureFixture(allocator);
+    defer allocator.free(fixture.capsule_bytes);
+    defer allocator.free(fixture.checkpoint_bytes);
+    defer allocator.free(fixture.turn_receipt_bytes);
+    defer allocator.free(fixture.actuation_receipt_fingerprints);
+    defer allocator.free(fixture.actuation_receipt_byte_slices);
+    defer allocator.free(fixture.actuation_receipt_bytes);
+    defer allocator.free(fixture.root_result_bytes);
+    defer allocator.free(fixture.bundle_bytes);
+
+    const external_dependency_options = world.Appliance.TurnClosureValidation{
+        .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    };
+    var observed_induced_failure = false;
+    var observed_success = false;
+    var fail_offset: usize = 0;
+    while (fail_offset < 128 and !observed_success) : (fail_offset += 1) {
+        var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{
+            .fail_index = std.math.maxInt(usize),
+        });
+        failing_allocator.fail_index = failing_allocator.alloc_index + fail_offset;
+        const report = fixture.closure.validationReport(failing_allocator.allocator(), external_dependency_options) catch {
+            observed_induced_failure = true;
+            try std.testing.expect(failing_allocator.has_induced_failure);
+            continue;
+        };
+        try report.validate();
+        try std.testing.expect(report.valid);
+        observed_success = true;
+    }
+
+    try std.testing.expect(observed_induced_failure);
+    try std.testing.expect(observed_success);
+}
+
+test "appliance TurnClosure rejects over-limit byte payloads before allocation" {
+    const allocator = std.testing.allocator;
+    const fixture = try applianceTurnClosureFixture(allocator);
+    defer allocator.free(fixture.capsule_bytes);
+    defer allocator.free(fixture.checkpoint_bytes);
+    defer allocator.free(fixture.turn_receipt_bytes);
+    defer allocator.free(fixture.actuation_receipt_fingerprints);
+    defer allocator.free(fixture.actuation_receipt_byte_slices);
+    defer allocator.free(fixture.actuation_receipt_bytes);
+    defer allocator.free(fixture.root_result_bytes);
+    defer allocator.free(fixture.bundle_bytes);
+
+    const encoded = try fixture.closure.encode(allocator);
+    defer allocator.free(encoded);
+    var malformed = try allocator.dupe(u8, encoded);
+    defer allocator.free(malformed);
+    const count_offset = try applianceTestTurnClosureFinalizedReceiptBytesCountOffset(malformed);
+    std.mem.writeInt(u64, malformed[count_offset..][0..8], world.Appliance.TurnClosureLimits.default.max_items + 1, .little);
+
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.TurnClosure.decode(allocator, malformed));
+
+    const limits = world.Appliance.TurnClosureLimits.default;
+    var oversized_receipt = try allocator.dupe(u8, encoded);
+    defer allocator.free(oversized_receipt);
+    const first_receipt_len_offset = count_offset + @sizeOf(u64);
+    std.mem.writeInt(u32, oversized_receipt[first_receipt_len_offset..][0..4], @intCast(limits.max_receipt_bytes + 1), .little);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.TurnClosure.decode(allocator, oversized_receipt));
+
+    const oversized_checkpoint = try allocator.alloc(u8, limits.max_checkpoint_bytes + 1);
+    defer allocator.free(oversized_checkpoint);
+    @memset(oversized_checkpoint, 'c');
+    var oversized_checkpoint_closure = fixture.closure;
+    oversized_checkpoint_closure.checkpoint_bytes = oversized_checkpoint;
+    oversized_checkpoint_closure = applianceTestRecomputedTurnClosure(oversized_checkpoint_closure);
+    const oversized_checkpoint_encoded = try oversized_checkpoint_closure.encode(allocator);
+    defer allocator.free(oversized_checkpoint_encoded);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.TurnClosure.decode(allocator, oversized_checkpoint_encoded));
+
+    var overlimit_pending_count_bytes: [@sizeOf(u64)]u8 = undefined;
+    std.mem.writeInt(u64, &overlimit_pending_count_bytes, limits.max_items + 1, .little);
+    var overlimit_pending_closure = fixture.closure;
+    overlimit_pending_closure.pending_host_request_bytes = &overlimit_pending_count_bytes;
+    overlimit_pending_closure.status = .needs_host;
+    overlimit_pending_closure = applianceTestRecomputedTurnClosure(overlimit_pending_closure);
+    try std.testing.expectError(error.CapacityExceeded, overlimit_pending_closure.validate(allocator, .{
+        .limits = limits,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    }));
+}
+
+test "appliance TurnClosure rejects mismatched required bytes and unresolved roots" {
+    const allocator = std.testing.allocator;
+    const fixture = try applianceTurnClosureFixture(allocator);
+    defer allocator.free(fixture.capsule_bytes);
+    defer allocator.free(fixture.checkpoint_bytes);
+    defer allocator.free(fixture.turn_receipt_bytes);
+    defer allocator.free(fixture.actuation_receipt_fingerprints);
+    defer allocator.free(fixture.actuation_receipt_byte_slices);
+    defer allocator.free(fixture.actuation_receipt_bytes);
+    defer allocator.free(fixture.root_result_bytes);
+    defer allocator.free(fixture.bundle_bytes);
+
+    var wrong_checkpoint = fixture.closure;
+    wrong_checkpoint.checkpoint_fingerprint +%= 1;
+    wrong_checkpoint.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = wrong_checkpoint.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = wrong_checkpoint.appliance_manifest_fingerprint,
+        .turn_sequence_number = wrong_checkpoint.turn_sequence_number,
+        .parent_state_fingerprint = wrong_checkpoint.parent_state_fingerprint,
+        .resulting_state_fingerprint = wrong_checkpoint.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = wrong_checkpoint.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = wrong_checkpoint.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = wrong_checkpoint.checkpoint_fingerprint,
+        .checkpoint_bytes = wrong_checkpoint.checkpoint_bytes,
+        .capsule_fingerprint = wrong_checkpoint.capsule_fingerprint,
+        .capsule_bytes = wrong_checkpoint.capsule_bytes,
+        .turn_receipt_fingerprint = wrong_checkpoint.turn_receipt_fingerprint,
+        .turn_receipt_bytes = wrong_checkpoint.turn_receipt_bytes,
+        .evidence_bundle_bytes = wrong_checkpoint.evidence_bundle_bytes,
+        .root_result_fingerprint = wrong_checkpoint.root_result_fingerprint,
+        .root_result_bytes = wrong_checkpoint.root_result_bytes,
+        .root_result_value_ref_fingerprint = wrong_checkpoint.root_result_value_ref_fingerprint,
+        .status = wrong_checkpoint.status,
+    }).closure_fingerprint;
+    const external_dependency_options = world.Appliance.TurnClosureValidation{
+        .limits = .archive_decode,
+        .bundle_options = .{ .allow_external_dependencies = true },
+    };
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_checkpoint.validate(allocator, external_dependency_options));
+
+    var wrong_resulting_state = fixture.closure;
+    wrong_resulting_state.resulting_state_fingerprint +%= 1;
+    wrong_resulting_state.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = wrong_resulting_state.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = wrong_resulting_state.appliance_manifest_fingerprint,
+        .turn_sequence_number = wrong_resulting_state.turn_sequence_number,
+        .parent_state_fingerprint = wrong_resulting_state.parent_state_fingerprint,
+        .resulting_state_fingerprint = wrong_resulting_state.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = wrong_resulting_state.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = wrong_resulting_state.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = wrong_resulting_state.checkpoint_fingerprint,
+        .checkpoint_bytes = wrong_resulting_state.checkpoint_bytes,
+        .capsule_fingerprint = wrong_resulting_state.capsule_fingerprint,
+        .capsule_bytes = wrong_resulting_state.capsule_bytes,
+        .turn_receipt_fingerprint = wrong_resulting_state.turn_receipt_fingerprint,
+        .turn_receipt_bytes = wrong_resulting_state.turn_receipt_bytes,
+        .evidence_bundle_bytes = wrong_resulting_state.evidence_bundle_bytes,
+        .root_result_fingerprint = wrong_resulting_state.root_result_fingerprint,
+        .root_result_bytes = wrong_resulting_state.root_result_bytes,
+        .root_result_value_ref_fingerprint = wrong_resulting_state.root_result_value_ref_fingerprint,
+        .finalized_actuation_receipt_fingerprints = wrong_resulting_state.finalized_actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = wrong_resulting_state.finalized_actuation_receipt_bytes,
+        .status = wrong_resulting_state.status,
+    }).closure_fingerprint;
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_resulting_state.validate(allocator, external_dependency_options));
+
+    const tampered_capsule = try allocator.dupe(u8, fixture.capsule_bytes);
+    defer allocator.free(tampered_capsule);
+    tampered_capsule[tampered_capsule.len - 1] ^= 0x01;
+    var wrong_capsule_bytes = fixture.closure;
+    wrong_capsule_bytes.capsule_bytes = tampered_capsule;
+    wrong_capsule_bytes.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = wrong_capsule_bytes.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = wrong_capsule_bytes.appliance_manifest_fingerprint,
+        .turn_sequence_number = wrong_capsule_bytes.turn_sequence_number,
+        .parent_state_fingerprint = wrong_capsule_bytes.parent_state_fingerprint,
+        .resulting_state_fingerprint = wrong_capsule_bytes.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = wrong_capsule_bytes.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = wrong_capsule_bytes.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = wrong_capsule_bytes.checkpoint_fingerprint,
+        .checkpoint_bytes = wrong_capsule_bytes.checkpoint_bytes,
+        .capsule_fingerprint = wrong_capsule_bytes.capsule_fingerprint,
+        .capsule_bytes = wrong_capsule_bytes.capsule_bytes,
+        .turn_receipt_fingerprint = wrong_capsule_bytes.turn_receipt_fingerprint,
+        .turn_receipt_bytes = wrong_capsule_bytes.turn_receipt_bytes,
+        .evidence_bundle_bytes = wrong_capsule_bytes.evidence_bundle_bytes,
+        .root_result_fingerprint = wrong_capsule_bytes.root_result_fingerprint,
+        .root_result_bytes = wrong_capsule_bytes.root_result_bytes,
+        .root_result_value_ref_fingerprint = wrong_capsule_bytes.root_result_value_ref_fingerprint,
+        .finalized_actuation_receipt_fingerprints = wrong_capsule_bytes.finalized_actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = wrong_capsule_bytes.finalized_actuation_receipt_bytes,
+        .status = wrong_capsule_bytes.status,
+    }).closure_fingerprint;
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_capsule_bytes.validate(allocator, external_dependency_options));
+
+    var missing_receipt_bytes = fixture.closure;
+    missing_receipt_bytes.finalized_actuation_receipt_bytes = &.{};
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_receipt_bytes.validate(allocator, external_dependency_options));
+
+    var missing_finalized_evidence = fixture.closure;
+    missing_finalized_evidence.finalized_actuation_receipt_fingerprints = &.{};
+    missing_finalized_evidence.finalized_actuation_receipt_bytes = &.{};
+    missing_finalized_evidence = applianceTestRecomputedTurnClosure(missing_finalized_evidence);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_finalized_evidence.validate(allocator, external_dependency_options));
+
+    var duplicate_base_receipt = try world.Appliance.TurnReceipt.decodeArchivePayload(allocator, fixture.turn_receipt_bytes);
+    defer duplicate_base_receipt.deinit(allocator);
+    const duplicate_applied_replies = [_]u64{
+        duplicate_base_receipt.applied_host_reply_fingerprints[0],
+        duplicate_base_receipt.applied_host_reply_fingerprints[0] ^ 0xD1,
+    };
+    const duplicate_turn_receipt = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = duplicate_base_receipt.manifest_fingerprint,
+        .turn_sequence_number = duplicate_base_receipt.turn_sequence_number,
+        .command_fingerprint = duplicate_base_receipt.command_fingerprint,
+        .prior_checkpoint_fingerprint = duplicate_base_receipt.prior_checkpoint_fingerprint,
+        .applied_host_reply_fingerprints = &duplicate_applied_replies,
+        .emitted_host_request_fingerprints = duplicate_base_receipt.emitted_host_request_fingerprints,
+        .source_capsule_fingerprint = duplicate_base_receipt.source_capsule_fingerprint,
+        .resulting_capsule_fingerprint = duplicate_base_receipt.resulting_capsule_fingerprint,
+        .archive_append_batch_fingerprint = duplicate_base_receipt.archive_append_batch_fingerprint,
+        .resulting_archive_moment_fingerprint = duplicate_base_receipt.resulting_archive_moment_fingerprint,
+        .resulting_archive_seal_fingerprint = duplicate_base_receipt.resulting_archive_seal_fingerprint,
+        .resulting_chronicle_cursor_fingerprint = duplicate_base_receipt.resulting_chronicle_cursor_fingerprint,
+        .root_result_fingerprint = duplicate_base_receipt.root_result_fingerprint,
+        .status = duplicate_base_receipt.status,
+        .run_receipt_fingerprint = duplicate_base_receipt.run_receipt_fingerprint,
+        .blocker_count = duplicate_base_receipt.blocker_count,
+        .warning_count = duplicate_base_receipt.warning_count,
+    });
+    var duplicate_turn_receipt_payload: std.ArrayList(u8) = .empty;
+    defer duplicate_turn_receipt_payload.deinit(allocator);
+    try duplicate_turn_receipt.encode(&duplicate_turn_receipt_payload, allocator);
+    const duplicate_turn_receipt_bytes = try allocator.dupe(u8, duplicate_turn_receipt_payload.items);
+    defer allocator.free(duplicate_turn_receipt_bytes);
+    var duplicate_base_checkpoint = try world.Appliance.Checkpoint.decodeArchivePayload(allocator, fixture.checkpoint_bytes);
+    defer duplicate_base_checkpoint.deinit(allocator);
+    const duplicate_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = duplicate_base_checkpoint.manifest_fingerprint,
+        .turn_sequence_number = duplicate_base_checkpoint.turn_sequence_number,
+        .capsule_fingerprint = duplicate_base_checkpoint.capsule_fingerprint,
+        .capsule_image_ref_fingerprint = duplicate_base_checkpoint.capsule_image_ref_fingerprint,
+        .capsule_image_bytes = duplicate_base_checkpoint.capsule_image_bytes,
+        .latest_archive_moment_fingerprint = duplicate_base_checkpoint.latest_archive_moment_fingerprint,
+        .latest_archive_seal_fingerprint = duplicate_base_checkpoint.latest_archive_seal_fingerprint,
+        .latest_chronicle_cursor_fingerprint = duplicate_base_checkpoint.latest_chronicle_cursor_fingerprint,
+        .pending_archive_append_batch_fingerprint = duplicate_base_checkpoint.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = duplicate_base_checkpoint.pending_archive_resulting_cursor,
+        .latest_archive_cursor = duplicate_base_checkpoint.latest_archive_cursor,
+        .core_state = duplicate_base_checkpoint.core_state,
+        .previous_turn_receipt_fingerprint = duplicate_turn_receipt.receipt_fingerprint,
+        .outstanding_host_requests = duplicate_base_checkpoint.outstanding_host_requests,
+        .execution_mode = duplicate_base_checkpoint.execution_mode,
+        .metadata = duplicate_base_checkpoint.metadata,
+    });
+    var duplicate_checkpoint_payload: std.ArrayList(u8) = .empty;
+    defer duplicate_checkpoint_payload.deinit(allocator);
+    try duplicate_checkpoint.encode(&duplicate_checkpoint_payload, allocator);
+    const duplicate_checkpoint_bytes = try allocator.dupe(u8, duplicate_checkpoint_payload.items);
+    defer allocator.free(duplicate_checkpoint_bytes);
+    const duplicate_finalized_receipts = [_]u64{
+        fixture.actuation_receipt_fingerprints[0],
+        fixture.actuation_receipt_fingerprints[0],
+    };
+    const duplicate_finalized_receipt_bytes = [_][]const u8{
+        fixture.actuation_receipt_bytes,
+        fixture.actuation_receipt_bytes,
+    };
+    const duplicate_finalized_bundle = try applianceTestClosureBundleBytes(
+        allocator,
+        duplicate_checkpoint_bytes,
+        duplicate_turn_receipt_bytes,
+        fixture.capsule_bytes,
+        fixture.root_result_bytes,
+        fixture.actuation_receipt_bytes,
+    );
+    defer allocator.free(duplicate_finalized_bundle);
+    var duplicate_finalized_evidence = fixture.closure;
+    duplicate_finalized_evidence.checkpoint_fingerprint = duplicate_checkpoint.checkpoint_fingerprint;
+    duplicate_finalized_evidence.checkpoint_bytes = duplicate_checkpoint_bytes;
+    duplicate_finalized_evidence.turn_receipt_fingerprint = duplicate_turn_receipt.receipt_fingerprint;
+    duplicate_finalized_evidence.turn_receipt_bytes = duplicate_turn_receipt_bytes;
+    duplicate_finalized_evidence.evidence_bundle_bytes = duplicate_finalized_bundle;
+    duplicate_finalized_evidence.resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, fixture.closure.turn_sequence_number, duplicate_turn_receipt.receipt_fingerprint);
+    duplicate_finalized_evidence.finalized_actuation_receipt_fingerprints = &duplicate_finalized_receipts;
+    duplicate_finalized_evidence.finalized_actuation_receipt_bytes = &duplicate_finalized_receipt_bytes;
+    duplicate_finalized_evidence = applianceTestRecomputedTurnClosure(duplicate_finalized_evidence);
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicate_finalized_evidence.validate(allocator, external_dependency_options));
+
+    const forged_warnings = [_]u64{0xD7C4};
+    var forged_warning_count = fixture.closure;
+    forged_warning_count.warnings = &forged_warnings;
+    forged_warning_count = applianceTestRecomputedTurnClosure(forged_warning_count);
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_warning_count.validate(allocator, external_dependency_options));
+
+    var forged_genesis_parent_state = fixture.closure;
+    forged_genesis_parent_state.parent_state_fingerprint +%= 1;
+    forged_genesis_parent_state = applianceTestRecomputedTurnClosure(forged_genesis_parent_state);
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_genesis_parent_state.validate(allocator, external_dependency_options));
+    const forged_genesis_parent_state_bytes = try forged_genesis_parent_state.encode(allocator);
+    defer allocator.free(forged_genesis_parent_state_bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.TurnClosure.decodeArchivePayload(allocator, forged_genesis_parent_state_bytes));
+
+    var forged_genesis_parent_cursor = fixture.closure;
+    forged_genesis_parent_cursor.chronicle_parent_cursor_fingerprint +%= 1;
+    forged_genesis_parent_cursor = applianceTestRecomputedTurnClosure(forged_genesis_parent_cursor);
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_genesis_parent_cursor.validate(allocator, external_dependency_options));
+
+    var missing_run_receipt_bytes = fixture.closure;
+    missing_run_receipt_bytes.run_receipt_fingerprint = 0xD7C4;
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_run_receipt_bytes.validate(allocator, external_dependency_options));
+
+    const run_receipt = world.RunReceipt.init(.{
+        .run_permit_fingerprint = 0xD7D0,
+        .environment_certificate_fingerprint = 0xD7D1,
+        .target_ref_fingerprint = 0xD7D2,
+        .usage_ledger_fingerprint = 0xD7D3,
+        .final_run_state_fingerprint = 0xD7D4,
+        .final_status = .completed,
+    });
+    const run_receipt_bytes = try world.Continuity.encodePortableEvidence(world.RunReceipt, allocator, run_receipt);
+    defer allocator.free(run_receipt_bytes);
+    var base_turn_receipt = try world.Appliance.TurnReceipt.decodeArchivePayload(allocator, fixture.turn_receipt_bytes);
+    defer base_turn_receipt.deinit(allocator);
+    const turn_receipt_with_run = world.Appliance.TurnReceipt.init(.{
+        .manifest_fingerprint = base_turn_receipt.manifest_fingerprint,
+        .turn_sequence_number = base_turn_receipt.turn_sequence_number,
+        .command_fingerprint = base_turn_receipt.command_fingerprint,
+        .prior_checkpoint_fingerprint = base_turn_receipt.prior_checkpoint_fingerprint,
+        .applied_host_reply_fingerprints = base_turn_receipt.applied_host_reply_fingerprints,
+        .emitted_host_request_fingerprints = base_turn_receipt.emitted_host_request_fingerprints,
+        .source_capsule_fingerprint = base_turn_receipt.source_capsule_fingerprint,
+        .resulting_capsule_fingerprint = base_turn_receipt.resulting_capsule_fingerprint,
+        .archive_append_batch_fingerprint = base_turn_receipt.archive_append_batch_fingerprint,
+        .resulting_archive_moment_fingerprint = base_turn_receipt.resulting_archive_moment_fingerprint,
+        .resulting_archive_seal_fingerprint = base_turn_receipt.resulting_archive_seal_fingerprint,
+        .resulting_chronicle_cursor_fingerprint = base_turn_receipt.resulting_chronicle_cursor_fingerprint,
+        .root_result_fingerprint = base_turn_receipt.root_result_fingerprint,
+        .status = base_turn_receipt.status,
+        .run_receipt_fingerprint = run_receipt.receipt_fingerprint,
+        .blocker_count = base_turn_receipt.blocker_count,
+        .warning_count = base_turn_receipt.warning_count,
+    });
+    var turn_receipt_with_run_payload: std.ArrayList(u8) = .empty;
+    defer turn_receipt_with_run_payload.deinit(allocator);
+    try turn_receipt_with_run.encode(&turn_receipt_with_run_payload, allocator);
+    const turn_receipt_with_run_bytes = try allocator.dupe(u8, turn_receipt_with_run_payload.items);
+    defer allocator.free(turn_receipt_with_run_bytes);
+    var base_checkpoint = try world.Appliance.Checkpoint.decodeArchivePayload(allocator, fixture.checkpoint_bytes);
+    defer base_checkpoint.deinit(allocator);
+    const checkpoint_with_run = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = base_checkpoint.manifest_fingerprint,
+        .turn_sequence_number = base_checkpoint.turn_sequence_number,
+        .capsule_fingerprint = base_checkpoint.capsule_fingerprint,
+        .capsule_image_ref_fingerprint = base_checkpoint.capsule_image_ref_fingerprint,
+        .capsule_image_bytes = base_checkpoint.capsule_image_bytes,
+        .latest_archive_moment_fingerprint = base_checkpoint.latest_archive_moment_fingerprint,
+        .latest_archive_seal_fingerprint = base_checkpoint.latest_archive_seal_fingerprint,
+        .latest_chronicle_cursor_fingerprint = base_checkpoint.latest_chronicle_cursor_fingerprint,
+        .pending_archive_append_batch_fingerprint = base_checkpoint.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = base_checkpoint.pending_archive_resulting_cursor,
+        .latest_archive_cursor = base_checkpoint.latest_archive_cursor,
+        .core_state = base_checkpoint.core_state,
+        .previous_turn_receipt_fingerprint = turn_receipt_with_run.receipt_fingerprint,
+        .outstanding_host_requests = base_checkpoint.outstanding_host_requests,
+        .execution_mode = base_checkpoint.execution_mode,
+        .metadata = base_checkpoint.metadata,
+    });
+    var checkpoint_with_run_payload: std.ArrayList(u8) = .empty;
+    defer checkpoint_with_run_payload.deinit(allocator);
+    try checkpoint_with_run.encode(&checkpoint_with_run_payload, allocator);
+    const checkpoint_with_run_bytes = try allocator.dupe(u8, checkpoint_with_run_payload.items);
+    defer allocator.free(checkpoint_with_run_bytes);
+    const bundle_missing_run_receipt = try applianceTestClosureBundleBytes(
+        allocator,
+        checkpoint_with_run_bytes,
+        turn_receipt_with_run_bytes,
+        fixture.capsule_bytes,
+        fixture.root_result_bytes,
+        fixture.actuation_receipt_bytes,
+    );
+    defer allocator.free(bundle_missing_run_receipt);
+    var closure_missing_run_receipt_root = fixture.closure;
+    closure_missing_run_receipt_root.checkpoint_fingerprint = checkpoint_with_run.checkpoint_fingerprint;
+    closure_missing_run_receipt_root.checkpoint_bytes = checkpoint_with_run_bytes;
+    closure_missing_run_receipt_root.turn_receipt_fingerprint = turn_receipt_with_run.receipt_fingerprint;
+    closure_missing_run_receipt_root.turn_receipt_bytes = turn_receipt_with_run_bytes;
+    closure_missing_run_receipt_root.evidence_bundle_bytes = bundle_missing_run_receipt;
+    closure_missing_run_receipt_root.resulting_state_fingerprint = world.Appliance.coreStateFingerprint(.completed, fixture.closure.turn_sequence_number, turn_receipt_with_run.receipt_fingerprint);
+    closure_missing_run_receipt_root.run_receipt_fingerprint = run_receipt.receipt_fingerprint;
+    closure_missing_run_receipt_root.run_receipt_bytes = run_receipt_bytes;
+    closure_missing_run_receipt_root = applianceTestRecomputedTurnClosure(closure_missing_run_receipt_root);
+    try std.testing.expectError(error.ObjectMissing, closure_missing_run_receipt_root.validate(allocator, external_dependency_options));
+
+    const bundle_with_run_receipt = try applianceTestClosureBundleBytesWithRunReceipt(
+        allocator,
+        checkpoint_with_run_bytes,
+        turn_receipt_with_run_bytes,
+        fixture.capsule_bytes,
+        fixture.root_result_bytes,
+        fixture.actuation_receipt_bytes,
+        run_receipt_bytes,
+    );
+    defer allocator.free(bundle_with_run_receipt);
+    var closure_with_run_receipt_root = closure_missing_run_receipt_root;
+    closure_with_run_receipt_root.evidence_bundle_bytes = bundle_with_run_receipt;
+    closure_with_run_receipt_root = applianceTestRecomputedTurnClosure(closure_with_run_receipt_root);
+    try closure_with_run_receipt_root.validate(allocator, external_dependency_options);
+
+    const replay_checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = fixture.closure.appliance_manifest_fingerprint,
+        .turn_sequence_number = fixture.closure.turn_sequence_number,
+        .capsule_fingerprint = fixture.closure.capsule_fingerprint,
+        .previous_turn_receipt_fingerprint = fixture.closure.turn_receipt_fingerprint,
+        .execution_mode = .replay,
+    });
+    var replay_checkpoint_payload: std.ArrayList(u8) = .empty;
+    defer replay_checkpoint_payload.deinit(allocator);
+    try replay_checkpoint.encode(&replay_checkpoint_payload, allocator);
+    const replay_checkpoint_bytes = try allocator.dupe(u8, replay_checkpoint_payload.items);
+    defer allocator.free(replay_checkpoint_bytes);
+    var replay_missing_receipt_payloads = fixture.closure;
+    replay_missing_receipt_payloads.checkpoint_fingerprint = replay_checkpoint.checkpoint_fingerprint;
+    replay_missing_receipt_payloads.checkpoint_bytes = replay_checkpoint_bytes;
+    replay_missing_receipt_payloads.finalized_actuation_receipt_bytes = &.{};
+    try std.testing.expectError(error.InvalidFrameEncoding, replay_missing_receipt_payloads.validate(allocator, external_dependency_options));
+
+    const tampered_payload = try allocator.dupe(u8, fixture.actuation_receipt_bytes);
+    defer allocator.free(tampered_payload);
+    tampered_payload[tampered_payload.len - 1] ^= 0x01;
+    var tampered_receipt_bytes = fixture.closure;
+    tampered_receipt_bytes.finalized_actuation_receipt_bytes = &.{tampered_payload};
+    try std.testing.expectError(error.InvalidFrameEncoding, tampered_receipt_bytes.validate(allocator, external_dependency_options));
+
+    var receipt = try world.Appliance.TurnReceipt.decodeArchivePayload(allocator, fixture.turn_receipt_bytes);
+    defer receipt.deinit(allocator);
+    const forged_root_result_bytes = try applianceTestRootResultValueImageBytes(allocator, receipt.root_result_fingerprint.? +% 1);
+    defer allocator.free(forged_root_result_bytes);
+    const forged_root_result_ref = world.Continuity.ObjectRef.fromPayload(.root_result, world.Continuity.ObjectKind.root_result.defaultFormatVersion(), forged_root_result_bytes, "root.result");
+    const forged_bundle_bytes = try applianceTestClosureBundleBytes(
+        allocator,
+        fixture.checkpoint_bytes,
+        fixture.turn_receipt_bytes,
+        fixture.capsule_bytes,
+        forged_root_result_bytes,
+        fixture.actuation_receipt_bytes,
+    );
+    defer allocator.free(forged_bundle_bytes);
+    var forged_root_result = fixture.closure;
+    forged_root_result.root_result_fingerprint = forged_root_result_ref.object_fingerprint;
+    forged_root_result.root_result_value_ref_fingerprint = forged_root_result_ref.ref_fingerprint;
+    forged_root_result.root_result_bytes = forged_root_result_bytes;
+    forged_root_result.evidence_bundle_bytes = forged_bundle_bytes;
+    forged_root_result.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = forged_root_result.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = forged_root_result.appliance_manifest_fingerprint,
+        .turn_sequence_number = forged_root_result.turn_sequence_number,
+        .parent_state_fingerprint = forged_root_result.parent_state_fingerprint,
+        .resulting_state_fingerprint = forged_root_result.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = forged_root_result.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = forged_root_result.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = forged_root_result.checkpoint_fingerprint,
+        .checkpoint_bytes = forged_root_result.checkpoint_bytes,
+        .capsule_fingerprint = forged_root_result.capsule_fingerprint,
+        .capsule_bytes = forged_root_result.capsule_bytes,
+        .turn_receipt_fingerprint = forged_root_result.turn_receipt_fingerprint,
+        .turn_receipt_bytes = forged_root_result.turn_receipt_bytes,
+        .evidence_bundle_bytes = forged_root_result.evidence_bundle_bytes,
+        .root_result_fingerprint = forged_root_result.root_result_fingerprint,
+        .root_result_bytes = forged_root_result.root_result_bytes,
+        .root_result_value_ref_fingerprint = forged_root_result.root_result_value_ref_fingerprint,
+        .finalized_actuation_receipt_fingerprints = forged_root_result.finalized_actuation_receipt_fingerprints,
+        .finalized_actuation_receipt_bytes = forged_root_result.finalized_actuation_receipt_bytes,
+        .status = forged_root_result.status,
+    }).closure_fingerprint;
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_root_result.validate(allocator, external_dependency_options));
+
+    var missing_root = fixture.closure;
+    missing_root.capsule_fingerprint +%= 1;
+    missing_root.closure_fingerprint = world.Appliance.TurnClosure.init(.{
+        .executable_image_fingerprint = missing_root.executable_image_fingerprint,
+        .appliance_manifest_fingerprint = missing_root.appliance_manifest_fingerprint,
+        .turn_sequence_number = missing_root.turn_sequence_number,
+        .parent_state_fingerprint = missing_root.parent_state_fingerprint,
+        .resulting_state_fingerprint = missing_root.resulting_state_fingerprint,
+        .chronicle_parent_cursor_fingerprint = missing_root.chronicle_parent_cursor_fingerprint,
+        .chronicle_resulting_cursor_fingerprint = missing_root.chronicle_resulting_cursor_fingerprint,
+        .checkpoint_fingerprint = missing_root.checkpoint_fingerprint,
+        .checkpoint_bytes = missing_root.checkpoint_bytes,
+        .capsule_fingerprint = missing_root.capsule_fingerprint,
+        .capsule_bytes = missing_root.capsule_bytes,
+        .turn_receipt_fingerprint = missing_root.turn_receipt_fingerprint,
+        .turn_receipt_bytes = missing_root.turn_receipt_bytes,
+        .evidence_bundle_bytes = missing_root.evidence_bundle_bytes,
+        .root_result_fingerprint = missing_root.root_result_fingerprint,
+        .root_result_bytes = missing_root.root_result_bytes,
+        .root_result_value_ref_fingerprint = missing_root.root_result_value_ref_fingerprint,
+        .status = missing_root.status,
+    }).closure_fingerprint;
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_root.validate(allocator, external_dependency_options));
+}
+
+test "appliance Wire TurnInput canonicalizes resolution input order" {
+    const allocator = std.testing.allocator;
+    const first = world.Appliance.Wire.ResolutionInput.init(.{
+        .target_host_request_fingerprint = 0xA001,
+        .status = .responded,
+        .response_value_image_bytes = "one",
+        .host_claim_bytes = "claim-one",
+        .attempt_number = 1,
+    });
+    const second = world.Appliance.Wire.ResolutionInput.init(.{
+        .target_host_request_fingerprint = 0xA002,
+        .status = .failed,
+        .host_claim_bytes = "claim-two",
+        .attempt_number = 2,
+    });
+    const sorted = [_]world.Appliance.Wire.ResolutionInput{ first, second };
+    const reversed = [_]world.Appliance.Wire.ResolutionInput{ second, first };
+    const sorted_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA010,
+        .expected_parent_closure_fingerprint = 0xA011,
+        .previous_turn_receipt_fingerprint = 0xA012,
+        .turn_sequence_number = 1,
+        .resolutions = &sorted,
+    });
+    const reversed_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA010,
+        .expected_parent_closure_fingerprint = 0xA011,
+        .previous_turn_receipt_fingerprint = 0xA012,
+        .turn_sequence_number = 1,
+        .resolutions = &reversed,
+    });
+    const sorted_bytes = try sorted_input.encode(allocator);
+    defer allocator.free(sorted_bytes);
+    const reversed_bytes = try reversed_input.encode(allocator);
+    defer allocator.free(reversed_bytes);
+    try std.testing.expectEqualSlices(u8, sorted_bytes, reversed_bytes);
+
+    var decoded = try world.Appliance.Wire.TurnInput.decode(allocator, reversed_bytes);
+    defer decoded.deinit(allocator);
+    try decoded.validate(.default);
+    try std.testing.expectEqual(@as(u64, 0xA001), decoded.resolutions[0].target_host_request_fingerprint);
+    try std.testing.expectEqual(@as(u64, 0xA002), decoded.resolutions[1].target_host_request_fingerprint);
+
+    const duplicate = [_]world.Appliance.Wire.ResolutionInput{ first, first };
+    const duplicate_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA010,
+        .expected_parent_closure_fingerprint = 0xA011,
+        .previous_turn_receipt_fingerprint = 0xA012,
+        .turn_sequence_number = 1,
+        .resolutions = &duplicate,
+    });
+    try std.testing.expectError(error.DuplicateHostReply, duplicate_input.encode(allocator));
+}
+
+test "appliance Wire TurnInput rejects ignored parent closure bytes" {
+    const allocator = std.testing.allocator;
+    const input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA010,
+        .expected_parent_closure_fingerprint = 0xA011,
+        .previous_turn_receipt_fingerprint = 0xA012,
+        .turn_sequence_number = 1,
+        .parent_turn_closure_bytes = "ignored-parent-closure",
+    });
+    const bytes = try input.encode(allocator);
+    defer allocator.free(bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Wire.TurnInput.decode(allocator, bytes));
+}
+
+test "appliance Wire TurnInput rejects unsupported deterministic turn budgets" {
+    const allocator = std.testing.allocator;
+    const input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = 0xA010,
+        .turn_sequence_number = 0,
+        .deterministic_turn_budget = 1,
+    });
+    const bytes = try input.encode(allocator);
+    defer allocator.free(bytes);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.Wire.TurnInput.decode(allocator, bytes));
+}
+
+test "appliance Wire TurnInput rejects over-limit counts before reading entries" {
+    const allocator = std.testing.allocator;
+    const input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = 0xA010,
+        .turn_sequence_number = 0,
+    });
+    const bytes = try input.encode(allocator);
+    defer allocator.free(bytes);
+
+    const limits = world.Appliance.TurnClosureLimits.fromCapacity(world.Appliance.Capacity.tiny_one_port);
+    const root_argument_count_offset =
+        @sizeOf(u32) +
+        @sizeOf(u8) +
+        @sizeOf(u64) +
+        3 * @sizeOf(u8) +
+        @sizeOf(u64);
+    var malformed_roots = try allocator.dupe(u8, bytes);
+    defer allocator.free(malformed_roots);
+    std.mem.writeInt(u64, malformed_roots[root_argument_count_offset..][0..8], limits.max_items + 1, .little);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, malformed_roots, limits));
+
+    const resolution_count_offset =
+        @sizeOf(u32) +
+        @sizeOf(u8) +
+        @sizeOf(u64) +
+        3 * @sizeOf(u8) +
+        @sizeOf(u64) +
+        @sizeOf(u64) +
+        @sizeOf(u32);
+    var malformed = try allocator.dupe(u8, bytes);
+    defer allocator.free(malformed);
+    std.mem.writeInt(u64, malformed[resolution_count_offset..][0..8], limits.max_resolution_inputs + 1, .little);
+
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, malformed, limits));
+
+    const receiver_evidence_count_offset = resolution_count_offset + @sizeOf(u64);
+    var malformed_receiver_evidence = try allocator.dupe(u8, bytes);
+    defer allocator.free(malformed_receiver_evidence);
+    std.mem.writeInt(u64, malformed_receiver_evidence[receiver_evidence_count_offset..][0..8], limits.max_items + 1, .little);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, malformed_receiver_evidence, limits));
+}
+
+test "appliance Wire TurnInput rejects over-limit byte fields during decode" {
+    const allocator = std.testing.allocator;
+    const limits = world.Appliance.TurnClosureLimits.fromCapacity(world.Appliance.Capacity.tiny_one_port);
+
+    const root_argument = try allocator.alloc(u8, limits.max_result_bytes + 1);
+    defer allocator.free(root_argument);
+    @memset(root_argument, 'r');
+    const root_argument_images = [_][]const u8{root_argument};
+    const boot_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = 0xA030,
+        .turn_sequence_number = 0,
+        .root_argument_images = &root_argument_images,
+    });
+    const boot_bytes = try boot_input.encode(allocator);
+    defer allocator.free(boot_bytes);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, boot_bytes, limits));
+
+    const parent_closure = try allocator.alloc(u8, limits.max_closure_bytes + 1);
+    defer allocator.free(parent_closure);
+    @memset(parent_closure, 'p');
+    const restore_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .restore,
+        .appliance_manifest_fingerprint = 0xA031,
+        .turn_sequence_number = 1,
+        .parent_turn_closure_bytes = parent_closure,
+    });
+    const restore_bytes = try restore_input.encode(allocator);
+    defer allocator.free(restore_bytes);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, restore_bytes, limits));
+
+    const response_value = try allocator.alloc(u8, limits.max_result_bytes + 1);
+    defer allocator.free(response_value);
+    @memset(response_value, 'v');
+    const resolution = world.Appliance.Wire.ResolutionInput.init(.{
+        .target_host_request_fingerprint = 0xA032,
+        .status = .responded,
+        .response_value_image_bytes = response_value,
+    });
+    const resolution_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA033,
+        .turn_sequence_number = 1,
+        .resolutions = &.{resolution},
+    });
+    const resolution_bytes = try resolution_input.encode(allocator);
+    defer allocator.free(resolution_bytes);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, resolution_bytes, limits));
+
+    const retention_metadata = try allocator.alloc(u8, limits.max_metadata_bytes + 1);
+    defer allocator.free(retention_metadata);
+    @memset(retention_metadata, 'm');
+    const retention = world.Appliance.Wire.RetentionInput.init(.{
+        .prior_archive_append_batch_fingerprint = 0xA034,
+        .resulting_moment_fingerprint = 0xA035,
+        .resulting_seal_fingerprint = 0xA036,
+        .resulting_chronicle_cursor_fingerprint = 0xA037,
+        .host_retention_status = .retained,
+        .metadata = retention_metadata,
+    });
+    const retention_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = 0xA038,
+        .turn_sequence_number = 1,
+        .retention = retention,
+    });
+    const retention_bytes = try retention_input.encode(allocator);
+    defer allocator.free(retention_bytes);
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, retention_bytes, limits));
+}
+
+test "appliance Wire turn input decodes against active capacity limits" {
+    const allocator = std.testing.allocator;
+    const metadata = try allocator.alloc(u8, world.Appliance.Capacity.wasm_small.max_metadata_bytes + 1);
+    defer allocator.free(metadata);
+    @memset(metadata, 'm');
+
+    const input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .boot,
+        .appliance_manifest_fingerprint = 0xA020,
+        .turn_sequence_number = 0,
+        .host_metadata = metadata,
+    });
+    const bytes = try input.encode(allocator);
+    defer allocator.free(bytes);
+
+    try std.testing.expectError(error.CapacityExceeded, world.Appliance.Wire.TurnInput.decode(allocator, bytes));
+    var decoded = try world.Appliance.Wire.TurnInput.decodeWithLimits(
+        allocator,
+        bytes,
+        world.Appliance.TurnClosureLimits.fromCapacity(world.Appliance.Capacity.wasm_agent),
+    );
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqual(metadata.len, decoded.host_metadata.len);
+    try std.testing.expectEqualSlices(u8, metadata, decoded.host_metadata);
+}
+
 test "appliance Continuity object kinds are canonical evidence kinds" {
     try std.testing.expectEqual(world.world_appliance_manifest_format_version, world.Continuity.ObjectKind.appliance_manifest.defaultFormatVersion());
     try std.testing.expectEqual(world.world_appliance_command_format_version, world.Continuity.ObjectKind.appliance_command.defaultFormatVersion());
@@ -7967,6 +9576,9 @@ test "appliance Continuity object kinds are canonical evidence kinds" {
     try std.testing.expectEqual(world.world_appliance_turn_output_format_version, world.Continuity.ObjectKind.appliance_turn_output.defaultFormatVersion());
     try std.testing.expectEqual(world.world_appliance_checkpoint_format_version, world.Continuity.ObjectKind.appliance_checkpoint.defaultFormatVersion());
     try std.testing.expectEqual(world.world_appliance_turn_receipt_format_version, world.Continuity.ObjectKind.appliance_turn_receipt.defaultFormatVersion());
+    try std.testing.expectEqual(world.world_appliance_turn_closure_format_version, world.Continuity.ObjectKind.appliance_turn_closure.defaultFormatVersion());
+    try std.testing.expectEqual(@as(u32, 1), world.Continuity.ObjectKind.archive_append_batch.defaultFormatVersion());
+    try std.testing.expectEqual(@as(u32, 1), world.Continuity.ObjectKind.root_result.defaultFormatVersion());
 
     const ref = world.Continuity.ObjectRef.fromPayload(.appliance_manifest, world.world_appliance_manifest_format_version, "manifest", "appliance manifest");
     try ref.validate();
@@ -8944,6 +10556,119 @@ test "World Seed Replay accepts batched host replies for independent requests" {
     try std.testing.expect(output.root_result_value_image_bytes.len != 0);
     try std.testing.expectEqual(@as(?u64, null), output.root_result_value_ref_fingerprint);
     try std.testing.expect(output.checkpoint_bytes.len != 0);
+}
+
+test "WorldV0Report requires every completion proof bit" {
+    const report = world.Appliance.WorldV0Report.init(.{
+        .boundary_v0_5_0_portable_v2_baseline_passed = true,
+        .canonical_executable_image_passed = true,
+        .actual_universal_wasm_executed = true,
+        .genuinely_unrelated_images_executed = true,
+        .internal_loaded_provider_executed = true,
+        .multi_suspension_loaded_root_executed = true,
+        .active_loaded_fabric_restored = true,
+        .verified_replay_without_fresh_effect_passed = true,
+        .unsupported_actuated_replay_rejected = true,
+        .deterministic_retry_passed = true,
+        .batched_request_reply_passed = true,
+        .independent_javascript_codec_passed = true,
+        .exact_root_result_bytes_passed = true,
+        .exact_receipt_bytes_passed = true,
+        .exact_capsule_bytes_passed = true,
+        .exact_archive_append_batch_bytes_passed = true,
+        .native_wasm_parity_passed = true,
+        .cold_warm_parity_passed = true,
+        .memory_bound_passed = true,
+        .malformed_input_suite_passed = true,
+        .regression_matrix_passed = true,
+    });
+    try report.validate();
+    try std.testing.expect(report.passed);
+    try std.testing.expect(report.allRequiredBooleansPassed());
+
+    const missing_active_restore = world.Appliance.WorldV0Report.init(.{
+        .boundary_v0_5_0_portable_v2_baseline_passed = true,
+        .canonical_executable_image_passed = true,
+        .actual_universal_wasm_executed = true,
+        .genuinely_unrelated_images_executed = true,
+        .internal_loaded_provider_executed = true,
+        .multi_suspension_loaded_root_executed = true,
+        .active_loaded_fabric_restored = false,
+        .verified_replay_without_fresh_effect_passed = true,
+        .unsupported_actuated_replay_rejected = true,
+        .deterministic_retry_passed = true,
+        .batched_request_reply_passed = true,
+        .independent_javascript_codec_passed = true,
+        .exact_root_result_bytes_passed = true,
+        .exact_receipt_bytes_passed = true,
+        .exact_capsule_bytes_passed = true,
+        .exact_archive_append_batch_bytes_passed = true,
+        .native_wasm_parity_passed = true,
+        .cold_warm_parity_passed = true,
+        .memory_bound_passed = true,
+        .malformed_input_suite_passed = true,
+        .regression_matrix_passed = true,
+    });
+    try missing_active_restore.validate();
+    try std.testing.expect(!missing_active_restore.passed);
+
+    const missing_actuated_replay_rejection = world.Appliance.WorldV0Report.init(.{
+        .boundary_v0_5_0_portable_v2_baseline_passed = true,
+        .canonical_executable_image_passed = true,
+        .actual_universal_wasm_executed = true,
+        .genuinely_unrelated_images_executed = true,
+        .internal_loaded_provider_executed = true,
+        .multi_suspension_loaded_root_executed = true,
+        .active_loaded_fabric_restored = true,
+        .verified_replay_without_fresh_effect_passed = true,
+        .unsupported_actuated_replay_rejected = false,
+        .deterministic_retry_passed = true,
+        .batched_request_reply_passed = true,
+        .independent_javascript_codec_passed = true,
+        .exact_root_result_bytes_passed = true,
+        .exact_receipt_bytes_passed = true,
+        .exact_capsule_bytes_passed = true,
+        .exact_archive_append_batch_bytes_passed = true,
+        .native_wasm_parity_passed = true,
+        .cold_warm_parity_passed = true,
+        .memory_bound_passed = true,
+        .malformed_input_suite_passed = true,
+        .regression_matrix_passed = true,
+    });
+    try missing_actuated_replay_rejection.validate();
+    try std.testing.expect(!missing_actuated_replay_rejection.passed);
+
+    const blocked = world.Appliance.WorldV0Report.init(.{
+        .boundary_v0_5_0_portable_v2_baseline_passed = true,
+        .canonical_executable_image_passed = true,
+        .actual_universal_wasm_executed = true,
+        .genuinely_unrelated_images_executed = true,
+        .internal_loaded_provider_executed = true,
+        .multi_suspension_loaded_root_executed = true,
+        .active_loaded_fabric_restored = true,
+        .verified_replay_without_fresh_effect_passed = true,
+        .unsupported_actuated_replay_rejected = true,
+        .deterministic_retry_passed = true,
+        .batched_request_reply_passed = true,
+        .independent_javascript_codec_passed = true,
+        .exact_root_result_bytes_passed = true,
+        .exact_receipt_bytes_passed = true,
+        .exact_capsule_bytes_passed = true,
+        .exact_archive_append_batch_bytes_passed = true,
+        .native_wasm_parity_passed = true,
+        .cold_warm_parity_passed = true,
+        .memory_bound_passed = true,
+        .malformed_input_suite_passed = true,
+        .regression_matrix_passed = true,
+        .blockers = &.{0xF00D},
+    });
+    try blocked.validate();
+    try std.testing.expect(blocked.allRequiredBooleansPassed());
+    try std.testing.expect(!blocked.passed);
+
+    var forged = report;
+    forged.active_loaded_fabric_restored = false;
+    try std.testing.expectError(error.InvalidFrameEncoding, forged.validate());
 }
 
 const ApplianceActuationFixture = struct {

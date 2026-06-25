@@ -127,6 +127,18 @@ fn fabricTestMapping(kind: world.Fabric.ValueMappingKind) world.Fabric.ValueMapp
     };
 }
 
+fn fabricActiveInvocationWitnessFingerprintForTest(invocation_fingerprint: u64, route_fingerprint: u64, mapping_fingerprint: u64) u64 {
+    var hasher = std.hash.Wyhash.init(0x6361_7073_6662_6177);
+    var buffer: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buffer, invocation_fingerprint, .little);
+    hasher.update(&buffer);
+    std.mem.writeInt(u64, &buffer, route_fingerprint, .little);
+    hasher.update(&buffer);
+    std.mem.writeInt(u64, &buffer, mapping_fingerprint, .little);
+    hasher.update(&buffer);
+    return hasher.final();
+}
+
 fn fabricTestRoute(kind: world.Fabric.RouteKind, provider_target_ref_fingerprint: ?u64) world.Fabric.Route {
     const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
     const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
@@ -9838,6 +9850,16 @@ test "fabric image captures active invocation completed receipt and witnesses" {
         .local_run_id = 1,
         .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
     });
+    const parent_handle_2 = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 2,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    const provider_handle_2 = world.RunHandle.init(.{
+        .runspace_fingerprint = runspace.runspace_fingerprint,
+        .local_run_id = 3,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
     const request = testRunspaceRequestFrame();
     const parent_state = world.RunState.init(.{
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
@@ -9863,12 +9885,34 @@ test "fabric image captures active invocation completed receipt and witnesses" {
         .pending_mailbox_id = 1,
         .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
     }));
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = parent_handle_2,
+        .target_ref = parent_ref,
+        .current_state = parent_state,
+        .status = .parked_on_port,
+        .pending_mailbox_id = 2,
+    }));
+    try runspace.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = provider_handle_2,
+        .target_ref = provider_ref,
+        .current_state = provider_state,
+        .status = .parked_on_port,
+        .pending_mailbox_id = 3,
+        .parent_run_handle_fingerprint = parent_handle_2.handle_fingerprint,
+    }));
     const pending = try runspace.mailbox.push(.{
         .run_handle = parent_handle,
         .mailbox_id = 0,
         .request = request,
         .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
         .inserted_event_index = 0,
+    });
+    const pending_2 = try runspace.mailbox.push(.{
+        .run_handle = parent_handle_2,
+        .mailbox_id = 2,
+        .request = request,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .inserted_event_index = 1,
     });
     const mapping = fabricTestMapping(.payload_to_provider_args);
     const route = fabricTestRoute(.target_export, provider_ref.target_ref_fingerprint);
@@ -9882,6 +9926,7 @@ test "fabric image captures active invocation completed receipt and witnesses" {
     });
     try runspace.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try runspace.fabric_routes.append(allocator, route);
+    try runspace.fabric_route_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try runspace.fabric_value_mappings.append(allocator, mapping);
     const invocation = world.Fabric.Invocation.init(.{
         .plan_fingerprint = plan.plan_fingerprint,
@@ -9896,6 +9941,19 @@ test "fabric image captures active invocation completed receipt and witnesses" {
         .status = .provider_parked,
     });
     try runspace.fabric_invocations.append(allocator, invocation);
+    const invocation_2 = world.Fabric.Invocation.init(.{
+        .plan_fingerprint = plan.plan_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_run_handle_fingerprint = parent_handle_2.handle_fingerprint,
+        .parent_pending_port_fingerprint = pending_2.pending_port_fingerprint,
+        .parent_mailbox_id = 2,
+        .request_frame_fingerprint = request.frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle_2.handle_fingerprint,
+        .depth = 1,
+        .sequence = 1,
+        .status = .provider_parked,
+    });
+    try runspace.fabric_invocations.append(allocator, invocation_2);
     const receipt = world.Fabric.Receipt.init(.{
         .invocation_fingerprint = invocation.invocation_fingerprint,
         .route_fingerprint = route.route_fingerprint,
@@ -9910,16 +9968,23 @@ test "fabric image captures active invocation completed receipt and witnesses" {
     defer image.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), image.fabric_plan_fingerprints.len);
     try std.testing.expectEqual(plan.plan_fingerprint, image.fabric_plan_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 1), image.active_invocation_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 2), image.active_invocation_fingerprints.len);
     try std.testing.expectEqual(invocation.invocation_fingerprint, image.active_invocation_fingerprints[0]);
+    try std.testing.expectEqual(invocation_2.invocation_fingerprint, image.active_invocation_fingerprints[1]);
     try std.testing.expectEqual(@as(usize, 1), image.completed_receipt_fingerprints.len);
     try std.testing.expectEqual(receipt.receipt_fingerprint, image.completed_receipt_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 1), image.route_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 2), image.route_fingerprints.len);
     try std.testing.expectEqual(route.route_fingerprint, image.route_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 1), image.value_mapping_fingerprints.len);
+    try std.testing.expectEqual(route.route_fingerprint, image.route_fingerprints[1]);
+    try std.testing.expectEqual(@as(usize, 2), image.route_plan_fingerprints.len);
+    try std.testing.expectEqual(plan.plan_fingerprint, image.route_plan_fingerprints[0]);
+    try std.testing.expectEqual(plan.plan_fingerprint, image.route_plan_fingerprints[1]);
+    try std.testing.expectEqual(@as(usize, 2), image.value_mapping_fingerprints.len);
     try std.testing.expectEqual(mapping.mapping_fingerprint, image.value_mapping_fingerprints[0]);
-    try std.testing.expectEqual(@as(usize, 1), image.provider_run_refs.len);
+    try std.testing.expectEqual(mapping.mapping_fingerprint, image.value_mapping_fingerprints[1]);
+    try std.testing.expectEqual(@as(usize, 2), image.provider_run_refs.len);
     try std.testing.expectEqual(provider_handle.handle_fingerprint, image.provider_run_refs[0]);
+    try std.testing.expectEqual(provider_handle_2.handle_fingerprint, image.provider_run_refs[1]);
 }
 
 test "fabric image rejects missing active route witness" {
@@ -10268,6 +10333,7 @@ test "capsule freeze active fabric requires parked allowance" {
     });
     try runspace.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try runspace.fabric_routes.append(allocator, route);
+    try runspace.fabric_route_plan_fingerprints.append(allocator, plan.plan_fingerprint);
     try runspace.fabric_value_mappings.append(allocator, mapping);
     const invocation = world.Fabric.Invocation.init(.{
         .plan_fingerprint = plan.plan_fingerprint,
@@ -10289,11 +10355,16 @@ test "capsule freeze active fabric requires parked allowance" {
     try std.testing.expectEqual(world.Capsule.NormalForm.active_fabric_parked, image.manifest.normal_form);
     try std.testing.expectEqual(@as(usize, 1), image.manifest.active_fabric_invocation_count);
     try std.testing.expectEqual(invocation.invocation_fingerprint, image.fabric_image.?.active_invocation_fingerprints[0]);
+    const orphan_active_invocations = world.Capsule.FabricImage.init(.{
+        .active_invocations = image.fabric_image.?.active_invocations,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, orphan_active_invocations.validate(.{}));
     const missing_active_witnesses = world.Capsule.FabricImage.init(.{
         .fabric_plan_fingerprints = image.fabric_image.?.fabric_plan_fingerprints,
         .active_invocation_fingerprints = image.fabric_image.?.active_invocation_fingerprints,
         .completed_receipt_fingerprints = image.fabric_image.?.completed_receipt_fingerprints,
         .route_fingerprints = image.fabric_image.?.route_fingerprints,
+        .route_plan_fingerprints = image.fabric_image.?.route_plan_fingerprints,
         .value_mapping_fingerprints = image.fabric_image.?.value_mapping_fingerprints,
         .status_summary_fingerprint = image.fabric_image.?.status_summary_fingerprint,
     });
@@ -10307,6 +10378,11 @@ test "capsule freeze active fabric requires parked allowance" {
     try std.testing.expectError(error.InvalidFrameEncoding, under_witnessed_image.validate(.{}));
     const wrong_mapping = fabricTestMapping(.unit_args);
     const wrong_mapping_refs = [_]u64{wrong_mapping.mapping_fingerprint};
+    const wrong_mapping_depth_stack = [_]u64{fabricActiveInvocationWitnessFingerprintForTest(
+        invocation.invocation_fingerprint,
+        route.route_fingerprint,
+        wrong_mapping.mapping_fingerprint,
+    )};
     const mismatched_active_witnesses = world.Capsule.FabricImage.init(.{
         .fabric_plan_fingerprints = image.fabric_image.?.fabric_plan_fingerprints,
         .active_invocation_fingerprints = image.fabric_image.?.active_invocation_fingerprints,
@@ -10315,8 +10391,12 @@ test "capsule freeze active fabric requires parked allowance" {
         .provider_run_refs = image.fabric_image.?.provider_run_refs,
         .provider_state_summary_fingerprints = image.fabric_image.?.provider_state_summary_fingerprints,
         .route_fingerprints = image.fabric_image.?.route_fingerprints,
+        .route_plan_fingerprints = image.fabric_image.?.route_plan_fingerprints,
         .value_mapping_fingerprints = &wrong_mapping_refs,
-        .depth_route_stack = image.fabric_image.?.depth_route_stack,
+        .active_invocations = image.fabric_image.?.active_invocations,
+        .route_witnesses = image.fabric_image.?.route_witnesses,
+        .value_mapping_witnesses = &.{wrong_mapping},
+        .depth_route_stack = &wrong_mapping_depth_stack,
         .status_summary_fingerprint = image.fabric_image.?.status_summary_fingerprint,
     });
     const mismatched_witness_image = world.Capsule.Image.init(.{
@@ -10327,6 +10407,34 @@ test "capsule freeze active fabric requires parked allowance" {
         .run_images = image.run_images,
     });
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_witness_image.validate(.{}));
+
+    const wrong_route_plan_fingerprint = plan.plan_fingerprint ^ 0x5150_00FF;
+    const route_plan_fingerprints = [_]u64{wrong_route_plan_fingerprint};
+    const fabric_plan_fingerprints = [_]u64{ plan.plan_fingerprint, wrong_route_plan_fingerprint };
+    const mismatched_route_plan_edge = world.Capsule.FabricImage.init(.{
+        .fabric_plan_fingerprints = &fabric_plan_fingerprints,
+        .active_invocation_fingerprints = image.fabric_image.?.active_invocation_fingerprints,
+        .completed_receipt_fingerprints = image.fabric_image.?.completed_receipt_fingerprints,
+        .parent_pending_port_refs = image.fabric_image.?.parent_pending_port_refs,
+        .provider_run_refs = image.fabric_image.?.provider_run_refs,
+        .provider_state_summary_fingerprints = image.fabric_image.?.provider_state_summary_fingerprints,
+        .route_fingerprints = image.fabric_image.?.route_fingerprints,
+        .route_plan_fingerprints = &route_plan_fingerprints,
+        .value_mapping_fingerprints = image.fabric_image.?.value_mapping_fingerprints,
+        .active_invocations = image.fabric_image.?.active_invocations,
+        .route_witnesses = image.fabric_image.?.route_witnesses,
+        .value_mapping_witnesses = image.fabric_image.?.value_mapping_witnesses,
+        .depth_route_stack = image.fabric_image.?.depth_route_stack,
+        .status_summary_fingerprint = image.fabric_image.?.status_summary_fingerprint,
+    });
+    const mismatched_route_plan_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .fabric_image = mismatched_route_plan_edge,
+        .run_image_refs = image.run_image_refs,
+        .run_images = image.run_images,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_route_plan_image.validate(.{}));
 
     const missing_fabric_image = world.Capsule.Image.init(.{
         .manifest = image.manifest,
@@ -11464,6 +11572,37 @@ test "capsule handoff admission binds restore witnesses and receiver permit" {
     try std.testing.expect(completed_admission.accepted);
     try std.testing.expectEqual(restore.restore_report_fingerprint, completed_admission.capsule_restore_report_fingerprint.?);
     try std.testing.expectEqual(@as(usize, imported.runspace_image.run_slots.len * 2), restore.restored_run_handle_mappings.len);
+    const forged_mailbox_id_mappings = [_]u64{ 0x5150_e201, 0x5150_e202 };
+    const forged_mailbox_id_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restore.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restore.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restore.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restore.restored_local_run_id_start,
+        .restored_run_handle_mappings = restore.restored_run_handle_mappings,
+        .restored_root_run_handles = restore.restored_root_run_handles,
+        .restored_provider_run_handles = restore.restored_provider_run_handles,
+        .restored_pending_port_mappings = restore.restored_pending_port_mappings,
+        .restored_pending_mailbox_id_mappings = &forged_mailbox_id_mappings,
+        .restored_fabric_invocation_mappings = restore.restored_fabric_invocation_mappings,
+        .guest_conformance_refs = restore.guest_conformance_refs,
+        .restored_actuation_receipt_refs = restore.restored_actuation_receipt_refs,
+        .replayed_sender_actuation_receipt_refs = restore.replayed_sender_actuation_receipt_refs,
+        .receiver_local_actuation_receipt_refs = restore.receiver_local_actuation_receipt_refs,
+        .environment_certificate_fingerprint = restore.environment_certificate_fingerprint,
+        .receiver_run_permit_fingerprint = restore.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restore.warnings,
+        .summary = "forged mailbox id mappings",
+    });
+    const forged_mailbox_id_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_completed,
+        .image = imported,
+        .certificate = cert,
+        .thaw_plan = thaw,
+        .restore_report = forged_mailbox_id_restore,
+    });
+    try std.testing.expect(!forged_mailbox_id_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_mailbox_id_admission.blockers[0]);
     const forged_environment_refs = [_]u64{0x5150_e001};
     const environment_manifest = world.Capsule.Manifest.init(.{
         .kind = .completed_assembly,
@@ -12977,9 +13116,23 @@ test "capsule active fabric restore rejects mutation without fabric state image"
         .routes = &.{route},
         .value_mappings = &.{mapping},
     });
+    const inactive_mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const inactive_plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{ mapping, inactive_mapping },
+    });
     try source.fabric_plan_fingerprints.append(allocator, plan.plan_fingerprint);
+    try source.fabric_plan_fingerprints.append(allocator, inactive_plan.plan_fingerprint);
     try source.fabric_routes.append(allocator, route);
+    try source.fabric_route_plan_fingerprints.append(allocator, plan.plan_fingerprint);
+    try source.fabric_routes.append(allocator, route);
+    try source.fabric_route_plan_fingerprints.append(allocator, inactive_plan.plan_fingerprint);
     try source.fabric_value_mappings.append(allocator, mapping);
+    try source.fabric_value_mappings.append(allocator, inactive_mapping);
     try source.fabric_invocations.append(allocator, world.Fabric.Invocation.init(.{
         .plan_fingerprint = plan.plan_fingerprint,
         .route_fingerprint = route.route_fingerprint,
@@ -12994,15 +13147,295 @@ test "capsule active fabric restore rejects mutation without fabric state image"
     }));
     var image = try world.Capsule.freezeRunspace(&source, .{ .allow_active_fabric_parked = true });
     defer image.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), image.fabric_image.?.route_fingerprints.len);
+    try std.testing.expectEqual(@as(usize, 2), image.fabric_image.?.route_plan_fingerprints.len);
+    try std.testing.expectEqual(route.route_fingerprint, image.fabric_image.?.route_fingerprints[0]);
+    try std.testing.expectEqual(route.route_fingerprint, image.fabric_image.?.route_fingerprints[1]);
+    try std.testing.expectEqual(plan.plan_fingerprint, image.fabric_image.?.route_plan_fingerprints[0]);
+    try std.testing.expectEqual(inactive_plan.plan_fingerprint, image.fabric_image.?.route_plan_fingerprints[1]);
+    try std.testing.expectEqual(@as(usize, 1), image.fabric_image.?.route_witnesses.len);
+    const missing_fabric_image = world.Capsule.Image.init(.{
+        .manifest = image.manifest,
+        .runspace_image = image.runspace_image,
+        .link_image = image.link_image,
+        .fabric_image = null,
+        .admission_refs = image.admission_refs,
+        .environment_refs = image.environment_refs,
+        .supervision_refs = image.supervision_refs,
+        .guest_conformance_refs = image.guest_conformance_refs,
+        .transcript_image_refs = image.transcript_image_refs,
+        .run_image_refs = image.run_image_refs,
+        .value_image_refs = image.value_image_refs,
+        .actuation_intent_refs = image.actuation_intent_refs,
+        .actuation_receipt_refs = image.actuation_receipt_refs,
+        .actuation_journal_refs = image.actuation_journal_refs,
+        .transcript_images = image.transcript_images,
+        .run_images = image.run_images,
+        .value_images = image.value_images,
+        .dependency_refs = image.dependency_refs,
+        .object_refs = image.object_refs,
+        .metadata = image.metadata,
+    });
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_fabric_image.validate(.{}));
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
-    var restore = try world.Capsule.thawIntoRunspace(image, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3a03, .{ .mode = .restore_parked });
-    defer restore.deinit(allocator);
-    try std.testing.expect(!restore.accepted);
-    try std.testing.expectEqual(world.Capsule.Blocker.malformed_image, restore.blockers[0]);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Capsule.thawIntoRunspace(missing_fabric_image, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3a03, .{
+        .mode = .restore_parked,
+        .require_link_match = false,
+    }));
     try std.testing.expectEqual(@as(usize, 0), receiver.slots.items.len);
     try std.testing.expectEqual(@as(usize, 0), receiver.mailbox.pendingCount());
     try std.testing.expectEqual(@as(usize, 0), receiver.fabric_invocations.items.len);
+
+    var restored_receiver = world.Runspace.init(allocator, .{});
+    defer restored_receiver.deinit();
+    var restored = try world.Capsule.thawIntoRunspace(image, &restored_receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3a06, .{
+        .mode = .restore_parked,
+        .require_link_match = false,
+    });
+    defer restored.deinit(allocator);
+    try std.testing.expect(restored.accepted);
+    try std.testing.expectEqual(@as(usize, 2), restored_receiver.fabric_routes.items.len);
+    var saw_active_route = false;
+    var saw_inactive_route = false;
+    for (restored_receiver.fabric_routes.items, restored_receiver.fabric_route_plan_fingerprints.items) |restored_route, plan_fingerprint| {
+        if (restored_route.route_fingerprint != route.route_fingerprint) continue;
+        if (plan_fingerprint == plan.plan_fingerprint) {
+            saw_active_route = true;
+        } else if (plan_fingerprint == inactive_plan.plan_fingerprint) {
+            saw_inactive_route = true;
+        } else {
+            return error.InvalidFrameEncoding;
+        }
+    }
+    try std.testing.expect(saw_active_route);
+    try std.testing.expect(saw_inactive_route);
+
+    const thaw_plan = try world.Capsule.planThaw(image, parent_ref.target_ref_fingerprint, 0, 0x5150_3a06, .{
+        .mode = .restore_parked,
+        .require_link_match = false,
+    });
+    const admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = image,
+        .thaw_plan = thaw_plan,
+        .restore_report = restored,
+    });
+    try std.testing.expect(admission.accepted);
+    try std.testing.expectEqual(restored.restore_report_fingerprint, admission.capsule_restore_report_fingerprint.?);
+
+    var zero_pending_mappings = try allocator.dupe(u64, restored.restored_pending_port_mappings);
+    defer allocator.free(zero_pending_mappings);
+    try std.testing.expect(zero_pending_mappings.len >= 2);
+    zero_pending_mappings[1] = 0;
+    const zero_pending_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restored.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restored.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restored.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restored.restored_local_run_id_start,
+        .restored_run_handle_mappings = restored.restored_run_handle_mappings,
+        .restored_root_run_handles = restored.restored_root_run_handles,
+        .restored_provider_run_handles = restored.restored_provider_run_handles,
+        .restored_pending_port_mappings = zero_pending_mappings,
+        .restored_pending_mailbox_id_mappings = restored.restored_pending_mailbox_id_mappings,
+        .restored_fabric_invocation_mappings = restored.restored_fabric_invocation_mappings,
+        .restored_fabric_invocation_sequence_start = restored.restored_fabric_invocation_sequence_start,
+        .guest_conformance_refs = restored.guest_conformance_refs,
+        .restored_actuation_receipt_refs = restored.restored_actuation_receipt_refs,
+        .environment_certificate_fingerprint = restored.environment_certificate_fingerprint,
+        .receiver_run_permit_fingerprint = restored.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restored.warnings,
+        .summary = restored.summary,
+    });
+    const zero_pending_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = image,
+        .thaw_plan = thaw_plan,
+        .restore_report = zero_pending_restore,
+    });
+    try std.testing.expect(!zero_pending_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, zero_pending_admission.blockers[0]);
+
+    var zero_fabric_mappings = try allocator.dupe(u64, restored.restored_fabric_invocation_mappings);
+    defer allocator.free(zero_fabric_mappings);
+    try std.testing.expect(zero_fabric_mappings.len >= 2);
+    zero_fabric_mappings[1] = 0;
+    const zero_fabric_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restored.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restored.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restored.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restored.restored_local_run_id_start,
+        .restored_run_handle_mappings = restored.restored_run_handle_mappings,
+        .restored_root_run_handles = restored.restored_root_run_handles,
+        .restored_provider_run_handles = restored.restored_provider_run_handles,
+        .restored_pending_port_mappings = restored.restored_pending_port_mappings,
+        .restored_pending_mailbox_id_mappings = restored.restored_pending_mailbox_id_mappings,
+        .restored_fabric_invocation_mappings = zero_fabric_mappings,
+        .restored_fabric_invocation_sequence_start = restored.restored_fabric_invocation_sequence_start,
+        .guest_conformance_refs = restored.guest_conformance_refs,
+        .restored_actuation_receipt_refs = restored.restored_actuation_receipt_refs,
+        .environment_certificate_fingerprint = restored.environment_certificate_fingerprint,
+        .receiver_run_permit_fingerprint = restored.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restored.warnings,
+        .summary = restored.summary,
+    });
+    const zero_fabric_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = image,
+        .thaw_plan = thaw_plan,
+        .restore_report = zero_fabric_restore,
+    });
+    try std.testing.expect(!zero_fabric_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, zero_fabric_admission.blockers[0]);
+
+    var forged_fabric_mappings = try allocator.dupe(u64, restored.restored_fabric_invocation_mappings);
+    defer allocator.free(forged_fabric_mappings);
+    try std.testing.expect(forged_fabric_mappings.len >= 2);
+    forged_fabric_mappings[1] +%= 1;
+    if (forged_fabric_mappings[1] == 0) forged_fabric_mappings[1] = 1;
+    const forged_fabric_restore = world.Capsule.RestoreReport.init(.{
+        .capsule_image_fingerprint = restored.capsule_image_fingerprint,
+        .thaw_plan_fingerprint = restored.thaw_plan_fingerprint,
+        .restored_runspace_fingerprint = restored.restored_runspace_fingerprint,
+        .restored_local_run_id_start = restored.restored_local_run_id_start,
+        .restored_run_handle_mappings = restored.restored_run_handle_mappings,
+        .restored_root_run_handles = restored.restored_root_run_handles,
+        .restored_provider_run_handles = restored.restored_provider_run_handles,
+        .restored_pending_port_mappings = restored.restored_pending_port_mappings,
+        .restored_pending_mailbox_id_mappings = restored.restored_pending_mailbox_id_mappings,
+        .restored_fabric_invocation_mappings = forged_fabric_mappings,
+        .restored_fabric_invocation_sequence_start = restored.restored_fabric_invocation_sequence_start,
+        .guest_conformance_refs = restored.guest_conformance_refs,
+        .restored_actuation_receipt_refs = restored.restored_actuation_receipt_refs,
+        .environment_certificate_fingerprint = restored.environment_certificate_fingerprint,
+        .receiver_run_permit_fingerprint = restored.receiver_run_permit_fingerprint,
+        .accepted = true,
+        .warnings = restored.warnings,
+        .summary = restored.summary,
+    });
+    const forged_fabric_admission = world.Admission.capsuleAdmissionReport(.{
+        .mode = .restore_parked,
+        .image = image,
+        .thaw_plan = thaw_plan,
+        .restore_report = forged_fabric_restore,
+    });
+    try std.testing.expect(!forged_fabric_admission.accepted);
+    try std.testing.expectEqual(world.Admission.AdmissionBlocker.PackageInvalid, forged_fabric_admission.blockers[0]);
+}
+
+test "capsule active fabric restore preserves linked assembly fabric scope" {
+    const allocator = std.testing.allocator;
+    const parent_ref = world.TargetRef.fromTarget(fixtures.Ports.Target);
+    const provider_ref = world.TargetRef.fromTarget(fixtures.Strict.Target);
+    var source = world.Runspace.init(allocator, .{});
+    defer source.deinit();
+    const parent_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 0,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+    });
+    const provider_handle = world.RunHandle.init(.{
+        .runspace_fingerprint = source.runspace_fingerprint,
+        .local_run_id = 1,
+        .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+    });
+    const parent_request = testRunspaceRequestFrame();
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = parent_handle,
+        .target_ref = parent_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+            .pending_request_fingerprint = parent_request.frame_fingerprint,
+            .turn_index = parent_request.turn_index,
+            .status = .parked_on_port,
+        }),
+        .status = .parked_on_port,
+        .pending_mailbox_id = 0,
+    }));
+    try source.slots.append(allocator, world.Runspace.RunSlot.fromState(.{
+        .handle = provider_handle,
+        .target_ref = provider_ref,
+        .current_state = world.RunState.init(.{
+            .target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+            .status = .parked_on_supervision,
+        }),
+        .status = .parked_on_supervision,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+    }));
+    const parent_pending = try source.mailbox.push(.{
+        .run_handle = parent_handle,
+        .mailbox_id = 0,
+        .request = parent_request,
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .inserted_event_index = 0,
+    });
+    source.next_mailbox_id = 1;
+
+    const mapping = fabricTestMapping(.provider_result_to_parent_response);
+    const route = world.Fabric.Route.init(.{
+        .route_id = 0x5150_3b10,
+        .kind = .target_export,
+        .parent_world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .parent_target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .parent_world_port_id = 0,
+        .provider_target_ref_fingerprint = provider_ref.target_ref_fingerprint,
+        .provider_world_surface_fingerprint = provider_ref.world_surface_fingerprint,
+        .provider_target_certificate_fingerprint = provider_ref.target_certificate_fingerprint,
+        .response_value_mapping_fingerprint = mapping.mapping_fingerprint,
+        .metadata = "linked-active-fabric-scope",
+    });
+    const plan = world.Fabric.Plan.init(.{
+        .target_ref_fingerprint = parent_ref.target_ref_fingerprint,
+        .world_surface_fingerprint = parent_ref.world_surface_fingerprint,
+        .target_certificate_fingerprint = parent_ref.target_certificate_fingerprint,
+        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Ports.Target).import_set_fingerprint,
+        .routes = &.{route},
+        .value_mappings = &.{mapping},
+    });
+    const assembly = world.Assembly.init(.{
+        .root_target_ref = parent_ref,
+        .link_plan_fingerprint = 0x5150_3b11,
+        .linker_certificate_fingerprint = 0x5150_3b12,
+        .linker_policy_fingerprint = 0x5150_3b14,
+        .fabric_plans = &.{plan},
+        .provider_run_templates = &.{provider_ref.target_ref_fingerprint},
+    });
+    try assembly.installIntoRunspace(&source);
+    try source.fabric_invocations.append(allocator, world.Fabric.Invocation.init(.{
+        .plan_fingerprint = plan.plan_fingerprint,
+        .route_fingerprint = route.route_fingerprint,
+        .parent_run_handle_fingerprint = parent_handle.handle_fingerprint,
+        .parent_pending_port_fingerprint = parent_pending.pending_port_fingerprint,
+        .parent_mailbox_id = 0,
+        .request_frame_fingerprint = parent_request.frame_fingerprint,
+        .provider_run_handle_fingerprint = provider_handle.handle_fingerprint,
+        .depth = 1,
+        .sequence = 0,
+        .status = .provider_parked,
+    }));
+
+    var image = try world.Capsule.freezeAssembly(&source, assembly, .{ .allow_active_fabric_parked = true });
+    defer image.deinit(allocator);
+    try std.testing.expectEqual(assembly.link_plan_fingerprint, image.manifest.link_plan_fingerprint.?);
+    try std.testing.expectEqual(assembly.linker_certificate_fingerprint, image.manifest.link_certificate_fingerprint.?);
+    try std.testing.expectEqual(assembly.assembly_fingerprint, image.manifest.assembly_fingerprint.?);
+
+    var receiver = world.Runspace.init(allocator, .{});
+    defer receiver.deinit();
+    var restored = try world.Capsule.thawIntoRunspace(image, &receiver, parent_ref.target_ref_fingerprint, 0, 0x5150_3b13, .{
+        .mode = .restore_parked,
+        .require_link_match = false,
+    });
+    defer restored.deinit(allocator);
+    try std.testing.expect(restored.accepted);
+
+    var refrozen = try world.Capsule.freezeAssembly(&receiver, assembly, .{ .allow_active_fabric_parked = true });
+    defer refrozen.deinit(allocator);
+    try std.testing.expectEqual(assembly.link_plan_fingerprint, refrozen.manifest.link_plan_fingerprint.?);
+    try std.testing.expectEqual(assembly.linker_certificate_fingerprint, refrozen.manifest.link_certificate_fingerprint.?);
+    try std.testing.expectEqual(assembly.assembly_fingerprint, refrozen.manifest.assembly_fingerprint.?);
 }
 
 test "capsule agent transfer preserves residual external import" {
@@ -23491,6 +23924,7 @@ test "runspace loaded fabric response enforces provider result fingerprint mappi
         .provider_result_value_table_id = 1,
         .provider_result_value_fingerprint = provider_final_image.value_image_fingerprint +% 1,
         .parent_response_value_table_id = 1,
+        .parent_response_value_fingerprint = provider_final_image.value_image_fingerprint +% 1,
     });
     const route = world.Fabric.Route.init(.{
         .route_id = 423,
@@ -41829,6 +42263,15 @@ test "Loaded Fabric installs provider from sealed executable image route" {
 
     _ = try runspace.tick();
     try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(runspace.slots.items[1].handle)).status);
+    const active_invocation = runspace.fabric_invocations.items[invocation.sequence];
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.provider_running, active_invocation.status);
+    const event = try runspace.respondFromFabric(active_invocation);
+    try std.testing.expectEqual(world.Runspace.EventKind.run_resumed, event.kind);
+    try std.testing.expectEqual(world.Fabric.InvocationStatus.parent_responded, runspace.fabric_invocations.items[invocation.sequence].status);
+    try std.testing.expectEqual(@as(usize, 0), runspace.report().pending_port_count);
+    try std.testing.expectEqual(@as(usize, 1), runspace.report().fabric_receipt_count);
+    _ = try runspace.tick();
+    try std.testing.expectEqual(world.Runspace.RunStatus.completed, (try runspace.getSlotSummary(root_handle)).status);
 }
 
 test "Loaded Run rejects response frame fingerprint mismatch" {

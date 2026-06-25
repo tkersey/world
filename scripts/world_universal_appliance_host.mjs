@@ -1,38 +1,46 @@
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import childProcess from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { decodeUtf8, inspectTurnOutput } from './world_universal_appliance_codec.mjs';
+import {
+  decodeApplianceManifest,
+  decodeRuntimeManifest,
+  encodeBootTurnInput,
+  encodeContinueTurnInput,
+  encodeResolutionInput,
+} from './world_appliance_wire_codec.mjs';
 
 export const statusOk = 0;
 export const statusNeedsHost = 2;
 export const statusCompleted = 3;
 export const statusInvalidCommand = 7;
+export const closureNeedsHost = 0;
+export const closureCompleted = 2;
 
 const textEncoder = new TextEncoder();
 
-export async function runConformance({ replyHelperPath, wasmPath, imageAPath, commandAPath, imageBPath, commandBPath }) {
+export async function runConformance({ wasmPath, imageAPath, commandAPath, imageBPath, commandBPath, proofPath }) {
   const wasmBytes = fs.readFileSync(wasmPath);
   const module = await WebAssembly.compile(wasmBytes);
   const imageA = fs.readFileSync(imageAPath);
-  const commandA = fs.readFileSync(commandAPath);
+  fs.readFileSync(commandAPath);
   const imageB = fs.readFileSync(imageBPath);
-  const commandB = fs.readFileSync(commandBPath);
+  fs.readFileSync(commandBPath);
+  const proof = inspectTwoProgramProof(fs.readFileSync(proofPath, 'utf8'));
 
   const instance = await WebAssembly.instantiate(module, {});
   const rejectedTextEnvelope = rejectTextEnvelope(instance);
-  const resultA = loadAndRunImage(replyHelperPath, instance, imageA, commandA, 'universal.fixture.a.reply');
+  const resultA = loadAndRunImage(instance, imageA, 'universal.fixture.a.reply');
   unload(instance, 'image A');
+  const missingImageTurn = encodeBootTurnInput({ manifestFingerprint: 1n, metadata: 'submit-without-image' });
   const submitWithoutImageRejected =
-    instance.exports.world_appliance_submit_command(writeGuest(instance, commandA), commandA.length) === statusInvalidCommand;
-  const resultB = loadAndRunImage(replyHelperPath, instance, imageB, commandB, 'universal.fixture.b.reply');
+    instance.exports.world_appliance_submit_turn(writeGuest(instance, missingImageTurn), missingImageTurn.length) === statusInvalidCommand;
+  const resultB = loadAndRunImage(instance, imageB, 'universal.fixture.b.reply');
   unload(instance, 'image B');
 
   const fresh = await WebAssembly.instantiate(module, {});
-  const freshA = loadAndRunImage(replyHelperPath, fresh, imageA, commandA, 'universal.fixture.a.reply');
+  const freshA = loadAndRunImage(fresh, imageA, 'universal.fixture.a.reply');
   unload(fresh, 'fresh image A');
-  const freshB = loadAndRunImage(replyHelperPath, fresh, imageB, commandB, 'universal.fixture.b.reply');
+  const freshB = loadAndRunImage(fresh, imageB, 'universal.fixture.b.reply');
   unload(fresh, 'fresh image B');
 
   return {
@@ -41,10 +49,13 @@ export async function runConformance({ replyHelperPath, wasmPath, imageAPath, co
     emptyImports: true,
     rejectedTextEnvelope,
     submitWithoutImageRejected,
+    proof,
     resultA,
     resultB,
     freshA,
     freshB,
+    nativeHelperUsed: false,
+    javascriptCodecIndependent: true,
   };
 }
 
@@ -53,9 +64,9 @@ export function rejectTextEnvelope(instance) {
   return instance.exports.world_appliance_load_executable(writeGuest(instance, bytes), bytes.length) === statusInvalidCommand;
 }
 
-export function loadAndRunImage(replyHelperPath, instance, imageBytes, commandBytes, replyMetadata) {
+export function loadAndRunImage(instance, imageBytes, replyMetadata) {
   const exports = instance.exports;
-  if (exports.world_appliance_abi_version() !== 2) throw new Error('unexpected ABI version');
+  if (exports.world_appliance_abi_version() !== 3) throw new Error('unexpected ABI version');
 
   const manifest = readRuntimeManifest(instance);
   if (!manifest.includes('imports=0\n')) throw new Error('runtime manifest does not declare zero imports');
@@ -68,17 +79,39 @@ export function loadAndRunImage(replyHelperPath, instance, imageBytes, commandBy
   const manifestPtr = exports.world_appliance_alloc(manifestLen);
   if (manifestPtr === 0) throw new Error('manifest allocation failed');
   if (exports.world_appliance_read_manifest(manifestPtr, manifestLen) !== manifestLen) return { loaded: true, manifestPresent: false };
+  const manifestBytes = new Uint8Array(instance.exports.memory.buffer, manifestPtr, manifestLen).slice();
+  const applianceManifest = decodeApplianceManifest(manifestBytes);
 
-  const submitStatus = exports.world_appliance_submit_command(writeGuest(instance, commandBytes), commandBytes.length);
+  const bootTurn = encodeBootTurnInput({
+    manifestFingerprint: applianceManifest.manifestFingerprint,
+    metadata: `${replyMetadata}:boot`,
+  });
+  const submitStatus = exports.world_appliance_submit_turn(writeGuest(instance, bootTurn), bootTurn.length);
+  if (submitStatus === statusCompleted) {
+    const completedOutput = readClosureBytes(instance);
+    const completedSummary = inspectTurnOutput(completedOutput);
+    return completedRunSummary(completedOutput, completedSummary, false);
+  }
   if (submitStatus !== statusNeedsHost) return { loaded: true, manifestPresent: true, outputReady: false };
-  const needsHostOutput = readOutputBytes(instance);
+  const needsHostOutput = readClosureBytes(instance);
   const needsHostSummary = inspectTurnOutput(needsHostOutput);
-  if (needsHostSummary.status !== 0 || needsHostSummary.hostRequestCount === 0) {
+  if (needsHostSummary.status !== closureNeedsHost || needsHostSummary.hostRequestCount === 0) {
     return { loaded: true, manifestPresent: true, outputReady: true, hostRequestReady: false };
   }
-  const replyCommandBytes = replyCommandForOutput(replyHelperPath, needsHostOutput, replyMetadata);
+  const resolution = encodeResolutionInput({
+    request: needsHostSummary.hostRequests[0],
+    responseFingerprint: 0x600d0001n,
+    metadata: replyMetadata,
+  });
+  const continueTurn = encodeContinueTurnInput({
+    manifestFingerprint: needsHostSummary.manifestFingerprint,
+    previousTurnReceiptFingerprint: needsHostSummary.turnReceipt.receiptFingerprint,
+    turnSequenceNumber: needsHostSummary.turnSequenceNumber + 1n,
+    resolutions: [resolution],
+    metadata: `${replyMetadata}:continue`,
+  });
 
-  const replyStatus = exports.world_appliance_submit_command(writeGuest(instance, replyCommandBytes), replyCommandBytes.length);
+  const replyStatus = exports.world_appliance_submit_turn(writeGuest(instance, continueTurn), continueTurn.length);
   if (replyStatus !== statusCompleted) {
     return {
       loaded: true,
@@ -87,24 +120,71 @@ export function loadAndRunImage(replyHelperPath, instance, imageBytes, commandBy
       hostRequestReady: true,
       completed: false,
       replyStatus,
-      replyCommandLen: replyCommandBytes.length,
+      replyCommandLen: continueTurn.length,
       lastError: readLastError(instance),
     };
   }
-  const completedOutput = readOutputBytes(instance);
+  const completedOutput = readClosureBytes(instance);
   const completedSummary = inspectTurnOutput(completedOutput);
+  return completedRunSummary(completedOutput, completedSummary, true);
+}
+
+function completedRunSummary(completedOutput, completedSummary, hostRequestReady) {
   return {
     loaded: true,
     manifestPresent: true,
     outputReady: true,
-    hostRequestReady: true,
-    completed: completedSummary.status === 1 && completedSummary.hostRequestCount === 0,
+    hostRequestReady,
+    completed: completedSummary.status === closureCompleted && completedSummary.hostRequestCount === 0,
     rootResultReady: completedSummary.rootResultFingerprint !== null && completedSummary.rootResultBytesLen > 0,
     archiveAppendReady: completedSummary.archiveAppendFingerprint !== null && completedSummary.archiveAppendBytesLen > 0,
     completedOutputSha256: sha256Hex(completedOutput),
     rootResultFingerprint: fingerprintString(completedSummary.rootResultFingerprint),
     archiveAppendFingerprint: fingerprintString(completedSummary.archiveAppendFingerprint),
   };
+}
+
+function inspectTwoProgramProof(text) {
+  const facts = parseProofFacts(text);
+  const read = (key) => {
+    const value = facts.get(key);
+    if (value === undefined || value.length === 0) throw new Error(`missing proof fact ${key}`);
+    return value;
+  };
+  const readInt = (key) => {
+    const value = Number(read(key));
+    if (!Number.isSafeInteger(value)) throw new Error(`invalid numeric proof fact ${key}`);
+    return value;
+  };
+  return {
+    programPlanANotEqualB: read('program_plan_a_hash') !== read('program_plan_b_hash'),
+    rootModuleANotEqualB: read('root_module_a_fingerprint') !== read('root_module_b_fingerprint'),
+    dispatchANotEqualB: read('dispatch_a_fingerprint') !== read('dispatch_b_fingerprint'),
+    manifestANotEqualB: read('manifest_a_fingerprint') !== read('manifest_b_fingerprint'),
+    imageAOnePort:
+      readInt('module_count_a') === 1 &&
+      readInt('external_binding_count_a') === 1 &&
+      readInt('route_count_a') === 0,
+    imageBLoadedProvider:
+      readInt('module_count_b') > 1 &&
+      readInt('external_binding_count_b') === 0 &&
+      readInt('route_count_b') > 0 &&
+      readInt('provider_module_count_b') > 0,
+  };
+}
+
+function parseProofFacts(text) {
+  const facts = new Map();
+  for (const line of text.split('\n')) {
+    if (line.length === 0) continue;
+    const equals = line.indexOf('=');
+    if (equals <= 0) throw new Error(`malformed proof fact: ${line}`);
+    const key = line.slice(0, equals);
+    const value = line.slice(equals + 1);
+    if (facts.has(key)) throw new Error(`duplicate proof fact: ${key}`);
+    facts.set(key, value);
+  }
+  return facts;
 }
 
 function sha256Hex(bytes) {
@@ -115,27 +195,14 @@ function fingerprintString(value) {
   return value === null ? null : value.toString(16).padStart(16, '0');
 }
 
-export function replyCommandForOutput(replyHelperPath, outputBytes, metadata) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'world-universal-reply-'));
-  try {
-    const outputPath = path.join(dir, 'turn-output.bin');
-    const commandPath = path.join(dir, 'reply-command.bin');
-    fs.writeFileSync(outputPath, outputBytes);
-    childProcess.execFileSync(replyHelperPath, ['--reply', outputPath, commandPath, metadata], { stdio: 'pipe' });
-    return fs.readFileSync(commandPath);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-export function readOutputBytes(instance) {
+export function readClosureBytes(instance) {
   const exports = instance.exports;
-  const outputLen = exports.world_appliance_output_len();
-  if (outputLen === 0) throw new Error('missing output');
-  const outputPtr = exports.world_appliance_alloc(outputLen);
-  if (outputPtr === 0) throw new Error('output allocation failed');
-  if (exports.world_appliance_read_output(outputPtr, outputLen) !== outputLen) throw new Error('output read failed');
-  return new Uint8Array(instance.exports.memory.buffer, outputPtr, outputLen).slice();
+  const closureLen = exports.world_appliance_closure_len();
+  if (closureLen === 0) throw new Error('missing closure');
+  const closurePtr = exports.world_appliance_alloc(closureLen);
+  if (closurePtr === 0) throw new Error('closure allocation failed');
+  if (exports.world_appliance_read_closure(closurePtr, closureLen) !== closureLen) throw new Error('closure read failed');
+  return new Uint8Array(instance.exports.memory.buffer, closurePtr, closureLen).slice();
 }
 
 export function readRuntimeManifest(instance) {
@@ -150,10 +217,12 @@ export function readRuntimeManifest(instance) {
 }
 
 function assertRuntimeProfileManifest(manifest) {
+  const facts = decodeRuntimeManifest(manifest);
+  if (facts.get('imports') !== '0') throw new Error('runtime manifest does not declare zero imports');
   const required = [
     'runtime_profile_fingerprint=',
     'supports_loaded_execution=true\n',
-    'supports_internal_providers=false\n',
+    'supports_internal_providers=true\n',
     'supports_external_actuation=true\n',
     'max_modules=8\n',
     'max_provider_depth=8\n',
@@ -162,7 +231,7 @@ function assertRuntimeProfileManifest(manifest) {
     'max_image_bytes=131072\n',
     'max_command_bytes=65536\n',
     'max_output_bytes=131072\n',
-    'max_linear_memory_pages=2048\n',
+    'max_linear_memory_pages=1024\n',
     'runtime_profile_metadata=\n',
   ];
   for (const line of required) {

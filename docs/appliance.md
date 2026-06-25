@@ -4,7 +4,7 @@ A World Appliance is a closed, reconstructible execution fabric. It advances det
 
 ## What is a World Appliance?
 
-An Appliance packages a closed World target assembly behind one canonical host-turn protocol. A host submits an `Appliance.Command` byte image and receives an `Appliance.TurnOutput` byte image. The output binds the new checkpoint, host-bound work, turn receipt, and optional Archive append evidence fingerprint plus canonical ref.
+An Appliance packages a closed World target assembly behind one canonical host-turn protocol. Legacy native tests still exercise `Appliance.Command` and `Appliance.TurnOutput`; the universal v0 deployment ABI consumes untrusted `Appliance.Wire.TurnInput` and emits canonical `Appliance.TurnClosure`. The closure binds the new checkpoint, host-bound work, turn receipt, executable Capsule, Continuity.Bundle evidence, exact result bytes when complete, and Archive append bytes.
 
 ## Why Appliance now?
 
@@ -60,6 +60,10 @@ Actuation owns the host-effect membrane. `Actuation.Membrane.prepareHost` valida
 
 `Appliance.TurnReceipt` binds one host-visible state transition: Manifest, turn sequence, Command, applied replies, emitted requests, source/resulting Capsule fingerprints, Archive append fingerprint, result anchors, status, run receipt, blockers, and warnings. It is deterministic local evidence, not a signature.
 
+## TurnClosure
+
+`Appliance.TurnClosure` is the quiescent portable unit. It validates that every required semantic reference resolves through the immutable executable image, the authenticated parent closure, or embedded Continuity.Bundle objects. Completed closures carry exact root-result bytes; `needs_host` closures carry every external HostRequest up to capacity; advancing closures carry exactly one checkpoint, one executable Capsule, one TurnReceipt, one Chronicle transaction, and one Archive.AppendBatch.
+
 ## Resident fast path
 
 The resident path may keep `Appliance.Core` and underlying execution state alive between turns. It must still submit canonical commands and read canonical outputs.
@@ -92,9 +96,9 @@ Supervision remains the owner of permits, budgets, checks, usage ledgers, and re
 
 Appliance ABI v1 is a deployment ABI above Guest ABI v1. Required exports include ABI version, canonical Manifest byte length/read, command submission, output length/read, last-error length/read, and reset. Output-producing submit statuses include `needs_host`, `completed`, `failed`, `blocked`, `cancelled`, and `output_ready`; these leave canonical TurnOutput bytes readable. `Appliance.Native` mirrors those ABI-shaped operations directly over Core, including bounded last-error bytes for rejected commands. The canonical WASM artifact also exposes Capacity and MemoryPlan fingerprints plus required linear-memory bounds before command submission. The artifact requires no WASI, filesystem, network, clock, randomness, actuator imports, storage imports, or host allocator callbacks.
 
-## Universal Appliance ABI v2
+## Universal Appliance ABI v3
 
-`world_universal_appliance.wasm` is a target-neutral ABI v2 conformance artifact for the generic World Seed host surface. It is not compiled for a particular Boundary Target. It accepts canonical `world.Executable.Image` v2 bytes, decodes and validates the embedded Boundary module closure, derives the Appliance manifest from the loaded image, and executes through the existing Appliance/Core, Runspace, Fabric, Actuation, Capsule, Continuity, Chronicle, and Archive owners.
+`world_universal_appliance.wasm` is a target-neutral ABI v3 conformance artifact for the generic World Seed host surface. It is not compiled for a particular Boundary Target. It accepts canonical `world.Executable.Image` v2 bytes, decodes and validates the embedded Boundary module closure, derives the Appliance manifest from the loaded image, accepts untrusted Wire turn input, and executes through the existing Appliance/Core, Runspace, Fabric, Actuation, Capsule, Continuity, Chronicle, and Archive owners.
 
 - `world_appliance_abi_version`
 - `world_appliance_runtime_manifest_len`
@@ -103,15 +107,15 @@ Appliance ABI v1 is a deployment ABI above Guest ABI v1. Required exports includ
 - `world_appliance_unload_executable`
 - `world_appliance_manifest_len`
 - `world_appliance_read_manifest`
-- `world_appliance_submit_command`
-- `world_appliance_output_len`
-- `world_appliance_read_output`
+- `world_appliance_submit_turn`
+- `world_appliance_closure_len`
+- `world_appliance_read_closure`
 - `world_appliance_last_error_len`
 - `world_appliance_read_last_error`
 - `world_appliance_reset`
 - bounded allocation helpers
 
-The runtime manifest is readable before image load and includes the enforced `Executable.RuntimeProfile` fingerprint, feature booleans, and size bounds required for image compatibility. The executable manifest is canonical `Appliance.Manifest` bytes and is readable only after successful load. Load is transactional, `reset` clears execution state while retaining the loaded image, `unload` clears image and execution state, and output remains readable until the next mutating call. The artifact has zero imports, no WASI, no host callbacks, and bounded linear memory.
+The runtime manifest is readable before image load and includes the enforced `Executable.RuntimeProfile` fingerprint, feature booleans, and size bounds required for image compatibility. The executable manifest is canonical `Appliance.Manifest` bytes and is readable only after successful load. Load is transactional, `reset` clears execution state while retaining the loaded image, `unload` clears image and execution state, and closure output remains readable until the next mutating call. The artifact has zero imports, no WASI, no host callbacks, and bounded linear memory.
 
 `zig build check-world-universal-appliance-wasm` builds and inspects the artifact. `zig build check-world-universal-appliance-node` is the external runtime proof and is part of `zig build check-world-universal`: installed Node compiles the same WASM bytes once, instantiates with an empty import object, loads two unrelated canonical `Executable.Image` byte images into one instance, repeats the same images in a fresh instance, and checks exact canonical host-request, result, and Archive append bytes.
 
@@ -125,7 +129,7 @@ The host owns real effects, credentials, network clients, files, humans and appr
 
 The host must not forge World receipts, resume arbitrary mailbox entries, bypass Actuation preparation, reinterpret ObjectRef or Archive identity, mutate checkpoints, or redefine request ordering.
 
-The dependency-free ECMAScript reference host is split into `scripts/world_universal_appliance_codec.mjs`, `scripts/world_universal_appliance_host.mjs`, and `scripts/world_universal_appliance_conformance.mjs`. It compiles and instantiates the WASM, reads manifests and TurnOutput bytes, routes fixture effects by stable identity, asks the fixture generator for canonical response commands, and submits those commands back to the runtime. It does not execute ProgramPlan semantics, implement Runspace/Fabric/Actuation/Capsule/Chronicle/Archive, or validate Archive contents.
+The dependency-free ECMAScript reference host is split into `scripts/world_appliance_wire_codec.mjs`, `scripts/world_loaded_value_codec.mjs`, `scripts/world_universal_appliance_host.mjs`, and `scripts/world_universal_appliance_conformance.mjs`. It compiles and instantiates the WASM, reads manifests and TurnClosure bytes, routes fixture effects by stable identity and response schema, encodes Wire resolution input, and submits that input back to the runtime. It does not execute ProgramPlan semantics, implement Runspace/Fabric/Actuation/Capsule/Chronicle/Archive, mint evidence fingerprints, or validate Archive contents.
 
 ## Non-goals
 

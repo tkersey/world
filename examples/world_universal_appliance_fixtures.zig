@@ -31,6 +31,7 @@ pub fn main(init: std.process.Init) !void {
     const command_a_path = args.next() orelse return error.InvalidArguments;
     const image_b_path = args.next() orelse return error.InvalidArguments;
     const command_b_path = args.next() orelse return error.InvalidArguments;
+    const proof_path = args.next() orelse return error.InvalidArguments;
     if (args.next() != null) return error.InvalidArguments;
 
     const image_a = try buildExecutableImage(allocator, "universal.fixture.a", "universal.fixture.a");
@@ -38,15 +39,17 @@ pub fn main(init: std.process.Init) !void {
     const manifest_a_fingerprint = try manifestFingerprintForImage(allocator, image_a);
     const command_a = try bootCommandBytes(allocator, manifest_a_fingerprint, "universal.fixture.a");
 
-    const image_b = try buildExecutableImage(allocator, "universal.fixture.b", "universal.fixture.b");
+    const image_b = try buildLoadedProviderImage(allocator);
     const image_b_bytes = try image_b.encode(allocator);
     const manifest_b_fingerprint = try manifestFingerprintForImage(allocator, image_b);
-    const command_b = try bootCommandBytes(allocator, manifest_b_fingerprint, "universal.fixture.b");
+    const command_b = try bootCommandBytes(allocator, manifest_b_fingerprint, "universal.fixture.b.loaded-provider");
+    const proof = try twoProgramProofBytes(allocator, image_a, manifest_a_fingerprint, image_b, manifest_b_fingerprint);
 
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = image_a_path, .data = image_a_bytes });
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = command_a_path, .data = command_a });
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = image_b_path, .data = image_b_bytes });
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = command_b_path, .data = command_b });
+    try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = proof_path, .data = proof });
 }
 
 fn buildExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8, binding_label: []const u8) !world.Executable.Image {
@@ -97,6 +100,83 @@ fn buildExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8
     var prepared = try builder.prepare();
     defer prepared.deinit();
     return try prepared.seal();
+}
+
+fn buildLoadedProviderImage(allocator: std.mem.Allocator) !world.Executable.Image {
+    const root_bytes = try fixtures.ProviderPorts.Target.Module.fullImage(allocator);
+    defer allocator.free(root_bytes);
+    const provider_bytes = try fixtures.Strict.Target.Module.fullImage(allocator);
+    defer allocator.free(provider_bytes);
+
+    var builder = world.Executable.Builder.init(allocator, .{
+        .runtime_profile = universal.executable_runtime_profile,
+        .linker_policy = .strict_closed,
+        .metadata = "universal.fixture.b.loaded-provider",
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+    try builder.addProviderModule(provider_bytes);
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    return try prepared.seal();
+}
+
+fn twoProgramProofBytes(
+    allocator: std.mem.Allocator,
+    image_a: world.Executable.Image,
+    manifest_a_fingerprint: u64,
+    image_b: world.Executable.Image,
+    manifest_b_fingerprint: u64,
+) ![]const u8 {
+    const root_a = image_a.module_set.root() orelse return error.InvalidFrameEncoding;
+    const root_b = image_b.module_set.root() orelse return error.InvalidFrameEncoding;
+    return std.fmt.allocPrint(
+        allocator,
+        "image_a_fingerprint={x}\n" ++
+            "image_b_fingerprint={x}\n" ++
+            "manifest_a_fingerprint={x}\n" ++
+            "manifest_b_fingerprint={x}\n" ++
+            "root_module_a_fingerprint={x}\n" ++
+            "root_module_b_fingerprint={x}\n" ++
+            "program_plan_a_hash={x}\n" ++
+            "program_plan_b_hash={x}\n" ++
+            "module_count_a={d}\n" ++
+            "module_count_b={d}\n" ++
+            "dispatch_a_fingerprint={x}\n" ++
+            "dispatch_b_fingerprint={x}\n" ++
+            "external_binding_count_a={d}\n" ++
+            "external_binding_count_b={d}\n" ++
+            "route_count_a={d}\n" ++
+            "route_count_b={d}\n" ++
+            "provider_module_count_b={d}\n",
+        .{
+            image_a.image_fingerprint,
+            image_b.image_fingerprint,
+            manifest_a_fingerprint,
+            manifest_b_fingerprint,
+            root_a.module_ref.boundary_module_fingerprint,
+            root_b.module_ref.boundary_module_fingerprint,
+            root_a.module_ref.residual_program_plan_hash orelse 0,
+            root_b.module_ref.residual_program_plan_hash orelse 0,
+            image_a.module_set.modules.len,
+            image_b.module_set.modules.len,
+            image_a.dispatch_image.dispatch_fingerprint,
+            image_b.dispatch_image.dispatch_fingerprint,
+            image_a.external_bindings.len,
+            image_b.external_bindings.len,
+            image_a.dispatch_image.route_ids.len,
+            image_b.dispatch_image.route_ids.len,
+            providerModuleCount(image_b),
+        },
+    );
+}
+
+fn providerModuleCount(image: world.Executable.Image) usize {
+    var count: usize = 0;
+    for (image.module_set.modules) |module| {
+        if (module.role == .provider) count += 1;
+    }
+    return count;
 }
 
 fn manifestFingerprintForImage(allocator: std.mem.Allocator, image: world.Executable.Image) !u64 {
