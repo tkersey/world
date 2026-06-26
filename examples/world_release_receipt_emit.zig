@@ -151,6 +151,8 @@ fn sourcePackageChecksum(io: std.Io, allocator: std.mem.Allocator) !u64 {
         "scripts/world_appliance_wire_codec.mjs",
         "scripts/world_loaded_value_codec.mjs",
         "docs/world_v0.md",
+        "docs/compatibility.md",
+        "docs/security_model.md",
     };
     for (paths) |path| {
         const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(8 * 1024 * 1024));
