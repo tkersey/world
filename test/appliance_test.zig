@@ -10559,8 +10559,15 @@ test "World Seed Replay accepts batched host replies for independent requests" {
 }
 
 test "WorldV0Report requires every completion proof bit" {
+    const test_universal_wasm_checksum: u64 = 0x5750_1000_0000_0003;
+    const test_source_package_checksum: u64 = 0x5750_5000_0000_0003;
     var proof_receipt_storage: [world.Protocol.required_proof_kind_count]world.Protocol.ProofReceipt = undefined;
-    const release_receipt = world.Protocol.canonicalReleaseReceipt(world.Protocol.buildCanonicalProofReceipts(&proof_receipt_storage));
+    var artifact_evidence: [world.Protocol.required_proof_kind_count][4]u64 = undefined;
+    const release_receipt = world.Protocol.releaseReceiptForArtifacts(
+        world.Protocol.buildProofReceiptsForArtifacts(&proof_receipt_storage, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum),
+        test_universal_wasm_checksum,
+        test_source_package_checksum,
+    );
     try release_receipt.validate();
     const report = try world.Appliance.WorldV0Report.fromReleaseReceipt(release_receipt);
     try report.validate();

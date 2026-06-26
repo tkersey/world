@@ -6,15 +6,12 @@ pub fn main(init: std.process.Init) !void {
     var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
 
-    var proof_receipts: [world.Protocol.required_proof_kind_count]world.Protocol.ProofReceipt = undefined;
-    const release_receipt = world.Protocol.canonicalReleaseReceipt(world.Protocol.buildCanonicalProofReceipts(&proof_receipts));
-    try release_receipt.validate();
-    const report = try world.Appliance.WorldV0Report.fromReleaseReceipt(release_receipt);
+    const report = world.Appliance.WorldV0Report.init(.{});
     try report.validate();
-    if (!report.passed) return error.WorldV0ReportIncomplete;
+    if (report.passed) return error.WorldV0ReportUnexpectedlyComplete;
 
     try stdout.print("world_v0_complete={}\n", .{report.passed});
-    try stdout.print("two_program_plans_one_wasm=true\n", .{});
+    try stdout.print("two_program_plans_one_wasm={}\n", .{report.genuinely_unrelated_images_executed});
     try stdout.print("loaded_internal_provider_executed={}\n", .{report.internal_loaded_provider_executed});
     try stdout.print("active_fabric_restore_accepted={}\n", .{report.active_loaded_fabric_restored});
     try stdout.print("verified_replay_without_fresh_effect={}\n", .{report.verified_replay_without_fresh_effect_passed});

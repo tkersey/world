@@ -386,8 +386,41 @@ pub fn Protocol(comptime W: type) type {
             return out;
         }
 
+        pub fn buildProofReceiptsForArtifacts(
+            out: *[required_proof_kind_count]ProofReceipt,
+            artifact_evidence: *[required_proof_kind_count][4]u64,
+            universal_wasm_checksum: u64,
+            source_package_checksum: u64,
+        ) []const ProofReceipt {
+            for (required_proof_kinds, 0..) |kind, index| {
+                artifact_evidence[index] = canonicalArtifactEvidence(kind, universal_wasm_checksum, source_package_checksum);
+                out[index] = ProofReceipt.init(.{
+                    .proof_kind = kind,
+                    .input_corpus_case_fingerprints = canonicalProofEvidence(kind),
+                    .expected_output_fingerprints = canonicalProofEvidence(kind),
+                    .actual_output_fingerprints = canonicalProofEvidence(kind),
+                    .artifact_fingerprints = artifact_evidence[index][0..],
+                    .bounded_diagnostics = canonicalProofEvidence(kind),
+                    .actual_comparison_result = true,
+                });
+            }
+            return out;
+        }
+
         pub fn canonicalReleaseReceipt(proof_receipts: []const ProofReceipt) ReleaseReceipt {
-            return ReleaseReceipt.init(.{ .proof_receipts = proof_receipts });
+            return ReleaseReceipt.init(.{
+                .proof_receipts = proof_receipts,
+                .universal_wasm_checksum = 0,
+                .source_package_checksum = 0,
+            });
+        }
+
+        pub fn releaseReceiptForArtifacts(proof_receipts: []const ProofReceipt, universal_wasm_checksum: u64, source_package_checksum: u64) ReleaseReceipt {
+            return ReleaseReceipt.init(.{
+                .proof_receipts = proof_receipts,
+                .universal_wasm_checksum = universal_wasm_checksum,
+                .source_package_checksum = source_package_checksum,
+            });
         }
 
         pub fn conformanceCorpusRootFingerprint() u64 {

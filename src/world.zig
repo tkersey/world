@@ -1409,8 +1409,15 @@ test "boundary world protocol compatibility rejects mismatched boundary evidence
 }
 
 test "world protocol release receipt validates required proof matrix exactly once" {
+    const test_universal_wasm_checksum: u64 = 0x5750_1000_0000_0001;
+    const test_source_package_checksum: u64 = 0x5750_5000_0000_0001;
     var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
-    const release_receipt = Protocol.canonicalReleaseReceipt(Protocol.buildCanonicalProofReceipts(&proof_receipts));
+    var artifact_evidence: [Protocol.required_proof_kind_count][4]u64 = undefined;
+    const release_receipt = Protocol.releaseReceiptForArtifacts(
+        Protocol.buildProofReceiptsForArtifacts(&proof_receipts, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum),
+        test_universal_wasm_checksum,
+        test_source_package_checksum,
+    );
     try release_receipt.validate();
     try std.testing.expect(release_receipt.complete);
     try std.testing.expect(release_receipt.release_receipt_fingerprint != 0);
@@ -1420,9 +1427,14 @@ test "world protocol release receipt validates required proof matrix exactly onc
     try std.testing.expect(std.mem.indexOfScalar(u64, proof_receipts[0].input_corpus_case_fingerprints, first_proof_gate_fingerprint) != null);
     try std.testing.expect(std.mem.indexOfScalar(u64, proof_receipts[0].artifact_fingerprints, first_proof_gate_fingerprint) != null);
 
+    var synthetic_proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
+    const synthetic_release = Protocol.canonicalReleaseReceipt(Protocol.buildCanonicalProofReceipts(&synthetic_proof_receipts));
+    try std.testing.expect(!synthetic_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, synthetic_release.validate());
+
     var duplicate_receipts = proof_receipts;
     duplicate_receipts[1] = duplicate_receipts[0];
-    const duplicate_release = Protocol.canonicalReleaseReceipt(&duplicate_receipts);
+    const duplicate_release = Protocol.releaseReceiptForArtifacts(&duplicate_receipts, test_universal_wasm_checksum, test_source_package_checksum);
     try std.testing.expect(!duplicate_release.complete);
     try std.testing.expectError(error.InvalidFrameEncoding, duplicate_release.validate());
 
@@ -1432,7 +1444,7 @@ test "world protocol release receipt validates required proof matrix exactly onc
         .protocol_manifest_fingerprint = 0xBAD,
         .actual_comparison_result = true,
     });
-    const mismatched_release = Protocol.canonicalReleaseReceipt(&mismatched_receipts);
+    const mismatched_release = Protocol.releaseReceiptForArtifacts(&mismatched_receipts, test_universal_wasm_checksum, test_source_package_checksum);
     try std.testing.expect(!mismatched_release.complete);
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_release.validate());
 }
@@ -1463,12 +1475,19 @@ test "world v0 budgets match protocol manifest baselines" {
 }
 
 test "world adversarial codecs reject malformed protocol receipt evidence fail closed" {
+    const test_universal_wasm_checksum: u64 = 0x5750_1000_0000_0002;
+    const test_source_package_checksum: u64 = 0x5750_5000_0000_0002;
     var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
-    const release_receipt = Protocol.canonicalReleaseReceipt(Protocol.buildCanonicalProofReceipts(&proof_receipts));
+    var artifact_evidence: [Protocol.required_proof_kind_count][4]u64 = undefined;
+    const release_receipt = Protocol.releaseReceiptForArtifacts(
+        Protocol.buildProofReceiptsForArtifacts(&proof_receipts, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum),
+        test_universal_wasm_checksum,
+        test_source_package_checksum,
+    );
     try release_receipt.validate();
 
     const truncated_matrix = proof_receipts[0 .. proof_receipts.len - 1];
-    const missing_release = Protocol.canonicalReleaseReceipt(truncated_matrix);
+    const missing_release = Protocol.releaseReceiptForArtifacts(truncated_matrix, test_universal_wasm_checksum, test_source_package_checksum);
     try std.testing.expect(!missing_release.complete);
     try std.testing.expectError(error.InvalidFrameEncoding, missing_release.validate());
 
@@ -1522,7 +1541,7 @@ test "world adversarial codecs reject malformed protocol receipt evidence fail c
         .bounded_diagnostics = &.{0xAA},
         .actual_comparison_result = true,
     });
-    const arbitrary_proof_release = Protocol.canonicalReleaseReceipt(&arbitrary_proof);
+    const arbitrary_proof_release = Protocol.releaseReceiptForArtifacts(&arbitrary_proof, test_universal_wasm_checksum, test_source_package_checksum);
     try std.testing.expect(!arbitrary_proof_release.complete);
     try std.testing.expectError(error.InvalidFrameEncoding, arbitrary_proof_release.validate());
 
@@ -1535,13 +1554,13 @@ test "world adversarial codecs reject malformed protocol receipt evidence fail c
         .artifact_fingerprints = &.{Protocol.Manifest.manifestFingerprint().lo},
         .actual_comparison_result = true,
     });
-    const mismatched_proof_release = Protocol.canonicalReleaseReceipt(&mismatched_proof);
+    const mismatched_proof_release = Protocol.releaseReceiptForArtifacts(&mismatched_proof, test_universal_wasm_checksum, test_source_package_checksum);
     try std.testing.expect(!mismatched_proof_release.complete);
     try std.testing.expectError(error.InvalidFrameEncoding, mismatched_proof_release.validate());
 
     var duplicated = proof_receipts;
     duplicated[Protocol.required_proof_kind_count - 1] = duplicated[0];
-    const duplicated_release = Protocol.canonicalReleaseReceipt(&duplicated);
+    const duplicated_release = Protocol.releaseReceiptForArtifacts(&duplicated, test_universal_wasm_checksum, test_source_package_checksum);
     try std.testing.expect(!duplicated_release.complete);
     try std.testing.expectError(error.InvalidFrameEncoding, duplicated_release.validate());
 }

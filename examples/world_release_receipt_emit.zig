@@ -9,12 +9,15 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
 
     var wasm_path: ?[]const u8 = null;
+    var wasm_inspection_receipt_path: ?[]const u8 = null;
     var out_path: ?[]const u8 = null;
     var proof_gates: [Protocol.required_proof_kind_count][]const u8 = undefined;
     var proof_gate_count: usize = 0;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--wasm")) {
             wasm_path = args.next() orelse return error.MissingWasmPath;
+        } else if (std.mem.eql(u8, arg, "--wasm-inspection-receipt")) {
+            wasm_inspection_receipt_path = args.next() orelse return error.MissingWasmInspectionReceiptPath;
         } else if (std.mem.eql(u8, arg, "--out")) {
             out_path = args.next() orelse return error.MissingOutPath;
         } else if (std.mem.eql(u8, arg, "--proof-gate")) {
@@ -29,6 +32,10 @@ pub fn main(init: std.process.Init) !void {
 
     const wasm_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, wasm_path orelse return error.MissingWasmPath, allocator, .limited(world.world_max_decoded_byte_field_len));
     defer allocator.free(wasm_bytes);
+    try validateUniversalWasmArtifact(wasm_bytes);
+    const wasm_inspection_receipt_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, wasm_inspection_receipt_path orelse return error.MissingWasmInspectionReceiptPath, allocator, .limited(1024 * 1024));
+    defer allocator.free(wasm_inspection_receipt_bytes);
+    try validateWasmInspectionReceipt(wasm_inspection_receipt_bytes);
 
     const universal_wasm_checksum = checksum64(wasm_bytes);
     const source_package_checksum = try sourcePackageChecksum(init.io, allocator);
@@ -171,4 +178,119 @@ fn checksum64(bytes: []const u8) u64 {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
     return std.mem.readInt(u64, digest[0..8], .big);
+}
+
+fn validateUniversalWasmArtifact(bytes: []const u8) !void {
+    if (bytes.len < 8 or !std.mem.eql(u8, bytes[0..4], "\x00asm")) return error.InvalidFrameEncoding;
+    if (std.mem.readInt(u32, bytes[4..8], .little) != 1) return error.InvalidFrameEncoding;
+
+    var required_seen = [_]bool{false} ** world.Appliance.Abi.universal_required_exports.len;
+    var import_count: u32 = 0;
+    var cursor: usize = 8;
+    while (cursor < bytes.len) {
+        const section_id = try readWasmU8(bytes, &cursor);
+        const section_len = try readWasmU32(bytes, &cursor);
+        if (section_len > bytes.len - cursor) return error.InvalidFrameEncoding;
+        const section = bytes[cursor .. cursor + section_len];
+        if (section_id == 2) import_count = try countWasmImports(section);
+        if (section_id == 7) try inspectUniversalExports(section, &required_seen);
+        cursor += section_len;
+    }
+    if (import_count != 0) return error.UniversalWasmInspectionFailed;
+    for (required_seen) |seen| {
+        if (!seen) return error.MissingUniversalWasmExport;
+    }
+}
+
+fn validateWasmInspectionReceipt(bytes: []const u8) !void {
+    if (!jsonBool(bytes, "artifact_inspection")) return error.WasmInspectionReceiptIncomplete;
+    if (!jsonBool(bytes, "actual_webassembly_execution")) return error.WasmInspectionReceiptIncomplete;
+    if (!jsonBool(bytes, "memory_limit_compliance")) return error.WasmInspectionReceiptIncomplete;
+    if (!jsonBool(bytes, "complete")) return error.WasmInspectionReceiptIncomplete;
+    if (std.mem.indexOf(u8, bytes, "\"protocol_manifest_fingerprint_lo\"") == null) return error.WasmInspectionReceiptIncomplete;
+}
+
+fn jsonBool(bytes: []const u8, field: []const u8) bool {
+    const field_index = std.mem.indexOf(u8, bytes, field) orelse return false;
+    const colon_index = std.mem.indexOfScalarPos(u8, bytes, field_index + field.len, ':') orelse return false;
+    var cursor = colon_index + 1;
+    while (cursor < bytes.len and std.ascii.isWhitespace(bytes[cursor])) : (cursor += 1) {}
+    return std.mem.startsWith(u8, bytes[cursor..], "true");
+}
+
+fn countWasmImports(section: []const u8) !u32 {
+    var cursor: usize = 0;
+    const count = try readWasmU32(section, &cursor);
+    var index: u32 = 0;
+    while (index < count) : (index += 1) {
+        _ = try readWasmName(section, &cursor);
+        _ = try readWasmName(section, &cursor);
+        const kind = try readWasmU8(section, &cursor);
+        switch (kind) {
+            0 => _ = try readWasmU32(section, &cursor),
+            1 => {
+                _ = try readWasmU8(section, &cursor);
+                try skipWasmLimits(section, &cursor);
+            },
+            2 => try skipWasmLimits(section, &cursor),
+            3 => {
+                _ = try readWasmU8(section, &cursor);
+                _ = try readWasmU8(section, &cursor);
+            },
+            else => return error.InvalidFrameEncoding,
+        }
+    }
+    if (cursor != section.len) return error.InvalidFrameEncoding;
+    return count;
+}
+
+fn skipWasmLimits(bytes: []const u8, cursor: *usize) !void {
+    const flags = try readWasmU8(bytes, cursor);
+    _ = try readWasmU32(bytes, cursor);
+    if ((flags & 0x01) != 0) _ = try readWasmU32(bytes, cursor);
+    if ((flags & ~@as(u8, 0x01)) != 0) return error.InvalidFrameEncoding;
+}
+
+fn inspectUniversalExports(section: []const u8, required_seen: *[world.Appliance.Abi.universal_required_exports.len]bool) !void {
+    var cursor: usize = 0;
+    const count = try readWasmU32(section, &cursor);
+    var index: u32 = 0;
+    while (index < count) : (index += 1) {
+        const name = try readWasmName(section, &cursor);
+        _ = try readWasmU8(section, &cursor);
+        _ = try readWasmU32(section, &cursor);
+        for (world.Appliance.Abi.universal_required_exports, 0..) |required, required_index| {
+            if (std.mem.eql(u8, name, required)) required_seen[required_index] = true;
+        }
+    }
+    if (cursor != section.len) return error.InvalidFrameEncoding;
+}
+
+fn readWasmName(bytes: []const u8, cursor: *usize) ![]const u8 {
+    const len = try readWasmU32(bytes, cursor);
+    if (len > bytes.len - cursor.*) return error.InvalidFrameEncoding;
+    const name = bytes[cursor.* .. cursor.* + len];
+    cursor.* += len;
+    return name;
+}
+
+fn readWasmU8(bytes: []const u8, cursor: *usize) !u8 {
+    if (cursor.* >= bytes.len) return error.InvalidFrameEncoding;
+    const value = bytes[cursor.*];
+    cursor.* += 1;
+    return value;
+}
+
+fn readWasmU32(bytes: []const u8, cursor: *usize) !u32 {
+    var result: u32 = 0;
+    var shift: u5 = 0;
+    while (true) {
+        if (cursor.* >= bytes.len) return error.InvalidFrameEncoding;
+        const byte = bytes[cursor.*];
+        cursor.* += 1;
+        result |= @as(u32, byte & 0x7f) << shift;
+        if ((byte & 0x80) == 0) return result;
+        if (shift == 28) return error.InvalidFrameEncoding;
+        shift += 7;
+    }
 }

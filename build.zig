@@ -451,7 +451,7 @@ pub fn build(b: *std.Build) void {
     emit_world_release_receipt_run.addArgs(&.{
         "--receipt-out",
     });
-    _ = emit_world_release_receipt_run.addOutputFileArg("world-release-receipt.json");
+    const world_wasm_inspection_receipt = emit_world_release_receipt_run.addOutputFileArg("world-wasm-inspection-receipt.json");
     emit_world_release_receipt_run.step.dependOn(world_universal_appliance_wasm_step);
     const world_release_receipt_emit_mod = b.createModule(.{
         .root_source_file = b.path("examples/world_release_receipt_emit.zig"),
@@ -463,6 +463,8 @@ pub fn build(b: *std.Build) void {
     const emit_world_protocol_release_receipt_run = b.addRunArtifact(world_release_receipt_emit_exe);
     emit_world_protocol_release_receipt_run.addArgs(&.{"--wasm"});
     emit_world_protocol_release_receipt_run.addFileArg(universal_appliance_wasm.getEmittedBin());
+    emit_world_protocol_release_receipt_run.addArgs(&.{"--wasm-inspection-receipt"});
+    emit_world_protocol_release_receipt_run.addFileArg(world_wasm_inspection_receipt);
     emit_world_protocol_release_receipt_run.addArgs(&.{"--out"});
     _ = emit_world_protocol_release_receipt_run.addOutputFileArg("world-release-receipt.json");
     emit_world_protocol_release_receipt_run.addArgs(&.{
@@ -1933,18 +1935,18 @@ pub fn build(b: *std.Build) void {
             .name = "world-v0-report",
             .path = "examples/world_v0_report.zig",
             .step = "run-world-v0-report",
-            .desc = "Run the World v0 positive proof report.",
+            .desc = "Run the World v0 fail-closed proof report.",
             .expected_stdout =
-            \\world_v0_complete=true
-            \\two_program_plans_one_wasm=true
-            \\loaded_internal_provider_executed=true
-            \\active_fabric_restore_accepted=true
-            \\verified_replay_without_fresh_effect=true
+            \\world_v0_complete=false
+            \\two_program_plans_one_wasm=false
+            \\loaded_internal_provider_executed=false
+            \\active_fabric_restore_accepted=false
+            \\verified_replay_without_fresh_effect=false
             \\actuated_replay_supported=false
-            \\unsupported_actuated_replay_rejected=true
-            \\javascript_codec_independent=true
-            \\deterministic_retry=true
-            \\universal_memory_bound_passed=true
+            \\unsupported_actuated_replay_rejected=false
+            \\javascript_codec_independent=false
+            \\deterministic_retry=false
+            \\universal_memory_bound_passed=false
             \\
             ,
         },
