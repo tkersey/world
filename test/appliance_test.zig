@@ -1112,7 +1112,7 @@ fn buildMinimalApplianceWasmWithOptions(
 }
 
 test "appliance static contract exposes root namespace and versions" {
-    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_abi_version);
+    try std.testing.expectEqual(@as(u32, 4), world.world_appliance_abi_version);
     try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_format_version);
     try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_memory_plan_fingerprint_version);
@@ -1123,7 +1123,7 @@ test "appliance static contract exposes root namespace and versions" {
     try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_checkpoint_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_receipt_format_version);
-    try std.testing.expectEqual(@as(u32, 3), world.Appliance.Abi.version);
+    try std.testing.expectEqual(@as(u32, 4), world.Appliance.Abi.version);
     try std.testing.expectEqual(world.Appliance.Abi.Status.buffer_too_small, @as(world.Appliance.Abi.Status, @enumFromInt(15)));
     try std.testing.expectEqual(@as(usize, 8), world.Appliance.Abi.metadata_exports.len);
     try std.testing.expect(world.Appliance.Abi.statusHasTurnOutput(.needs_host));

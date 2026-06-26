@@ -205,6 +205,16 @@ pub fn Protocol(comptime W: type) type {
                 return true;
             }
 
+            fn matchesCanonicalProofEvidence(self: @This()) bool {
+                const canonical = canonicalProofEvidence(self.proof_kind);
+                if (canonical.len == 0) return false;
+                return std.mem.eql(u64, self.input_corpus_case_fingerprints, canonical) and
+                    std.mem.eql(u64, self.expected_output_fingerprints, canonical) and
+                    std.mem.eql(u64, self.actual_output_fingerprints, canonical) and
+                    std.mem.eql(u64, self.artifact_fingerprints, canonical) and
+                    std.mem.eql(u64, self.bounded_diagnostics, canonical);
+            }
+
             pub fn validate(self: @This()) !void {
                 if (self.receipt_format_version != world_protocol_proof_receipt_format_version) return error.InvalidFrameEncoding;
                 if (self.receipt_fingerprint_version != world_protocol_proof_receipt_fingerprint_version) return error.InvalidFrameEncoding;
@@ -289,6 +299,7 @@ pub fn Protocol(comptime W: type) type {
                     try receipt.validate();
                     if (!receipt.passed()) return error.InvalidFrameEncoding;
                     const index = requiredProofKindIndex(receipt.proof_kind) orelse return error.InvalidFrameEncoding;
+                    if (!receipt.matchesCanonicalProofEvidence()) return error.InvalidFrameEncoding;
                     if (seen[index]) return error.InvalidFrameEncoding;
                     seen[index] = true;
                 }
@@ -439,7 +450,7 @@ pub fn Protocol(comptime W: type) type {
             pub const required_feature_flags = &.{
                 "boundary-portable-v2-loaded-execution-profile",
                 "executable-image-v2",
-                "appliance-abi-v3",
+                "appliance-abi-v4",
                 "turn-closure-v1",
                 "archive-v1",
             };
@@ -457,7 +468,7 @@ pub fn Protocol(comptime W: type) type {
             pub const Limits = struct {
                 max_universal_wasm_linear_memory_bytes: u64 = 67_108_864,
                 max_executable_image_bytes: u32 = 128 * 1024,
-                max_turn_input_bytes: u32 = 1_704_960,
+                max_turn_input_bytes: u32 = 2_950_144,
                 max_turn_closure_bytes: u32 = 512 * 1024,
                 max_capsule_bytes: u32 = 4 * 1024 * 1024,
                 max_archive_append_batch_bytes: u32 = 4 * 1024 * 1024,

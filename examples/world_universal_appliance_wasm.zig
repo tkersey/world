@@ -54,8 +54,8 @@ pub const executable_runtime_profile = world.Executable.RuntimeProfile.init(.{
 });
 
 const runtime_manifest =
-    "world.universal_appliance.runtime.v3\n" ++
-    "abi=3\n" ++
+    "world.universal_appliance.runtime.v4\n" ++
+    std.fmt.comptimePrint("abi={d}\n", .{Abi.universal_version}) ++
     std.fmt.comptimePrint("world_protocol_manifest_format={d}\n", .{world.world_protocol_manifest_format_version}) ++
     std.fmt.comptimePrint("world_protocol_manifest_fingerprint_version={d}\n", .{world.world_protocol_manifest_fingerprint_version}) ++
     std.fmt.comptimePrint("world_protocol_manifest_fingerprint_lo={x}\n", .{world.Protocol.Manifest.manifestFingerprint().lo}) ++

@@ -994,7 +994,7 @@ pub fn build(b: *std.Build) void {
             .desc = "Run two unrelated World Seed images through one generic wasm Appliance implementation.",
             .expected_stdout =
             \\world_seed=two_images_one_wasm
-            \\abi_version=3
+            \\abi_version=4
             \\images=2
             \\images_loaded=true
             \\manifests_present=true
@@ -1009,8 +1009,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Seed migration example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=e98011dfecc4b9d2
-            \\restored_output=e98011dfecc4b9d2
+            \\resident_output=6d2787f7766186f9
+            \\restored_output=6d2787f7766186f9
             \\
             ,
         },
@@ -1710,7 +1710,7 @@ pub fn build(b: *std.Build) void {
             \\actuation_bindings=1
             \\checkpoint_every_turn=true
             \\output_bytes=9000
-            \\turn_receipt=c3168933c0844302
+            \\turn_receipt=b7f4e333a51579cb
             \\
             ,
         },
@@ -1737,8 +1737,8 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance reconstruction example.",
             .expected_stdout =
             \\reconstruction_equivalent=true
-            \\resident_output=e98011dfecc4b9d2
-            \\restored_output=e98011dfecc4b9d2
+            \\resident_output=6d2787f7766186f9
+            \\restored_output=6d2787f7766186f9
             \\
             ,
         },
@@ -1749,10 +1749,10 @@ pub fn build(b: *std.Build) void {
             .desc = "Run the World Appliance archive example.",
             .expected_stdout =
             \\archive_batches=1
-            \\output_archive_request=1d33b3728cc95c0d
+            \\output_archive_request=f92ac1845c38f100
             \\archive_objects=3
-            \\retention_ack=42ae75fef4d7eced
-            \\moment=bc75ba8cd87f879f
+            \\retention_ack=579149e5679d9de0
+            \\moment=5de8f61f92b66d71
             \\
             ,
         },
@@ -1899,8 +1899,8 @@ pub fn build(b: *std.Build) void {
             .step = "run-world-appliance-wasm-probe",
             .desc = "Run the World Appliance WASM probe example.",
             .expected_stdout =
-            \\appliance_abi_version=3
-            \\manifest=4ac36f0580a2e703
+            \\appliance_abi_version=4
+            \\manifest=1cd97157f2d1ac8e
             \\capacity=5fcf964fbaa4a66b
             \\memory_plan=ed1c9222ab3bed1d
             \\required_exports=9

@@ -143,7 +143,7 @@ const expected = {
   limits: {
     max_universal_wasm_linear_memory_bytes: 67108864,
     max_executable_image_bytes: 131072,
-    max_turn_input_bytes: 1704960,
+    max_turn_input_bytes: 2950144,
     max_turn_closure_bytes: 524288,
     max_capsule_bytes: 4194304,
     max_archive_append_batch_bytes: 4194304,
@@ -313,7 +313,7 @@ async function inspectAndExecuteWasm(path) {
   const manifestLen = Number(instance.exports.world_protocol_manifest_len());
   const fingerprintLo = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_lo());
   const fingerprintHi = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_hi());
-  if (Number(instance.exports.world_appliance_abi_version()) !== 3) throw new Error('unexpected appliance ABI version');
+  if (Number(instance.exports.world_appliance_abi_version()) !== 4) throw new Error('unexpected appliance ABI version');
   if (manifestLen <= 0 || fingerprintLo === 0n || fingerprintHi === 0n) {
     throw new Error('wasm protocol manifest execution failed');
   }

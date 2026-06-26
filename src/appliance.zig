@@ -4711,7 +4711,7 @@ pub fn Appliance(comptime World: type) type {
 
         pub const Abi = struct {
             pub const version: u32 = World.world_appliance_abi_version;
-            pub const universal_version: u32 = 3;
+            pub const universal_version: u32 = World.world_appliance_abi_version;
             pub const Status = enum(u32) {
                 ok = 0,
                 output_ready = 1,

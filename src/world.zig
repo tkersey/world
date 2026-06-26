@@ -373,7 +373,7 @@ pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 3;
 pub const world_guest_conformance_report_fingerprint_version: u32 = 1;
-pub const world_appliance_abi_version: u32 = 3;
+pub const world_appliance_abi_version: u32 = 4;
 pub const world_appliance_manifest_format_version: u32 = 3;
 pub const world_appliance_manifest_fingerprint_version: u32 = 3;
 pub const world_appliance_memory_plan_fingerprint_version: u32 = 1;
@@ -1447,7 +1447,7 @@ test "world v0 budgets match protocol manifest baselines" {
     const limits = Protocol.Manifest.limits;
     try std.testing.expectEqual(@as(u64, 67_108_864), limits.max_universal_wasm_linear_memory_bytes);
     try std.testing.expectEqual(@as(u32, 128 * 1024), limits.max_executable_image_bytes);
-    try std.testing.expectEqual(@as(u32, 1_704_960), limits.max_turn_input_bytes);
+    try std.testing.expectEqual(@as(u32, 2_950_144), limits.max_turn_input_bytes);
     try std.testing.expectEqual(@as(u32, 512 * 1024), limits.max_turn_closure_bytes);
     try std.testing.expectEqual(@as(u32, 4 * 1024 * 1024), limits.max_capsule_bytes);
     try std.testing.expectEqual(@as(u32, 4 * 1024 * 1024), limits.max_archive_append_batch_bytes);
@@ -1500,6 +1500,20 @@ test "world adversarial codecs reject malformed protocol receipt evidence fail c
     var forged_receipt = proof_receipts[0];
     forged_receipt.receipt_fingerprint ^= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, forged_receipt.validate());
+
+    var arbitrary_proof = proof_receipts;
+    arbitrary_proof[0] = Protocol.ProofReceipt.init(.{
+        .proof_kind = .boundary_portable_v2,
+        .input_corpus_case_fingerprints = &.{0xAA},
+        .expected_output_fingerprints = &.{0xAA},
+        .actual_output_fingerprints = &.{0xAA},
+        .artifact_fingerprints = &.{0xAA},
+        .bounded_diagnostics = &.{0xAA},
+        .actual_comparison_result = true,
+    });
+    const arbitrary_proof_release = Protocol.canonicalReleaseReceipt(&arbitrary_proof);
+    try std.testing.expect(!arbitrary_proof_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, arbitrary_proof_release.validate());
 
     var mismatched_proof = proof_receipts;
     mismatched_proof[0] = Protocol.ProofReceipt.init(.{

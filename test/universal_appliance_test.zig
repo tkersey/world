@@ -3,8 +3,8 @@ const universal = @import("universal_appliance_impl");
 const world = @import("world");
 const fixtures = @import("world_fixtures");
 
-test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded memory" {
-    try std.testing.expectEqual(@as(u32, 3), universal.world_appliance_abi_version());
+test "Universal Appliance ABI v4 emits TurnClosure bytes and preserves bounded memory" {
+    try std.testing.expectEqual(@as(u32, 4), universal.world_appliance_abi_version());
     try std.testing.expect(universal.world_appliance_runtime_manifest_len() > 0);
     try std.testing.expect(universal.executable_runtime_profile.supports_internal_providers);
     const runtime_manifest_len = universal.world_appliance_runtime_manifest_len();
@@ -29,7 +29,7 @@ test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded m
     try expectManifestLine(runtime_manifest, "max_image_bytes=131072\n");
     try expectManifestLine(runtime_manifest, "max_command_bytes=65536\n");
     try expectManifestLine(runtime_manifest, "max_output_bytes=131072\n");
-    try expectManifestLine(runtime_manifest, "max_turn_input_bytes=1704960\n");
+    try expectManifestLine(runtime_manifest, "max_turn_input_bytes=2950144\n");
     try expectManifestLine(runtime_manifest, "max_closure_bytes=524288\n");
     try expectManifestLine(runtime_manifest, "max_linear_memory_pages=1024\n");
     try expectManifestLine(runtime_manifest, "decoded_immutable_bytes_limit=16777216\n");

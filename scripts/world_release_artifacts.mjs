@@ -180,7 +180,7 @@ async function inspectWasm(bytes) {
   const manifestLen = Number(instance.exports.world_protocol_manifest_len());
   const lo = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_lo());
   const hi = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_hi());
-  if (Number(instance.exports.world_appliance_abi_version()) !== 3) throw new Error('unexpected appliance ABI version');
+  if (Number(instance.exports.world_appliance_abi_version()) !== 4) throw new Error('unexpected appliance ABI version');
   const memory = instance.exports.memory;
   if (manifestLen <= 0 || lo === 0n || hi === 0n) {
     throw new Error('protocol manifest wasm calls failed');

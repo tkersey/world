@@ -108,7 +108,7 @@
   "limits": {
     "max_universal_wasm_linear_memory_bytes": 67108864,
     "max_executable_image_bytes": 131072,
-    "max_turn_input_bytes": 1704960,
+    "max_turn_input_bytes": 2950144,
     "max_turn_closure_bytes": 524288,
     "max_capsule_bytes": 4194304,
     "max_archive_append_batch_bytes": 4194304,
