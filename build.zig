@@ -465,6 +465,30 @@ pub fn build(b: *std.Build) void {
     emit_world_protocol_release_receipt_run.addFileArg(universal_appliance_wasm.getEmittedBin());
     emit_world_protocol_release_receipt_run.addArgs(&.{"--out"});
     _ = emit_world_protocol_release_receipt_run.addOutputFileArg("world-release-receipt.json");
+    emit_world_protocol_release_receipt_run.addArgs(&.{
+        "--proof-gate", "check-boundary-world-compatibility",
+        "--proof-gate", "check-world-executable-image",
+        "--proof-gate", "check-world-universal-appliance-node",
+        "--proof-gate", "check-world-two-programs-one-wasm",
+        "--proof-gate", "check-world-universal-providers",
+        "--proof-gate", "check-world-loaded-runspace",
+        "--proof-gate", "check-world-active-fabric-restore",
+        "--proof-gate", "check-world-replay-positive",
+        "--proof-gate", "check-world-v0-negative",
+        "--proof-gate", "check-world-deterministic-retry",
+        "--proof-gate", "check-world-appliance-batching",
+        "--proof-gate", "check-world-js-codec",
+        "--proof-gate", "check-world-conformance-corpus",
+        "--proof-gate", "check-world-adversarial-codecs",
+        "--proof-gate", "check-world-adversarial-codecs",
+        "--proof-gate", "check-world-adversarial-codecs",
+        "--proof-gate", "check-world-state-machine-differential",
+        "--proof-gate", "check-world-state-machine-differential",
+        "--proof-gate", "check-world-universal-memory",
+        "--proof-gate", "check-world-js-malformed-corpus",
+        "--proof-gate", "check-world-conformance-corpus",
+        "--proof-gate", "check-world-reproducible-wasm",
+    });
     emit_world_protocol_release_receipt_run.step.dependOn(&emit_world_release_receipt_run.step);
     const emit_world_release_receipt_step = b.step("emit-world-release-receipt", "Emit the World v0 release receipt from proof evidence.");
     emit_world_release_receipt_step.dependOn(&emit_world_protocol_release_receipt_run.step);
@@ -937,6 +961,24 @@ pub fn build(b: *std.Build) void {
     const check_world_active_fabric_restore_step = b.step("check-world-active-fabric-restore", "Run positive World active Fabric restore proof.");
     const check_world_v0_negative_step = b.step("check-world-v0-negative", "Run World v0 malformed and denial proof gates.");
     check_world_v0_negative_step.dependOn(check_world_seed_malformed_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_boundary_world_compatibility_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_executable_image_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_universal_appliance_node_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_two_programs_one_wasm_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_universal_providers_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_loaded_runspace_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_active_fabric_restore_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_replay_positive_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_v0_negative_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_deterministic_retry_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_appliance_batching_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_js_codec_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_conformance_corpus_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_adversarial_codecs_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_state_machine_differential_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_universal_memory_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_js_malformed_corpus_step);
+    emit_world_protocol_release_receipt_run.step.dependOn(check_world_reproducible_wasm_step);
     const check_world_v0_step = b.step("check-world-v0", "Run the World v0 positive Turn Closure completion gate.");
     check_world_v0_step.dependOn(check_world_executable_image_step);
     check_world_v0_step.dependOn(check_world_turn_closure_step);

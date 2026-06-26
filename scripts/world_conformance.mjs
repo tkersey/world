@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import {
   BinaryReader,
@@ -196,8 +195,7 @@ try {
 
 receipt.complete = receiptComplete(receipt, args);
 receipt.receipt_fingerprint = fnv64Hex(JSON.stringify(receipt));
-const outputReceipt = args.wasm ? buildProtocolReleaseReceipt(receipt, args) : receipt;
-if (args.receiptOut) writeFileSync(args.receiptOut, `${JSON.stringify(outputReceipt, null, 2)}\n`);
+if (args.receiptOut) writeFileSync(args.receiptOut, `${JSON.stringify(receipt, null, 2)}\n`);
 if (!receipt.complete) {
   console.error(JSON.stringify(receipt, null, 2));
   process.exit(1);
@@ -227,84 +225,6 @@ function receiptComplete(receipt, args) {
   return receipt.artifact_inspection &&
     receipt.actual_webassembly_execution &&
     receipt.memory_limit_compliance;
-}
-
-function buildProtocolReleaseReceipt(evidenceReceipt, args) {
-  const wasmChecksum = checksum64(readFileSync(args.wasm));
-  const sourceChecksum = sourcePackageChecksum(args.corpus ?? 'conformance/v0/world');
-  const proofReceipts = expected.proof_kinds.map((proofKind, index) => {
-    const evidence = proofKindEvidenceFingerprint(index);
-    const receipt = {
-      receipt_format_version: 1,
-      receipt_fingerprint_version: 1,
-      proof_kind: proofKind,
-      protocol_manifest_fingerprint: evidenceReceipt.protocol_manifest_fingerprint_lo,
-      input_corpus_case_fingerprints: [evidence],
-      expected_output_fingerprints: [evidence],
-      actual_output_fingerprints: [evidence],
-      actual_comparison_result: true,
-      artifact_fingerprints: [evidence, wasmChecksum, sourceChecksum],
-      blocker_count: 0,
-      warning_count: 0,
-      bounded_diagnostics: [evidence],
-    };
-    receipt.receipt_fingerprint = fnv64Hex(JSON.stringify(receipt));
-    return receipt;
-  });
-  const releaseReceipt = {
-    release_receipt_format_version: 1,
-    release_receipt_fingerprint_version: 1,
-    boundary_protocol_manifest_fingerprint: '0xf970e6d1a1601cbc',
-    world_protocol_manifest_fingerprint: evidenceReceipt.protocol_manifest_fingerprint_lo,
-    conformance_corpus_root_fingerprint: fnv64Hex(JSON.stringify({
-      positive: expected.positive,
-      negative: expected.negative,
-      transition: expected.transition,
-      wire_records: expected.wire_records,
-      malformed_wire: expected.malformed_wire,
-      proof_kinds: expected.proof_kinds,
-      limits: expected.limits,
-    })),
-    universal_wasm_checksum: wasmChecksum,
-    source_package_checksum: sourceChecksum,
-    proof_receipts: proofReceipts,
-    evidence_receipt: evidenceReceipt,
-    complete: proofReceipts.length === expected.proof_kinds.length && evidenceReceipt.complete,
-    blockers: [],
-    warnings: [],
-  };
-  releaseReceipt.release_receipt_fingerprint = fnv64Hex(JSON.stringify(releaseReceipt));
-  return releaseReceipt;
-}
-
-function proofKindEvidenceFingerprint(index) {
-  return `0x${(0x5750000000000000n | BigInt(index + 1)).toString(16).padStart(16, '0')}`;
-}
-
-function sourcePackageChecksum(corpusPath) {
-  const hash = createHash('sha256');
-  const corpusFile = statSync(corpusPath).isDirectory() ? join(corpusPath, 'corpus.json') : corpusPath;
-  for (const path of [
-    corpusFile,
-    'scripts/world_conformance.mjs',
-    'scripts/world_appliance_wire_codec.mjs',
-    'scripts/world_loaded_value_codec.mjs',
-    'docs/world_v0.md',
-  ]) {
-    hash.update(path);
-    hash.update('\0');
-    hash.update(readFileSync(path));
-    hash.update('\0');
-  }
-  return checksum64(hash.digest());
-}
-
-function checksum64(bytes) {
-  return `0x${sha256Hex(bytes).slice(0, 16)}`;
-}
-
-function sha256Hex(bytes) {
-  return createHash('sha256').update(bytes).digest('hex');
 }
 
 function loadCorpus(path) {

@@ -10,15 +10,22 @@ pub fn main(init: std.process.Init) !void {
 
     var wasm_path: ?[]const u8 = null;
     var out_path: ?[]const u8 = null;
+    var proof_gates: [Protocol.required_proof_kind_count][]const u8 = undefined;
+    var proof_gate_count: usize = 0;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--wasm")) {
             wasm_path = args.next() orelse return error.MissingWasmPath;
         } else if (std.mem.eql(u8, arg, "--out")) {
             out_path = args.next() orelse return error.MissingOutPath;
+        } else if (std.mem.eql(u8, arg, "--proof-gate")) {
+            if (proof_gate_count >= proof_gates.len) return error.TooManyProofGates;
+            proof_gates[proof_gate_count] = args.next() orelse return error.MissingProofGate;
+            proof_gate_count += 1;
         } else {
             return error.UnknownArgument;
         }
     }
+    if (proof_gate_count != Protocol.required_proof_kind_count) return error.MissingProofGate;
 
     const wasm_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, wasm_path orelse return error.MissingWasmPath, allocator, .limited(world.world_max_decoded_byte_field_len));
     defer allocator.free(wasm_bytes);
@@ -51,11 +58,11 @@ pub fn main(init: std.process.Init) !void {
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
-    try writeReleaseReceiptJson(allocator, &out, release_receipt, proof_receipts[0..]);
+    try writeReleaseReceiptJson(allocator, &out, release_receipt, proof_receipts[0..], proof_gates[0..]);
     try std.Io.Dir.cwd().writeFile(init.io, .{ .sub_path = out_path orelse return error.MissingOutPath, .data = out.items });
 }
 
-fn writeReleaseReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), receipt: Protocol.ReleaseReceipt, proof_receipts: []const Protocol.ProofReceipt) !void {
+fn writeReleaseReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), receipt: Protocol.ReleaseReceipt, proof_receipts: []const Protocol.ProofReceipt, proof_gates: []const []const u8) !void {
     try out.print(allocator,
         \\{{
         \\  "release_receipt_format_version": {d},
@@ -82,7 +89,7 @@ fn writeReleaseReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
     });
     for (proof_receipts, 0..) |proof_receipt, index| {
         if (index != 0) try out.appendSlice(allocator, ",\n");
-        try writeProofReceiptJson(allocator, out, proof_receipt);
+        try writeProofReceiptJson(allocator, out, proof_receipt, proof_gates[index]);
     }
     try out.print(allocator,
         \\
@@ -94,9 +101,10 @@ fn writeReleaseReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
     , .{});
 }
 
-fn writeProofReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), receipt: Protocol.ProofReceipt) !void {
+fn writeProofReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), receipt: Protocol.ProofReceipt, proof_gate: []const u8) !void {
     try out.print(allocator,
         \\    {{
+        \\      "proof_gate": "{s}",
         \\      "receipt_format_version": {d},
         \\      "receipt_fingerprint_version": {d},
         \\      "receipt_fingerprint": {d},
@@ -104,6 +112,7 @@ fn writeProofReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), 
         \\      "protocol_manifest_fingerprint": {d},
         \\      "input_corpus_case_fingerprints": 
     , .{
+        proof_gate,
         receipt.receipt_format_version,
         receipt.receipt_fingerprint_version,
         receipt.receipt_fingerprint,
