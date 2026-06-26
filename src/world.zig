@@ -1497,6 +1497,14 @@ test "world adversarial codecs reject malformed protocol receipt evidence fail c
     try std.testing.expect(!missing_source_checksum.complete);
     try std.testing.expectError(error.InvalidFrameEncoding, missing_source_checksum.validate());
 
+    const forged_checksums = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+        .universal_wasm_checksum = 1,
+        .source_package_checksum = 2,
+    });
+    try std.testing.expect(!forged_checksums.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_checksums.validate());
+
     var forged_receipt = proof_receipts[0];
     forged_receipt.receipt_fingerprint ^= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, forged_receipt.validate());

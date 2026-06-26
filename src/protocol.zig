@@ -224,6 +224,9 @@ pub fn Protocol(comptime W: type) type {
         };
 
         pub const ReleaseReceipt = struct {
+            const required_universal_wasm_checksum = protocolArtifactFingerprint("world.universal_wasm.checksum");
+            const required_source_package_checksum = protocolArtifactFingerprint("world.source_package.checksum");
+
             release_receipt_format_version: u32 = world_protocol_release_receipt_format_version,
             release_receipt_fingerprint_version: u32 = world_protocol_release_receipt_fingerprint_version,
             release_receipt_fingerprint: u64 = 0,
@@ -231,8 +234,8 @@ pub fn Protocol(comptime W: type) type {
             world_protocol_manifest_fingerprint: u64 = 0,
             conformance_corpus_root_fingerprint: u64 = 0,
             proof_receipts: []const ProofReceipt,
-            universal_wasm_checksum: u64 = protocolArtifactFingerprint("world.universal_wasm.checksum"),
-            source_package_checksum: u64 = protocolArtifactFingerprint("world.source_package.checksum"),
+            universal_wasm_checksum: u64 = required_universal_wasm_checksum,
+            source_package_checksum: u64 = required_source_package_checksum,
             complete: bool = false,
             blockers: []const u64 = &.{},
             warnings: []const u64 = &.{},
@@ -242,8 +245,8 @@ pub fn Protocol(comptime W: type) type {
                 boundary_protocol_manifest_fingerprint: u64 = Manifest.required_boundary_protocol_manifest_fingerprint,
                 world_protocol_manifest_fingerprint: u64 = 0,
                 conformance_corpus_root_fingerprint: u64 = 0,
-                universal_wasm_checksum: u64 = protocolArtifactFingerprint("world.universal_wasm.checksum"),
-                source_package_checksum: u64 = protocolArtifactFingerprint("world.source_package.checksum"),
+                universal_wasm_checksum: u64 = required_universal_wasm_checksum,
+                source_package_checksum: u64 = required_source_package_checksum,
                 blockers: []const u64 = &.{},
                 warnings: []const u64 = &.{},
             }) @This() {
@@ -268,7 +271,7 @@ pub fn Protocol(comptime W: type) type {
                 if (self.boundary_protocol_manifest_fingerprint != Manifest.required_boundary_protocol_manifest_fingerprint) return error.InvalidFrameEncoding;
                 if (self.world_protocol_manifest_fingerprint != Manifest.manifestFingerprint().lo) return error.InvalidFrameEncoding;
                 if (self.conformance_corpus_root_fingerprint != conformanceCorpusRootFingerprint()) return error.InvalidFrameEncoding;
-                if (self.universal_wasm_checksum == 0 or self.source_package_checksum == 0) return error.InvalidFrameEncoding;
+                if (!self.artifactChecksumsBound()) return error.InvalidFrameEncoding;
                 try self.validateProofMatrix();
                 if (self.complete != self.computedComplete()) return error.InvalidFrameEncoding;
                 if (self.release_receipt_fingerprint != fingerprintReleaseReceipt(self)) return error.InvalidFrameEncoding;
@@ -287,9 +290,14 @@ pub fn Protocol(comptime W: type) type {
                 if (self.boundary_protocol_manifest_fingerprint != Manifest.required_boundary_protocol_manifest_fingerprint) return false;
                 if (self.world_protocol_manifest_fingerprint != Manifest.manifestFingerprint().lo) return false;
                 if (self.conformance_corpus_root_fingerprint != conformanceCorpusRootFingerprint()) return false;
-                if (self.universal_wasm_checksum == 0 or self.source_package_checksum == 0) return false;
+                if (!self.artifactChecksumsBound()) return false;
                 self.validateProofMatrix() catch return false;
                 return self.blockers.len == 0;
+            }
+
+            fn artifactChecksumsBound(self: @This()) bool {
+                return self.universal_wasm_checksum == required_universal_wasm_checksum and
+                    self.source_package_checksum == required_source_package_checksum;
             }
 
             fn validateProofMatrix(self: @This()) !void {

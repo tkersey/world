@@ -161,6 +161,7 @@ const corpus = loadCorpus(args.corpus ?? 'conformance/v0/world');
 const receipt = {
   receipt_format_version: 1,
   runner: 'scripts/world_conformance.mjs',
+  evidence_scope: args.wasm ? 'wasm-release' : 'js-corpus',
   artifact_inspection: false,
   actual_webassembly_execution: false,
   positive_success: false,
@@ -192,7 +193,7 @@ try {
   receipt.blockers.push(String(error?.message ?? error));
 }
 
-receipt.complete = receipt.blockers.length === 0;
+receipt.complete = receiptComplete(receipt, args);
 receipt.receipt_fingerprint = fnv64Hex(JSON.stringify(receipt));
 if (args.receiptOut) writeFileSync(args.receiptOut, `${JSON.stringify(receipt, null, 2)}\n`);
 if (!receipt.complete) {
@@ -212,6 +213,18 @@ function parseArgs(raw) {
     else throw new Error(`unknown argument: ${arg}`);
   }
   return parsed;
+}
+
+function receiptComplete(receipt, args) {
+  if (receipt.blockers.length !== 0) return false;
+  if (args.mode !== 'malformed') {
+    if (!receipt.positive_success || !receipt.byte_equality || !receipt.semantic_fingerprint_equality) return false;
+  }
+  if (args.mode !== 'js-corpus' && !receipt.expected_rejection) return false;
+  if (!args.wasm) return true;
+  return receipt.artifact_inspection &&
+    receipt.actual_webassembly_execution &&
+    receipt.memory_limit_compliance;
 }
 
 function loadCorpus(path) {
