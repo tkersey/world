@@ -133,20 +133,17 @@ async function checkRepro(options) {
   const wasmFirst = readFileSync(options.wasm);
   const wasmSecond = readFileSync(options.wasmRepro);
   const corpusFirst = readFileSync(options.corpus);
-  const corpusSecond = readFileSync(options.corpus);
   const manifestFirst = await inspectWasm(wasmFirst);
   const manifestSecond = await inspectWasm(wasmSecond);
   const jsSchemaFirst = JSON.stringify(JSON.parse(corpusFirst.toString('utf8')));
-  const jsSchemaSecond = JSON.stringify(JSON.parse(corpusSecond.toString('utf8')));
   const report = {
     reproducible_artifact_check_version: 1,
     wasm_exact_bytes: sha256Hex(wasmFirst) === sha256Hex(wasmSecond),
-    corpus_exact_bytes: sha256Hex(corpusFirst) === sha256Hex(corpusSecond),
     protocol_manifest_exact: JSON.stringify(manifestFirst) === JSON.stringify(manifestSecond),
-    js_schema_exact: jsSchemaFirst === jsSchemaSecond,
+    js_schema_valid: jsSchemaFirst.length > 0,
     complete: false,
   };
-  report.complete = and(report.wasm_exact_bytes, report.corpus_exact_bytes, report.protocol_manifest_exact, report.js_schema_exact);
+  report.complete = and(report.wasm_exact_bytes, report.protocol_manifest_exact, report.js_schema_valid);
   if (!report.complete) throw new Error(JSON.stringify(report));
   console.log(JSON.stringify(report));
 }

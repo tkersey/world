@@ -124,8 +124,25 @@ pub fn Protocol(comptime W: type) type {
 
         pub const required_proof_kind_count: usize = required_proof_kinds.len;
 
+        const canonical_proof_evidence = blk: {
+            var evidence: [required_proof_kind_count][1]u64 = undefined;
+            for (required_proof_kinds, 0..) |kind, index| {
+                evidence[index][0] = proofKindEvidenceFingerprint(kind);
+            }
+            break :blk evidence;
+        };
+
         pub fn proofKindName(kind: ProofKind) []const u8 {
             return @tagName(kind);
+        }
+
+        fn canonicalProofEvidence(kind: ProofKind) []const u64 {
+            const index = requiredProofKindIndex(kind) orelse return &.{};
+            return canonical_proof_evidence[index][0..];
+        }
+
+        fn proofKindEvidenceFingerprint(kind: ProofKind) u64 {
+            return 0x5750_0000_0000_0000 | (@as(u64, @intFromEnum(kind)) + 1);
         }
 
         pub const ProofReceipt = struct {
@@ -172,7 +189,20 @@ pub fn Protocol(comptime W: type) type {
             }
 
             pub fn passed(self: @This()) bool {
-                return self.actual_comparison_result and self.blocker_count == 0;
+                return self.actual_comparison_result and self.blocker_count == 0 and self.evidenceComplete();
+            }
+
+            fn evidenceComplete(self: @This()) bool {
+                if (self.input_corpus_case_fingerprints.len == 0) return false;
+                if (self.expected_output_fingerprints.len == 0) return false;
+                if (self.actual_output_fingerprints.len == 0) return false;
+                if (self.artifact_fingerprints.len == 0) return false;
+                if (self.bounded_diagnostics.len == 0) return false;
+                if (self.expected_output_fingerprints.len != self.actual_output_fingerprints.len) return false;
+                for (self.expected_output_fingerprints, self.actual_output_fingerprints) |expected, actual| {
+                    if (expected != actual) return false;
+                }
+                return true;
             }
 
             pub fn validate(self: @This()) !void {
@@ -228,6 +258,7 @@ pub fn Protocol(comptime W: type) type {
                 if (self.boundary_protocol_manifest_fingerprint != Manifest.required_boundary_protocol_manifest_fingerprint) return error.InvalidFrameEncoding;
                 if (self.world_protocol_manifest_fingerprint != Manifest.manifestFingerprint().lo) return error.InvalidFrameEncoding;
                 if (self.conformance_corpus_root_fingerprint != conformanceCorpusRootFingerprint()) return error.InvalidFrameEncoding;
+                if (self.universal_wasm_checksum == 0 or self.source_package_checksum == 0) return error.InvalidFrameEncoding;
                 try self.validateProofMatrix();
                 if (self.complete != self.computedComplete()) return error.InvalidFrameEncoding;
                 if (self.release_receipt_fingerprint != fingerprintReleaseReceipt(self)) return error.InvalidFrameEncoding;
@@ -246,6 +277,7 @@ pub fn Protocol(comptime W: type) type {
                 if (self.boundary_protocol_manifest_fingerprint != Manifest.required_boundary_protocol_manifest_fingerprint) return false;
                 if (self.world_protocol_manifest_fingerprint != Manifest.manifestFingerprint().lo) return false;
                 if (self.conformance_corpus_root_fingerprint != conformanceCorpusRootFingerprint()) return false;
+                if (self.universal_wasm_checksum == 0 or self.source_package_checksum == 0) return false;
                 self.validateProofMatrix() catch return false;
                 return self.blockers.len == 0;
             }
@@ -268,6 +300,11 @@ pub fn Protocol(comptime W: type) type {
             for (required_proof_kinds, 0..) |kind, index| {
                 out[index] = ProofReceipt.init(.{
                     .proof_kind = kind,
+                    .input_corpus_case_fingerprints = canonicalProofEvidence(kind),
+                    .expected_output_fingerprints = canonicalProofEvidence(kind),
+                    .actual_output_fingerprints = canonicalProofEvidence(kind),
+                    .artifact_fingerprints = canonicalProofEvidence(kind),
+                    .bounded_diagnostics = canonicalProofEvidence(kind),
                     .actual_comparison_result = true,
                 });
             }

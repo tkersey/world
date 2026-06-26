@@ -1483,9 +1483,36 @@ test "world adversarial codecs reject malformed protocol receipt evidence fail c
     try std.testing.expect(!wrong_corpus_root.complete);
     try std.testing.expectError(error.InvalidFrameEncoding, wrong_corpus_root.validate());
 
+    const missing_wasm_checksum = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+        .universal_wasm_checksum = 0,
+    });
+    try std.testing.expect(!missing_wasm_checksum.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_wasm_checksum.validate());
+
+    const missing_source_checksum = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+        .source_package_checksum = 0,
+    });
+    try std.testing.expect(!missing_source_checksum.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_source_checksum.validate());
+
     var forged_receipt = proof_receipts[0];
     forged_receipt.receipt_fingerprint ^= 1;
     try std.testing.expectError(error.InvalidFrameEncoding, forged_receipt.validate());
+
+    var mismatched_proof = proof_receipts;
+    mismatched_proof[0] = Protocol.ProofReceipt.init(.{
+        .proof_kind = .boundary_portable_v2,
+        .input_corpus_case_fingerprints = &.{Protocol.conformanceCorpusRootFingerprint()},
+        .expected_output_fingerprints = &.{0xA},
+        .actual_output_fingerprints = &.{0xB},
+        .artifact_fingerprints = &.{Protocol.Manifest.manifestFingerprint().lo},
+        .actual_comparison_result = true,
+    });
+    const mismatched_proof_release = Protocol.canonicalReleaseReceipt(&mismatched_proof);
+    try std.testing.expect(!mismatched_proof_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_proof_release.validate());
 
     var duplicated = proof_receipts;
     duplicated[Protocol.required_proof_kind_count - 1] = duplicated[0];
