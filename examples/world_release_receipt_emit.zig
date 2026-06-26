@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
     const universal_wasm_checksum = checksum64(wasm_bytes);
     const wasm_inspection_receipt_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, wasm_inspection_receipt_path orelse return error.MissingWasmInspectionReceiptPath, allocator, .limited(1024 * 1024));
     defer allocator.free(wasm_inspection_receipt_bytes);
-    try validateWasmInspectionReceipt(wasm_inspection_receipt_bytes, universal_wasm_checksum);
+    try validateWasmInspectionReceipt(allocator, wasm_inspection_receipt_bytes, universal_wasm_checksum);
 
     const source_package_checksum = try sourcePackageChecksum(init.io, allocator);
 
@@ -202,38 +202,78 @@ fn validateUniversalWasmArtifact(bytes: []const u8) !void {
     }
 }
 
-fn validateWasmInspectionReceipt(bytes: []const u8, expected_wasm_checksum: u64) !void {
-    if (!jsonBool(bytes, "artifact_inspection")) return error.WasmInspectionReceiptIncomplete;
-    if (!jsonBool(bytes, "actual_webassembly_execution")) return error.WasmInspectionReceiptIncomplete;
-    if (!jsonBool(bytes, "memory_limit_compliance")) return error.WasmInspectionReceiptIncomplete;
-    if (!jsonBool(bytes, "complete")) return error.WasmInspectionReceiptIncomplete;
+const WasmInspectionReceipt = struct {
+    universal_wasm_checksum: []const u8,
+    protocol_manifest_fingerprint_lo: []const u8,
+    artifact_inspection: bool,
+    actual_webassembly_execution: bool,
+    memory_limit_compliance: bool,
+    complete: bool,
+};
+
+fn validateWasmInspectionReceipt(allocator: std.mem.Allocator, bytes: []const u8, expected_wasm_checksum: u64) !void {
+    const parsed = std.json.parseFromSlice(WasmInspectionReceipt, allocator, bytes, .{
+        .ignore_unknown_fields = true,
+    }) catch return error.WasmInspectionReceiptIncomplete;
+    defer parsed.deinit();
+
+    const receipt = parsed.value;
+    if (!receipt.artifact_inspection) return error.WasmInspectionReceiptIncomplete;
+    if (!receipt.actual_webassembly_execution) return error.WasmInspectionReceiptIncomplete;
+    if (!receipt.memory_limit_compliance) return error.WasmInspectionReceiptIncomplete;
+    if (!receipt.complete) return error.WasmInspectionReceiptIncomplete;
 
     var checksum_buf: [18]u8 = undefined;
     const expected_checksum = try std.fmt.bufPrint(&checksum_buf, "0x{x:0>16}", .{expected_wasm_checksum});
-    if (!jsonStringEquals(bytes, "universal_wasm_checksum", expected_checksum)) return error.WasmInspectionReceiptArtifactMismatch;
+    if (!std.mem.eql(u8, receipt.universal_wasm_checksum, expected_checksum)) return error.WasmInspectionReceiptArtifactMismatch;
 
     var manifest_buf: [18]u8 = undefined;
     const expected_manifest = try std.fmt.bufPrint(&manifest_buf, "0x{x}", .{Protocol.Manifest.manifestFingerprint().lo});
-    if (!jsonStringEquals(bytes, "protocol_manifest_fingerprint_lo", expected_manifest)) return error.WasmInspectionReceiptArtifactMismatch;
+    if (!std.mem.eql(u8, receipt.protocol_manifest_fingerprint_lo, expected_manifest)) return error.WasmInspectionReceiptArtifactMismatch;
 }
 
-fn jsonBool(bytes: []const u8, field: []const u8) bool {
-    const field_index = std.mem.indexOf(u8, bytes, field) orelse return false;
-    const colon_index = std.mem.indexOfScalarPos(u8, bytes, field_index + field.len, ':') orelse return false;
-    var cursor = colon_index + 1;
-    while (cursor < bytes.len and std.ascii.isWhitespace(bytes[cursor])) : (cursor += 1) {}
-    return std.mem.startsWith(u8, bytes[cursor..], "true");
-}
+test "wasm inspection receipt validation uses parsed fields" {
+    const allocator = std.testing.allocator;
+    const valid = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "universal_wasm_checksum": "0x0000000000001234",
+        \\  "protocol_manifest_fingerprint_lo": "0x{x}",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
+        \\  "memory_limit_compliance": true,
+        \\  "complete": true
+        \\}}
+    , .{Protocol.Manifest.manifestFingerprint().lo});
+    defer allocator.free(valid);
+    try validateWasmInspectionReceipt(allocator, valid, 0x1234);
 
-fn jsonStringEquals(bytes: []const u8, field: []const u8, expected: []const u8) bool {
-    const field_index = std.mem.indexOf(u8, bytes, field) orelse return false;
-    const colon_index = std.mem.indexOfScalarPos(u8, bytes, field_index + field.len, ':') orelse return false;
-    var cursor = colon_index + 1;
-    while (cursor < bytes.len and std.ascii.isWhitespace(bytes[cursor])) : (cursor += 1) {}
-    if (cursor >= bytes.len or bytes[cursor] != '"') return false;
-    cursor += 1;
-    const end = std.mem.indexOfScalarPos(u8, bytes, cursor, '"') orelse return false;
-    return std.mem.eql(u8, bytes[cursor..end], expected);
+    const decoy_complete = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "not_complete": true,
+        \\  "universal_wasm_checksum": "0x0000000000001234",
+        \\  "protocol_manifest_fingerprint_lo": "0x{x}",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
+        \\  "memory_limit_compliance": true,
+        \\  "complete": false
+        \\}}
+    , .{Protocol.Manifest.manifestFingerprint().lo});
+    defer allocator.free(decoy_complete);
+    try std.testing.expectError(error.WasmInspectionReceiptIncomplete, validateWasmInspectionReceipt(allocator, decoy_complete, 0x1234));
+
+    const decoy_checksum = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "not_universal_wasm_checksum": "0x0000000000001234",
+        \\  "universal_wasm_checksum": "0x0000000000005678",
+        \\  "protocol_manifest_fingerprint_lo": "0x{x}",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
+        \\  "memory_limit_compliance": true,
+        \\  "complete": true
+        \\}}
+    , .{Protocol.Manifest.manifestFingerprint().lo});
+    defer allocator.free(decoy_checksum);
+    try std.testing.expectError(error.WasmInspectionReceiptArtifactMismatch, validateWasmInspectionReceipt(allocator, decoy_checksum, 0x1234));
 }
 
 fn countWasmImports(section: []const u8) !u32 {
