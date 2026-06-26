@@ -430,9 +430,9 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"world protocol release receipt"},
     });
-    const emit_world_proof_receipts_run = b.addSystemCommand(&.{
-        "node",
-        "scripts/world_conformance.mjs",
+    const emit_world_proof_receipts_run = b.addSystemCommand(&.{"node"});
+    emit_world_proof_receipts_run.addFileArg(b.path("scripts/world_conformance.mjs"));
+    emit_world_proof_receipts_run.addArgs(&.{
         "--corpus",
         "conformance/v0/world",
         "--receipt-out",
@@ -440,9 +440,9 @@ pub fn build(b: *std.Build) void {
     _ = emit_world_proof_receipts_run.addOutputFileArg("world-proof-receipts.json");
     const emit_world_proof_receipts_step = b.step("emit-world-proof-receipts", "Emit machine-readable World v0 proof receipts.");
     emit_world_proof_receipts_step.dependOn(&emit_world_proof_receipts_run.step);
-    const emit_world_release_receipt_run = b.addSystemCommand(&.{
-        "node",
-        "scripts/world_conformance.mjs",
+    const emit_world_release_receipt_run = b.addSystemCommand(&.{"node"});
+    emit_world_release_receipt_run.addFileArg(b.path("scripts/world_conformance.mjs"));
+    emit_world_release_receipt_run.addArgs(&.{
         "--corpus",
         "conformance/v0/world",
         "--wasm",

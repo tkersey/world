@@ -33,11 +33,11 @@ pub fn main(init: std.process.Init) !void {
     const wasm_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, wasm_path orelse return error.MissingWasmPath, allocator, .limited(world.world_max_decoded_byte_field_len));
     defer allocator.free(wasm_bytes);
     try validateUniversalWasmArtifact(wasm_bytes);
+    const universal_wasm_checksum = checksum64(wasm_bytes);
     const wasm_inspection_receipt_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, wasm_inspection_receipt_path orelse return error.MissingWasmInspectionReceiptPath, allocator, .limited(1024 * 1024));
     defer allocator.free(wasm_inspection_receipt_bytes);
-    try validateWasmInspectionReceipt(wasm_inspection_receipt_bytes);
+    try validateWasmInspectionReceipt(wasm_inspection_receipt_bytes, universal_wasm_checksum);
 
-    const universal_wasm_checksum = checksum64(wasm_bytes);
     const source_package_checksum = try sourcePackageChecksum(init.io, allocator);
 
     var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
@@ -202,12 +202,19 @@ fn validateUniversalWasmArtifact(bytes: []const u8) !void {
     }
 }
 
-fn validateWasmInspectionReceipt(bytes: []const u8) !void {
+fn validateWasmInspectionReceipt(bytes: []const u8, expected_wasm_checksum: u64) !void {
     if (!jsonBool(bytes, "artifact_inspection")) return error.WasmInspectionReceiptIncomplete;
     if (!jsonBool(bytes, "actual_webassembly_execution")) return error.WasmInspectionReceiptIncomplete;
     if (!jsonBool(bytes, "memory_limit_compliance")) return error.WasmInspectionReceiptIncomplete;
     if (!jsonBool(bytes, "complete")) return error.WasmInspectionReceiptIncomplete;
-    if (std.mem.indexOf(u8, bytes, "\"protocol_manifest_fingerprint_lo\"") == null) return error.WasmInspectionReceiptIncomplete;
+
+    var checksum_buf: [18]u8 = undefined;
+    const expected_checksum = try std.fmt.bufPrint(&checksum_buf, "0x{x:0>16}", .{expected_wasm_checksum});
+    if (!jsonStringEquals(bytes, "universal_wasm_checksum", expected_checksum)) return error.WasmInspectionReceiptArtifactMismatch;
+
+    var manifest_buf: [18]u8 = undefined;
+    const expected_manifest = try std.fmt.bufPrint(&manifest_buf, "0x{x}", .{Protocol.Manifest.manifestFingerprint().lo});
+    if (!jsonStringEquals(bytes, "protocol_manifest_fingerprint_lo", expected_manifest)) return error.WasmInspectionReceiptArtifactMismatch;
 }
 
 fn jsonBool(bytes: []const u8, field: []const u8) bool {
@@ -216,6 +223,17 @@ fn jsonBool(bytes: []const u8, field: []const u8) bool {
     var cursor = colon_index + 1;
     while (cursor < bytes.len and std.ascii.isWhitespace(bytes[cursor])) : (cursor += 1) {}
     return std.mem.startsWith(u8, bytes[cursor..], "true");
+}
+
+fn jsonStringEquals(bytes: []const u8, field: []const u8, expected: []const u8) bool {
+    const field_index = std.mem.indexOf(u8, bytes, field) orelse return false;
+    const colon_index = std.mem.indexOfScalarPos(u8, bytes, field_index + field.len, ':') orelse return false;
+    var cursor = colon_index + 1;
+    while (cursor < bytes.len and std.ascii.isWhitespace(bytes[cursor])) : (cursor += 1) {}
+    if (cursor >= bytes.len or bytes[cursor] != '"') return false;
+    cursor += 1;
+    const end = std.mem.indexOfScalarPos(u8, bytes, cursor, '"') orelse return false;
+    return std.mem.eql(u8, bytes[cursor..end], expected);
 }
 
 fn countWasmImports(section: []const u8) !u32 {

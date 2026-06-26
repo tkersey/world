@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import {
   BinaryReader,
@@ -339,12 +340,17 @@ async function inspectAndExecuteWasm(path) {
   if (textDecoder.decode(manifestBytes.subarray(0, 4)) !== 'WPM1') throw new Error('wasm protocol manifest magic mismatch');
   if (readU64Le(manifestBytes, 12) !== fingerprintLo || readU64Le(manifestBytes, 20) !== fingerprintHi) throw new Error('wasm protocol manifest fingerprint mismatch');
   return {
+    universal_wasm_checksum: checksum64Hex(bytes),
     protocol_manifest_fingerprint_lo: `0x${fingerprintLo.toString(16)}`,
     protocol_manifest_fingerprint_hi: `0x${fingerprintHi.toString(16)}`,
     artifact_inspection: true,
     actual_webassembly_execution: true,
     memory_limit_compliance: true,
   };
+}
+
+function checksum64Hex(bytes) {
+  return `0x${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}`;
 }
 
 function decodeTurnInputForCheck(bytes) {
