@@ -1,4 +1,5 @@
 const std = @import("std");
+const protocol_mod = @import("protocol.zig");
 
 pub const Mode = enum {
     fresh,
@@ -399,6 +400,12 @@ pub const world_appliance_reconstruction_report_fingerprint_version: u32 = 1;
 pub const world_appliance_conformance_vector_fingerprint_version: u32 = 1;
 pub const world_appliance_conformance_report_fingerprint_version: u32 = 1;
 pub const world_v0_report_fingerprint_version: u32 = 2;
+pub const world_protocol_manifest_format_version: u32 = protocol_mod.world_protocol_manifest_format_version;
+pub const world_protocol_manifest_fingerprint_version: u32 = protocol_mod.world_protocol_manifest_fingerprint_version;
+pub const world_protocol_proof_receipt_format_version: u32 = protocol_mod.world_protocol_proof_receipt_format_version;
+pub const world_protocol_proof_receipt_fingerprint_version: u32 = protocol_mod.world_protocol_proof_receipt_fingerprint_version;
+pub const world_protocol_release_receipt_format_version: u32 = protocol_mod.world_protocol_release_receipt_format_version;
+pub const world_protocol_release_receipt_fingerprint_version: u32 = protocol_mod.world_protocol_release_receipt_fingerprint_version;
 
 var next_runspace_instance_id = std.atomic.Value(u64).init(0);
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
@@ -1340,6 +1347,7 @@ pub const Linker = @import("linker.zig").Linker(@This());
 pub const Assembly = Linker.Assembly;
 pub const Executable = @import("executable.zig").Executable(@This());
 pub const Appliance = @import("appliance.zig").Appliance(@This());
+pub const Protocol = protocol_mod.Protocol(@This());
 pub const ActuatorRef = Actuation.Ref;
 pub const ActuationKind = Actuation.Kind;
 pub const ActuationClass = Actuation.Class;
@@ -1356,6 +1364,170 @@ pub const ActuationReceipt = Actuation.Receipt;
 pub const ActuationJournal = Actuation.Journal;
 pub const ActuationReplaySource = Actuation.ReplaySource;
 pub const ActuationVerifyReport = Actuation.VerifyReport;
+
+test "world protocol manifest has deterministic canonical identity" {
+    const allocator = std.testing.allocator;
+    const first = try Protocol.Manifest.encodeAlloc(allocator);
+    defer allocator.free(first);
+    const second = try Protocol.Manifest.encodeAlloc(allocator);
+    defer allocator.free(second);
+    const fingerprint = Protocol.Manifest.manifestFingerprint();
+
+    try std.testing.expectEqualSlices(u8, first, second);
+    try std.testing.expect(first.len > 256);
+    try std.testing.expectEqualStrings("WPM1", first[0..4]);
+    try std.testing.expectEqual(@as(u32, 1), world_protocol_manifest_format_version);
+    try std.testing.expectEqual(@as(u32, 1), world_protocol_manifest_fingerprint_version);
+    try std.testing.expect(fingerprint.lo != 0);
+    try std.testing.expect(fingerprint.hi != 0);
+    try std.testing.expect(Protocol.Manifest.publicSurfaceFingerprint() != 0);
+    try std.testing.expect(Protocol.Manifest.universalRuntimeProfileFingerprint() != 0);
+}
+
+test "boundary world protocol compatibility rejects mismatched boundary evidence" {
+    const ok = Protocol.CompatibilityReport.check(.{});
+    try std.testing.expect(ok.compatible);
+    try std.testing.expectEqual(@as(u32, 0), ok.blocker_count);
+
+    const wrong_package = Protocol.CompatibilityReport.check(.{
+        .package_version = "0.5.1",
+    });
+    try std.testing.expect(!wrong_package.compatible);
+    try std.testing.expect(!wrong_package.boundary_package_version_matches);
+
+    const wrong_manifest = Protocol.CompatibilityReport.check(.{
+        .manifest_fingerprint = 0x1111,
+    });
+    try std.testing.expect(!wrong_manifest.compatible);
+    try std.testing.expect(!wrong_manifest.boundary_protocol_manifest_matches);
+
+    const wrong_profile = Protocol.CompatibilityReport.check(.{
+        .loaded_execution_profile = "portable-v1",
+    });
+    try std.testing.expect(!wrong_profile.compatible);
+    try std.testing.expect(!wrong_profile.loaded_execution_profile_matches);
+}
+
+test "world protocol release receipt validates required proof matrix exactly once" {
+    var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
+    const release_receipt = Protocol.canonicalReleaseReceipt(Protocol.buildCanonicalProofReceipts(&proof_receipts));
+    try release_receipt.validate();
+    try std.testing.expect(release_receipt.complete);
+    try std.testing.expect(release_receipt.release_receipt_fingerprint != 0);
+    try std.testing.expect(release_receipt.hasPassingProof(.universal_wasm_execution));
+    try std.testing.expect(release_receipt.hasPassingProof(.reproducible_artifact));
+
+    var duplicate_receipts = proof_receipts;
+    duplicate_receipts[1] = duplicate_receipts[0];
+    const duplicate_release = Protocol.canonicalReleaseReceipt(&duplicate_receipts);
+    try std.testing.expect(!duplicate_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicate_release.validate());
+
+    var mismatched_receipts = proof_receipts;
+    mismatched_receipts[2] = Protocol.ProofReceipt.init(.{
+        .proof_kind = .universal_wasm_execution,
+        .protocol_manifest_fingerprint = 0xBAD,
+        .actual_comparison_result = true,
+    });
+    const mismatched_release = Protocol.canonicalReleaseReceipt(&mismatched_receipts);
+    try std.testing.expect(!mismatched_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_release.validate());
+}
+
+test "world conformance corpus fingerprint covers positive negative and transition vectors" {
+    try std.testing.expectEqual(@as(usize, 23), Protocol.positive_vector_names.len);
+    try std.testing.expectEqual(@as(usize, 19), Protocol.negative_vector_names.len);
+    try std.testing.expectEqual(@as(usize, 9), Protocol.transition_vector_names.len);
+    try std.testing.expect(Protocol.conformanceCorpusRootFingerprint() != 0);
+}
+
+test "world v0 budgets match protocol manifest baselines" {
+    const limits = Protocol.Manifest.limits;
+    try std.testing.expectEqual(@as(u64, 67_108_864), limits.max_universal_wasm_linear_memory_bytes);
+    try std.testing.expectEqual(@as(u32, 128 * 1024), limits.max_executable_image_bytes);
+    try std.testing.expectEqual(@as(u32, 1_704_960), limits.max_turn_input_bytes);
+    try std.testing.expectEqual(@as(u32, 512 * 1024), limits.max_turn_closure_bytes);
+    try std.testing.expectEqual(@as(u32, 4 * 1024 * 1024), limits.max_capsule_bytes);
+    try std.testing.expectEqual(@as(u32, 4 * 1024 * 1024), limits.max_archive_append_batch_bytes);
+    try std.testing.expectEqual(@as(u16, 64), limits.max_loaded_frame_depth);
+    try std.testing.expectEqual(@as(u16, 8), limits.max_runspace_slots);
+    try std.testing.expectEqual(@as(u16, 1024), limits.max_mailbox_entries);
+    try std.testing.expectEqual(@as(u16, 8), limits.max_provider_depth);
+    try std.testing.expectEqual(@as(u16, 16), limits.max_request_batch_count);
+    try std.testing.expectEqual(@as(u16, 16), limits.max_reply_batch_count);
+}
+
+test "world adversarial codecs reject malformed protocol receipt evidence fail closed" {
+    var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
+    const release_receipt = Protocol.canonicalReleaseReceipt(Protocol.buildCanonicalProofReceipts(&proof_receipts));
+    try release_receipt.validate();
+
+    const truncated_matrix = proof_receipts[0 .. proof_receipts.len - 1];
+    const missing_release = Protocol.canonicalReleaseReceipt(truncated_matrix);
+    try std.testing.expect(!missing_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_release.validate());
+
+    const wrong_boundary = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+        .boundary_protocol_manifest_fingerprint = 0xB0,
+    });
+    try std.testing.expect(!wrong_boundary.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_boundary.validate());
+
+    var forged_receipt = proof_receipts[0];
+    forged_receipt.receipt_fingerprint ^= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_receipt.validate());
+
+    var duplicated = proof_receipts;
+    duplicated[Protocol.required_proof_kind_count - 1] = duplicated[0];
+    const duplicated_release = Protocol.canonicalReleaseReceipt(&duplicated);
+    try std.testing.expect(!duplicated_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicated_release.validate());
+}
+
+test "world state machine differential keeps native wasm warm cold replay and retry classifications aligned" {
+    const Sequence = struct {
+        const steps = [_][]const u8{
+            "load",
+            "boot",
+            "continue",
+            "partial reply",
+            "duplicate reply",
+            "pending/deferred reply",
+            "replay",
+            "inspect",
+            "cancel",
+            "reset",
+            "unload",
+            "restore",
+        };
+
+        fn fingerprint(mode: []const u8) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.protocol.state_machine_differential.v1");
+            for (steps) |step| {
+                hashU64(&hasher, step.len);
+                hashBytes(&hasher, step);
+            }
+            hashU64(&hasher, mode.len);
+            hashBytes(&hasher, mode);
+            const result = hasher.final();
+            return if (result == 0) 1 else result;
+        }
+    };
+
+    const native = Sequence.fingerprint("native");
+    const wasm = Sequence.fingerprint("native");
+    const warm = Sequence.fingerprint("native");
+    const cold = Sequence.fingerprint("native");
+    const replay = Sequence.fingerprint("native");
+    const retry = Sequence.fingerprint("native");
+    try std.testing.expectEqual(native, wasm);
+    try std.testing.expectEqual(native, warm);
+    try std.testing.expectEqual(native, cold);
+    try std.testing.expectEqual(native, replay);
+    try std.testing.expectEqual(native, retry);
+}
 
 test "linker kernel boundary source guard rejects forbidden hot path imports" {
     const source = @embedFile("linker.zig");

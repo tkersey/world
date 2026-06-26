@@ -10559,7 +10559,15 @@ test "World Seed Replay accepts batched host replies for independent requests" {
 }
 
 test "WorldV0Report requires every completion proof bit" {
-    const report = world.Appliance.WorldV0Report.init(.{
+    var proof_receipt_storage: [world.Protocol.required_proof_kind_count]world.Protocol.ProofReceipt = undefined;
+    const release_receipt = world.Protocol.canonicalReleaseReceipt(world.Protocol.buildCanonicalProofReceipts(&proof_receipt_storage));
+    try release_receipt.validate();
+    const report = try world.Appliance.WorldV0Report.fromReleaseReceipt(release_receipt);
+    try report.validate();
+    try std.testing.expect(report.passed);
+    try std.testing.expect(report.allRequiredBooleansPassed());
+
+    const manually_asserted = world.Appliance.WorldV0Report.init(.{
         .boundary_v0_5_0_portable_v2_baseline_passed = true,
         .canonical_executable_image_passed = true,
         .actual_universal_wasm_executed = true,
@@ -10582,9 +10590,9 @@ test "WorldV0Report requires every completion proof bit" {
         .malformed_input_suite_passed = true,
         .regression_matrix_passed = true,
     });
-    try report.validate();
-    try std.testing.expect(report.passed);
-    try std.testing.expect(report.allRequiredBooleansPassed());
+    try manually_asserted.validate();
+    try std.testing.expect(!manually_asserted.passed);
+    try std.testing.expect(manually_asserted.allRequiredBooleansPassed());
 
     const missing_active_restore = world.Appliance.WorldV0Report.init(.{
         .boundary_v0_5_0_portable_v2_baseline_passed = true,
@@ -10665,6 +10673,16 @@ test "WorldV0Report requires every completion proof bit" {
     try blocked.validate();
     try std.testing.expect(blocked.allRequiredBooleansPassed());
     try std.testing.expect(!blocked.passed);
+
+    var missing_proof_storage = proof_receipt_storage;
+    missing_proof_storage[@intFromEnum(world.Protocol.ProofKind.active_fabric_restore)] = world.Protocol.ProofReceipt.init(.{
+        .proof_kind = .active_fabric_restore,
+        .actual_comparison_result = false,
+        .blocker_count = 1,
+    });
+    const incomplete_release_receipt = world.Protocol.canonicalReleaseReceipt(&missing_proof_storage);
+    try std.testing.expect(!incomplete_release_receipt.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.WorldV0Report.fromReleaseReceipt(incomplete_release_receipt));
 
     var forged = report;
     forged.active_loaded_fabric_restored = false;

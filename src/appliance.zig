@@ -2955,6 +2955,7 @@ pub fn Appliance(comptime World: type) type {
         pub const WorldV0Report = struct {
             report_fingerprint_version: u32 = World.world_v0_report_fingerprint_version,
             report_fingerprint: u64 = 0,
+            release_receipt_fingerprint: u64 = 0,
             boundary_v0_5_0_portable_v2_baseline_passed: bool = false,
             canonical_executable_image_passed: bool = false,
             actual_universal_wasm_executed: bool = false,
@@ -3030,7 +3031,40 @@ pub fn Appliance(comptime World: type) type {
                     .blockers = args.blockers,
                     .warnings = args.warnings,
                 };
-                result.passed = result.allRequiredBooleansPassed() and result.blockers.len == 0;
+                result.passed = false;
+                result.report_fingerprint = fingerprintWorldV0Report(result);
+                return result;
+            }
+
+            pub fn fromReleaseReceipt(receipt: World.Protocol.ReleaseReceipt) !@This() {
+                try receipt.validate();
+                var result = @This(){
+                    .release_receipt_fingerprint = receipt.release_receipt_fingerprint,
+                    .boundary_v0_5_0_portable_v2_baseline_passed = receipt.hasPassingProof(.boundary_portable_v2),
+                    .canonical_executable_image_passed = receipt.hasPassingProof(.executable_image),
+                    .actual_universal_wasm_executed = receipt.hasPassingProof(.universal_wasm_execution),
+                    .genuinely_unrelated_images_executed = receipt.hasPassingProof(.two_programs_one_wasm),
+                    .internal_loaded_provider_executed = receipt.hasPassingProof(.loaded_internal_provider),
+                    .multi_suspension_loaded_root_executed = receipt.hasPassingProof(.multi_suspension_root),
+                    .active_loaded_fabric_restored = receipt.hasPassingProof(.active_fabric_restore),
+                    .verified_replay_without_fresh_effect_passed = receipt.hasPassingProof(.replay_without_fresh_effect),
+                    .unsupported_actuated_replay_rejected = receipt.hasPassingProof(.unsupported_actuated_replay_rejected),
+                    .deterministic_retry_passed = receipt.hasPassingProof(.deterministic_retry),
+                    .batched_request_reply_passed = receipt.hasPassingProof(.batched_request_reply),
+                    .independent_javascript_codec_passed = receipt.hasPassingProof(.independent_javascript_codec),
+                    .exact_root_result_bytes_passed = receipt.hasPassingProof(.exact_result_bytes),
+                    .exact_receipt_bytes_passed = receipt.hasPassingProof(.exact_receipt_bytes),
+                    .exact_capsule_bytes_passed = receipt.hasPassingProof(.exact_capsule_bytes),
+                    .exact_archive_append_batch_bytes_passed = receipt.hasPassingProof(.exact_archive_append_batch_bytes),
+                    .native_wasm_parity_passed = receipt.hasPassingProof(.native_wasm_parity),
+                    .cold_warm_parity_passed = receipt.hasPassingProof(.cold_warm_parity),
+                    .memory_bound_passed = receipt.hasPassingProof(.memory_bound),
+                    .malformed_input_suite_passed = receipt.hasPassingProof(.malformed_input),
+                    .regression_matrix_passed = receipt.hasPassingProof(.regression_matrix),
+                    .blockers = receipt.blockers,
+                    .warnings = receipt.warnings,
+                    .passed = receipt.complete,
+                };
                 result.report_fingerprint = fingerprintWorldV0Report(result);
                 return result;
             }
@@ -3039,7 +3073,7 @@ pub fn Appliance(comptime World: type) type {
                 if (self.report_fingerprint_version != World.world_v0_report_fingerprint_version) return error.InvalidFrameEncoding;
                 try validateFingerprintSlice(self.blockers);
                 try validateFingerprintSlice(self.warnings);
-                if (self.passed != (self.allRequiredBooleansPassed() and self.blockers.len == 0)) return error.InvalidFrameEncoding;
+                if (self.passed != (self.release_receipt_fingerprint != 0 and self.allRequiredBooleansPassed() and self.blockers.len == 0)) return error.InvalidFrameEncoding;
                 if (self.report_fingerprint != fingerprintWorldV0Report(self)) return error.InvalidFrameEncoding;
             }
 
@@ -4797,6 +4831,10 @@ pub fn Appliance(comptime World: type) type {
                 "world_appliance_reset",
                 "world_appliance_alloc",
                 "world_appliance_free",
+                "world_protocol_manifest_len",
+                "world_protocol_read_manifest",
+                "world_protocol_manifest_fingerprint_lo",
+                "world_protocol_manifest_fingerprint_hi",
             };
             pub const metadata_exports = [_][]const u8{
                 "world_appliance_manifest_fingerprint_lo",
@@ -9493,6 +9531,7 @@ pub fn Appliance(comptime World: type) type {
             var hasher = std.hash.Wyhash.init(0);
             hashBytes(&hasher, "world.v0_report.fingerprint");
             hashU64(&hasher, report.report_fingerprint_version);
+            hashU64(&hasher, report.release_receipt_fingerprint);
             hashBool(&hasher, report.boundary_v0_5_0_portable_v2_baseline_passed);
             hashBool(&hasher, report.canonical_executable_image_passed);
             hashBool(&hasher, report.actual_universal_wasm_executed);

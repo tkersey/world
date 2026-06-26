@@ -310,6 +310,197 @@ pub fn build(b: *std.Build) void {
         .root_module = world_module_test_module,
         .filters = test_args.filters,
     });
+    const world_protocol_manifest_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = &.{"world protocol manifest"},
+    });
+    const check_world_protocol_manifest_step = b.step("check-world-protocol-manifest", "Run World Protocol.Manifest canonical encoding and WASM export checks.");
+    dependOnNativeRunOrCompile(b, target, check_world_protocol_manifest_step, world_protocol_manifest_tests, test_args.passthrough);
+    check_world_protocol_manifest_step.dependOn(check_world_universal_appliance_wasm_step);
+    const boundary_world_compatibility_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = &.{"boundary world protocol compatibility"},
+    });
+    const check_boundary_world_compatibility_step = b.step("check-boundary-world-compatibility", "Run World checks that bind the frozen Boundary v0 protocol manifest evidence.");
+    dependOnNativeRunOrCompile(b, target, check_boundary_world_compatibility_step, boundary_world_compatibility_tests, test_args.passthrough);
+    const world_conformance_corpus_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = &.{"world conformance corpus"},
+    });
+    const check_world_conformance_corpus_step = b.step("check-world-conformance-corpus", "Validate the World v0 conformance corpus case inventory.");
+    dependOnNativeRunOrCompile(b, target, check_world_conformance_corpus_step, world_conformance_corpus_tests, test_args.passthrough);
+    const run_world_conformance_corpus_node = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_conformance.mjs",
+        "--corpus",
+        "conformance/v0/world",
+    });
+    check_world_conformance_corpus_step.dependOn(&run_world_conformance_corpus_node.step);
+    const run_world_js_corpus = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_conformance.mjs",
+        "--corpus",
+        "conformance/v0/world",
+        "--mode",
+        "js-corpus",
+    });
+    const check_world_js_corpus_step = b.step("check-world-js-corpus", "Run dependency-free JavaScript protocol corpus parity checks.");
+    check_world_js_corpus_step.dependOn(&run_world_js_corpus.step);
+    const run_world_js_malformed_corpus = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_conformance.mjs",
+        "--corpus",
+        "conformance/v0/world",
+        "--mode",
+        "malformed",
+    });
+    const check_world_js_malformed_corpus_step = b.step("check-world-js-malformed-corpus", "Run dependency-free JavaScript malformed corpus rejection checks.");
+    check_world_js_malformed_corpus_step.dependOn(&run_world_js_malformed_corpus.step);
+    const world_adversarial_codec_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = &.{"world adversarial codecs"},
+    });
+    const check_world_adversarial_codecs_step = b.step("check-world-adversarial-codecs", "Run World v0 adversarial protocol codec checks.");
+    dependOnNativeRunOrCompile(b, target, check_world_adversarial_codecs_step, world_adversarial_codec_tests, test_args.passthrough);
+    const world_state_machine_differential_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = &.{"world state machine differential"},
+    });
+    const check_world_state_machine_differential_step = b.step("check-world-state-machine-differential", "Run World state-machine differential classification checks.");
+    dependOnNativeRunOrCompile(b, target, check_world_state_machine_differential_step, world_state_machine_differential_tests, test_args.passthrough);
+    const world_release_receipt_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = &.{"world protocol release receipt"},
+    });
+    const emit_world_proof_receipts_run = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_conformance.mjs",
+        "--corpus",
+        "conformance/v0/world",
+        "--receipt-out",
+    });
+    _ = emit_world_proof_receipts_run.addOutputFileArg("world-proof-receipts.json");
+    const emit_world_proof_receipts_step = b.step("emit-world-proof-receipts", "Emit machine-readable World v0 proof receipts.");
+    emit_world_proof_receipts_step.dependOn(&emit_world_proof_receipts_run.step);
+    const emit_world_release_receipt_run = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_conformance.mjs",
+        "--corpus",
+        "conformance/v0/world",
+        "--receipt-out",
+    });
+    _ = emit_world_release_receipt_run.addOutputFileArg("world-release-receipt.json");
+    const emit_world_release_receipt_step = b.step("emit-world-release-receipt", "Emit the World v0 release receipt from proof evidence.");
+    emit_world_release_receipt_step.dependOn(&emit_world_release_receipt_run.step);
+    const check_world_release_receipt_step = b.step("check-world-release-receipt", "Validate the World v0 release receipt proof matrix.");
+    dependOnNativeRunOrCompile(b, target, check_world_release_receipt_step, world_release_receipt_tests, test_args.passthrough);
+    check_world_release_receipt_step.dependOn(emit_world_release_receipt_step);
+    const world_v0_budget_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = &.{"world v0 budgets"},
+    });
+    const check_world_v0_budgets_step = b.step("check-world-v0-budgets", "Validate World v0 structural budget baselines.");
+    dependOnNativeRunOrCompile(b, target, check_world_v0_budgets_step, world_v0_budget_tests, test_args.passthrough);
+    const run_world_reproducible_wasm_check = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_release_artifacts.mjs",
+        "--mode",
+        "check-repro",
+        "--wasm",
+        "zig-out/bin/world_universal_appliance.wasm",
+        "--corpus",
+        "conformance/v0/world/corpus.json",
+    });
+    run_world_reproducible_wasm_check.step.dependOn(world_universal_appliance_wasm_step);
+    const check_world_reproducible_wasm_step = b.step("check-world-reproducible-wasm", "Validate deterministic World v0 release artifacts from current outputs.");
+    check_world_reproducible_wasm_step.dependOn(&run_world_reproducible_wasm_check.step);
+    const run_dist_world_v0 = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_release_artifacts.mjs",
+        "--mode",
+        "dist",
+        "--wasm",
+        "zig-out/bin/world_universal_appliance.wasm",
+        "--out",
+        "zig-out/dist/world-v0.1.0",
+    });
+    run_dist_world_v0.step.dependOn(world_universal_appliance_wasm_step);
+    const emit_world_release_artifacts_step = b.step("emit-world-release-artifacts", "Emit World v0.1.0 release artifacts.");
+    emit_world_release_artifacts_step.dependOn(&run_dist_world_v0.step);
+    const dist_world_v0_1_step = b.step("dist-world-v0.1.0", "Package World v0.1.0 release artifacts.");
+    dist_world_v0_1_step.dependOn(&run_dist_world_v0.step);
+    const run_check_world_v0_1_dist = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_release_artifacts.mjs",
+        "--mode",
+        "check-dist",
+        "--dist",
+        "zig-out/dist/world-v0.1.0",
+    });
+    run_check_world_v0_1_dist.step.dependOn(&run_dist_world_v0.step);
+    const run_check_world_v0_1_standalone = b.addSystemCommand(&.{
+        "node",
+        "zig-out/dist/world-v0.1.0/scripts/world_conformance.mjs",
+        "--wasm",
+        "zig-out/dist/world-v0.1.0/world_universal_appliance.wasm",
+        "--corpus",
+        "zig-out/dist/world-v0.1.0/conformance/v0/world",
+        "--receipt-out",
+    });
+    _ = run_check_world_v0_1_standalone.addOutputFileArg("world-distributed-conformance-receipt.json");
+    run_check_world_v0_1_standalone.step.dependOn(&run_dist_world_v0.step);
+    const check_world_v0_1_release_step = b.step("check-world-v0.1-release", "Validate packaged World v0.1.0 artifacts and source-free conformance.");
+    check_world_v0_1_release_step.dependOn(&run_check_world_v0_1_dist.step);
+    check_world_v0_1_release_step.dependOn(&run_check_world_v0_1_standalone.step);
     const wasm_guest_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("examples/world_wasm_guest_one_port.zig"),
@@ -689,6 +880,16 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(check_world_deterministic_retry_step);
     check_step.dependOn(check_world_js_codec_step);
     check_step.dependOn(check_world_universal_step);
+    check_step.dependOn(check_world_protocol_manifest_step);
+    check_step.dependOn(check_boundary_world_compatibility_step);
+    check_step.dependOn(check_world_conformance_corpus_step);
+    check_step.dependOn(check_world_js_corpus_step);
+    check_step.dependOn(check_world_js_malformed_corpus_step);
+    check_step.dependOn(check_world_adversarial_codecs_step);
+    check_step.dependOn(check_world_state_machine_differential_step);
+    check_step.dependOn(check_world_release_receipt_step);
+    check_step.dependOn(check_world_v0_budgets_step);
+    check_step.dependOn(check_world_reproducible_wasm_step);
     const check_world_seed_step = b.step("check-world-seed", "Run World Seed killer examples and conformance checks.");
     const check_world_seed_malformed_step = b.step("check-world-seed-malformed", "Run World Seed malformed/rejection checks.");
     const check_world_active_fabric_restore_step = b.step("check-world-active-fabric-restore", "Run positive World active Fabric restore proof.");
@@ -707,8 +908,16 @@ pub fn build(b: *std.Build) void {
     check_world_v0_step.dependOn(check_world_deterministic_retry_step);
     check_world_v0_step.dependOn(check_world_appliance_batching_step);
     check_world_v0_step.dependOn(check_world_js_codec_step);
+    check_world_v0_step.dependOn(check_world_js_corpus_step);
+    check_world_v0_step.dependOn(check_world_js_malformed_corpus_step);
     check_world_v0_step.dependOn(check_world_two_programs_one_wasm_step);
     check_world_v0_step.dependOn(check_world_universal_memory_step);
+    check_world_v0_step.dependOn(check_world_conformance_corpus_step);
+    check_world_v0_step.dependOn(check_world_adversarial_codecs_step);
+    check_world_v0_step.dependOn(check_world_state_machine_differential_step);
+    check_world_v0_step.dependOn(check_world_release_receipt_step);
+    check_world_v0_step.dependOn(check_world_v0_budgets_step);
+    check_world_v0_step.dependOn(check_world_reproducible_wasm_step);
     check_step.dependOn(check_world_seed_step);
     check_step.dependOn(check_world_seed_malformed_step);
     check_step.dependOn(check_world_v0_negative_step);

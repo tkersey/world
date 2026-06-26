@@ -9,10 +9,18 @@ const wasm_page_size = 64 * 1024;
 const Signature = struct {
     params: u32 = 0,
     results: u32 = 0,
-    all_i32: bool = true,
+    params_all_i32: bool = true,
+    results_all_i32: bool = true,
+    results_all_i64: bool = true,
 
-    fn matches(self: @This(), params: u32, results: u32) bool {
-        return self.params == params and self.results == results and self.all_i32;
+    fn matches(self: @This(), params: u32, results: u32, result_type: ?u8) bool {
+        if (self.params != params or self.results != results or !self.params_all_i32) return false;
+        return switch (result_type orelse 0) {
+            0 => results == 0,
+            0x7f => self.results_all_i32,
+            0x7e => self.results_all_i64,
+            else => false,
+        };
     }
 };
 
@@ -114,17 +122,27 @@ fn inspectTypes(section: []const u8, out: *[max_types]Signature) !usize {
     while (index < count) : (index += 1) {
         if (try readU8(section, &cursor) != 0x60) return error.InvalidFrameEncoding;
         const params = try readU32(section, &cursor);
-        var all_i32 = true;
+        var params_all_i32 = true;
         var param_index: u32 = 0;
         while (param_index < params) : (param_index += 1) {
-            if (try readU8(section, &cursor) != 0x7f) all_i32 = false;
+            if (try readU8(section, &cursor) != 0x7f) params_all_i32 = false;
         }
         const results = try readU32(section, &cursor);
+        var results_all_i32 = true;
+        var results_all_i64 = true;
         var result_index: u32 = 0;
         while (result_index < results) : (result_index += 1) {
-            if (try readU8(section, &cursor) != 0x7f) all_i32 = false;
+            const result_type = try readU8(section, &cursor);
+            if (result_type != 0x7f) results_all_i32 = false;
+            if (result_type != 0x7e) results_all_i64 = false;
         }
-        out[index] = .{ .params = params, .results = results, .all_i32 = all_i32 };
+        out[index] = .{
+            .params = params,
+            .results = results,
+            .params_all_i32 = params_all_i32,
+            .results_all_i32 = results_all_i32,
+            .results_all_i64 = results_all_i64,
+        };
     }
     if (cursor != section.len) return error.InvalidFrameEncoding;
     return @intCast(count);
@@ -207,7 +225,7 @@ fn inspectExports(
         for (expected_exports, 0..) |expected, expected_index| {
             if (!std.mem.eql(u8, name, expected)) continue;
             inspection.required_mask |= @as(u32, 1) << @intCast(expected_index);
-            if (signatureMatches(export_index, function_import_count, type_sigs, function_type_indices, expectedParamCount(expected_index), expectedResultCount(expected_index))) {
+            if (signatureMatches(export_index, function_import_count, type_sigs, function_type_indices, expectedParamCount(expected_index), expectedResultCount(expected_index), expectedResultType(expected_index))) {
                 inspection.signature_mask |= @as(u32, 1) << @intCast(expected_index);
             }
             if (expected_index == 0) abi_function_index.* = export_index;
@@ -239,13 +257,13 @@ fn inspectCode(section: []const u8, function_count: usize, function_import_count
     if (cursor != section.len) return error.InvalidFrameEncoding;
 }
 
-fn signatureMatches(function_index: u32, function_import_count: usize, type_sigs: []const Signature, function_type_indices: []const u32, params: u32, results: u32) bool {
+fn signatureMatches(function_index: u32, function_import_count: usize, type_sigs: []const Signature, function_type_indices: []const u32, params: u32, results: u32, result_type: ?u8) bool {
     if (function_index < function_import_count) return false;
     const defined_index = function_index - @as(u32, @intCast(function_import_count));
     if (defined_index >= function_type_indices.len) return false;
     const type_index = function_type_indices[@intCast(defined_index)];
     if (type_index >= type_sigs.len) return false;
-    return type_sigs[@intCast(type_index)].matches(params, results);
+    return type_sigs[@intCast(type_index)].matches(params, results, result_type);
 }
 
 fn expectedParamCount(index: usize) u32 {
@@ -257,6 +275,7 @@ fn expectedParamCount(index: usize) u32 {
         11 => 2,
         13 => 1,
         14 => 2,
+        16 => 2,
         else => 0,
     };
 }
@@ -265,6 +284,14 @@ fn expectedResultCount(index: usize) u32 {
     return switch (index) {
         14 => 0,
         else => 1,
+    };
+}
+
+fn expectedResultType(index: usize) ?u8 {
+    return switch (index) {
+        14 => null,
+        17, 18 => 0x7e,
+        else => 0x7f,
     };
 }
 
