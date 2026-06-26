@@ -10589,6 +10589,7 @@ test "WorldV0Report requires every completion proof bit" {
         .memory_bound_passed = true,
         .malformed_input_suite_passed = true,
         .regression_matrix_passed = true,
+        .reproducible_artifact_passed = true,
     });
     try manually_asserted.validate();
     try std.testing.expect(!manually_asserted.passed);
@@ -10616,6 +10617,7 @@ test "WorldV0Report requires every completion proof bit" {
         .memory_bound_passed = true,
         .malformed_input_suite_passed = true,
         .regression_matrix_passed = true,
+        .reproducible_artifact_passed = true,
     });
     try missing_active_restore.validate();
     try std.testing.expect(!missing_active_restore.passed);
@@ -10642,6 +10644,7 @@ test "WorldV0Report requires every completion proof bit" {
         .memory_bound_passed = true,
         .malformed_input_suite_passed = true,
         .regression_matrix_passed = true,
+        .reproducible_artifact_passed = true,
     });
     try missing_actuated_replay_rejection.validate();
     try std.testing.expect(!missing_actuated_replay_rejection.passed);
@@ -10668,6 +10671,7 @@ test "WorldV0Report requires every completion proof bit" {
         .memory_bound_passed = true,
         .malformed_input_suite_passed = true,
         .regression_matrix_passed = true,
+        .reproducible_artifact_passed = true,
         .blockers = &.{0xF00D},
     });
     try blocked.validate();

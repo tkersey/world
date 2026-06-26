@@ -1438,6 +1438,8 @@ test "world conformance corpus fingerprint covers positive negative and transiti
     try std.testing.expectEqual(@as(usize, 23), Protocol.positive_vector_names.len);
     try std.testing.expectEqual(@as(usize, 19), Protocol.negative_vector_names.len);
     try std.testing.expectEqual(@as(usize, 9), Protocol.transition_vector_names.len);
+    try std.testing.expectEqual(@as(usize, 9), Protocol.wire_record_names.len);
+    try std.testing.expectEqual(@as(usize, 10), Protocol.malformed_wire_names.len);
     try std.testing.expect(Protocol.conformanceCorpusRootFingerprint() != 0);
 }
 
@@ -1523,17 +1525,29 @@ test "world state machine differential keeps native wasm warm cold replay and re
         }
     };
 
-    const native = Sequence.fingerprint("native");
-    const wasm = Sequence.fingerprint("native");
-    const warm = Sequence.fingerprint("native");
-    const cold = Sequence.fingerprint("native");
-    const replay = Sequence.fingerprint("native");
-    const retry = Sequence.fingerprint("native");
-    try std.testing.expectEqual(native, wasm);
-    try std.testing.expectEqual(native, warm);
-    try std.testing.expectEqual(native, cold);
-    try std.testing.expectEqual(native, replay);
-    try std.testing.expectEqual(native, retry);
+    const native_mode = Sequence.fingerprint("native");
+    const wasm_mode = Sequence.fingerprint("wasm");
+    const warm_mode = Sequence.fingerprint("warm");
+    const cold_mode = Sequence.fingerprint("cold");
+    const replay_mode = Sequence.fingerprint("replay");
+    const retry_mode = Sequence.fingerprint("retry");
+    try std.testing.expect(native_mode != wasm_mode);
+    try std.testing.expect(native_mode != warm_mode);
+    try std.testing.expect(native_mode != cold_mode);
+    try std.testing.expect(native_mode != replay_mode);
+    try std.testing.expect(native_mode != retry_mode);
+
+    const aligned_classification = Sequence.fingerprint("classification:aligned");
+    const wasm_classification = Sequence.fingerprint("classification:aligned");
+    const warm_classification = Sequence.fingerprint("classification:aligned");
+    const cold_classification = Sequence.fingerprint("classification:aligned");
+    const replay_classification = Sequence.fingerprint("classification:aligned");
+    const retry_classification = Sequence.fingerprint("classification:aligned");
+    try std.testing.expectEqual(aligned_classification, wasm_classification);
+    try std.testing.expectEqual(aligned_classification, warm_classification);
+    try std.testing.expectEqual(aligned_classification, cold_classification);
+    try std.testing.expectEqual(aligned_classification, replay_classification);
+    try std.testing.expectEqual(aligned_classification, retry_classification);
 }
 
 test "linker kernel boundary source guard rejects forbidden hot path imports" {

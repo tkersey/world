@@ -284,6 +284,26 @@ pub fn Protocol(comptime W: type) type {
             hashStringList(&hasher, positive_vector_names[0..]);
             hashStringList(&hasher, negative_vector_names[0..]);
             hashStringList(&hasher, transition_vector_names[0..]);
+            hashStringList(&hasher, wire_record_names[0..]);
+            hashStringList(&hasher, malformed_wire_names[0..]);
+            hashU64(&hasher, required_proof_kinds.len);
+            for (required_proof_kinds) |kind| {
+                const name = proofKindName(kind);
+                hashU64(&hasher, name.len);
+                hashBytes(&hasher, name);
+            }
+            hashU64(&hasher, Manifest.limits.max_universal_wasm_linear_memory_bytes);
+            hashU64(&hasher, Manifest.limits.max_executable_image_bytes);
+            hashU64(&hasher, Manifest.limits.max_turn_input_bytes);
+            hashU64(&hasher, Manifest.limits.max_turn_closure_bytes);
+            hashU64(&hasher, Manifest.limits.max_capsule_bytes);
+            hashU64(&hasher, Manifest.limits.max_archive_append_batch_bytes);
+            hashU64(&hasher, Manifest.limits.max_loaded_frame_depth);
+            hashU64(&hasher, Manifest.limits.max_runspace_slots);
+            hashU64(&hasher, Manifest.limits.max_mailbox_entries);
+            hashU64(&hasher, Manifest.limits.max_provider_depth);
+            hashU64(&hasher, Manifest.limits.max_request_batch_count);
+            hashU64(&hasher, Manifest.limits.max_reply_batch_count);
             return nonzero(hasher.final());
         }
 
@@ -345,6 +365,31 @@ pub fn Protocol(comptime W: type) type {
             "replay without fresh effect",
             "deterministic retry after effect",
             "Archive crash-window recovery",
+        };
+
+        pub const wire_record_names = [_][]const u8{
+            "Wire TurnInput",
+            "ResolutionInput",
+            "RetentionInput",
+            "HostRequest",
+            "LoadedValue images",
+            "TurnClosure",
+            "TurnReceipt",
+            "Checkpoint",
+            "Archive AppendBatch metadata",
+        };
+
+        pub const malformed_wire_names = [_][]const u8{
+            "truncation",
+            "length overflow",
+            "invalid enum",
+            "invalid optional tag",
+            "unsorted canonical list",
+            "duplicate request target",
+            "wrong schema",
+            "malformed sum variant",
+            "excessive nesting",
+            "trailing bytes",
         };
 
         pub const Manifest = struct {

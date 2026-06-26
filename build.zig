@@ -196,6 +196,22 @@ pub fn build(b: *std.Build) void {
     universal_appliance_wasm.stack_size = 16_777_216;
     universal_appliance_wasm.initial_memory = 67_108_864;
     universal_appliance_wasm.max_memory = 67_108_864;
+    const universal_appliance_wasm_repro_module = b.createModule(.{
+        .root_source_file = b.path("examples/world_universal_appliance_wasm.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    universal_appliance_wasm_repro_module.addImport("world", wasm_world);
+    const universal_appliance_wasm_repro = b.addExecutable(.{
+        .name = "world_universal_appliance_repro",
+        .root_module = universal_appliance_wasm_repro_module,
+    });
+    universal_appliance_wasm_repro.entry = .disabled;
+    universal_appliance_wasm_repro.rdynamic = true;
+    universal_appliance_wasm_repro.export_memory = true;
+    universal_appliance_wasm_repro.stack_size = 16_777_216;
+    universal_appliance_wasm_repro.initial_memory = 67_108_864;
+    universal_appliance_wasm_repro.max_memory = 67_108_864;
     const install_universal_appliance_wasm = b.addInstallArtifact(universal_appliance_wasm, .{});
     const world_universal_appliance_wasm_step = b.step("world-universal-appliance-wasm", "Build World universal Appliance ABI conformance wasm artifact.");
     world_universal_appliance_wasm_step.dependOn(&install_universal_appliance_wasm.step);
@@ -430,7 +446,9 @@ pub fn build(b: *std.Build) void {
         "--corpus",
         "conformance/v0/world",
         "--wasm",
-        "zig-out/bin/world_universal_appliance.wasm",
+    });
+    emit_world_release_receipt_run.addFileArg(universal_appliance_wasm.getEmittedBin());
+    emit_world_release_receipt_run.addArgs(&.{
         "--receipt-out",
     });
     _ = emit_world_release_receipt_run.addOutputFileArg("world-release-receipt.json");
@@ -459,7 +477,13 @@ pub fn build(b: *std.Build) void {
         "--mode",
         "check-repro",
         "--wasm",
-        "zig-out/bin/world_universal_appliance.wasm",
+    });
+    run_world_reproducible_wasm_check.addFileArg(universal_appliance_wasm.getEmittedBin());
+    run_world_reproducible_wasm_check.addArgs(&.{
+        "--wasm-repro",
+    });
+    run_world_reproducible_wasm_check.addFileArg(universal_appliance_wasm_repro.getEmittedBin());
+    run_world_reproducible_wasm_check.addArgs(&.{
         "--corpus",
         "conformance/v0/world/corpus.json",
     });
@@ -472,7 +496,9 @@ pub fn build(b: *std.Build) void {
         "--mode",
         "dist",
         "--wasm",
-        "zig-out/bin/world_universal_appliance.wasm",
+    });
+    run_dist_world_v0.addFileArg(universal_appliance_wasm.getEmittedBin());
+    run_dist_world_v0.addArgs(&.{
         "--out",
         "zig-out/dist/world-v0.1.0",
     });

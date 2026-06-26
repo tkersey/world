@@ -2977,6 +2977,7 @@ pub fn Appliance(comptime World: type) type {
             memory_bound_passed: bool = false,
             malformed_input_suite_passed: bool = false,
             regression_matrix_passed: bool = false,
+            reproducible_artifact_passed: bool = false,
             blockers: []const u64 = &.{},
             warnings: []const u64 = &.{},
             passed: bool = false,
@@ -3003,6 +3004,7 @@ pub fn Appliance(comptime World: type) type {
                 memory_bound_passed: bool = false,
                 malformed_input_suite_passed: bool = false,
                 regression_matrix_passed: bool = false,
+                reproducible_artifact_passed: bool = false,
                 blockers: []const u64 = &.{},
                 warnings: []const u64 = &.{},
             }) @This() {
@@ -3028,6 +3030,7 @@ pub fn Appliance(comptime World: type) type {
                     .memory_bound_passed = args.memory_bound_passed,
                     .malformed_input_suite_passed = args.malformed_input_suite_passed,
                     .regression_matrix_passed = args.regression_matrix_passed,
+                    .reproducible_artifact_passed = args.reproducible_artifact_passed,
                     .blockers = args.blockers,
                     .warnings = args.warnings,
                 };
@@ -3061,6 +3064,7 @@ pub fn Appliance(comptime World: type) type {
                     .memory_bound_passed = receipt.hasPassingProof(.memory_bound),
                     .malformed_input_suite_passed = receipt.hasPassingProof(.malformed_input),
                     .regression_matrix_passed = receipt.hasPassingProof(.regression_matrix),
+                    .reproducible_artifact_passed = receipt.hasPassingProof(.reproducible_artifact),
                     .blockers = receipt.blockers,
                     .warnings = receipt.warnings,
                     .passed = receipt.complete,
@@ -3098,7 +3102,8 @@ pub fn Appliance(comptime World: type) type {
                     self.cold_warm_parity_passed and
                     self.memory_bound_passed and
                     self.malformed_input_suite_passed and
-                    self.regression_matrix_passed;
+                    self.regression_matrix_passed and
+                    self.reproducible_artifact_passed;
             }
         };
 
@@ -9553,6 +9558,7 @@ pub fn Appliance(comptime World: type) type {
             hashBool(&hasher, report.memory_bound_passed);
             hashBool(&hasher, report.malformed_input_suite_passed);
             hashBool(&hasher, report.regression_matrix_passed);
+            hashBool(&hasher, report.reproducible_artifact_passed);
             hashU64Slice(&hasher, report.blockers);
             hashU64Slice(&hasher, report.warnings);
             hashBool(&hasher, report.passed);

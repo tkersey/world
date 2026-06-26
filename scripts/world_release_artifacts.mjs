@@ -10,6 +10,8 @@ import {
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
+const textDecoder = new TextDecoder();
+
 const args = parseArgs(process.argv.slice(2));
 
 try {
@@ -33,6 +35,7 @@ function parseArgs(raw) {
     const arg = raw[i];
     if (arg === '--mode') parsed.mode = raw[++i];
     else if (arg === '--wasm') parsed.wasm = raw[++i];
+    else if (arg === '--wasm-repro') parsed.wasmRepro = raw[++i];
     else if (arg === '--out') parsed.out = raw[++i];
     else if (arg === '--dist') parsed.dist = raw[++i];
     else if (arg === '--corpus') parsed.corpus = raw[++i];
@@ -89,7 +92,7 @@ async function emitDist(options) {
     boundary_package: '0.5.0',
   };
   writeFileSync(join(out, 'world-protocol-manifest.json'), `${JSON.stringify(wasmInspection, null, 2)}\n`);
-  writeFileSync(join(out, 'world-release-receipt.json'), `${JSON.stringify(metadata, null, 2)}\n`);
+  writeFileSync(join(out, 'world-release-artifact.json'), `${JSON.stringify(metadata, null, 2)}\n`);
   writeFileSync(join(out, 'human-readable-manifest.txt'), humanManifest(metadata));
   writeChecksums(out);
   console.log(JSON.stringify({ dist: out, complete: true, wasm_sha256: metadata.wasm.sha256 }));
@@ -101,7 +104,7 @@ async function checkDist(options) {
   const required = [
     'world_universal_appliance.wasm',
     'world-protocol-manifest.json',
-    'world-release-receipt.json',
+    'world-release-artifact.json',
     'human-readable-manifest.txt',
     'checksums.txt',
     'conformance/v0/world/corpus.json',
@@ -125,9 +128,10 @@ async function checkDist(options) {
 
 async function checkRepro(options) {
   requirePath(options.wasm, '--wasm');
+  requirePath(options.wasmRepro, '--wasm-repro');
   requirePath(options.corpus, '--corpus');
   const wasmFirst = readFileSync(options.wasm);
-  const wasmSecond = readFileSync(options.wasm);
+  const wasmSecond = readFileSync(options.wasmRepro);
   const corpusFirst = readFileSync(options.corpus);
   const corpusSecond = readFileSync(options.corpus);
   const manifestFirst = await inspectWasm(wasmFirst);
@@ -157,20 +161,39 @@ async function inspectWasm(bytes) {
     'world_protocol_read_manifest',
     'world_protocol_manifest_fingerprint_lo',
     'world_protocol_manifest_fingerprint_hi',
+    'world_appliance_abi_version',
+    'world_appliance_alloc',
+    'world_appliance_free',
   ]) {
     if (!exportNames.has(name)) throw new Error(`missing wasm protocol export: ${name}`);
   }
   if (imports.length !== 0) throw new Error('universal wasm must have zero imports');
   const instance = await WebAssembly.instantiate(module, {});
+  for (const name of [
+    'world_protocol_manifest_len',
+    'world_protocol_read_manifest',
+    'world_protocol_manifest_fingerprint_lo',
+    'world_protocol_manifest_fingerprint_hi',
+    'world_appliance_abi_version',
+    'world_appliance_alloc',
+    'world_appliance_free',
+  ]) {
+    if (typeof instance.exports[name] !== 'function') throw new Error(`wasm export is not callable: ${name}`);
+  }
   const manifestLen = Number(instance.exports.world_protocol_manifest_len());
-  const readLen = Number(instance.exports.world_protocol_read_manifest(0, 0));
   const lo = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_lo());
   const hi = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_hi());
+  if (Number(instance.exports.world_appliance_abi_version()) !== 3) throw new Error('unexpected appliance ABI version');
   const memory = instance.exports.memory;
-  if (manifestLen <= 0 || readLen !== manifestLen || lo === 0n || hi === 0n) {
+  if (manifestLen <= 0 || lo === 0n || hi === 0n) {
     throw new Error('protocol manifest wasm calls failed');
   }
   if (!(memory instanceof WebAssembly.Memory)) throw new Error('missing exported memory');
+  if (memory.buffer.byteLength > 67108864) throw new Error('wasm memory limit violation');
+  assertMemoryCannotGrow(memory);
+  const manifestBytes = readProtocolManifest(instance, manifestLen);
+  if (textDecoder.decode(manifestBytes.subarray(0, 4)) !== 'WPM1') throw new Error('wasm protocol manifest magic mismatch');
+  if (readU64Le(manifestBytes, 12) !== lo || readU64Le(manifestBytes, 20) !== hi) throw new Error('wasm protocol manifest fingerprint mismatch');
   return {
     manifest_len: manifestLen,
     protocol_manifest_fingerprint_lo: `0x${lo.toString(16)}`,
@@ -186,7 +209,7 @@ function writeChecksums(root) {
   const files = [
     'world_universal_appliance.wasm',
     'world-protocol-manifest.json',
-    'world-release-receipt.json',
+    'world-release-artifact.json',
     'human-readable-manifest.txt',
     'conformance/v0/world/corpus.json',
     'scripts/world_conformance.mjs',
@@ -230,6 +253,32 @@ function requirePath(value, label) {
 
 function sha256Hex(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function readProtocolManifest(instance, len) {
+  const ptr = Number(instance.exports.world_appliance_alloc(len));
+  if (ptr <= 0) throw new Error('wasm manifest allocation failed');
+  try {
+    const readLen = Number(instance.exports.world_protocol_read_manifest(ptr, len));
+    if (readLen !== len) throw new Error('wasm protocol manifest read failed');
+    return new Uint8Array(instance.exports.memory.buffer, ptr, len).slice();
+  } finally {
+    instance.exports.world_appliance_free(ptr, len);
+  }
+}
+
+function assertMemoryCannotGrow(memory) {
+  try {
+    memory.grow(1);
+  } catch {
+    return;
+  }
+  throw new Error('wasm memory maximum exceeds declared limit');
+}
+
+function readU64Le(bytes, offset) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getBigUint64(offset, true);
 }
 
 function and(...values) {

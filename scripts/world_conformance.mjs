@@ -5,6 +5,7 @@ import {
   BinaryReader,
   encodeBootTurnInput,
   encodeContinueTurnInput,
+  encodeTurnInput,
   encodeResolutionInput,
   operationBoot,
   operationContinue,
@@ -21,6 +22,8 @@ import {
   encodeSum,
   encodeU64Word,
 } from './world_loaded_value_codec.mjs';
+
+const textDecoder = new TextDecoder();
 
 const requiredExports = [
   'world_appliance_abi_version',
@@ -114,6 +117,20 @@ const expected = {
     'regression_matrix',
     'reproducible_artifact',
   ],
+  limits: {
+    max_universal_wasm_linear_memory_bytes: 67108864,
+    max_executable_image_bytes: 131072,
+    max_turn_input_bytes: 1704960,
+    max_turn_closure_bytes: 524288,
+    max_capsule_bytes: 4194304,
+    max_archive_append_batch_bytes: 4194304,
+    max_loaded_frame_depth: 64,
+    max_runspace_slots: 8,
+    max_mailbox_entries: 1024,
+    max_provider_depth: 8,
+    max_request_batch_count: 16,
+    max_reply_batch_count: 16,
+  },
 };
 
 const args = parseArgs(process.argv.slice(2));
@@ -182,10 +199,8 @@ function loadCorpus(path) {
 function validateCorpus(actual) {
   if (actual.format_version !== 1) throw new Error('invalid corpus format version');
   for (const [key, values] of Object.entries(expected)) {
-    assertArrayEqual(actual[key], values, key);
-  }
-  if (actual.limits.max_universal_wasm_linear_memory_bytes !== 67108864) {
-    throw new Error('unexpected universal wasm memory budget');
+    if (Array.isArray(values)) assertArrayEqual(actual[key], values, key);
+    else assertObjectEqual(actual[key], values, key);
   }
 }
 
@@ -235,12 +250,15 @@ function runMalformedJsCorpus() {
     expectedResponseSchemaRefFingerprint: 0xf00dn,
   };
   const duplicate = encodeResolutionInput({ request });
-  expectReject(() => encodeContinueTurnInput({
+  const duplicateBytes = encodeTurnInput({
+    operation: operationContinue,
     manifestFingerprint: 0x1234n,
     previousTurnReceiptFingerprint: 0x1235n,
     turnSequenceNumber: 1n,
     resolutions: [duplicate, duplicate],
-  }), 'duplicate request target');
+    allowDuplicateResolutionTargets: true,
+  });
+  expectReject(() => decodeTurnInputForCheck(duplicateBytes), 'duplicate request target');
 }
 
 async function inspectAndExecuteWasm(path) {
@@ -251,20 +269,39 @@ async function inspectAndExecuteWasm(path) {
   for (const name of requiredExports) {
     if (!exportNames.has(name)) throw new Error(`missing wasm export: ${name}`);
   }
+  for (const name of [
+    'world_appliance_abi_version',
+    'world_appliance_alloc',
+    'world_appliance_free',
+  ]) {
+    if (!exportNames.has(name)) throw new Error(`missing wasm appliance export: ${name}`);
+  }
   const imports = WebAssembly.Module.imports(module);
   if (imports.length !== 0) throw new Error('universal wasm must not import host functions');
   const instance = await WebAssembly.instantiate(module, {});
+  for (const name of [
+    ...requiredExports,
+    'world_appliance_abi_version',
+    'world_appliance_alloc',
+    'world_appliance_free',
+  ]) {
+    if (typeof instance.exports[name] !== 'function') throw new Error(`wasm export is not callable: ${name}`);
+  }
   const manifestLen = Number(instance.exports.world_protocol_manifest_len());
-  const readLen = Number(instance.exports.world_protocol_read_manifest(0, 0));
   const fingerprintLo = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_lo());
   const fingerprintHi = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_hi());
-  if (manifestLen <= 0 || readLen !== manifestLen || fingerprintLo === 0n || fingerprintHi === 0n) {
+  if (Number(instance.exports.world_appliance_abi_version()) !== 3) throw new Error('unexpected appliance ABI version');
+  if (manifestLen <= 0 || fingerprintLo === 0n || fingerprintHi === 0n) {
     throw new Error('wasm protocol manifest execution failed');
   }
   const memory = instance.exports.memory;
   if (!(memory instanceof WebAssembly.Memory) || memory.buffer.byteLength > 67108864) {
     throw new Error('wasm memory limit violation');
   }
+  assertMemoryCannotGrow(memory);
+  const manifestBytes = readProtocolManifest(instance, manifestLen);
+  if (textDecoder.decode(manifestBytes.subarray(0, 4)) !== 'WPM1') throw new Error('wasm protocol manifest magic mismatch');
+  if (readU64Le(manifestBytes, 12) !== fingerprintLo || readU64Le(manifestBytes, 20) !== fingerprintHi) throw new Error('wasm protocol manifest fingerprint mismatch');
   return {
     artifact_inspection: true,
     actual_webassembly_execution: true,
@@ -286,10 +323,15 @@ function decodeTurnInputForCheck(bytes) {
   reader.skipByteSlices();
   reader.bytesLen();
   const resolutionCount = Number(reader.u64());
+  let previousResolutionTarget = null;
   for (let i = 0; i < resolutionCount; i += 1) {
     const resolutionFormatVersion = reader.u32();
     if (resolutionFormatVersion !== 1) throw new Error('invalid ResolutionInput format version');
-    reader.u64();
+    const target = reader.u64();
+    if (previousResolutionTarget !== null && target <= previousResolutionTarget) {
+      throw new Error('duplicate or unsorted resolution target');
+    }
+    previousResolutionTarget = target;
     const status = reader.u8();
     if (status < 0 || status > 5) throw new Error('invalid ResolutionInput status');
     reader.bytesLen();
@@ -314,6 +356,44 @@ function assertArrayEqual(actual, wanted, label) {
   for (let i = 0; i < wanted.length; i += 1) {
     if (actual[i] !== wanted[i]) throw new Error(`${label} case ${i} mismatch`);
   }
+}
+
+function assertObjectEqual(actual, wanted, label) {
+  if (actual === null || typeof actual !== 'object' || Array.isArray(actual)) {
+    throw new Error(`${label} object mismatch`);
+  }
+  const actualKeys = Object.keys(actual).sort();
+  const wantedKeys = Object.keys(wanted).sort();
+  assertArrayEqual(actualKeys, wantedKeys, `${label} keys`);
+  for (const key of wantedKeys) {
+    if (actual[key] !== wanted[key]) throw new Error(`${label}.${key} mismatch`);
+  }
+}
+
+function readProtocolManifest(instance, len) {
+  const ptr = Number(instance.exports.world_appliance_alloc(len));
+  if (ptr <= 0) throw new Error('wasm manifest allocation failed');
+  try {
+    const readLen = Number(instance.exports.world_protocol_read_manifest(ptr, len));
+    if (readLen !== len) throw new Error('wasm protocol manifest read failed');
+    return new Uint8Array(instance.exports.memory.buffer, ptr, len).slice();
+  } finally {
+    instance.exports.world_appliance_free(ptr, len);
+  }
+}
+
+function assertMemoryCannotGrow(memory) {
+  try {
+    memory.grow(1);
+  } catch {
+    return;
+  }
+  throw new Error('wasm memory maximum exceeds declared limit');
+}
+
+function readU64Le(bytes, offset) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getBigUint64(offset, true);
 }
 
 function expectReject(fn, label) {
