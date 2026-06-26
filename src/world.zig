@@ -1416,6 +1416,9 @@ test "world protocol release receipt validates required proof matrix exactly onc
     try std.testing.expect(release_receipt.release_receipt_fingerprint != 0);
     try std.testing.expect(release_receipt.hasPassingProof(.universal_wasm_execution));
     try std.testing.expect(release_receipt.hasPassingProof(.reproducible_artifact));
+    const first_proof_gate_fingerprint = Protocol.proofGateFingerprint(proof_receipts[0].proof_kind);
+    try std.testing.expect(std.mem.indexOfScalar(u64, proof_receipts[0].input_corpus_case_fingerprints, first_proof_gate_fingerprint) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u64, proof_receipts[0].artifact_fingerprints, first_proof_gate_fingerprint) != null);
 
     var duplicate_receipts = proof_receipts;
     duplicate_receipts[1] = duplicate_receipts[0];

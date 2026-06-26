@@ -125,15 +125,15 @@ pub fn Protocol(comptime W: type) type {
         pub const required_proof_kind_count: usize = required_proof_kinds.len;
 
         const canonical_proof_evidence = blk: {
-            var evidence: [required_proof_kind_count][1]u64 = undefined;
+            var evidence: [required_proof_kind_count][2]u64 = undefined;
             for (required_proof_kinds, 0..) |kind, index| {
-                evidence[index][0] = proofKindEvidenceFingerprint(kind);
+                evidence[index] = .{ proofKindEvidenceFingerprint(kind), proofGateFingerprint(kind) };
             }
             break :blk evidence;
         };
 
         const canonical_proof_artifact_evidence = blk: {
-            var evidence: [required_proof_kind_count][3]u64 = undefined;
+            var evidence: [required_proof_kind_count][4]u64 = undefined;
             for (required_proof_kinds, 0..) |kind, index| {
                 evidence[index] = canonicalArtifactEvidence(kind, default_universal_wasm_checksum, default_source_package_checksum);
             }
@@ -147,6 +147,33 @@ pub fn Protocol(comptime W: type) type {
             return @tagName(kind);
         }
 
+        pub fn proofGateName(kind: ProofKind) []const u8 {
+            return switch (kind) {
+                .boundary_portable_v2 => "check-boundary-world-compatibility",
+                .executable_image => "check-world-executable-image",
+                .universal_wasm_execution => "check-world-universal-appliance-node",
+                .two_programs_one_wasm => "check-world-two-programs-one-wasm",
+                .loaded_internal_provider => "check-world-universal-providers",
+                .multi_suspension_root => "check-world-loaded-runspace",
+                .active_fabric_restore => "check-world-active-fabric-restore",
+                .replay_without_fresh_effect => "check-world-replay-positive",
+                .unsupported_actuated_replay_rejected => "check-world-v0-negative",
+                .deterministic_retry => "check-world-deterministic-retry",
+                .batched_request_reply => "check-world-appliance-batching",
+                .independent_javascript_codec => "check-world-js-codec",
+                .exact_result_bytes => "check-world-conformance-corpus",
+                .exact_receipt_bytes => "check-world-adversarial-codecs",
+                .exact_capsule_bytes => "check-world-adversarial-codecs",
+                .exact_archive_append_batch_bytes => "check-world-adversarial-codecs",
+                .native_wasm_parity => "check-world-state-machine-differential",
+                .cold_warm_parity => "check-world-state-machine-differential",
+                .memory_bound => "check-world-universal-memory",
+                .malformed_input => "check-world-js-malformed-corpus",
+                .regression_matrix => "check-world-conformance-corpus",
+                .reproducible_artifact => "check-world-reproducible-wasm",
+            };
+        }
+
         fn canonicalProofEvidence(kind: ProofKind) []const u64 {
             const index = requiredProofKindIndex(kind) orelse return &.{};
             return canonical_proof_evidence[index][0..];
@@ -157,12 +184,24 @@ pub fn Protocol(comptime W: type) type {
             return canonical_proof_artifact_evidence[index][0..];
         }
 
-        fn canonicalArtifactEvidence(kind: ProofKind, universal_wasm_checksum: u64, source_package_checksum: u64) [3]u64 {
-            return .{ proofKindEvidenceFingerprint(kind), universal_wasm_checksum, source_package_checksum };
+        fn canonicalArtifactEvidence(kind: ProofKind, universal_wasm_checksum: u64, source_package_checksum: u64) [4]u64 {
+            return .{ proofKindEvidenceFingerprint(kind), proofGateFingerprint(kind), universal_wasm_checksum, source_package_checksum };
         }
 
         pub fn proofKindEvidenceFingerprint(kind: ProofKind) u64 {
             return 0x5750_0000_0000_0000 | (@as(u64, @intFromEnum(kind)) + 1);
+        }
+
+        pub fn proofGateFingerprint(kind: ProofKind) u64 {
+            var hash: u64 = 0xcbf2_9ce4_8422_2325;
+            hash = (hash ^ 0x5750_4700_0000_0001) *% 0x0000_0100_0000_01b3;
+            hash = (hash ^ @as(u64, @intFromEnum(kind))) *% 0x0000_0100_0000_01b3;
+            const gate_name = proofGateName(kind);
+            hash = (hash ^ gate_name.len) *% 0x0000_0100_0000_01b3;
+            for (gate_name) |byte| {
+                hash = (hash ^ byte) *% 0x0000_0100_0000_01b3;
+            }
+            return nonzero(hash);
         }
 
         pub const ProofReceipt = struct {

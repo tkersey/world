@@ -34,11 +34,12 @@ pub fn main(init: std.process.Init) !void {
     const source_package_checksum = try sourcePackageChecksum(init.io, allocator);
 
     var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
-    var input_evidence: [Protocol.required_proof_kind_count][1]u64 = undefined;
-    var artifact_evidence: [Protocol.required_proof_kind_count][3]u64 = undefined;
+    var input_evidence: [Protocol.required_proof_kind_count][2]u64 = undefined;
+    var artifact_evidence: [Protocol.required_proof_kind_count][4]u64 = undefined;
     for (Protocol.required_proof_kinds, 0..) |kind, index| {
-        input_evidence[index][0] = Protocol.proofKindEvidenceFingerprint(kind);
-        artifact_evidence[index] = .{ input_evidence[index][0], universal_wasm_checksum, source_package_checksum };
+        if (!std.mem.eql(u8, proof_gates[index], Protocol.proofGateName(kind))) return error.InvalidProofGate;
+        input_evidence[index] = .{ Protocol.proofKindEvidenceFingerprint(kind), Protocol.proofGateFingerprint(kind) };
+        artifact_evidence[index] = .{ input_evidence[index][0], input_evidence[index][1], universal_wasm_checksum, source_package_checksum };
         proof_receipts[index] = Protocol.ProofReceipt.init(.{
             .proof_kind = kind,
             .input_corpus_case_fingerprints = input_evidence[index][0..],
@@ -67,12 +68,12 @@ fn writeReleaseReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
         \\{{
         \\  "release_receipt_format_version": {d},
         \\  "release_receipt_fingerprint_version": {d},
-        \\  "release_receipt_fingerprint": {d},
-        \\  "boundary_protocol_manifest_fingerprint": {d},
-        \\  "world_protocol_manifest_fingerprint": {d},
-        \\  "conformance_corpus_root_fingerprint": {d},
-        \\  "universal_wasm_checksum": {d},
-        \\  "source_package_checksum": {d},
+        \\  "release_receipt_fingerprint": "0x{x:0>16}",
+        \\  "boundary_protocol_manifest_fingerprint": "0x{x:0>16}",
+        \\  "world_protocol_manifest_fingerprint": "0x{x:0>16}",
+        \\  "conformance_corpus_root_fingerprint": "0x{x:0>16}",
+        \\  "universal_wasm_checksum": "0x{x:0>16}",
+        \\  "source_package_checksum": "0x{x:0>16}",
         \\  "complete": {},
         \\  "proof_receipts": [
         \\
@@ -105,14 +106,16 @@ fn writeProofReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), 
     try out.print(allocator,
         \\    {{
         \\      "proof_gate": "{s}",
+        \\      "proof_gate_fingerprint": "0x{x:0>16}",
         \\      "receipt_format_version": {d},
         \\      "receipt_fingerprint_version": {d},
-        \\      "receipt_fingerprint": {d},
+        \\      "receipt_fingerprint": "0x{x:0>16}",
         \\      "proof_kind": "{s}",
-        \\      "protocol_manifest_fingerprint": {d},
+        \\      "protocol_manifest_fingerprint": "0x{x:0>16}",
         \\      "input_corpus_case_fingerprints": 
     , .{
         proof_gate,
+        Protocol.proofGateFingerprint(receipt.proof_kind),
         receipt.receipt_format_version,
         receipt.receipt_fingerprint_version,
         receipt.receipt_fingerprint,
@@ -135,7 +138,7 @@ fn writeU64Array(allocator: std.mem.Allocator, out: *std.ArrayList(u8), values: 
     try out.append(allocator, '[');
     for (values, 0..) |value, index| {
         if (index != 0) try out.appendSlice(allocator, ", ");
-        try out.print(allocator, "{d}", .{value});
+        try out.print(allocator, "\"0x{x:0>16}\"", .{value});
     }
     try out.append(allocator, ']');
 }
