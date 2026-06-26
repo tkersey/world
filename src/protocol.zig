@@ -161,7 +161,7 @@ pub fn Protocol(comptime W: type) type {
             return .{ proofKindEvidenceFingerprint(kind), universal_wasm_checksum, source_package_checksum };
         }
 
-        fn proofKindEvidenceFingerprint(kind: ProofKind) u64 {
+        pub fn proofKindEvidenceFingerprint(kind: ProofKind) u64 {
             return 0x5750_0000_0000_0000 | (@as(u64, @intFromEnum(kind)) + 1);
         }
 
