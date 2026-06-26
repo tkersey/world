@@ -132,6 +132,17 @@ pub fn Protocol(comptime W: type) type {
             break :blk evidence;
         };
 
+        const canonical_proof_artifact_evidence = blk: {
+            var evidence: [required_proof_kind_count][3]u64 = undefined;
+            for (required_proof_kinds, 0..) |kind, index| {
+                evidence[index] = canonicalArtifactEvidence(kind, default_universal_wasm_checksum, default_source_package_checksum);
+            }
+            break :blk evidence;
+        };
+
+        const default_universal_wasm_checksum = protocolArtifactFingerprint("world.universal_wasm.checksum");
+        const default_source_package_checksum = protocolArtifactFingerprint("world.source_package.checksum");
+
         pub fn proofKindName(kind: ProofKind) []const u8 {
             return @tagName(kind);
         }
@@ -139,6 +150,15 @@ pub fn Protocol(comptime W: type) type {
         fn canonicalProofEvidence(kind: ProofKind) []const u64 {
             const index = requiredProofKindIndex(kind) orelse return &.{};
             return canonical_proof_evidence[index][0..];
+        }
+
+        fn canonicalProofArtifactEvidence(kind: ProofKind) []const u64 {
+            const index = requiredProofKindIndex(kind) orelse return &.{};
+            return canonical_proof_artifact_evidence[index][0..];
+        }
+
+        fn canonicalArtifactEvidence(kind: ProofKind, universal_wasm_checksum: u64, source_package_checksum: u64) [3]u64 {
+            return .{ proofKindEvidenceFingerprint(kind), universal_wasm_checksum, source_package_checksum };
         }
 
         fn proofKindEvidenceFingerprint(kind: ProofKind) u64 {
@@ -205,13 +225,14 @@ pub fn Protocol(comptime W: type) type {
                 return true;
             }
 
-            fn matchesCanonicalProofEvidence(self: @This()) bool {
+            fn matchesCanonicalProofEvidence(self: @This(), universal_wasm_checksum: u64, source_package_checksum: u64) bool {
                 const canonical = canonicalProofEvidence(self.proof_kind);
                 if (canonical.len == 0) return false;
+                const canonical_artifacts = canonicalArtifactEvidence(self.proof_kind, universal_wasm_checksum, source_package_checksum);
                 return std.mem.eql(u64, self.input_corpus_case_fingerprints, canonical) and
                     std.mem.eql(u64, self.expected_output_fingerprints, canonical) and
                     std.mem.eql(u64, self.actual_output_fingerprints, canonical) and
-                    std.mem.eql(u64, self.artifact_fingerprints, canonical) and
+                    std.mem.eql(u64, self.artifact_fingerprints, canonical_artifacts[0..]) and
                     std.mem.eql(u64, self.bounded_diagnostics, canonical);
             }
 
@@ -224,9 +245,6 @@ pub fn Protocol(comptime W: type) type {
         };
 
         pub const ReleaseReceipt = struct {
-            const required_universal_wasm_checksum = protocolArtifactFingerprint("world.universal_wasm.checksum");
-            const required_source_package_checksum = protocolArtifactFingerprint("world.source_package.checksum");
-
             release_receipt_format_version: u32 = world_protocol_release_receipt_format_version,
             release_receipt_fingerprint_version: u32 = world_protocol_release_receipt_fingerprint_version,
             release_receipt_fingerprint: u64 = 0,
@@ -234,8 +252,8 @@ pub fn Protocol(comptime W: type) type {
             world_protocol_manifest_fingerprint: u64 = 0,
             conformance_corpus_root_fingerprint: u64 = 0,
             proof_receipts: []const ProofReceipt,
-            universal_wasm_checksum: u64 = required_universal_wasm_checksum,
-            source_package_checksum: u64 = required_source_package_checksum,
+            universal_wasm_checksum: u64 = default_universal_wasm_checksum,
+            source_package_checksum: u64 = default_source_package_checksum,
             complete: bool = false,
             blockers: []const u64 = &.{},
             warnings: []const u64 = &.{},
@@ -245,8 +263,8 @@ pub fn Protocol(comptime W: type) type {
                 boundary_protocol_manifest_fingerprint: u64 = Manifest.required_boundary_protocol_manifest_fingerprint,
                 world_protocol_manifest_fingerprint: u64 = 0,
                 conformance_corpus_root_fingerprint: u64 = 0,
-                universal_wasm_checksum: u64 = required_universal_wasm_checksum,
-                source_package_checksum: u64 = required_source_package_checksum,
+                universal_wasm_checksum: u64 = default_universal_wasm_checksum,
+                source_package_checksum: u64 = default_source_package_checksum,
                 blockers: []const u64 = &.{},
                 warnings: []const u64 = &.{},
             }) @This() {
@@ -296,8 +314,7 @@ pub fn Protocol(comptime W: type) type {
             }
 
             fn artifactChecksumsBound(self: @This()) bool {
-                return self.universal_wasm_checksum == required_universal_wasm_checksum and
-                    self.source_package_checksum == required_source_package_checksum;
+                return self.universal_wasm_checksum != 0 and self.source_package_checksum != 0;
             }
 
             fn validateProofMatrix(self: @This()) !void {
@@ -307,7 +324,7 @@ pub fn Protocol(comptime W: type) type {
                     try receipt.validate();
                     if (!receipt.passed()) return error.InvalidFrameEncoding;
                     const index = requiredProofKindIndex(receipt.proof_kind) orelse return error.InvalidFrameEncoding;
-                    if (!receipt.matchesCanonicalProofEvidence()) return error.InvalidFrameEncoding;
+                    if (!receipt.matchesCanonicalProofEvidence(self.universal_wasm_checksum, self.source_package_checksum)) return error.InvalidFrameEncoding;
                     if (seen[index]) return error.InvalidFrameEncoding;
                     seen[index] = true;
                 }
@@ -322,7 +339,7 @@ pub fn Protocol(comptime W: type) type {
                     .input_corpus_case_fingerprints = canonicalProofEvidence(kind),
                     .expected_output_fingerprints = canonicalProofEvidence(kind),
                     .actual_output_fingerprints = canonicalProofEvidence(kind),
-                    .artifact_fingerprints = canonicalProofEvidence(kind),
+                    .artifact_fingerprints = canonicalProofArtifactEvidence(kind),
                     .bounded_diagnostics = canonicalProofEvidence(kind),
                     .actual_comparison_result = true,
                 });
