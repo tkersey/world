@@ -227,6 +227,7 @@ pub fn Protocol(comptime W: type) type {
                 if (self.release_receipt_fingerprint_version != world_protocol_release_receipt_fingerprint_version) return error.InvalidFrameEncoding;
                 if (self.boundary_protocol_manifest_fingerprint != Manifest.required_boundary_protocol_manifest_fingerprint) return error.InvalidFrameEncoding;
                 if (self.world_protocol_manifest_fingerprint != Manifest.manifestFingerprint().lo) return error.InvalidFrameEncoding;
+                if (self.conformance_corpus_root_fingerprint != conformanceCorpusRootFingerprint()) return error.InvalidFrameEncoding;
                 try self.validateProofMatrix();
                 if (self.complete != self.computedComplete()) return error.InvalidFrameEncoding;
                 if (self.release_receipt_fingerprint != fingerprintReleaseReceipt(self)) return error.InvalidFrameEncoding;
@@ -244,6 +245,7 @@ pub fn Protocol(comptime W: type) type {
                 if (self.release_receipt_fingerprint_version != world_protocol_release_receipt_fingerprint_version) return false;
                 if (self.boundary_protocol_manifest_fingerprint != Manifest.required_boundary_protocol_manifest_fingerprint) return false;
                 if (self.world_protocol_manifest_fingerprint != Manifest.manifestFingerprint().lo) return false;
+                if (self.conformance_corpus_root_fingerprint != conformanceCorpusRootFingerprint()) return false;
                 self.validateProofMatrix() catch return false;
                 return self.blockers.len == 0;
             }

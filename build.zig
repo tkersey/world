@@ -429,9 +429,12 @@ pub fn build(b: *std.Build) void {
         "scripts/world_conformance.mjs",
         "--corpus",
         "conformance/v0/world",
+        "--wasm",
+        "zig-out/bin/world_universal_appliance.wasm",
         "--receipt-out",
     });
     _ = emit_world_release_receipt_run.addOutputFileArg("world-release-receipt.json");
+    emit_world_release_receipt_run.step.dependOn(world_universal_appliance_wasm_step);
     const emit_world_release_receipt_step = b.step("emit-world-release-receipt", "Emit the World v0 release receipt from proof evidence.");
     emit_world_release_receipt_step.dependOn(&emit_world_release_receipt_run.step);
     const check_world_release_receipt_step = b.step("check-world-release-receipt", "Validate the World v0 release receipt proof matrix.");
