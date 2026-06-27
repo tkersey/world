@@ -4,6 +4,7 @@ const world = @import("world");
 const Protocol = world.Protocol;
 
 const source_package_root_files = [_][]const u8{
+    "README.md",
     "build.zig",
     "build.zig.zon",
 };
@@ -522,6 +523,7 @@ test "wasm inspection receipt validation uses parsed fields" {
 
 test "source package checksum covers release-defining source paths" {
     for ([_][]const u8{
+        "README.md",
         "build.zig",
         "src/protocol.zig",
         "src/appliance.zig",

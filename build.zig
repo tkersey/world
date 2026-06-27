@@ -55,6 +55,7 @@ fn dependOnNativeRunOrCompile(
 }
 
 const world_source_package_root_files = [_][]const u8{
+    "README.md",
     "build.zig",
     "build.zig.zon",
 };
