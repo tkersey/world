@@ -3,6 +3,20 @@ const world = @import("world");
 
 const Protocol = world.Protocol;
 
+const source_package_root_files = [_][]const u8{
+    "build.zig",
+    "build.zig.zon",
+};
+
+const source_package_dirs = [_][]const u8{
+    "src",
+    "examples",
+    "scripts",
+    "test",
+    "docs",
+    "conformance",
+};
+
 pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.page_allocator;
     var args = std.process.Args.Iterator.init(init.minimal.args);
@@ -10,6 +24,7 @@ pub fn main(init: std.process.Init) !void {
 
     var wasm_path: ?[]const u8 = null;
     var wasm_inspection_receipt_path: ?[]const u8 = null;
+    var proof_receipts_path: ?[]const u8 = null;
     var out_path: ?[]const u8 = null;
     var proof_gates: [Protocol.required_proof_kind_count][]const u8 = undefined;
     var proof_gate_count: usize = 0;
@@ -18,6 +33,8 @@ pub fn main(init: std.process.Init) !void {
             wasm_path = args.next() orelse return error.MissingWasmPath;
         } else if (std.mem.eql(u8, arg, "--wasm-inspection-receipt")) {
             wasm_inspection_receipt_path = args.next() orelse return error.MissingWasmInspectionReceiptPath;
+        } else if (std.mem.eql(u8, arg, "--proof-receipts")) {
+            proof_receipts_path = args.next() orelse return error.MissingProofReceiptsPath;
         } else if (std.mem.eql(u8, arg, "--out")) {
             out_path = args.next() orelse return error.MissingOutPath;
         } else if (std.mem.eql(u8, arg, "--proof-gate")) {
@@ -37,26 +54,30 @@ pub fn main(init: std.process.Init) !void {
     const wasm_inspection_receipt_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, wasm_inspection_receipt_path orelse return error.MissingWasmInspectionReceiptPath, allocator, .limited(1024 * 1024));
     defer allocator.free(wasm_inspection_receipt_bytes);
     try validateWasmInspectionReceipt(allocator, wasm_inspection_receipt_bytes, universal_wasm_checksum);
+    const proof_receipts_bytes = try std.Io.Dir.cwd().readFileAlloc(init.io, proof_receipts_path orelse return error.MissingProofReceiptsPath, allocator, .limited(1024 * 1024));
+    defer allocator.free(proof_receipts_bytes);
 
     const source_package_checksum = try sourcePackageChecksum(init.io, allocator);
 
     var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
     var input_evidence: [Protocol.required_proof_kind_count][2]u64 = undefined;
+    var expected_evidence: [Protocol.required_proof_kind_count][2]u64 = undefined;
+    var actual_evidence: [Protocol.required_proof_kind_count][2]u64 = undefined;
+    var diagnostics_evidence: [Protocol.required_proof_kind_count][2]u64 = undefined;
     var artifact_evidence: [Protocol.required_proof_kind_count][4]u64 = undefined;
-    for (Protocol.required_proof_kinds, 0..) |kind, index| {
-        if (!std.mem.eql(u8, proof_gates[index], Protocol.proofGateName(kind))) return error.InvalidProofGate;
-        input_evidence[index] = .{ Protocol.proofKindEvidenceFingerprint(kind), Protocol.proofGateFingerprint(kind) };
-        artifact_evidence[index] = .{ input_evidence[index][0], input_evidence[index][1], universal_wasm_checksum, source_package_checksum };
-        proof_receipts[index] = Protocol.ProofReceipt.init(.{
-            .proof_kind = kind,
-            .input_corpus_case_fingerprints = input_evidence[index][0..],
-            .expected_output_fingerprints = input_evidence[index][0..],
-            .actual_output_fingerprints = input_evidence[index][0..],
-            .actual_comparison_result = true,
-            .artifact_fingerprints = artifact_evidence[index][0..],
-            .bounded_diagnostics = input_evidence[index][0..],
-        });
-    }
+    try buildProofReceiptsFromEvidence(
+        allocator,
+        proof_receipts_bytes,
+        proof_gates[0..],
+        universal_wasm_checksum,
+        source_package_checksum,
+        &proof_receipts,
+        &input_evidence,
+        &expected_evidence,
+        &actual_evidence,
+        &diagnostics_evidence,
+        &artifact_evidence,
+    );
     const release_receipt = Protocol.ReleaseReceipt.init(.{
         .proof_receipts = proof_receipts[0..],
         .universal_wasm_checksum = universal_wasm_checksum,
@@ -151,17 +172,14 @@ fn writeU64Array(allocator: std.mem.Allocator, out: *std.ArrayList(u8), values: 
 }
 
 fn sourcePackageChecksum(io: std.Io, allocator: std.mem.Allocator) !u64 {
+    var paths = try collectSourcePackagePaths(io, allocator);
+    defer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit(allocator);
+    }
+
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    const paths = [_][]const u8{
-        "conformance/v0/world/corpus.json",
-        "scripts/world_conformance.mjs",
-        "scripts/world_appliance_wire_codec.mjs",
-        "scripts/world_loaded_value_codec.mjs",
-        "docs/world_v0.md",
-        "docs/compatibility.md",
-        "docs/security_model.md",
-    };
-    for (paths) |path| {
+    for (paths.items) |path| {
         const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(8 * 1024 * 1024));
         defer allocator.free(bytes);
         hasher.update(path);
@@ -172,6 +190,53 @@ fn sourcePackageChecksum(io: std.Io, allocator: std.mem.Allocator) !u64 {
     var digest: [32]u8 = undefined;
     hasher.final(&digest);
     return std.mem.readInt(u64, digest[0..8], .big);
+}
+
+fn collectSourcePackagePaths(io: std.Io, allocator: std.mem.Allocator) !std.ArrayList([]const u8) {
+    var paths: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit(allocator);
+    }
+
+    for (source_package_root_files) |path| {
+        const owned = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned);
+        try paths.append(allocator, owned);
+    }
+
+    for (source_package_dirs) |root| {
+        var dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
+        defer dir.close(io);
+
+        var walker = try dir.walk(allocator);
+        defer walker.deinit();
+        while (try walker.next(io)) |entry| {
+            if (entry.kind != .file) continue;
+            const owned = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ root, entry.path });
+            errdefer allocator.free(owned);
+            try paths.append(allocator, owned);
+        }
+    }
+
+    std.mem.sort([]const u8, paths.items, {}, sourcePathLessThan);
+    return paths;
+}
+
+fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.lessThan(u8, lhs, rhs);
+}
+
+fn sourcePackagePathCovered(path: []const u8) bool {
+    for (source_package_root_files) |covered| {
+        if (std.mem.eql(u8, covered, path)) return true;
+    }
+    for (source_package_dirs) |dir| {
+        if (std.mem.startsWith(u8, path, dir) and
+            path.len > dir.len and
+            path[dir.len] == '/') return true;
+    }
+    return false;
 }
 
 fn checksum64(bytes: []const u8) u64 {
@@ -212,6 +277,37 @@ const WasmInspectionReceipt = struct {
     complete: bool,
 };
 
+const ProofReceipts = struct {
+    receipt_format_version: u32,
+    runner: []const u8,
+    evidence_scope: []const u8,
+    artifact_inspection: bool,
+    actual_webassembly_execution: bool,
+    positive_success: bool,
+    expected_rejection: bool,
+    byte_equality: bool,
+    semantic_fingerprint_equality: bool,
+    memory_limit_compliance: bool,
+    blockers: []const []const u8,
+    warnings: []const []const u8,
+    complete: bool,
+    proof_receipts: []const ProofReceiptEvidence,
+    receipt_fingerprint: []const u8,
+};
+
+const ProofReceiptEvidence = struct {
+    proof_kind: []const u8,
+    proof_gate: []const u8,
+    proof_gate_fingerprint: []const u8,
+    input_corpus_case_fingerprints: []const []const u8,
+    expected_output_fingerprints: []const []const u8,
+    actual_output_fingerprints: []const []const u8,
+    actual_comparison_result: bool,
+    bounded_diagnostics: []const []const u8,
+    blocker_count: u32,
+    warning_count: u32,
+};
+
 fn validateWasmInspectionReceipt(allocator: std.mem.Allocator, bytes: []const u8, expected_wasm_checksum: u64) !void {
     const parsed = std.json.parseFromSlice(WasmInspectionReceipt, allocator, bytes, .{
         .ignore_unknown_fields = true,
@@ -235,6 +331,100 @@ fn validateWasmInspectionReceipt(allocator: std.mem.Allocator, bytes: []const u8
     var manifest_hi_buf: [18]u8 = undefined;
     const expected_manifest_hi = try std.fmt.bufPrint(&manifest_hi_buf, "0x{x}", .{Protocol.Manifest.manifestFingerprint().hi});
     if (!std.mem.eql(u8, receipt.protocol_manifest_fingerprint_hi, expected_manifest_hi)) return error.WasmInspectionReceiptArtifactMismatch;
+}
+
+fn validateProofReceipts(allocator: std.mem.Allocator, bytes: []const u8) !void {
+    const parsed = std.json.parseFromSlice(ProofReceipts, allocator, bytes, .{
+        .ignore_unknown_fields = true,
+    }) catch return error.ProofReceiptsIncomplete;
+    defer parsed.deinit();
+
+    const receipt = parsed.value;
+    if (receipt.receipt_format_version != 1) return error.ProofReceiptsIncomplete;
+    if (!std.mem.eql(u8, receipt.runner, "scripts/world_conformance.mjs")) return error.ProofReceiptsIncomplete;
+    if (!std.mem.eql(u8, receipt.evidence_scope, "js-corpus")) return error.ProofReceiptsIncomplete;
+    if (receipt.artifact_inspection) return error.ProofReceiptsIncomplete;
+    if (receipt.actual_webassembly_execution) return error.ProofReceiptsIncomplete;
+    if (receipt.memory_limit_compliance) return error.ProofReceiptsIncomplete;
+    if (!receipt.positive_success) return error.ProofReceiptsIncomplete;
+    if (!receipt.expected_rejection) return error.ProofReceiptsIncomplete;
+    if (!receipt.byte_equality) return error.ProofReceiptsIncomplete;
+    if (!receipt.semantic_fingerprint_equality) return error.ProofReceiptsIncomplete;
+    if (receipt.blockers.len != 0) return error.ProofReceiptsIncomplete;
+    if (!receipt.complete) return error.ProofReceiptsIncomplete;
+    if (receipt.proof_receipts.len != Protocol.required_proof_kind_count) return error.ProofReceiptsIncomplete;
+    if (receipt.receipt_fingerprint.len == 0) return error.ProofReceiptsIncomplete;
+}
+
+fn buildProofReceiptsFromEvidence(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    proof_gates: []const []const u8,
+    universal_wasm_checksum: u64,
+    source_package_checksum: u64,
+    proof_receipts: *[Protocol.required_proof_kind_count]Protocol.ProofReceipt,
+    input_evidence: *[Protocol.required_proof_kind_count][2]u64,
+    expected_evidence: *[Protocol.required_proof_kind_count][2]u64,
+    actual_evidence: *[Protocol.required_proof_kind_count][2]u64,
+    diagnostics_evidence: *[Protocol.required_proof_kind_count][2]u64,
+    artifact_evidence: *[Protocol.required_proof_kind_count][4]u64,
+) !void {
+    try validateProofReceipts(allocator, bytes);
+    const parsed = std.json.parseFromSlice(ProofReceipts, allocator, bytes, .{
+        .ignore_unknown_fields = true,
+    }) catch return error.ProofReceiptsIncomplete;
+    defer parsed.deinit();
+
+    var seen = [_]bool{false} ** Protocol.required_proof_kind_count;
+    for (parsed.value.proof_receipts) |receipt| {
+        const index = proofEvidenceIndex(receipt.proof_kind) orelse return error.ProofReceiptsIncomplete;
+        if (seen[index]) return error.ProofReceiptsIncomplete;
+        seen[index] = true;
+
+        const kind = Protocol.required_proof_kinds[index];
+        if (!std.mem.eql(u8, receipt.proof_gate, Protocol.proofGateName(kind))) return error.ProofReceiptsIncomplete;
+        if (!std.mem.eql(u8, proof_gates[index], receipt.proof_gate)) return error.InvalidProofGate;
+        if (try parseHexU64(receipt.proof_gate_fingerprint) != Protocol.proofGateFingerprint(kind)) return error.ProofReceiptsIncomplete;
+        input_evidence[index] = try parseEvidencePair(receipt.input_corpus_case_fingerprints);
+        expected_evidence[index] = try parseEvidencePair(receipt.expected_output_fingerprints);
+        actual_evidence[index] = try parseEvidencePair(receipt.actual_output_fingerprints);
+        diagnostics_evidence[index] = try parseEvidencePair(receipt.bounded_diagnostics);
+        const canonical_evidence = [_]u64{ Protocol.proofKindEvidenceFingerprint(kind), Protocol.proofGateFingerprint(kind) };
+        if (!std.mem.eql(u64, input_evidence[index][0..], canonical_evidence[0..])) return error.ProofReceiptsIncomplete;
+        if (!std.mem.eql(u64, expected_evidence[index][0..], canonical_evidence[0..])) return error.ProofReceiptsIncomplete;
+        if (!std.mem.eql(u64, actual_evidence[index][0..], canonical_evidence[0..])) return error.ProofReceiptsIncomplete;
+        if (!std.mem.eql(u64, diagnostics_evidence[index][0..], canonical_evidence[0..])) return error.ProofReceiptsIncomplete;
+        artifact_evidence[index] = .{ input_evidence[index][0], input_evidence[index][1], universal_wasm_checksum, source_package_checksum };
+        proof_receipts[index] = Protocol.ProofReceipt.init(.{
+            .proof_kind = kind,
+            .input_corpus_case_fingerprints = input_evidence[index][0..],
+            .expected_output_fingerprints = expected_evidence[index][0..],
+            .actual_output_fingerprints = actual_evidence[index][0..],
+            .actual_comparison_result = receipt.actual_comparison_result,
+            .artifact_fingerprints = artifact_evidence[index][0..],
+            .blocker_count = receipt.blocker_count,
+            .warning_count = receipt.warning_count,
+            .bounded_diagnostics = diagnostics_evidence[index][0..],
+        });
+    }
+    for (seen) |present| if (!present) return error.ProofReceiptsIncomplete;
+}
+
+fn proofEvidenceIndex(name: []const u8) ?usize {
+    for (Protocol.required_proof_kinds, 0..) |kind, index| {
+        if (std.mem.eql(u8, name, Protocol.proofKindName(kind))) return index;
+    }
+    return null;
+}
+
+fn parseEvidencePair(values: []const []const u8) ![2]u64 {
+    if (values.len != 2) return error.ProofReceiptsIncomplete;
+    return .{ try parseHexU64(values[0]), try parseHexU64(values[1]) };
+}
+
+fn parseHexU64(value: []const u8) !u64 {
+    if (!std.mem.startsWith(u8, value, "0x")) return error.ProofReceiptsIncomplete;
+    return std.fmt.parseInt(u64, value[2..], 16) catch return error.ProofReceiptsIncomplete;
 }
 
 test "wasm inspection receipt validation uses parsed fields" {
@@ -296,6 +486,89 @@ test "wasm inspection receipt validation uses parsed fields" {
     , .{Protocol.Manifest.manifestFingerprint().lo});
     defer allocator.free(wrong_manifest_hi);
     try std.testing.expectError(error.WasmInspectionReceiptArtifactMismatch, validateWasmInspectionReceipt(allocator, wrong_manifest_hi, 0x1234));
+}
+
+test "source package checksum covers release-defining source paths" {
+    for ([_][]const u8{
+        "build.zig",
+        "src/protocol.zig",
+        "src/appliance.zig",
+        "examples/world_universal_appliance_wasm.zig",
+        "examples/world_universal_appliance_fixtures.zig",
+        "examples/world_release_receipt_emit.zig",
+        "scripts/world_release_artifacts.mjs",
+        "scripts/world_conformance.mjs",
+        "scripts/world_universal_appliance_conformance.mjs",
+        "scripts/world_universal_appliance_host.mjs",
+    }) |path| {
+        try std.testing.expect(sourcePackagePathCovered(path));
+    }
+}
+
+test "proof receipts validation requires complete corpus evidence" {
+    const allocator = std.testing.allocator;
+    const valid =
+        \\{
+        \\  "receipt_format_version": 1,
+        \\  "runner": "scripts/world_conformance.mjs",
+        \\  "evidence_scope": "js-corpus",
+        \\  "artifact_inspection": false,
+        \\  "actual_webassembly_execution": false,
+        \\  "positive_success": true,
+        \\  "expected_rejection": true,
+        \\  "byte_equality": true,
+        \\  "semantic_fingerprint_equality": true,
+        \\  "memory_limit_compliance": false,
+        \\  "blockers": [],
+        \\  "warnings": [],
+        \\  "complete": true,
+        \\  "proof_receipts": [],
+        \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
+        \\}
+    ;
+    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, valid));
+
+    const decoy_complete =
+        \\{
+        \\  "receipt_format_version": 1,
+        \\  "runner": "scripts/world_conformance.mjs",
+        \\  "evidence_scope": "js-corpus",
+        \\  "artifact_inspection": false,
+        \\  "actual_webassembly_execution": false,
+        \\  "positive_success": true,
+        \\  "expected_rejection": true,
+        \\  "byte_equality": true,
+        \\  "semantic_fingerprint_equality": true,
+        \\  "memory_limit_compliance": false,
+        \\  "blockers": [],
+        \\  "warnings": [],
+        \\  "complete": false,
+        \\  "proof_receipts": [],
+        \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
+        \\}
+    ;
+    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, decoy_complete));
+
+    const partial_corpus =
+        \\{
+        \\  "receipt_format_version": 1,
+        \\  "runner": "scripts/world_conformance.mjs",
+        \\  "evidence_scope": "js-corpus",
+        \\  "artifact_inspection": false,
+        \\  "actual_webassembly_execution": false,
+        \\  "positive_success": true,
+        \\  "expected_rejection": false,
+        \\  "byte_equality": true,
+        \\  "semantic_fingerprint_equality": true,
+        \\  "memory_limit_compliance": false,
+        \\  "blockers": [],
+        \\  "warnings": [],
+        \\  "complete": true,
+        \\  "proof_receipts": [],
+        \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
+        \\}
+    ;
+    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, partial_corpus));
 }
 
 fn countWasmImports(section: []const u8) !u32 {

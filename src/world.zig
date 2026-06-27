@@ -1491,6 +1491,12 @@ test "world adversarial codecs reject malformed protocol receipt evidence fail c
     try std.testing.expect(!missing_release.complete);
     try std.testing.expectError(error.InvalidFrameEncoding, missing_release.validate());
 
+    const omitted_checksums = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+    });
+    try std.testing.expect(!omitted_checksums.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, omitted_checksums.validate());
+
     const wrong_boundary = Protocol.ReleaseReceipt.init(.{
         .proof_receipts = &proof_receipts,
         .boundary_protocol_manifest_fingerprint = 0xB0,

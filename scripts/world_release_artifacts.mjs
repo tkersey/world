@@ -3,6 +3,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -13,6 +14,41 @@ import { join } from 'node:path';
 const textDecoder = new TextDecoder();
 
 const args = parseArgs(process.argv.slice(2));
+
+const requiredDistFiles = [
+  'world_universal_appliance.wasm',
+  'world-protocol-manifest.json',
+  'world-release-artifact.json',
+  'human-readable-manifest.txt',
+  'checksums.txt',
+  'conformance/v0/world/corpus.json',
+  'scripts/world_conformance.mjs',
+  'scripts/world_appliance_wire_codec.mjs',
+  'scripts/world_loaded_value_codec.mjs',
+  'docs/world_v0.md',
+  'docs/compatibility.md',
+  'docs/security_model.md',
+];
+
+const checksumCoveredDistFiles = requiredDistFiles.filter((rel) => rel !== 'checksums.txt');
+
+const universalApplianceRequiredExports = [
+  'world_appliance_abi_version',
+  'world_appliance_runtime_manifest_len',
+  'world_appliance_read_runtime_manifest',
+  'world_appliance_load_executable',
+  'world_appliance_unload_executable',
+  'world_appliance_manifest_len',
+  'world_appliance_read_manifest',
+  'world_appliance_submit_turn',
+  'world_appliance_closure_len',
+  'world_appliance_read_closure',
+  'world_appliance_last_error_len',
+  'world_appliance_read_last_error',
+  'world_appliance_reset',
+  'world_appliance_alloc',
+  'world_appliance_free',
+];
 
 try {
   if (args.mode === 'dist') {
@@ -101,27 +137,15 @@ async function emitDist(options) {
 async function checkDist(options) {
   requirePath(options.dist, '--dist');
   const dist = options.dist;
-  const required = [
-    'world_universal_appliance.wasm',
-    'world-protocol-manifest.json',
-    'world-release-artifact.json',
-    'human-readable-manifest.txt',
-    'checksums.txt',
-    'conformance/v0/world/corpus.json',
-    'scripts/world_conformance.mjs',
-    'scripts/world_appliance_wire_codec.mjs',
-    'scripts/world_loaded_value_codec.mjs',
-    'docs/world_v0.md',
-    'docs/compatibility.md',
-    'docs/security_model.md',
-  ];
-  for (const rel of required) {
+  for (const rel of requiredDistFiles) {
     const path = join(dist, rel);
     if (!existsSync(path)) throw new Error(`missing dist file: ${rel}`);
   }
-  verifyChecksums(dist);
+  verifyDistFileSet(dist, requiredDistFiles);
+  verifyChecksums(dist, checksumCoveredDistFiles);
   const wasmBytes = readFileSync(join(dist, 'world_universal_appliance.wasm'));
   const inspection = await inspectWasm(wasmBytes);
+  verifyReleaseMetadata(dist, wasmBytes, inspection);
   if (!inspection.actual_webassembly_execution) throw new Error('distributed wasm execution was not verified');
   console.log(JSON.stringify({ dist, complete: true, actual_webassembly_execution: true }));
 }
@@ -158,9 +182,7 @@ async function inspectWasm(bytes) {
     'world_protocol_read_manifest',
     'world_protocol_manifest_fingerprint_lo',
     'world_protocol_manifest_fingerprint_hi',
-    'world_appliance_abi_version',
-    'world_appliance_alloc',
-    'world_appliance_free',
+    ...universalApplianceRequiredExports,
   ]) {
     if (!exportNames.has(name)) throw new Error(`missing wasm protocol export: ${name}`);
   }
@@ -171,9 +193,7 @@ async function inspectWasm(bytes) {
     'world_protocol_read_manifest',
     'world_protocol_manifest_fingerprint_lo',
     'world_protocol_manifest_fingerprint_hi',
-    'world_appliance_abi_version',
-    'world_appliance_alloc',
-    'world_appliance_free',
+    ...universalApplianceRequiredExports,
   ]) {
     if (typeof instance.exports[name] !== 'function') throw new Error(`wasm export is not callable: ${name}`);
   }
@@ -203,28 +223,89 @@ async function inspectWasm(bytes) {
 }
 
 function writeChecksums(root) {
-  const files = [
-    'world_universal_appliance.wasm',
-    'world-protocol-manifest.json',
-    'world-release-artifact.json',
-    'human-readable-manifest.txt',
-    'conformance/v0/world/corpus.json',
-    'scripts/world_conformance.mjs',
-    'scripts/world_appliance_wire_codec.mjs',
-    'scripts/world_loaded_value_codec.mjs',
-    'docs/world_v0.md',
-    'docs/compatibility.md',
-    'docs/security_model.md',
-  ];
-  const lines = files.map((rel) => `${sha256Hex(readFileSync(join(root, rel)))}  ${rel}`);
+  const lines = checksumCoveredDistFiles.map((rel) => `${sha256Hex(readFileSync(join(root, rel)))}  ${rel}`);
   writeFileSync(join(root, 'checksums.txt'), `${lines.join('\n')}\n`);
 }
 
-function verifyChecksums(root) {
-  const lines = readFileSync(join(root, 'checksums.txt'), 'utf8').trim().split('\n');
+function verifyChecksums(root, requiredFiles) {
+  const expected = new Set(requiredFiles);
+  const seen = new Set();
+  const text = readFileSync(join(root, 'checksums.txt'), 'utf8').trim();
+  if (text.length === 0) throw new Error('empty checksum manifest');
+  const lines = text.split('\n');
   for (const line of lines) {
     const [hash, rel] = line.split(/\s+/, 2);
+    if (!expected.has(rel)) throw new Error(`unexpected checksum entry: ${rel}`);
+    if (seen.has(rel)) throw new Error(`duplicate checksum entry: ${rel}`);
+    seen.add(rel);
     if (sha256Hex(readFileSync(join(root, rel))) !== hash) throw new Error(`checksum mismatch: ${rel}`);
+  }
+  for (const rel of expected) {
+    if (!seen.has(rel)) throw new Error(`missing checksum entry: ${rel}`);
+  }
+}
+
+function verifyDistFileSet(root, requiredFiles) {
+  const expected = new Set(requiredFiles);
+  const actual = new Set(collectDistFiles(root));
+  for (const rel of actual) {
+    if (!expected.has(rel)) throw new Error(`unexpected dist file: ${rel}`);
+  }
+  for (const rel of expected) {
+    if (!actual.has(rel)) throw new Error(`missing dist file: ${rel}`);
+  }
+}
+
+function collectDistFiles(root, prefix = '') {
+  const files = [];
+  const entries = readdirSync(join(root, prefix), { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) {
+      files.push(...collectDistFiles(root, rel));
+    } else if (entry.isFile()) {
+      files.push(rel);
+    } else {
+      throw new Error(`unsupported dist entry: ${rel}`);
+    }
+  }
+  return files;
+}
+
+function verifyReleaseMetadata(dist, wasmBytes, inspection) {
+  const artifact = JSON.parse(readFileSync(join(dist, 'world-release-artifact.json'), 'utf8'));
+  const protocolManifest = JSON.parse(readFileSync(join(dist, 'world-protocol-manifest.json'), 'utf8'));
+  const corpusBytes = readFileSync(join(dist, 'conformance/v0/world/corpus.json'));
+
+  assertEqual(artifact.release_artifact_format_version, 1, 'release_artifact_format_version');
+  assertEqual(artifact.package, 'world-v0.1.0', 'package');
+  assertEqual(artifact.zig_version, '0.16.0', 'zig_version');
+  assertEqual(artifact.boundary_package, '0.5.0', 'boundary_package');
+  assertEqual(artifact.wasm.byte_length, wasmBytes.length, 'wasm.byte_length');
+  assertEqual(artifact.wasm.sha256, sha256Hex(wasmBytes), 'wasm.sha256');
+  assertEqual(artifact.wasm.protocol_manifest_fingerprint_lo, inspection.protocol_manifest_fingerprint_lo, 'wasm.protocol_manifest_fingerprint_lo');
+  assertEqual(artifact.wasm.protocol_manifest_fingerprint_hi, inspection.protocol_manifest_fingerprint_hi, 'wasm.protocol_manifest_fingerprint_hi');
+  assertEqual(artifact.wasm.import_count, inspection.import_count, 'wasm.import_count');
+  assertEqual(artifact.wasm.export_count, inspection.export_count, 'wasm.export_count');
+  assertEqual(artifact.wasm.memory_min_bytes, inspection.memory_bytes, 'wasm.memory_min_bytes');
+  assertEqual(artifact.wasm.memory_max_bytes, inspection.memory_bytes, 'wasm.memory_max_bytes');
+  assertEqual(artifact.corpus.path, 'conformance/v0/world/corpus.json', 'corpus.path');
+  assertEqual(artifact.corpus.byte_length, corpusBytes.length, 'corpus.byte_length');
+  assertEqual(artifact.corpus.sha256, sha256Hex(corpusBytes), 'corpus.sha256');
+
+  assertEqual(protocolManifest.manifest_len, inspection.manifest_len, 'protocol_manifest.manifest_len');
+  assertEqual(protocolManifest.protocol_manifest_fingerprint_lo, inspection.protocol_manifest_fingerprint_lo, 'protocol_manifest.protocol_manifest_fingerprint_lo');
+  assertEqual(protocolManifest.protocol_manifest_fingerprint_hi, inspection.protocol_manifest_fingerprint_hi, 'protocol_manifest.protocol_manifest_fingerprint_hi');
+  assertEqual(protocolManifest.import_count, inspection.import_count, 'protocol_manifest.import_count');
+  assertEqual(protocolManifest.export_count, inspection.export_count, 'protocol_manifest.export_count');
+  assertEqual(protocolManifest.memory_bytes, inspection.memory_bytes, 'protocol_manifest.memory_bytes');
+  assertEqual(protocolManifest.actual_webassembly_execution, true, 'protocol_manifest.actual_webassembly_execution');
+}
+
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) {
+    throw new Error(`${label} mismatch: expected ${expected}, got ${actual}`);
   }
 }
 

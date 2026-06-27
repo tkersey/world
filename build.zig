@@ -54,6 +54,51 @@ fn dependOnNativeRunOrCompile(
     }
 }
 
+const world_source_package_root_files = [_][]const u8{
+    "build.zig",
+    "build.zig.zon",
+};
+
+const world_source_package_dirs = [_][]const u8{
+    "src",
+    "examples",
+    "scripts",
+    "test",
+    "docs",
+    "conformance",
+};
+
+fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
+    var paths: std.ArrayList([]const u8) = .empty;
+
+    for (world_source_package_root_files) |path| {
+        paths.append(b.allocator, b.dupe(path)) catch @panic("oom");
+    }
+
+    for (world_source_package_dirs) |root| {
+        var dir = std.Io.Dir.cwd().openDir(b.graph.io, root, .{ .iterate = true }) catch |err| {
+            std.debug.panic("failed to open source package directory '{s}': {s}", .{ root, @errorName(err) });
+        };
+        defer dir.close(b.graph.io);
+
+        var walker = dir.walk(b.allocator) catch @panic("oom");
+        defer walker.deinit();
+        while (walker.next(b.graph.io) catch |err| {
+            std.debug.panic("failed to walk source package directory '{s}': {s}", .{ root, @errorName(err) });
+        }) |entry| {
+            if (entry.kind != .file) continue;
+            paths.append(b.allocator, b.fmt("{s}/{s}", .{ root, entry.path })) catch @panic("oom");
+        }
+    }
+
+    std.mem.sort([]const u8, paths.items, {}, sourcePathLessThan);
+    for (paths.items) |path| run.addFileInput(b.path(path));
+}
+
+fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
+    return std.mem.lessThan(u8, lhs, rhs);
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -437,7 +482,7 @@ pub fn build(b: *std.Build) void {
         "conformance/v0/world",
         "--receipt-out",
     });
-    _ = emit_world_proof_receipts_run.addOutputFileArg("world-proof-receipts.json");
+    const world_proof_receipts = emit_world_proof_receipts_run.addOutputFileArg("world-proof-receipts.json");
     const emit_world_proof_receipts_step = b.step("emit-world-proof-receipts", "Emit machine-readable World v0 proof receipts.");
     emit_world_proof_receipts_step.dependOn(&emit_world_proof_receipts_run.step);
     const emit_world_release_receipt_run = b.addSystemCommand(&.{"node"});
@@ -472,8 +517,11 @@ pub fn build(b: *std.Build) void {
     emit_world_protocol_release_receipt_run.addFileArg(universal_appliance_wasm.getEmittedBin());
     emit_world_protocol_release_receipt_run.addArgs(&.{"--wasm-inspection-receipt"});
     emit_world_protocol_release_receipt_run.addFileArg(world_wasm_inspection_receipt);
+    emit_world_protocol_release_receipt_run.addArgs(&.{"--proof-receipts"});
+    emit_world_protocol_release_receipt_run.addFileArg(world_proof_receipts);
     emit_world_protocol_release_receipt_run.addArgs(&.{"--out"});
     _ = emit_world_protocol_release_receipt_run.addOutputFileArg("world-release-receipt.json");
+    addWorldSourcePackageInputs(b, emit_world_protocol_release_receipt_run);
     emit_world_protocol_release_receipt_run.addArgs(&.{
         "--proof-gate", "check-boundary-world-compatibility",
         "--proof-gate", "check-world-executable-image",
@@ -2225,6 +2273,7 @@ pub fn build(b: *std.Build) void {
         }
         if (std.mem.eql(u8, example.step, "run-world-turn-closure-replay")) {
             check_world_replay_positive_step.dependOn(run_step);
+            check_world_v0_negative_step.dependOn(run_step);
         }
         if (std.mem.eql(u8, example.step, "run-world-turn-closure-two-programs-one-wasm")) {
             check_world_two_programs_one_wasm_step.dependOn(run_step);
