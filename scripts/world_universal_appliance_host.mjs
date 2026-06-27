@@ -66,7 +66,7 @@ export function rejectTextEnvelope(instance) {
 
 export function loadAndRunImage(instance, imageBytes, replyMetadata) {
   const exports = instance.exports;
-  if (exports.world_appliance_abi_version() !== 3) throw new Error('unexpected ABI version');
+  if (exports.world_appliance_abi_version() !== 4) throw new Error('unexpected ABI version');
 
   const manifest = readRuntimeManifest(instance);
   if (!manifest.includes('imports=0\n')) throw new Error('runtime manifest does not declare zero imports');

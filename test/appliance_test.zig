@@ -1112,7 +1112,7 @@ fn buildMinimalApplianceWasmWithOptions(
 }
 
 test "appliance static contract exposes root namespace and versions" {
-    try std.testing.expectEqual(@as(u32, 3), world.world_appliance_abi_version);
+    try std.testing.expectEqual(@as(u32, 4), world.world_appliance_abi_version);
     try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_format_version);
     try std.testing.expectEqual(@as(u32, 3), world.world_appliance_manifest_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_memory_plan_fingerprint_version);
@@ -1123,7 +1123,7 @@ test "appliance static contract exposes root namespace and versions" {
     try std.testing.expectEqual(@as(u32, 2), world.world_appliance_turn_output_fingerprint_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_checkpoint_format_version);
     try std.testing.expectEqual(@as(u32, 1), world.world_appliance_turn_receipt_format_version);
-    try std.testing.expectEqual(@as(u32, 3), world.Appliance.Abi.version);
+    try std.testing.expectEqual(@as(u32, 4), world.Appliance.Abi.version);
     try std.testing.expectEqual(world.Appliance.Abi.Status.buffer_too_small, @as(world.Appliance.Abi.Status, @enumFromInt(15)));
     try std.testing.expectEqual(@as(usize, 8), world.Appliance.Abi.metadata_exports.len);
     try std.testing.expect(world.Appliance.Abi.statusHasTurnOutput(.needs_host));
@@ -3785,6 +3785,116 @@ test "appliance Core restore rehydrates outstanding HostRequest for continuation
     try std.testing.expectEqual(world.Appliance.CoreState.completed, restored.state);
     try std.testing.expect(restored.outstanding_host_request == null);
     try std.testing.expectEqualSlices(u8, resident_output, restored.readOutput());
+}
+
+test "world state machine differential binds observed native cold and retry outputs" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var resident = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer resident.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try resident.submit(boot_bytes);
+    try resident.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, resident.state);
+    const outstanding = resident.outstanding_host_request orelse return error.UnknownRequest;
+    const prior_receipt = resident.previous_turn_receipt_fingerprint.?;
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = resident.current_turn_sequence_number,
+        .capsule_fingerprint = 0xD5F0,
+        .pending_archive_append_batch_fingerprint = resident.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = resident.pending_archive_resulting_cursor,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .outstanding_host_requests = &.{outstanding},
+    });
+    var checkpoint_bytes: std.ArrayList(u8) = .empty;
+    defer checkpoint_bytes.deinit(std.testing.allocator);
+    try checkpoint.encode(&checkpoint_bytes, std.testing.allocator);
+    var owned_checkpoint = try world.Appliance.Checkpoint.decode(
+        std.testing.allocator,
+        checkpoint_bytes.items,
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer owned_checkpoint.deinit(std.testing.allocator);
+
+    const reply = applianceHostReplyFor(outstanding, 0xD5F1);
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .host_replies = &.{reply},
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+
+    try resident.submit(continue_bytes);
+    try resident.executeTurn();
+    const native_output = try std.testing.allocator.dupe(u8, resident.readOutput());
+    defer std.testing.allocator.free(native_output);
+
+    var cold = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer cold.reset();
+    try cold.restore(owned_checkpoint);
+    try cold.submit(continue_bytes);
+    try cold.executeTurn();
+    const cold_output = try std.testing.allocator.dupe(u8, cold.readOutput());
+    defer std.testing.allocator.free(cold_output);
+
+    var retry = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer retry.reset();
+    var retry_checkpoint = try world.Appliance.Checkpoint.decode(
+        std.testing.allocator,
+        checkpoint_bytes.items,
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer retry_checkpoint.deinit(std.testing.allocator);
+    try retry.restore(retry_checkpoint);
+    try retry.submit(continue_bytes);
+    try retry.executeTurn();
+    const retry_output = try std.testing.allocator.dupe(u8, retry.readOutput());
+    defer std.testing.allocator.free(retry_output);
+
+    const native_fingerprint = std.hash.Wyhash.hash(0, native_output);
+    const cold_fingerprint = std.hash.Wyhash.hash(0, cold_output);
+    const retry_fingerprint = std.hash.Wyhash.hash(0, retry_output);
+    try std.testing.expectEqual(native_fingerprint, cold_fingerprint);
+    try std.testing.expectEqual(native_fingerprint, retry_fingerprint);
+    try std.testing.expectEqualSlices(u8, native_output, cold_output);
+    try std.testing.expectEqualSlices(u8, native_output, retry_output);
+
+    var mutated = try std.testing.allocator.dupe(u8, native_output);
+    defer std.testing.allocator.free(mutated);
+    mutated[mutated.len - 1] ^= 1;
+    try std.testing.expect(std.hash.Wyhash.hash(0, mutated) != native_fingerprint);
 }
 
 test "appliance Core continuation source state chains from prior output" {
@@ -10559,7 +10669,44 @@ test "World Seed Replay accepts batched host replies for independent requests" {
 }
 
 test "WorldV0Report requires every completion proof bit" {
-    const report = world.Appliance.WorldV0Report.init(.{
+    const test_universal_wasm_checksum: u64 = 0x5750_1000_0000_0003;
+    const test_source_package_checksum: u64 = 0x5750_5000_0000_0003;
+    var proof_receipt_storage: [world.Protocol.required_proof_kind_count]world.Protocol.ProofReceipt = undefined;
+    var artifact_evidence: [world.Protocol.required_proof_kind_count][4]u64 = undefined;
+    _ = world.Protocol.buildProofReceiptsForArtifacts(&proof_receipt_storage, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum);
+    const synthetic_artifact_receipt = world.Protocol.releaseReceiptForArtifacts(
+        &proof_receipt_storage,
+        test_universal_wasm_checksum,
+        test_source_package_checksum,
+    );
+    try std.testing.expect(!synthetic_artifact_receipt.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, synthetic_artifact_receipt.validate());
+
+    for (&proof_receipt_storage) |*receipt| {
+        const source = receipt.*;
+        receipt.* = world.Protocol.ProofReceipt.init(.{
+            .proof_kind = source.proof_kind,
+            .protocol_manifest_fingerprint = source.protocol_manifest_fingerprint,
+            .input_corpus_case_fingerprints = source.input_corpus_case_fingerprints,
+            .expected_output_fingerprints = source.expected_output_fingerprints,
+            .actual_output_fingerprints = source.actual_output_fingerprints,
+            .actual_comparison_result = true,
+            .artifact_fingerprints = source.artifact_fingerprints,
+            .bounded_diagnostics = source.bounded_diagnostics,
+        });
+    }
+    const release_receipt = world.Protocol.releaseReceiptForArtifacts(
+        &proof_receipt_storage,
+        test_universal_wasm_checksum,
+        test_source_package_checksum,
+    );
+    try release_receipt.validate();
+    const report = try world.Appliance.WorldV0Report.fromReleaseReceipt(release_receipt);
+    try report.validate();
+    try std.testing.expect(report.passed);
+    try std.testing.expect(report.allRequiredBooleansPassed());
+
+    const manually_asserted = world.Appliance.WorldV0Report.init(.{
         .boundary_v0_5_0_portable_v2_baseline_passed = true,
         .canonical_executable_image_passed = true,
         .actual_universal_wasm_executed = true,
@@ -10581,10 +10728,11 @@ test "WorldV0Report requires every completion proof bit" {
         .memory_bound_passed = true,
         .malformed_input_suite_passed = true,
         .regression_matrix_passed = true,
+        .reproducible_artifact_passed = true,
     });
-    try report.validate();
-    try std.testing.expect(report.passed);
-    try std.testing.expect(report.allRequiredBooleansPassed());
+    try manually_asserted.validate();
+    try std.testing.expect(!manually_asserted.passed);
+    try std.testing.expect(manually_asserted.allRequiredBooleansPassed());
 
     const missing_active_restore = world.Appliance.WorldV0Report.init(.{
         .boundary_v0_5_0_portable_v2_baseline_passed = true,
@@ -10608,6 +10756,7 @@ test "WorldV0Report requires every completion proof bit" {
         .memory_bound_passed = true,
         .malformed_input_suite_passed = true,
         .regression_matrix_passed = true,
+        .reproducible_artifact_passed = true,
     });
     try missing_active_restore.validate();
     try std.testing.expect(!missing_active_restore.passed);
@@ -10634,6 +10783,7 @@ test "WorldV0Report requires every completion proof bit" {
         .memory_bound_passed = true,
         .malformed_input_suite_passed = true,
         .regression_matrix_passed = true,
+        .reproducible_artifact_passed = true,
     });
     try missing_actuated_replay_rejection.validate();
     try std.testing.expect(!missing_actuated_replay_rejection.passed);
@@ -10660,11 +10810,22 @@ test "WorldV0Report requires every completion proof bit" {
         .memory_bound_passed = true,
         .malformed_input_suite_passed = true,
         .regression_matrix_passed = true,
+        .reproducible_artifact_passed = true,
         .blockers = &.{0xF00D},
     });
     try blocked.validate();
     try std.testing.expect(blocked.allRequiredBooleansPassed());
     try std.testing.expect(!blocked.passed);
+
+    var missing_proof_storage = proof_receipt_storage;
+    missing_proof_storage[@intFromEnum(world.Protocol.ProofKind.active_fabric_restore)] = world.Protocol.ProofReceipt.init(.{
+        .proof_kind = .active_fabric_restore,
+        .actual_comparison_result = false,
+        .blocker_count = 1,
+    });
+    const incomplete_release_receipt = world.Protocol.canonicalReleaseReceipt(&missing_proof_storage);
+    try std.testing.expect(!incomplete_release_receipt.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, world.Appliance.WorldV0Report.fromReleaseReceipt(incomplete_release_receipt));
 
     var forged = report;
     forged.active_loaded_fabric_restored = false;

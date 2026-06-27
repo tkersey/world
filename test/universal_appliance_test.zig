@@ -3,8 +3,8 @@ const universal = @import("universal_appliance_impl");
 const world = @import("world");
 const fixtures = @import("world_fixtures");
 
-test "Universal Appliance ABI v3 emits TurnClosure bytes and preserves bounded memory" {
-    try std.testing.expectEqual(@as(u32, 3), universal.world_appliance_abi_version());
+test "Universal Appliance ABI v4 emits TurnClosure bytes and preserves bounded memory" {
+    try std.testing.expectEqual(@as(u32, 4), universal.world_appliance_abi_version());
     try std.testing.expect(universal.world_appliance_runtime_manifest_len() > 0);
     try std.testing.expect(universal.executable_runtime_profile.supports_internal_providers);
     const runtime_manifest_len = universal.world_appliance_runtime_manifest_len();

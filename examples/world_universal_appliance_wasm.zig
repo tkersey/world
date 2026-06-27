@@ -16,7 +16,7 @@ const max_host_replies_per_turn: usize = 16;
 const max_metadata_bytes: usize = 8192;
 const max_wire_resolution_overhead_bytes: usize = 64;
 const max_turn_reply_bytes: usize = max_host_replies_per_turn * (max_output_bytes + 2 * max_metadata_bytes + max_wire_resolution_overhead_bytes);
-const max_turn_input_bytes: usize = max_closure_bytes + max_command_bytes + max_turn_reply_bytes;
+const max_turn_input_bytes: usize = world.Protocol.Manifest.limits.max_turn_input_bytes;
 const guest_memory_bytes: usize = 4 * 1024 * 1024;
 const max_modules: usize = 8;
 const max_provider_depth: usize = 8;
@@ -54,8 +54,12 @@ pub const executable_runtime_profile = world.Executable.RuntimeProfile.init(.{
 });
 
 const runtime_manifest =
-    "world.universal_appliance.runtime.v3\n" ++
-    "abi=3\n" ++
+    "world.universal_appliance.runtime.v4\n" ++
+    std.fmt.comptimePrint("abi={d}\n", .{Abi.universal_version}) ++
+    std.fmt.comptimePrint("world_protocol_manifest_format={d}\n", .{world.world_protocol_manifest_format_version}) ++
+    std.fmt.comptimePrint("world_protocol_manifest_fingerprint_version={d}\n", .{world.world_protocol_manifest_fingerprint_version}) ++
+    std.fmt.comptimePrint("world_protocol_manifest_fingerprint_lo={x}\n", .{world.Protocol.Manifest.manifestFingerprint().lo}) ++
+    std.fmt.comptimePrint("world_protocol_manifest_fingerprint_hi={x}\n", .{world.Protocol.Manifest.manifestFingerprint().hi}) ++
     "imports=0\n" ++
     "wasi=false\n" ++
     "target_specific_boundary_type=false\n" ++
@@ -106,6 +110,28 @@ pub export fn world_appliance_runtime_manifest_len() usize {
 
 pub export fn world_appliance_read_runtime_manifest(ptr: usize, cap: usize) usize {
     return copyToGuest(ptr, cap, runtime_manifest);
+}
+
+pub export fn world_protocol_manifest_len() usize {
+    var buffer: [8192]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    const bytes = world.Protocol.Manifest.encodeAlloc(fba.allocator()) catch return 0;
+    return bytes.len;
+}
+
+pub export fn world_protocol_read_manifest(ptr: usize, cap: usize) usize {
+    var buffer: [8192]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    const bytes = world.Protocol.Manifest.encodeAlloc(fba.allocator()) catch return 0;
+    return copyToGuest(ptr, cap, bytes);
+}
+
+pub export fn world_protocol_manifest_fingerprint_lo() u64 {
+    return world.Protocol.Manifest.manifestFingerprint().lo;
+}
+
+pub export fn world_protocol_manifest_fingerprint_hi() u64 {
+    return world.Protocol.Manifest.manifestFingerprint().hi;
 }
 
 pub export fn world_appliance_load_executable(ptr: usize, len: usize) u32 {

@@ -24,7 +24,7 @@ World owns executable-image closure, admission, provider selection, Runspace lif
 
 ## Canonical Universal ABI
 
-The universal WASM exposes ABI v3 runtime manifest, load/unload, manifest read, turn submit, closure read, last-error, reset, memory, and bounded allocation exports. It has zero imports, no WASI, no filesystem, no network, no clock, no randomness, no host effect callback, no storage callback, and bounded linear memory.
+The universal WASM exposes ABI v4 runtime manifest, load/unload, manifest read, turn submit, closure read, last-error, reset, memory, and bounded allocation exports. It has zero imports, no WASI, no filesystem, no network, no clock, no randomness, no host effect callback, no storage callback, and bounded linear memory.
 
 Host exchange is canonical: hosts submit untrusted `Appliance.Wire.TurnInput` and receive `Appliance.TurnClosure`. HostRequests carry request/payload/idempotency/Actuation evidence bytes; closures carry root result bytes, result refs, finalized receipts, RunReceipt, checkpoint, executable Capsule evidence, Continuity.Bundle evidence, and Archive.AppendBatch bytes. Batched turns preserve missing and nonterminal requests, canonicalize reply order, reject duplicate or stale replies, and stop at the next quiescent boundary.
 

@@ -70,11 +70,12 @@ export function encodeTurnInput({
   deterministicTurnBudget = 0n,
   requestedEvidenceProfile = 1,
   hostMetadata = '',
+  allowDuplicateResolutionTargets = false,
 }) {
   const sortedResolutions = [...resolutions].sort((left, right) =>
     compareU64(left.targetHostRequestFingerprint, right.targetHostRequestFingerprint));
   for (let i = 1; i < sortedResolutions.length; i += 1) {
-    if (toU64(sortedResolutions[i - 1].targetHostRequestFingerprint) === toU64(sortedResolutions[i].targetHostRequestFingerprint)) {
+    if (!allowDuplicateResolutionTargets && toU64(sortedResolutions[i - 1].targetHostRequestFingerprint) === toU64(sortedResolutions[i].targetHostRequestFingerprint)) {
       throw new Error('duplicate resolution target');
     }
   }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const protocol_mod = @import("protocol.zig");
 
 pub const Mode = enum {
     fresh,
@@ -372,7 +373,7 @@ pub const world_guest_abi_version: u32 = 1;
 pub const world_guest_abi_contract_fingerprint_version: u32 = 1;
 pub const world_guest_conformance_vector_fingerprint_version: u32 = 3;
 pub const world_guest_conformance_report_fingerprint_version: u32 = 1;
-pub const world_appliance_abi_version: u32 = 3;
+pub const world_appliance_abi_version: u32 = 4;
 pub const world_appliance_manifest_format_version: u32 = 3;
 pub const world_appliance_manifest_fingerprint_version: u32 = 3;
 pub const world_appliance_memory_plan_fingerprint_version: u32 = 1;
@@ -398,7 +399,13 @@ pub const world_appliance_wire_retention_input_format_version: u32 = 1;
 pub const world_appliance_reconstruction_report_fingerprint_version: u32 = 1;
 pub const world_appliance_conformance_vector_fingerprint_version: u32 = 1;
 pub const world_appliance_conformance_report_fingerprint_version: u32 = 1;
-pub const world_v0_report_fingerprint_version: u32 = 2;
+pub const world_v0_report_fingerprint_version: u32 = 3;
+pub const world_protocol_manifest_format_version: u32 = protocol_mod.world_protocol_manifest_format_version;
+pub const world_protocol_manifest_fingerprint_version: u32 = protocol_mod.world_protocol_manifest_fingerprint_version;
+pub const world_protocol_proof_receipt_format_version: u32 = protocol_mod.world_protocol_proof_receipt_format_version;
+pub const world_protocol_proof_receipt_fingerprint_version: u32 = protocol_mod.world_protocol_proof_receipt_fingerprint_version;
+pub const world_protocol_release_receipt_format_version: u32 = protocol_mod.world_protocol_release_receipt_format_version;
+pub const world_protocol_release_receipt_fingerprint_version: u32 = protocol_mod.world_protocol_release_receipt_fingerprint_version;
 
 var next_runspace_instance_id = std.atomic.Value(u64).init(0);
 pub const world_max_decoded_byte_field_len: usize = 16 * 1024 * 1024;
@@ -1340,6 +1347,7 @@ pub const Linker = @import("linker.zig").Linker(@This());
 pub const Assembly = Linker.Assembly;
 pub const Executable = @import("executable.zig").Executable(@This());
 pub const Appliance = @import("appliance.zig").Appliance(@This());
+pub const Protocol = protocol_mod.Protocol(@This());
 pub const ActuatorRef = Actuation.Ref;
 pub const ActuationKind = Actuation.Kind;
 pub const ActuationClass = Actuation.Class;
@@ -1356,6 +1364,252 @@ pub const ActuationReceipt = Actuation.Receipt;
 pub const ActuationJournal = Actuation.Journal;
 pub const ActuationReplaySource = Actuation.ReplaySource;
 pub const ActuationVerifyReport = Actuation.VerifyReport;
+
+test "world protocol manifest has deterministic canonical identity" {
+    const allocator = std.testing.allocator;
+    const first = try Protocol.Manifest.encodeAlloc(allocator);
+    defer allocator.free(first);
+    const second = try Protocol.Manifest.encodeAlloc(allocator);
+    defer allocator.free(second);
+    const fingerprint = Protocol.Manifest.manifestFingerprint();
+
+    try std.testing.expectEqualSlices(u8, first, second);
+    try std.testing.expect(first.len > 256);
+    try std.testing.expectEqualStrings("WPM1", first[0..4]);
+    try std.testing.expectEqual(@as(u32, 1), world_protocol_manifest_format_version);
+    try std.testing.expectEqual(@as(u32, 1), world_protocol_manifest_fingerprint_version);
+    try std.testing.expect(fingerprint.lo != 0);
+    try std.testing.expect(fingerprint.hi != 0);
+    try std.testing.expect(Protocol.Manifest.publicSurfaceFingerprint() != 0);
+    try std.testing.expect(Protocol.Manifest.universalRuntimeProfileFingerprint() != 0);
+
+    const protocol_source = @embedFile("protocol.zig");
+    inline for (.{
+        "try appendU32(out, allocator, format_version);",
+        "try appendU32(out, allocator, fingerprint_version);",
+        "try appendU32(out, allocator, world_protocol_proof_receipt_format_version);",
+        "try appendU32(out, allocator, world_protocol_proof_receipt_fingerprint_version);",
+        "try appendU32(out, allocator, world_protocol_release_receipt_format_version);",
+        "try appendU32(out, allocator, world_protocol_release_receipt_fingerprint_version);",
+    }) |identity_binding| {
+        try std.testing.expect(std.mem.indexOf(u8, protocol_source, identity_binding) != null);
+    }
+}
+
+test "boundary world protocol compatibility rejects mismatched boundary evidence" {
+    const ok = Protocol.CompatibilityReport.check(.{});
+    try std.testing.expect(ok.compatible);
+    try std.testing.expectEqual(@as(u32, 0), ok.blocker_count);
+
+    const wrong_package = Protocol.CompatibilityReport.check(.{
+        .package_version = "0.5.1",
+    });
+    try std.testing.expect(!wrong_package.compatible);
+    try std.testing.expect(!wrong_package.boundary_package_version_matches);
+
+    const wrong_manifest = Protocol.CompatibilityReport.check(.{
+        .manifest_fingerprint = 0x1111,
+    });
+    try std.testing.expect(!wrong_manifest.compatible);
+    try std.testing.expect(!wrong_manifest.boundary_protocol_manifest_matches);
+
+    const wrong_profile = Protocol.CompatibilityReport.check(.{
+        .loaded_execution_profile = "portable-v1",
+    });
+    try std.testing.expect(!wrong_profile.compatible);
+    try std.testing.expect(!wrong_profile.loaded_execution_profile_matches);
+}
+
+test "world protocol release receipt validates required proof matrix exactly once" {
+    const test_universal_wasm_checksum: u64 = 0x5750_1000_0000_0001;
+    const test_source_package_checksum: u64 = 0x5750_5000_0000_0001;
+    var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
+    var artifact_evidence: [Protocol.required_proof_kind_count][4]u64 = undefined;
+    _ = Protocol.buildProofReceiptsForArtifacts(&proof_receipts, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum);
+    for (&proof_receipts) |*receipt| {
+        const source = receipt.*;
+        receipt.* = Protocol.ProofReceipt.init(.{
+            .proof_kind = source.proof_kind,
+            .protocol_manifest_fingerprint = source.protocol_manifest_fingerprint,
+            .input_corpus_case_fingerprints = source.input_corpus_case_fingerprints,
+            .expected_output_fingerprints = source.expected_output_fingerprints,
+            .actual_output_fingerprints = source.actual_output_fingerprints,
+            .actual_comparison_result = true,
+            .artifact_fingerprints = source.artifact_fingerprints,
+            .bounded_diagnostics = source.bounded_diagnostics,
+        });
+    }
+    const release_receipt = Protocol.releaseReceiptForArtifacts(
+        &proof_receipts,
+        test_universal_wasm_checksum,
+        test_source_package_checksum,
+    );
+    try release_receipt.validate();
+    try std.testing.expect(release_receipt.complete);
+    try std.testing.expect(release_receipt.release_receipt_fingerprint != 0);
+    try std.testing.expect(release_receipt.hasPassingProof(.universal_wasm_execution));
+    try std.testing.expect(release_receipt.hasPassingProof(.reproducible_artifact));
+    const first_proof_gate_fingerprint = Protocol.proofGateFingerprint(proof_receipts[0].proof_kind);
+    try std.testing.expect(std.mem.indexOfScalar(u64, proof_receipts[0].input_corpus_case_fingerprints, first_proof_gate_fingerprint) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u64, proof_receipts[0].artifact_fingerprints, first_proof_gate_fingerprint) != null);
+
+    var synthetic_proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
+    const synthetic_release = Protocol.canonicalReleaseReceipt(Protocol.buildCanonicalProofReceipts(&synthetic_proof_receipts));
+    try std.testing.expect(!synthetic_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, synthetic_release.validate());
+
+    var duplicate_receipts = proof_receipts;
+    duplicate_receipts[1] = duplicate_receipts[0];
+    const duplicate_release = Protocol.releaseReceiptForArtifacts(&duplicate_receipts, test_universal_wasm_checksum, test_source_package_checksum);
+    try std.testing.expect(!duplicate_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicate_release.validate());
+
+    var mismatched_receipts = proof_receipts;
+    mismatched_receipts[2] = Protocol.ProofReceipt.init(.{
+        .proof_kind = .universal_wasm_execution,
+        .protocol_manifest_fingerprint = 0xBAD,
+        .actual_comparison_result = true,
+    });
+    const mismatched_release = Protocol.releaseReceiptForArtifacts(&mismatched_receipts, test_universal_wasm_checksum, test_source_package_checksum);
+    try std.testing.expect(!mismatched_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_release.validate());
+}
+
+test "world conformance corpus fingerprint covers positive negative and transition vectors" {
+    try std.testing.expectEqual(@as(usize, 23), Protocol.positive_vector_names.len);
+    try std.testing.expectEqual(@as(usize, 19), Protocol.negative_vector_names.len);
+    try std.testing.expectEqual(@as(usize, 9), Protocol.transition_vector_names.len);
+    try std.testing.expectEqual(@as(usize, 9), Protocol.wire_record_names.len);
+    try std.testing.expectEqual(@as(usize, 10), Protocol.malformed_wire_names.len);
+    try std.testing.expect(Protocol.conformanceCorpusRootFingerprint() != 0);
+}
+
+test "world v0 budgets match protocol manifest baselines" {
+    const limits = Protocol.Manifest.limits;
+    try std.testing.expectEqual(@as(u64, 67_108_864), limits.max_universal_wasm_linear_memory_bytes);
+    try std.testing.expectEqual(@as(u32, 128 * 1024), limits.max_executable_image_bytes);
+    try std.testing.expectEqual(@as(u32, 2_950_144), limits.max_turn_input_bytes);
+    try std.testing.expectEqual(@as(u32, 512 * 1024), limits.max_turn_closure_bytes);
+    try std.testing.expectEqual(@as(u32, 4 * 1024 * 1024), limits.max_capsule_bytes);
+    try std.testing.expectEqual(@as(u32, 4 * 1024 * 1024), limits.max_archive_append_batch_bytes);
+    try std.testing.expectEqual(@as(u16, 64), limits.max_loaded_frame_depth);
+    try std.testing.expectEqual(@as(u16, 8), limits.max_runspace_slots);
+    try std.testing.expectEqual(@as(u16, 1024), limits.max_mailbox_entries);
+    try std.testing.expectEqual(@as(u16, 8), limits.max_provider_depth);
+    try std.testing.expectEqual(@as(u16, 16), limits.max_request_batch_count);
+    try std.testing.expectEqual(@as(u16, 16), limits.max_reply_batch_count);
+}
+
+test "world adversarial codecs reject malformed protocol receipt evidence fail closed" {
+    const test_universal_wasm_checksum: u64 = 0x5750_1000_0000_0002;
+    const test_source_package_checksum: u64 = 0x5750_5000_0000_0002;
+    var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
+    var artifact_evidence: [Protocol.required_proof_kind_count][4]u64 = undefined;
+    _ = Protocol.buildProofReceiptsForArtifacts(&proof_receipts, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum);
+    for (&proof_receipts) |*receipt| {
+        const source = receipt.*;
+        receipt.* = Protocol.ProofReceipt.init(.{
+            .proof_kind = source.proof_kind,
+            .protocol_manifest_fingerprint = source.protocol_manifest_fingerprint,
+            .input_corpus_case_fingerprints = source.input_corpus_case_fingerprints,
+            .expected_output_fingerprints = source.expected_output_fingerprints,
+            .actual_output_fingerprints = source.actual_output_fingerprints,
+            .actual_comparison_result = true,
+            .artifact_fingerprints = source.artifact_fingerprints,
+            .bounded_diagnostics = source.bounded_diagnostics,
+        });
+    }
+    const release_receipt = Protocol.releaseReceiptForArtifacts(
+        &proof_receipts,
+        test_universal_wasm_checksum,
+        test_source_package_checksum,
+    );
+    try release_receipt.validate();
+
+    const truncated_matrix = proof_receipts[0 .. proof_receipts.len - 1];
+    const missing_release = Protocol.releaseReceiptForArtifacts(truncated_matrix, test_universal_wasm_checksum, test_source_package_checksum);
+    try std.testing.expect(!missing_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_release.validate());
+
+    const omitted_checksums = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+    });
+    try std.testing.expect(!omitted_checksums.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, omitted_checksums.validate());
+
+    const wrong_boundary = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+        .boundary_protocol_manifest_fingerprint = 0xB0,
+    });
+    try std.testing.expect(!wrong_boundary.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_boundary.validate());
+
+    const wrong_corpus_root = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+        .conformance_corpus_root_fingerprint = 0xC0,
+    });
+    try std.testing.expect(!wrong_corpus_root.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, wrong_corpus_root.validate());
+
+    const missing_wasm_checksum = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+        .universal_wasm_checksum = 0,
+    });
+    try std.testing.expect(!missing_wasm_checksum.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_wasm_checksum.validate());
+
+    const missing_source_checksum = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+        .source_package_checksum = 0,
+    });
+    try std.testing.expect(!missing_source_checksum.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, missing_source_checksum.validate());
+
+    const forged_checksums = Protocol.ReleaseReceipt.init(.{
+        .proof_receipts = &proof_receipts,
+        .universal_wasm_checksum = 1,
+        .source_package_checksum = 2,
+    });
+    try std.testing.expect(!forged_checksums.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_checksums.validate());
+
+    var forged_receipt = proof_receipts[0];
+    forged_receipt.receipt_fingerprint ^= 1;
+    try std.testing.expectError(error.InvalidFrameEncoding, forged_receipt.validate());
+
+    var arbitrary_proof = proof_receipts;
+    arbitrary_proof[0] = Protocol.ProofReceipt.init(.{
+        .proof_kind = .boundary_portable_v2,
+        .input_corpus_case_fingerprints = &.{0xAA},
+        .expected_output_fingerprints = &.{0xAA},
+        .actual_output_fingerprints = &.{0xAA},
+        .artifact_fingerprints = &.{0xAA},
+        .bounded_diagnostics = &.{0xAA},
+        .actual_comparison_result = true,
+    });
+    const arbitrary_proof_release = Protocol.releaseReceiptForArtifacts(&arbitrary_proof, test_universal_wasm_checksum, test_source_package_checksum);
+    try std.testing.expect(!arbitrary_proof_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, arbitrary_proof_release.validate());
+
+    var mismatched_proof = proof_receipts;
+    mismatched_proof[0] = Protocol.ProofReceipt.init(.{
+        .proof_kind = .boundary_portable_v2,
+        .input_corpus_case_fingerprints = &.{Protocol.conformanceCorpusRootFingerprint()},
+        .expected_output_fingerprints = &.{0xA},
+        .actual_output_fingerprints = &.{0xB},
+        .artifact_fingerprints = &.{Protocol.Manifest.manifestFingerprint().lo},
+        .actual_comparison_result = true,
+    });
+    const mismatched_proof_release = Protocol.releaseReceiptForArtifacts(&mismatched_proof, test_universal_wasm_checksum, test_source_package_checksum);
+    try std.testing.expect(!mismatched_proof_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, mismatched_proof_release.validate());
+
+    var duplicated = proof_receipts;
+    duplicated[Protocol.required_proof_kind_count - 1] = duplicated[0];
+    const duplicated_release = Protocol.releaseReceiptForArtifacts(&duplicated, test_universal_wasm_checksum, test_source_package_checksum);
+    try std.testing.expect(!duplicated_release.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, duplicated_release.validate());
+}
 
 test "linker kernel boundary source guard rejects forbidden hot path imports" {
     const source = @embedFile("linker.zig");
