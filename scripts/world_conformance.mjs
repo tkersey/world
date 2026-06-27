@@ -469,7 +469,8 @@ async function inspectAndExecuteWasm(path) {
   const manifestLen = Number(instance.exports.world_protocol_manifest_len());
   const fingerprintLo = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_lo());
   const fingerprintHi = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_hi());
-  if (Number(instance.exports.world_appliance_abi_version()) !== 4) throw new Error('unexpected appliance ABI version');
+  const abiVersion = Number(instance.exports.world_appliance_abi_version());
+  if (abiVersion !== 4) throw new Error('unexpected appliance ABI version');
   if (manifestLen <= 0 || fingerprintLo === 0n || fingerprintHi === 0n) {
     throw new Error('wasm protocol manifest execution failed');
   }
@@ -483,6 +484,7 @@ async function inspectAndExecuteWasm(path) {
   if (readU64Le(manifestBytes, 12) !== fingerprintLo || readU64Le(manifestBytes, 20) !== fingerprintHi) throw new Error('wasm protocol manifest fingerprint mismatch');
   return {
     universal_wasm_checksum: checksum64Hex(bytes),
+    abi_version: abiVersion,
     protocol_manifest_fingerprint_lo: `0x${fingerprintLo.toString(16)}`,
     protocol_manifest_fingerprint_hi: `0x${fingerprintHi.toString(16)}`,
     artifact_inspection: true,

@@ -174,6 +174,7 @@ async function emitDist(options) {
     wasm: {
       byte_length: wasmBytes.length,
       sha256: sha256Hex(wasmBytes),
+      abi_version: wasmInspection.abi_version,
       protocol_manifest_fingerprint_lo: wasmInspection.protocol_manifest_fingerprint_lo,
       protocol_manifest_fingerprint_hi: wasmInspection.protocol_manifest_fingerprint_hi,
       import_count: wasmInspection.import_count,
@@ -264,7 +265,8 @@ async function inspectWasm(bytes) {
   const manifestLen = Number(instance.exports.world_protocol_manifest_len());
   const lo = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_lo());
   const hi = BigInt.asUintN(64, instance.exports.world_protocol_manifest_fingerprint_hi());
-  if (Number(instance.exports.world_appliance_abi_version()) !== 4) throw new Error('unexpected appliance ABI version');
+  const abiVersion = Number(instance.exports.world_appliance_abi_version());
+  if (abiVersion !== 4) throw new Error('unexpected appliance ABI version');
   const memory = instance.exports.memory;
   if (manifestLen <= 0 || lo === 0n || hi === 0n) {
     throw new Error('protocol manifest wasm calls failed');
@@ -277,6 +279,7 @@ async function inspectWasm(bytes) {
   if (readU64Le(manifestBytes, 12) !== lo || readU64Le(manifestBytes, 20) !== hi) throw new Error('wasm protocol manifest fingerprint mismatch');
   return {
     manifest_len: manifestLen,
+    abi_version: abiVersion,
     protocol_manifest_fingerprint_lo: `0x${lo.toString(16)}`,
     protocol_manifest_fingerprint_hi: `0x${hi.toString(16)}`,
     import_count: imports.length,
@@ -530,6 +533,7 @@ function verifyReleaseMetadata(dist, wasmBytes, inspection) {
   const artifact = JSON.parse(readFileSync(join(dist, 'world-release-artifact.json'), 'utf8'));
   const protocolManifest = JSON.parse(readFileSync(join(dist, 'world-protocol-manifest.json'), 'utf8'));
   const corpusBytes = readFileSync(join(dist, 'conformance/v0/world/corpus.json'));
+  const canonicalCorpusBytes = readFileSync('conformance/v0/world/corpus.json');
 
   assertEqual(artifact.release_artifact_format_version, 1, 'release_artifact_format_version');
   assertEqual(artifact.package, 'world-v0.1.0', 'package');
@@ -537,6 +541,7 @@ function verifyReleaseMetadata(dist, wasmBytes, inspection) {
   assertEqual(artifact.boundary_package, '0.5.0', 'boundary_package');
   assertEqual(artifact.wasm.byte_length, wasmBytes.length, 'wasm.byte_length');
   assertEqual(artifact.wasm.sha256, sha256Hex(wasmBytes), 'wasm.sha256');
+  assertEqual(artifact.wasm.abi_version, inspection.abi_version, 'wasm.abi_version');
   assertEqual(artifact.wasm.protocol_manifest_fingerprint_lo, inspection.protocol_manifest_fingerprint_lo, 'wasm.protocol_manifest_fingerprint_lo');
   assertEqual(artifact.wasm.protocol_manifest_fingerprint_hi, inspection.protocol_manifest_fingerprint_hi, 'wasm.protocol_manifest_fingerprint_hi');
   assertEqual(artifact.wasm.import_count, inspection.import_count, 'wasm.import_count');
@@ -546,8 +551,10 @@ function verifyReleaseMetadata(dist, wasmBytes, inspection) {
   assertEqual(artifact.corpus.path, 'conformance/v0/world/corpus.json', 'corpus.path');
   assertEqual(artifact.corpus.byte_length, corpusBytes.length, 'corpus.byte_length');
   assertEqual(artifact.corpus.sha256, sha256Hex(corpusBytes), 'corpus.sha256');
+  assertEqual(sha256Hex(corpusBytes), sha256Hex(canonicalCorpusBytes), 'corpus.canonical_sha256');
 
   assertEqual(protocolManifest.manifest_len, inspection.manifest_len, 'protocol_manifest.manifest_len');
+  assertEqual(protocolManifest.abi_version, inspection.abi_version, 'protocol_manifest.abi_version');
   assertEqual(protocolManifest.protocol_manifest_fingerprint_lo, inspection.protocol_manifest_fingerprint_lo, 'protocol_manifest.protocol_manifest_fingerprint_lo');
   assertEqual(protocolManifest.protocol_manifest_fingerprint_hi, inspection.protocol_manifest_fingerprint_hi, 'protocol_manifest.protocol_manifest_fingerprint_hi');
   assertEqual(protocolManifest.import_count, inspection.import_count, 'protocol_manifest.import_count');

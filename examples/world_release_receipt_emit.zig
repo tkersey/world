@@ -314,6 +314,7 @@ fn validateUniversalWasmArtifact(bytes: []const u8) !void {
         if (section_id == 2) import_count = try countWasmImports(section);
         if (section_id == 3) function_count = try inspectWasmFunctions(section, &function_type_indices, type_count);
         if (section_id == 5) memory = try inspectWasmMemory(section);
+        if (section_id == 8) return error.UniversalWasmInspectionFailed;
         if (section_id == 7) try inspectUniversalExports(
             section,
             type_sigs[0..type_count],
@@ -345,6 +346,7 @@ fn validateUniversalWasmArtifact(bytes: []const u8) !void {
 
 const WasmInspectionReceipt = struct {
     universal_wasm_checksum: []const u8,
+    abi_version: u32,
     protocol_manifest_fingerprint_lo: []const u8,
     protocol_manifest_fingerprint_hi: []const u8,
     artifact_inspection: bool,
@@ -404,6 +406,7 @@ fn validateWasmInspectionReceipt(allocator: std.mem.Allocator, bytes: []const u8
     var checksum_buf: [18]u8 = undefined;
     const expected_checksum = try std.fmt.bufPrint(&checksum_buf, "0x{x:0>16}", .{expected_wasm_checksum});
     if (!std.mem.eql(u8, receipt.universal_wasm_checksum, expected_checksum)) return error.WasmInspectionReceiptArtifactMismatch;
+    if (receipt.abi_version != world.Appliance.Abi.universal_version) return error.WasmInspectionReceiptArtifactMismatch;
 
     var manifest_buf: [18]u8 = undefined;
     const expected_manifest = try std.fmt.bufPrint(&manifest_buf, "0x{x}", .{Protocol.Manifest.manifestFingerprint().lo});
@@ -612,6 +615,7 @@ test "wasm inspection receipt validation uses parsed fields" {
     const valid = try std.fmt.allocPrint(allocator,
         \\{{
         \\  "universal_wasm_checksum": "0x0000000000001234",
+        \\  "abi_version": {},
         \\  "protocol_manifest_fingerprint_lo": "0x{x}",
         \\  "protocol_manifest_fingerprint_hi": "0x{x}",
         \\  "artifact_inspection": true,
@@ -619,7 +623,7 @@ test "wasm inspection receipt validation uses parsed fields" {
         \\  "memory_limit_compliance": true,
         \\  "complete": true
         \\}}
-    , .{ Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
+    , .{ world.Appliance.Abi.universal_version, Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
     defer allocator.free(valid);
     try validateWasmInspectionReceipt(allocator, valid, 0x1234);
 
@@ -627,6 +631,7 @@ test "wasm inspection receipt validation uses parsed fields" {
         \\{{
         \\  "not_complete": true,
         \\  "universal_wasm_checksum": "0x0000000000001234",
+        \\  "abi_version": {},
         \\  "protocol_manifest_fingerprint_lo": "0x{x}",
         \\  "protocol_manifest_fingerprint_hi": "0x{x}",
         \\  "artifact_inspection": true,
@@ -634,7 +639,7 @@ test "wasm inspection receipt validation uses parsed fields" {
         \\  "memory_limit_compliance": true,
         \\  "complete": false
         \\}}
-    , .{ Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
+    , .{ world.Appliance.Abi.universal_version, Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
     defer allocator.free(decoy_complete);
     try std.testing.expectError(error.WasmInspectionReceiptIncomplete, validateWasmInspectionReceipt(allocator, decoy_complete, 0x1234));
 
@@ -642,6 +647,7 @@ test "wasm inspection receipt validation uses parsed fields" {
         \\{{
         \\  "not_universal_wasm_checksum": "0x0000000000001234",
         \\  "universal_wasm_checksum": "0x0000000000005678",
+        \\  "abi_version": {},
         \\  "protocol_manifest_fingerprint_lo": "0x{x}",
         \\  "protocol_manifest_fingerprint_hi": "0x{x}",
         \\  "artifact_inspection": true,
@@ -649,13 +655,29 @@ test "wasm inspection receipt validation uses parsed fields" {
         \\  "memory_limit_compliance": true,
         \\  "complete": true
         \\}}
-    , .{ Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
+    , .{ world.Appliance.Abi.universal_version, Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
     defer allocator.free(decoy_checksum);
     try std.testing.expectError(error.WasmInspectionReceiptArtifactMismatch, validateWasmInspectionReceipt(allocator, decoy_checksum, 0x1234));
+
+    const wrong_abi = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "universal_wasm_checksum": "0x0000000000001234",
+        \\  "abi_version": {},
+        \\  "protocol_manifest_fingerprint_lo": "0x{x}",
+        \\  "protocol_manifest_fingerprint_hi": "0x{x}",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
+        \\  "memory_limit_compliance": true,
+        \\  "complete": true
+        \\}}
+    , .{ world.Appliance.Abi.universal_version + 1, Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
+    defer allocator.free(wrong_abi);
+    try std.testing.expectError(error.WasmInspectionReceiptArtifactMismatch, validateWasmInspectionReceipt(allocator, wrong_abi, 0x1234));
 
     const wrong_manifest_hi = try std.fmt.allocPrint(allocator,
         \\{{
         \\  "universal_wasm_checksum": "0x0000000000001234",
+        \\  "abi_version": {},
         \\  "protocol_manifest_fingerprint_lo": "0x{x}",
         \\  "protocol_manifest_fingerprint_hi": "0x0",
         \\  "artifact_inspection": true,
@@ -663,7 +685,7 @@ test "wasm inspection receipt validation uses parsed fields" {
         \\  "memory_limit_compliance": true,
         \\  "complete": true
         \\}}
-    , .{Protocol.Manifest.manifestFingerprint().lo});
+    , .{ world.Appliance.Abi.universal_version, Protocol.Manifest.manifestFingerprint().lo });
     defer allocator.free(wrong_manifest_hi);
     try std.testing.expectError(error.WasmInspectionReceiptArtifactMismatch, validateWasmInspectionReceipt(allocator, wrong_manifest_hi, 0x1234));
 }
@@ -1657,6 +1679,16 @@ test "universal wasm artifact validation accepts call_indirect stack order" {
     try validateUniversalWasmArtifact(bytes.items);
 }
 
+test "universal wasm artifact validation rejects start sections" {
+    const allocator = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+
+    try appendUniversalWasmFixture(allocator, &bytes, 0);
+
+    try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
+}
+
 test "universal wasm artifact validation rejects leftover values in void exports" {
     const allocator = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
@@ -2571,6 +2603,71 @@ fn expectedWasmResultType(index: usize) ?u8 {
     };
 }
 
+fn appendUniversalWasmFixture(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    start_function_index: ?u32,
+) !void {
+    try out.appendSlice(allocator, "\x00asm");
+    try out.appendSlice(allocator, &.{ 1, 0, 0, 0 });
+
+    var type_section: std.ArrayList(u8) = .empty;
+    defer type_section.deinit(allocator);
+    try appendWasmU32(allocator, &type_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendExpectedWasmFuncType(allocator, &type_section, index);
+    }
+    try appendWasmSection(allocator, out, 1, type_section.items);
+
+    var function_section: std.ArrayList(u8) = .empty;
+    defer function_section.deinit(allocator);
+    try appendWasmU32(allocator, &function_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendWasmU32(allocator, &function_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, out, 3, function_section.items);
+
+    var memory_section: std.ArrayList(u8) = .empty;
+    defer memory_section.deinit(allocator);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try memory_section.append(allocator, 0x01);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmSection(allocator, out, 5, memory_section.items);
+
+    var export_section: std.ArrayList(u8) = .empty;
+    defer export_section.deinit(allocator);
+    try appendWasmU32(allocator, &export_section, world.Appliance.Abi.universal_required_exports.len + 1);
+    try appendWasmName(allocator, &export_section, "memory");
+    try export_section.append(allocator, 2);
+    try appendWasmU32(allocator, &export_section, 0);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |name, index| {
+        try appendWasmName(allocator, &export_section, name);
+        try export_section.append(allocator, 0);
+        try appendWasmU32(allocator, &export_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, out, 7, export_section.items);
+
+    if (start_function_index) |index| {
+        var start_section: std.ArrayList(u8) = .empty;
+        defer start_section.deinit(allocator);
+        try appendWasmU32(allocator, &start_section, index);
+        try appendWasmSection(allocator, out, 8, start_section.items);
+    }
+
+    var code_section: std.ArrayList(u8) = .empty;
+    defer code_section.deinit(allocator);
+    try appendWasmU32(allocator, &code_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(allocator);
+        try appendWasmValidResultBody(allocator, &body, index);
+        try appendWasmU32(allocator, &code_section, @intCast(body.items.len));
+        try code_section.appendSlice(allocator, body.items);
+    }
+    try appendWasmSection(allocator, out, 10, code_section.items);
+}
+
 fn appendWasmSection(allocator: std.mem.Allocator, out: *std.ArrayList(u8), id: u8, section: []const u8) !void {
     try out.append(allocator, id);
     try appendWasmU32(allocator, out, @intCast(section.len));
@@ -2595,22 +2692,31 @@ fn appendExpectedWasmFuncType(allocator: std.mem.Allocator, out: *std.ArrayList(
 
 fn appendWasmValidResultBody(allocator: std.mem.Allocator, out: *std.ArrayList(u8), index: usize) !void {
     try appendWasmU32(allocator, out, 0);
-    if (expectedWasmResultType(index)) |result_type| try appendWasmConstForType(allocator, out, result_type);
+    switch (index) {
+        0 => try appendWasmI32ConstValue(allocator, out, world.Appliance.Abi.universal_version),
+        17 => try appendWasmI64ConstBits(allocator, out, Protocol.Manifest.manifestFingerprint().lo),
+        18 => try appendWasmI64ConstBits(allocator, out, Protocol.Manifest.manifestFingerprint().hi),
+        else => if (expectedWasmResultType(index)) |result_type| try appendWasmConstForType(allocator, out, result_type),
+    }
     try out.append(allocator, 0x0b);
 }
 
 fn appendWasmConstForType(allocator: std.mem.Allocator, out: *std.ArrayList(u8), result_type: u8) !void {
     switch (result_type) {
-        0x7f => {
-            try out.append(allocator, 0x41);
-            try appendWasmU32(allocator, out, 0);
-        },
-        0x7e => {
-            try out.append(allocator, 0x42);
-            try appendWasmU32(allocator, out, 0);
-        },
+        0x7f => try appendWasmI32ConstValue(allocator, out, 0),
+        0x7e => try appendWasmI64ConstBits(allocator, out, 0),
         else => return error.InvalidFrameEncoding,
     }
+}
+
+fn appendWasmI32ConstValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: u32) !void {
+    try out.append(allocator, 0x41);
+    try appendWasmU32(allocator, out, value);
+}
+
+fn appendWasmI64ConstBits(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: u64) !void {
+    try out.append(allocator, 0x42);
+    try appendWasmSignedLeb64(allocator, out, @bitCast(value));
 }
 
 fn appendWasmU32(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: u32) !void {
@@ -2621,6 +2727,17 @@ fn appendWasmU32(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: u
         if (remaining != 0) byte |= 0x80;
         try out.append(allocator, byte);
         if (remaining == 0) break;
+    }
+}
+
+fn appendWasmSignedLeb64(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: i64) !void {
+    var remaining = value;
+    while (true) {
+        const byte: u8 = @intCast(@as(u64, @bitCast(remaining)) & 0x7f);
+        remaining >>= 7;
+        const done = (remaining == 0 and (byte & 0x40) == 0) or (remaining == -1 and (byte & 0x40) != 0);
+        try out.append(allocator, if (done) byte else byte | 0x80);
+        if (done) return;
     }
 }
 
