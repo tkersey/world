@@ -1600,6 +1600,18 @@ test "world state machine differential keeps native wasm warm cold replay and re
             const result = hasher.final();
             return if (result == 0) 1 else result;
         }
+
+        fn classificationFingerprint(aligned: bool) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hashBytes(&hasher, "world.protocol.state_machine_differential.classification.v1");
+            hashU64(&hasher, @intFromBool(aligned));
+            const result = hasher.final();
+            return if (result == 0) 1 else result;
+        }
+
+        fn classify(mode: []const u8, observed_fingerprint: u64) u64 {
+            return classificationFingerprint(observed_fingerprint == fingerprint(mode));
+        }
     };
 
     const native_mode = Sequence.fingerprint("native");
@@ -1614,17 +1626,23 @@ test "world state machine differential keeps native wasm warm cold replay and re
     try std.testing.expect(native_mode != replay_mode);
     try std.testing.expect(native_mode != retry_mode);
 
-    const aligned_classification = Sequence.fingerprint("classification:aligned");
-    const wasm_classification = Sequence.fingerprint("classification:aligned");
-    const warm_classification = Sequence.fingerprint("classification:aligned");
-    const cold_classification = Sequence.fingerprint("classification:aligned");
-    const replay_classification = Sequence.fingerprint("classification:aligned");
-    const retry_classification = Sequence.fingerprint("classification:aligned");
-    try std.testing.expectEqual(aligned_classification, wasm_classification);
-    try std.testing.expectEqual(aligned_classification, warm_classification);
-    try std.testing.expectEqual(aligned_classification, cold_classification);
-    try std.testing.expectEqual(aligned_classification, replay_classification);
-    try std.testing.expectEqual(aligned_classification, retry_classification);
+    const native_classification = Sequence.classify("native", native_mode);
+    const wasm_classification = Sequence.classify("wasm", wasm_mode);
+    const warm_classification = Sequence.classify("warm", warm_mode);
+    const cold_classification = Sequence.classify("cold", cold_mode);
+    const replay_classification = Sequence.classify("replay", replay_mode);
+    const retry_classification = Sequence.classify("retry", retry_mode);
+    try std.testing.expectEqual(native_classification, wasm_classification);
+    try std.testing.expectEqual(native_classification, warm_classification);
+    try std.testing.expectEqual(native_classification, cold_classification);
+    try std.testing.expectEqual(native_classification, replay_classification);
+    try std.testing.expectEqual(native_classification, retry_classification);
+
+    try std.testing.expect(Sequence.classify("wasm", native_mode) != native_classification);
+    try std.testing.expect(Sequence.classify("warm", native_mode) != native_classification);
+    try std.testing.expect(Sequence.classify("cold", native_mode) != native_classification);
+    try std.testing.expect(Sequence.classify("replay", native_mode) != native_classification);
+    try std.testing.expect(Sequence.classify("retry", native_mode) != native_classification);
 }
 
 test "linker kernel boundary source guard rejects forbidden hot path imports" {
