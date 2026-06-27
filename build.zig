@@ -455,10 +455,10 @@ pub fn build(b: *std.Build) void {
     const world_state_machine_differential_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = b.graph.host,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary", .module = host_boundary },
                 .{ .name = "world", .module = host_world },
                 .{ .name = "world_fixtures", .module = host_fixtures },
             },
@@ -466,7 +466,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"world state machine differential"},
     });
     const check_world_state_machine_differential_step = b.step("check-world-state-machine-differential", "Run World state-machine differential classification checks.");
-    dependOnNativeRunOrCompile(b, target, check_world_state_machine_differential_step, world_state_machine_differential_tests, test_args.passthrough);
+    check_world_state_machine_differential_step.dependOn(&addRunArtifactWithArgs(b, world_state_machine_differential_tests, test_args.passthrough).step);
     check_world_state_machine_differential_step.dependOn(check_world_universal_appliance_node_step);
     const world_release_receipt_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1039,42 +1039,52 @@ pub fn build(b: *std.Build) void {
     const check_world_active_fabric_restore_step = b.step("check-world-active-fabric-restore", "Run positive World active Fabric restore proof.");
     const check_world_v0_negative_step = b.step("check-world-v0-negative", "Run World v0 malformed and denial proof gates.");
     check_world_v0_negative_step.dependOn(check_world_seed_malformed_step);
-    emit_world_proof_receipts_run.step.dependOn(check_boundary_world_compatibility_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_executable_image_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_universal_appliance_node_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_two_programs_one_wasm_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_universal_providers_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_loaded_runspace_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_active_fabric_restore_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_replay_positive_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_v0_negative_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_deterministic_retry_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_appliance_batching_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_js_codec_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_conformance_corpus_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_adversarial_codecs_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_state_machine_differential_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_universal_memory_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_js_malformed_corpus_step);
-    emit_world_proof_receipts_run.step.dependOn(check_world_reproducible_wasm_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_boundary_world_compatibility_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_executable_image_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_universal_appliance_node_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_two_programs_one_wasm_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_universal_providers_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_loaded_runspace_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_active_fabric_restore_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_replay_positive_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_v0_negative_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_deterministic_retry_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_appliance_batching_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_js_codec_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_conformance_corpus_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_adversarial_codecs_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_state_machine_differential_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_universal_memory_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_js_malformed_corpus_step);
-    emit_world_protocol_release_receipt_run.step.dependOn(check_world_reproducible_wasm_step);
+    if (!target.query.isNative()) {
+        const reject_non_native_release_receipt = b.addSystemCommand(&.{
+            "sh",
+            "-c",
+            "echo 'World release receipt emission requires a native target so every proof gate runs instead of compiling only.' >&2; exit 1",
+        });
+        emit_world_proof_receipts_run.step.dependOn(&reject_non_native_release_receipt.step);
+        emit_world_protocol_release_receipt_run.step.dependOn(&reject_non_native_release_receipt.step);
+    } else {
+        emit_world_proof_receipts_run.step.dependOn(check_boundary_world_compatibility_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_executable_image_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_universal_appliance_node_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_two_programs_one_wasm_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_universal_providers_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_loaded_runspace_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_active_fabric_restore_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_replay_positive_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_v0_negative_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_deterministic_retry_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_appliance_batching_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_js_codec_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_conformance_corpus_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_adversarial_codecs_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_state_machine_differential_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_universal_memory_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_js_malformed_corpus_step);
+        emit_world_proof_receipts_run.step.dependOn(check_world_reproducible_wasm_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_boundary_world_compatibility_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_executable_image_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_universal_appliance_node_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_two_programs_one_wasm_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_universal_providers_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_loaded_runspace_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_active_fabric_restore_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_replay_positive_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_v0_negative_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_deterministic_retry_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_appliance_batching_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_js_codec_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_conformance_corpus_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_adversarial_codecs_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_state_machine_differential_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_universal_memory_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_js_malformed_corpus_step);
+        emit_world_protocol_release_receipt_run.step.dependOn(check_world_reproducible_wasm_step);
+    }
     const check_world_v0_step = b.step("check-world-v0", "Run the World v0 positive Turn Closure completion gate.");
     check_world_v0_step.dependOn(check_world_executable_image_step);
     check_world_v0_step.dependOn(check_world_turn_closure_step);
