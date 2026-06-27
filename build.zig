@@ -642,6 +642,8 @@ pub fn build(b: *std.Build) void {
         "--receipt-out",
     });
     run_check_world_v0_1_standalone.addFileInput(b.path("zig-out/dist/world-v0.1.0/scripts/world_conformance.mjs"));
+    run_check_world_v0_1_standalone.addFileInput(b.path("zig-out/dist/world-v0.1.0/scripts/world_appliance_wire_codec.mjs"));
+    run_check_world_v0_1_standalone.addFileInput(b.path("zig-out/dist/world-v0.1.0/scripts/world_loaded_value_codec.mjs"));
     run_check_world_v0_1_standalone.addFileInput(b.path("zig-out/dist/world-v0.1.0/world_universal_appliance.wasm"));
     run_check_world_v0_1_standalone.addFileInput(b.path("zig-out/dist/world-v0.1.0/conformance/v0/world/corpus.json"));
     _ = run_check_world_v0_1_standalone.addOutputFileArg("world-distributed-conformance-receipt.json");
