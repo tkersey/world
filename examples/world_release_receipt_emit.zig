@@ -1127,6 +1127,77 @@ test "universal wasm artifact validation rejects missing final result after bloc
     try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
 }
 
+test "universal wasm artifact validation rejects branch to function result without operand" {
+    const allocator = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+    try bytes.appendSlice(allocator, "\x00asm");
+    try bytes.appendSlice(allocator, &.{ 1, 0, 0, 0 });
+
+    var type_section: std.ArrayList(u8) = .empty;
+    defer type_section.deinit(allocator);
+    try appendWasmU32(allocator, &type_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendExpectedWasmFuncType(allocator, &type_section, index);
+    }
+    try appendWasmSection(allocator, &bytes, 1, type_section.items);
+
+    var function_section: std.ArrayList(u8) = .empty;
+    defer function_section.deinit(allocator);
+    try appendWasmU32(allocator, &function_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendWasmU32(allocator, &function_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 3, function_section.items);
+
+    var memory_section: std.ArrayList(u8) = .empty;
+    defer memory_section.deinit(allocator);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try memory_section.append(allocator, 0x01);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmSection(allocator, &bytes, 5, memory_section.items);
+
+    var export_section: std.ArrayList(u8) = .empty;
+    defer export_section.deinit(allocator);
+    try appendWasmU32(allocator, &export_section, world.Appliance.Abi.universal_required_exports.len + 1);
+    try appendWasmName(allocator, &export_section, "memory");
+    try export_section.append(allocator, 2);
+    try appendWasmU32(allocator, &export_section, 0);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |name, index| {
+        try appendWasmName(allocator, &export_section, name);
+        try export_section.append(allocator, 0);
+        try appendWasmU32(allocator, &export_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 7, export_section.items);
+
+    var code_section: std.ArrayList(u8) = .empty;
+    defer code_section.deinit(allocator);
+    try appendWasmU32(allocator, &code_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(allocator);
+        if (index == 0) {
+            try appendWasmU32(allocator, &body, 0);
+            try body.append(allocator, 0x41);
+            try appendWasmU32(allocator, &body, 0);
+            try body.append(allocator, 0x1a);
+            try body.append(allocator, 0x41);
+            try appendWasmU32(allocator, &body, 1);
+            try body.append(allocator, 0x0d);
+            try appendWasmU32(allocator, &body, 0);
+            try body.append(allocator, 0x0b);
+        } else {
+            try appendWasmValidResultBody(allocator, &body, index);
+        }
+        try appendWasmU32(allocator, &code_section, @intCast(body.items.len));
+        try code_section.appendSlice(allocator, body.items);
+    }
+    try appendWasmSection(allocator, &bytes, 10, code_section.items);
+
+    try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
+}
+
 test "universal wasm artifact validation rejects code before exports" {
     const allocator = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
@@ -1499,9 +1570,13 @@ fn validateWasmCodeBody(
             0x0c, 0x0d, 0x10, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0xd2 => {
                 const immediate = try readWasmU32(body, &cursor);
                 switch (opcode) {
-                    0x0c => stack_known = false,
+                    0x0c => {
+                        try requireWasmBranchTargetResult(immediate, depth, required_result_type, &stack_known, &stack, &stack_depth);
+                        stack_known = false;
+                    },
                     0x0d => {
                         try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
+                        try requireWasmBranchTargetResult(immediate, depth, required_result_type, &stack_known, &stack, &stack_depth);
                         stack_known = false;
                     },
                     0x10 => try applyWasmCallStackEffect(immediate, type_sigs, function_type_indices, &stack_known, &stack, &stack_depth, required_result_type, &required_result_seen),
@@ -1534,10 +1609,14 @@ fn validateWasmCodeBody(
             },
             0x0e => {
                 const count = try readWasmU32(body, &cursor);
+                var target_requires_result = false;
                 var index: u32 = 0;
-                while (index < count) : (index += 1) _ = try readWasmU32(body, &cursor);
-                _ = try readWasmU32(body, &cursor);
+                while (index < count) : (index += 1) {
+                    target_requires_result = try wasmBranchTargetRequiresResult(try readWasmU32(body, &cursor), depth, required_result_type) or target_requires_result;
+                }
+                target_requires_result = try wasmBranchTargetRequiresResult(try readWasmU32(body, &cursor), depth, required_result_type) or target_requires_result;
                 try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
+                if (target_requires_result) try popWasmValue(&stack_known, &stack, &stack_depth, required_result_type.?);
                 stack_known = false;
             },
             0x11 => {
@@ -1643,6 +1722,18 @@ fn requireWasmFinalResult(stack_known: *bool, stack: *[max_wasm_stack_values]u8,
     if (stack_depth.* != 1) return error.UniversalWasmInspectionFailed;
     if (stack[0] != expected_type) return error.InvalidFrameEncoding;
     stack_depth.* = 0;
+}
+
+fn requireWasmBranchTargetResult(label_depth: u32, depth: usize, required_result_type: ?u8, stack_known: *bool, stack: *[max_wasm_stack_values]u8, stack_depth: *usize) !void {
+    if (try wasmBranchTargetRequiresResult(label_depth, depth, required_result_type)) {
+        try popWasmValue(stack_known, stack, stack_depth, required_result_type.?);
+    }
+}
+
+fn wasmBranchTargetRequiresResult(label_depth: u32, depth: usize, required_result_type: ?u8) !bool {
+    const target_depth: usize = @intCast(label_depth);
+    if (target_depth >= depth) return error.InvalidFrameEncoding;
+    return required_result_type != null and target_depth == depth - 1;
 }
 
 fn applyWasmNumericStackEffect(opcode: u8, stack_known: *bool, stack: *[max_wasm_stack_values]u8, stack_depth: *usize, required_result_type: ?u8, required_result_seen: *bool) !void {
