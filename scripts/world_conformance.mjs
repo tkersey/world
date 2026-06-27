@@ -73,6 +73,16 @@ const proofGateNames = {
   reproducible_artifact: 'check-world-reproducible-wasm',
 };
 
+const jsCorpusProofKinds = new Set([
+  'independent_javascript_codec',
+  'exact_result_bytes',
+  'exact_receipt_bytes',
+  'exact_capsule_bytes',
+  'exact_archive_append_batch_bytes',
+  'malformed_input',
+  'regression_matrix',
+]);
+
 const expected = {
   positive: [
     'Protocol.Manifest',
@@ -232,7 +242,10 @@ try {
 }
 
 receipt.complete = receiptComplete(receipt, args);
-if (!args.wasm && !args.mode) receipt.proof_receipts = buildProofReceipts(receipt);
+if (args.proofMatrix) {
+  receipt.proof_matrix_scope = args.proofMatrix;
+  receipt.proof_receipts = buildProofReceipts(receipt);
+}
 receipt.receipt_fingerprint = fnv64Hex(JSON.stringify(receipt));
 if (args.receiptOut) writeFileSync(args.receiptOut, `${JSON.stringify(receipt, null, 2)}\n`);
 if (!receipt.complete) {
@@ -249,6 +262,12 @@ function parseArgs(raw) {
     else if (arg === '--corpus') parsed.corpus = requireArgValue(arg, raw[++i]);
     else if (arg === '--receipt-out') parsed.receiptOut = requireArgValue(arg, raw[++i]);
     else if (arg === '--mode') parsed.mode = requireArgValue(arg, raw[++i]);
+    else if (arg === '--proof-matrix') {
+      parsed.proofMatrix = requireArgValue(arg, raw[++i]);
+      if (parsed.proofMatrix !== 'zig-build-release-gates') {
+        throw new Error(`unknown proof matrix scope: ${parsed.proofMatrix}`);
+      }
+    }
     else throw new Error(`unknown argument: ${arg}`);
   }
   return parsed;
@@ -288,12 +307,27 @@ function buildProofReceipts(receipt) {
       input_corpus_case_fingerprints: evidence,
       expected_output_fingerprints: evidence,
       actual_output_fingerprints: evidence,
-      actual_comparison_result: receipt.complete,
+      actual_comparison_result: proofKindPassedByReceipt(receipt, proofKind),
       bounded_diagnostics: evidence,
       blocker_count: receipt.blockers.length,
       warning_count: receipt.warnings.length,
     };
   });
+}
+
+function proofKindPassedByReceipt(receipt, proofKind) {
+  if (!receipt.complete) return false;
+  if (receipt.evidence_scope === 'js-corpus') return jsCorpusProofKinds.has(proofKind);
+  if (receipt.evidence_scope === 'wasm-release') {
+    return receipt.positive_success &&
+      receipt.expected_rejection &&
+      receipt.byte_equality &&
+      receipt.semantic_fingerprint_equality &&
+      receipt.artifact_inspection &&
+      receipt.actual_webassembly_execution &&
+      receipt.memory_limit_compliance;
+  }
+  return false;
 }
 
 function proofGateFingerprint(index, gateName) {
@@ -392,6 +426,10 @@ async function inspectAndExecuteWasm(path) {
   const bytes = readFileSync(path);
   const module = await WebAssembly.compile(bytes);
   const exports = WebAssembly.Module.exports(module);
+  const signatureInspection = inspectWasmAbiSignatures(bytes);
+  if (signatureInspection.signatureCount !== universalApplianceRequiredExports.length) {
+    throw new Error('universal wasm export signature coverage mismatch');
+  }
   const exportNames = new Set(exports.map((entry) => entry.name));
   for (const name of universalApplianceRequiredExports) {
     if (!exportNames.has(name)) throw new Error(`missing wasm export: ${name}`);
@@ -425,6 +463,195 @@ async function inspectAndExecuteWasm(path) {
     actual_webassembly_execution: true,
     memory_limit_compliance: true,
   };
+}
+
+function inspectWasmAbiSignatures(bytes) {
+  const data = new Uint8Array(bytes);
+  if (data.length < 8 ||
+    data[0] !== 0x00 ||
+    data[1] !== 0x61 ||
+    data[2] !== 0x73 ||
+    data[3] !== 0x6d ||
+    data[4] !== 0x01 ||
+    data[5] !== 0x00 ||
+    data[6] !== 0x00 ||
+    data[7] !== 0x00) {
+    throw new Error('invalid wasm header');
+  }
+
+  const types = [];
+  const functionTypeIndices = [];
+  let functionImportCount = 0;
+  const required = new Map(universalApplianceRequiredExports.map((name, index) => [name, index]));
+  const seen = new Set();
+  const signed = new Set();
+  let cursor = 8;
+
+  while (cursor < data.length) {
+    const sectionId = readWasmU8(data, cursor);
+    cursor += 1;
+    const sectionLen = readWasmVarU32At(data, cursor);
+    cursor = sectionLen.next;
+    if (sectionLen.value > data.length - cursor) throw new Error('invalid wasm section length');
+    const sectionEnd = cursor + sectionLen.value;
+    const state = { cursor, end: sectionEnd };
+    let handled = true;
+    if (sectionId === 1) {
+      inspectWasmTypeSection(data, state, types);
+    } else if (sectionId === 2) {
+      functionImportCount = inspectWasmImportSection(data, state, types.length, functionTypeIndices);
+    } else if (sectionId === 3) {
+      inspectWasmFunctionSection(data, state, types.length, functionTypeIndices);
+    } else if (sectionId === 7) {
+      inspectWasmExportSection(data, state, types, functionTypeIndices, functionImportCount, required, seen, signed);
+    } else {
+      handled = false;
+    }
+    if (handled && state.cursor !== sectionEnd) throw new Error(`invalid wasm section ${sectionId}`);
+    cursor = sectionEnd;
+  }
+
+  for (const name of universalApplianceRequiredExports) {
+    if (!seen.has(name)) throw new Error(`missing wasm protocol export: ${name}`);
+    if (!signed.has(name)) throw new Error(`wasm export signature mismatch: ${name}`);
+  }
+  return { signatureCount: signed.size };
+}
+
+function inspectWasmTypeSection(data, state, types) {
+  const count = readWasmVarU32(data, state);
+  for (let i = 0; i < count; i += 1) {
+    if (readWasmU8State(data, state) !== 0x60) throw new Error('invalid wasm function type');
+    const params = readWasmValueTypes(data, state);
+    const results = readWasmValueTypes(data, state);
+    types.push({ params, results });
+  }
+}
+
+function inspectWasmImportSection(data, state, typeCount, functionTypeIndices) {
+  const count = readWasmVarU32(data, state);
+  let functionImportCount = 0;
+  for (let i = 0; i < count; i += 1) {
+    readWasmName(data, state);
+    readWasmName(data, state);
+    const kind = readWasmU8State(data, state);
+    if (kind === 0) {
+      const typeIndex = readWasmVarU32(data, state);
+      if (typeIndex >= typeCount) throw new Error('invalid wasm function import type index');
+      functionTypeIndices.push(typeIndex);
+      functionImportCount += 1;
+    } else if (kind === 1) {
+      readWasmU8State(data, state);
+      skipWasmLimits(data, state);
+    } else if (kind === 2) {
+      skipWasmLimits(data, state);
+    } else if (kind === 3) {
+      readWasmU8State(data, state);
+      readWasmU8State(data, state);
+    } else {
+      throw new Error('invalid wasm import kind');
+    }
+  }
+  return functionImportCount;
+}
+
+function inspectWasmFunctionSection(data, state, typeCount, functionTypeIndices) {
+  const count = readWasmVarU32(data, state);
+  for (let i = 0; i < count; i += 1) {
+    const typeIndex = readWasmVarU32(data, state);
+    if (typeIndex >= typeCount) throw new Error('invalid wasm function type index');
+    functionTypeIndices.push(typeIndex);
+  }
+}
+
+function inspectWasmExportSection(data, state, types, functionTypeIndices, functionImportCount, required, seen, signed) {
+  const count = readWasmVarU32(data, state);
+  for (let i = 0; i < count; i += 1) {
+    const name = readWasmName(data, state);
+    const kind = readWasmU8State(data, state);
+    const exportIndex = readWasmVarU32(data, state);
+    if (!required.has(name)) continue;
+    seen.add(name);
+    if (kind !== 0) continue;
+    if (exportIndex < functionImportCount) throw new Error(`wasm export is imported function: ${name}`);
+    const typeIndex = functionTypeIndices[exportIndex];
+    const type = types[typeIndex];
+    const requiredIndex = required.get(name);
+    if (type && wasmSignatureMatches(type, expectedWasmParamTypes(requiredIndex), expectedWasmResultTypes(requiredIndex))) {
+      signed.add(name);
+    }
+  }
+}
+
+function wasmSignatureMatches(type, params, results) {
+  return sameByteList(type.params, params) && sameByteList(type.results, results);
+}
+
+function expectedWasmParamTypes(index) {
+  if ([2, 3, 6, 7, 9, 11, 14, 16].includes(index)) return [0x7f, 0x7f];
+  if (index === 13) return [0x7f];
+  return [];
+}
+
+function expectedWasmResultTypes(index) {
+  if (index === 14) return [];
+  if (index === 17 || index === 18) return [0x7e];
+  return [0x7f];
+}
+
+function sameByteList(actual, expectedValues) {
+  return actual.length === expectedValues.length && actual.every((value, index) => value === expectedValues[index]);
+}
+
+function readWasmValueTypes(data, state) {
+  const count = readWasmVarU32(data, state);
+  const values = [];
+  for (let i = 0; i < count; i += 1) values.push(readWasmU8State(data, state));
+  return values;
+}
+
+function readWasmName(data, state) {
+  const len = readWasmVarU32(data, state);
+  if (len > state.end - state.cursor) throw new Error('invalid wasm name');
+  const name = textDecoder.decode(data.subarray(state.cursor, state.cursor + len));
+  state.cursor += len;
+  return name;
+}
+
+function skipWasmLimits(data, state) {
+  const flags = readWasmVarU32(data, state);
+  readWasmVarU32(data, state);
+  if ((flags & 0x01) !== 0) readWasmVarU32(data, state);
+}
+
+function readWasmU8(data, offset) {
+  if (offset >= data.length) throw new Error('unexpected wasm eof');
+  return data[offset];
+}
+
+function readWasmU8State(data, state) {
+  if (state.cursor >= state.end) throw new Error('unexpected wasm section eof');
+  return data[state.cursor++];
+}
+
+function readWasmVarU32(data, state) {
+  const result = readWasmVarU32At(data, state.cursor, state.end);
+  state.cursor = result.next;
+  return result.value;
+}
+
+function readWasmVarU32At(data, offset, end = data.length) {
+  let result = 0;
+  let shift = 0;
+  let cursor = offset;
+  while (true) {
+    if (cursor >= end) throw new Error('unexpected wasm varuint eof');
+    const byte = data[cursor++];
+    result |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) return { value: result >>> 0, next: cursor };
+    shift += 7;
+    if (shift > 28) throw new Error('invalid wasm varuint32');
+  }
 }
 
 function checksum64Hex(bytes) {

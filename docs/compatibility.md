@@ -24,4 +24,3 @@ Hard rules:
 - ABI export signature changes require an ABI-version bump.
 - Boundary dependency upgrades require World compatibility proof.
 - Retained old corpora remain compatibility CI inputs.
-

@@ -174,7 +174,7 @@ fn writeProofReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), 
         \\      "receipt_fingerprint": "0x{x:0>16}",
         \\      "proof_kind": "{s}",
         \\      "protocol_manifest_fingerprint": "0x{x:0>16}",
-        \\      "input_corpus_case_fingerprints": 
+        \\      "input_corpus_case_fingerprints":
     , .{
         proof_gate,
         Protocol.proofGateFingerprint(receipt.proof_kind),
@@ -284,6 +284,7 @@ fn validateUniversalWasmArtifact(bytes: []const u8) !void {
     if (std.mem.readInt(u32, bytes[4..8], .little) != 1) return error.InvalidFrameEncoding;
 
     var required_seen = [_]bool{false} ** world.Appliance.Abi.universal_required_exports.len;
+    var required_result_types = [_]?u8{null} ** max_wasm_functions;
     var type_sigs: [max_wasm_types]WasmSignature = undefined;
     var type_count: usize = 0;
     var function_type_indices: [max_wasm_functions]u32 = undefined;
@@ -307,9 +308,10 @@ fn validateUniversalWasmArtifact(bytes: []const u8) !void {
             type_sigs[0..type_count],
             function_type_indices[0..function_count],
             &required_seen,
+            &required_result_types,
             &memory_export_seen,
         );
-        if (section_id == 10) code_count = try inspectWasmCode(section, function_count);
+        if (section_id == 10) code_count = try inspectWasmCode(section, function_count, required_result_types[0..function_count]);
         cursor += section_len;
     }
     if (import_count != 0) return error.UniversalWasmInspectionFailed;
@@ -349,6 +351,7 @@ const ProofReceipts = struct {
     blockers: []const []const u8,
     warnings: []const []const u8,
     complete: bool,
+    proof_matrix_scope: []const u8,
     proof_receipts: []const ProofReceiptEvidence,
     receipt_fingerprint: []const u8,
 };
@@ -400,16 +403,17 @@ fn validateProofReceipts(allocator: std.mem.Allocator, bytes: []const u8) !void 
     const receipt = parsed.value;
     if (receipt.receipt_format_version != 1) return error.ProofReceiptsIncomplete;
     if (!std.mem.eql(u8, receipt.runner, "scripts/world_conformance.mjs")) return error.ProofReceiptsIncomplete;
-    if (!std.mem.eql(u8, receipt.evidence_scope, "js-corpus")) return error.ProofReceiptsIncomplete;
-    if (receipt.artifact_inspection) return error.ProofReceiptsIncomplete;
-    if (receipt.actual_webassembly_execution) return error.ProofReceiptsIncomplete;
-    if (receipt.memory_limit_compliance) return error.ProofReceiptsIncomplete;
+    if (!std.mem.eql(u8, receipt.evidence_scope, "wasm-release")) return error.ProofReceiptsIncomplete;
+    if (!receipt.artifact_inspection) return error.ProofReceiptsIncomplete;
+    if (!receipt.actual_webassembly_execution) return error.ProofReceiptsIncomplete;
+    if (!receipt.memory_limit_compliance) return error.ProofReceiptsIncomplete;
     if (!receipt.positive_success) return error.ProofReceiptsIncomplete;
     if (!receipt.expected_rejection) return error.ProofReceiptsIncomplete;
     if (!receipt.byte_equality) return error.ProofReceiptsIncomplete;
     if (!receipt.semantic_fingerprint_equality) return error.ProofReceiptsIncomplete;
     if (receipt.blockers.len != 0) return error.ProofReceiptsIncomplete;
     if (!receipt.complete) return error.ProofReceiptsIncomplete;
+    if (!std.mem.eql(u8, receipt.proof_matrix_scope, "zig-build-release-gates")) return error.ProofReceiptsIncomplete;
     if (receipt.proof_receipts.len != Protocol.required_proof_kind_count) return error.ProofReceiptsIncomplete;
     if (receipt.receipt_fingerprint.len == 0) return error.ProofReceiptsIncomplete;
 }
@@ -570,14 +574,14 @@ test "proof receipts validation requires complete corpus evidence" {
         \\{
         \\  "receipt_format_version": 1,
         \\  "runner": "scripts/world_conformance.mjs",
-        \\  "evidence_scope": "js-corpus",
-        \\  "artifact_inspection": false,
-        \\  "actual_webassembly_execution": false,
+        \\  "evidence_scope": "wasm-release",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
         \\  "positive_success": true,
         \\  "expected_rejection": true,
         \\  "byte_equality": true,
         \\  "semantic_fingerprint_equality": true,
-        \\  "memory_limit_compliance": false,
+        \\  "memory_limit_compliance": true,
         \\  "blockers": [],
         \\  "warnings": [],
         \\  "complete": true,
@@ -591,14 +595,14 @@ test "proof receipts validation requires complete corpus evidence" {
         \\{
         \\  "receipt_format_version": 1,
         \\  "runner": "scripts/world_conformance.mjs",
-        \\  "evidence_scope": "js-corpus",
-        \\  "artifact_inspection": false,
-        \\  "actual_webassembly_execution": false,
+        \\  "evidence_scope": "wasm-release",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
         \\  "positive_success": true,
         \\  "expected_rejection": true,
         \\  "byte_equality": true,
         \\  "semantic_fingerprint_equality": true,
-        \\  "memory_limit_compliance": false,
+        \\  "memory_limit_compliance": true,
         \\  "blockers": [],
         \\  "warnings": [],
         \\  "complete": false,
@@ -612,11 +616,32 @@ test "proof receipts validation requires complete corpus evidence" {
         \\{
         \\  "receipt_format_version": 1,
         \\  "runner": "scripts/world_conformance.mjs",
+        \\  "evidence_scope": "wasm-release",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
+        \\  "positive_success": true,
+        \\  "expected_rejection": false,
+        \\  "byte_equality": true,
+        \\  "semantic_fingerprint_equality": true,
+        \\  "memory_limit_compliance": true,
+        \\  "blockers": [],
+        \\  "warnings": [],
+        \\  "complete": true,
+        \\  "proof_receipts": [],
+        \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
+        \\}
+    ;
+    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, partial_corpus));
+
+    const js_only =
+        \\{
+        \\  "receipt_format_version": 1,
+        \\  "runner": "scripts/world_conformance.mjs",
         \\  "evidence_scope": "js-corpus",
         \\  "artifact_inspection": false,
         \\  "actual_webassembly_execution": false,
         \\  "positive_success": true,
-        \\  "expected_rejection": false,
+        \\  "expected_rejection": true,
         \\  "byte_equality": true,
         \\  "semantic_fingerprint_equality": true,
         \\  "memory_limit_compliance": false,
@@ -627,7 +652,7 @@ test "proof receipts validation requires complete corpus evidence" {
         \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
         \\}
     ;
-    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, partial_corpus));
+    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, js_only));
 }
 
 test "universal wasm artifact validation rejects non-function required exports" {
@@ -749,6 +774,63 @@ test "universal wasm artifact validation rejects signature-only uninstantiable m
     try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
 }
 
+test "universal wasm artifact validation rejects empty result bodies" {
+    const allocator = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+    try bytes.appendSlice(allocator, "\x00asm");
+    try bytes.appendSlice(allocator, &.{ 1, 0, 0, 0 });
+
+    var type_section: std.ArrayList(u8) = .empty;
+    defer type_section.deinit(allocator);
+    try appendWasmU32(allocator, &type_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendExpectedWasmFuncType(allocator, &type_section, index);
+    }
+    try appendWasmSection(allocator, &bytes, 1, type_section.items);
+
+    var function_section: std.ArrayList(u8) = .empty;
+    defer function_section.deinit(allocator);
+    try appendWasmU32(allocator, &function_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendWasmU32(allocator, &function_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 3, function_section.items);
+
+    var memory_section: std.ArrayList(u8) = .empty;
+    defer memory_section.deinit(allocator);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try memory_section.append(allocator, 0x01);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmSection(allocator, &bytes, 5, memory_section.items);
+
+    var export_section: std.ArrayList(u8) = .empty;
+    defer export_section.deinit(allocator);
+    try appendWasmU32(allocator, &export_section, world.Appliance.Abi.universal_required_exports.len + 1);
+    try appendWasmName(allocator, &export_section, "memory");
+    try export_section.append(allocator, 2);
+    try appendWasmU32(allocator, &export_section, 0);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |name, index| {
+        try appendWasmName(allocator, &export_section, name);
+        try export_section.append(allocator, 0);
+        try appendWasmU32(allocator, &export_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 7, export_section.items);
+
+    var code_section: std.ArrayList(u8) = .empty;
+    defer code_section.deinit(allocator);
+    try appendWasmU32(allocator, &code_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports) |_| {
+        try appendWasmU32(allocator, &code_section, 2);
+        try appendWasmU32(allocator, &code_section, 0);
+        try code_section.append(allocator, 0x0b);
+    }
+    try appendWasmSection(allocator, &bytes, 10, code_section.items);
+
+    try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
+}
+
 fn countWasmImports(section: []const u8) !u32 {
     var cursor: usize = 0;
     const count = try readWasmU32(section, &cursor);
@@ -848,6 +930,7 @@ fn inspectUniversalExports(
     type_sigs: []const WasmSignature,
     function_type_indices: []const u32,
     required_seen: *[world.Appliance.Abi.universal_required_exports.len]bool,
+    required_result_types: *[max_wasm_functions]?u8,
     memory_export_seen: *bool,
 ) !void {
     var cursor: usize = 0;
@@ -882,13 +965,15 @@ fn inspectUniversalExports(
                 expectedWasmResultCount(required_index),
                 expectedWasmResultType(required_index),
             )) return error.UniversalWasmInspectionFailed;
+            if (export_index >= required_result_types.len) return error.UniversalWasmInspectionFailed;
+            required_result_types[@intCast(export_index)] = expectedWasmResultType(required_index);
             required_seen[required_index] = true;
         }
     }
     if (cursor != section.len) return error.InvalidFrameEncoding;
 }
 
-fn inspectWasmCode(section: []const u8, function_count: usize) !usize {
+fn inspectWasmCode(section: []const u8, function_count: usize, required_result_types: []const ?u8) !usize {
     var cursor: usize = 0;
     const count = try readWasmU32(section, &cursor);
     if (count != function_count) return error.InvalidFrameEncoding;
@@ -896,10 +981,137 @@ fn inspectWasmCode(section: []const u8, function_count: usize) !usize {
     while (index < count) : (index += 1) {
         const body_len = try readWasmU32(section, &cursor);
         if (body_len > section.len - cursor) return error.InvalidFrameEncoding;
+        try validateWasmCodeBody(section[cursor .. cursor + body_len], required_result_types[index]);
         cursor += body_len;
     }
     if (cursor != section.len) return error.InvalidFrameEncoding;
     return @intCast(count);
+}
+
+fn validateWasmCodeBody(body: []const u8, required_result_type: ?u8) !void {
+    var cursor: usize = 0;
+    const local_decl_count = try readWasmU32(body, &cursor);
+    var local_decl_index: u32 = 0;
+    while (local_decl_index < local_decl_count) : (local_decl_index += 1) {
+        _ = try readWasmU32(body, &cursor);
+        if (!validWasmValueType(try readWasmU8(body, &cursor))) return error.InvalidFrameEncoding;
+    }
+
+    var depth: usize = 1;
+    var required_result_seen = required_result_type == null;
+    while (depth != 0) {
+        if (cursor >= body.len) return error.InvalidFrameEncoding;
+        const opcode = try readWasmU8(body, &cursor);
+        switch (opcode) {
+            0x00, 0x01, 0x0f, 0x1a, 0x1b => {},
+            0x02, 0x03, 0x04 => {
+                try readWasmBlockType(body, &cursor);
+                depth += 1;
+            },
+            0x05 => {
+                if (depth <= 1) return error.InvalidFrameEncoding;
+            },
+            0x0b => {
+                if (depth == 1 and !required_result_seen) return error.UniversalWasmInspectionFailed;
+                depth -= 1;
+            },
+            0x0c, 0x0d, 0x10, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0xd2 => {
+                _ = try readWasmU32(body, &cursor);
+                if (opcode == 0x10 or opcode == 0x20 or opcode == 0x22 or opcode == 0x23 or opcode == 0xd2) required_result_seen = true;
+            },
+            0x0e => {
+                const count = try readWasmU32(body, &cursor);
+                var index: u32 = 0;
+                while (index < count) : (index += 1) _ = try readWasmU32(body, &cursor);
+                _ = try readWasmU32(body, &cursor);
+            },
+            0x11 => {
+                _ = try readWasmU32(body, &cursor);
+                _ = try readWasmU32(body, &cursor);
+            },
+            0x1c => {
+                const count = try readWasmU32(body, &cursor);
+                var index: u32 = 0;
+                while (index < count) : (index += 1) {
+                    if (!validWasmValueType(try readWasmU8(body, &cursor))) return error.InvalidFrameEncoding;
+                }
+            },
+            0x28...0x3e => {
+                _ = try readWasmU32(body, &cursor);
+                _ = try readWasmU32(body, &cursor);
+                if (opcode <= 0x35) required_result_seen = true;
+            },
+            0x3f, 0x40 => {
+                if (try readWasmU8(body, &cursor) != 0) return error.InvalidFrameEncoding;
+            },
+            0x41 => {
+                try readWasmLeb128(body, &cursor, 5);
+                if (required_result_type == 0x7f) required_result_seen = true;
+            },
+            0x42 => {
+                try readWasmLeb128(body, &cursor, 10);
+                if (required_result_type == 0x7e) required_result_seen = true;
+            },
+            0x43 => try skipWasmBytes(body, &cursor, 4),
+            0x44 => try skipWasmBytes(body, &cursor, 8),
+            0x45...0xc4, 0xd1 => required_result_seen = true,
+            0xd0 => {
+                if (!validWasmRefType(try readWasmU8(body, &cursor))) return error.InvalidFrameEncoding;
+            },
+            0xfc => try readWasmMiscInstruction(body, &cursor),
+            else => return error.InvalidFrameEncoding,
+        }
+    }
+    if (cursor != body.len) return error.InvalidFrameEncoding;
+}
+
+fn readWasmBlockType(bytes: []const u8, cursor: *usize) !void {
+    const first = try readWasmU8(bytes, cursor);
+    if (first == 0x40 or validWasmValueType(first)) return;
+    if (first < 0x40) return;
+    if ((first & 0x80) == 0) return error.InvalidFrameEncoding;
+    var read: u8 = 1;
+    while (read < 5) : (read += 1) {
+        const byte = try readWasmU8(bytes, cursor);
+        if ((byte & 0x80) == 0) return;
+    }
+    return error.InvalidFrameEncoding;
+}
+
+fn readWasmMiscInstruction(bytes: []const u8, cursor: *usize) !void {
+    const opcode = try readWasmU32(bytes, cursor);
+    switch (opcode) {
+        0...7 => {},
+        8 => {
+            _ = try readWasmU32(bytes, cursor);
+            if (try readWasmU8(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+        },
+        9, 13 => _ = try readWasmU32(bytes, cursor),
+        10 => {
+            if (try readWasmU8(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+            if (try readWasmU8(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+        },
+        11 => {
+            if (try readWasmU8(bytes, cursor) != 0) return error.InvalidFrameEncoding;
+        },
+        12, 14 => {
+            _ = try readWasmU32(bytes, cursor);
+            _ = try readWasmU32(bytes, cursor);
+        },
+        15, 16, 17 => _ = try readWasmU32(bytes, cursor),
+        else => return error.InvalidFrameEncoding,
+    }
+}
+
+fn validWasmValueType(value: u8) bool {
+    return switch (value) {
+        0x7f, 0x7e, 0x7d, 0x7c, 0x70, 0x6f => true,
+        else => false,
+    };
+}
+
+fn validWasmRefType(value: u8) bool {
+    return value == 0x70 or value == 0x6f;
 }
 
 fn wasmSignatureMatches(
@@ -999,6 +1211,20 @@ fn readWasmU8(bytes: []const u8, cursor: *usize) !u8 {
     const value = bytes[cursor.*];
     cursor.* += 1;
     return value;
+}
+
+fn skipWasmBytes(bytes: []const u8, cursor: *usize, len: usize) !void {
+    if (len > bytes.len - cursor.*) return error.InvalidFrameEncoding;
+    cursor.* += len;
+}
+
+fn readWasmLeb128(bytes: []const u8, cursor: *usize, max_bytes: u8) !void {
+    var read: u8 = 0;
+    while (read < max_bytes) : (read += 1) {
+        const byte = try readWasmU8(bytes, cursor);
+        if ((byte & 0x80) == 0) return;
+    }
+    return error.InvalidFrameEncoding;
 }
 
 fn readWasmU32(bytes: []const u8, cursor: *usize) !u32 {

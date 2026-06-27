@@ -483,17 +483,28 @@ pub fn build(b: *std.Build) void {
     emit_world_proof_receipts_run.addFileArg(b.path("scripts/world_conformance.mjs"));
     emit_world_proof_receipts_run.addArgs(&.{
         "--corpus",
-        "conformance/v0/world",
+    });
+    emit_world_proof_receipts_run.addFileArg(b.path("conformance/v0/world/corpus.json"));
+    emit_world_proof_receipts_run.addArgs(&.{
+        "--wasm",
+    });
+    emit_world_proof_receipts_run.addFileArg(universal_appliance_wasm.getEmittedBin());
+    emit_world_proof_receipts_run.addArgs(&.{
+        "--proof-matrix",
+        "zig-build-release-gates",
         "--receipt-out",
     });
     const world_proof_receipts = emit_world_proof_receipts_run.addOutputFileArg("world-proof-receipts.json");
+    emit_world_proof_receipts_run.step.dependOn(world_universal_appliance_wasm_step);
     const emit_world_proof_receipts_step = b.step("emit-world-proof-receipts", "Emit machine-readable World v0 proof receipts.");
     emit_world_proof_receipts_step.dependOn(&emit_world_proof_receipts_run.step);
     const emit_world_release_receipt_run = b.addSystemCommand(&.{"node"});
     emit_world_release_receipt_run.addFileArg(b.path("scripts/world_conformance.mjs"));
     emit_world_release_receipt_run.addArgs(&.{
         "--corpus",
-        "conformance/v0/world",
+    });
+    emit_world_release_receipt_run.addFileArg(b.path("conformance/v0/world/corpus.json"));
+    emit_world_release_receipt_run.addArgs(&.{
         "--wasm",
     });
     emit_world_release_receipt_run.addFileArg(universal_appliance_wasm.getEmittedBin());
@@ -524,7 +535,7 @@ pub fn build(b: *std.Build) void {
     emit_world_protocol_release_receipt_run.addArgs(&.{"--proof-receipts"});
     emit_world_protocol_release_receipt_run.addFileArg(world_proof_receipts);
     emit_world_protocol_release_receipt_run.addArgs(&.{"--out"});
-    _ = emit_world_protocol_release_receipt_run.addOutputFileArg("world-release-receipt.json");
+    const world_protocol_release_receipt = emit_world_protocol_release_receipt_run.addOutputFileArg("world-release-receipt.json");
     addWorldSourcePackageInputs(b, emit_world_protocol_release_receipt_run);
     emit_world_protocol_release_receipt_run.addArgs(&.{
         "--proof-gate", "check-boundary-world-compatibility",
@@ -598,10 +609,15 @@ pub fn build(b: *std.Build) void {
     });
     run_dist_world_v0.addFileArg(universal_appliance_wasm.getEmittedBin());
     run_dist_world_v0.addArgs(&.{
+        "--release-receipt",
+    });
+    run_dist_world_v0.addFileArg(world_protocol_release_receipt);
+    run_dist_world_v0.addArgs(&.{
         "--out",
         "zig-out/dist/world-v0.1.0",
     });
     run_dist_world_v0.step.dependOn(world_universal_appliance_wasm_step);
+    run_dist_world_v0.step.dependOn(emit_world_release_receipt_step);
     const emit_world_release_artifacts_step = b.step("emit-world-release-artifacts", "Emit World v0.1.0 release artifacts.");
     emit_world_release_artifacts_step.dependOn(&run_dist_world_v0.step);
     const dist_world_v0_1_step = b.step("dist-world-v0.1.0", "Package World v0.1.0 release artifacts.");

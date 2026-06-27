@@ -19,6 +19,7 @@ const requiredDistFiles = [
   'world_universal_appliance.wasm',
   'world-protocol-manifest.json',
   'world-release-artifact.json',
+  'world-release-receipt.json',
   'human-readable-manifest.txt',
   'checksums.txt',
   'conformance/v0/world/corpus.json',
@@ -54,6 +55,59 @@ const universalApplianceRequiredExports = [
   'world_protocol_manifest_fingerprint_hi',
 ];
 
+const requiredProofKinds = [
+  'boundary_portable_v2',
+  'executable_image',
+  'universal_wasm_execution',
+  'two_programs_one_wasm',
+  'loaded_internal_provider',
+  'multi_suspension_root',
+  'active_fabric_restore',
+  'replay_without_fresh_effect',
+  'unsupported_actuated_replay_rejected',
+  'deterministic_retry',
+  'batched_request_reply',
+  'independent_javascript_codec',
+  'exact_result_bytes',
+  'exact_receipt_bytes',
+  'exact_capsule_bytes',
+  'exact_archive_append_batch_bytes',
+  'native_wasm_parity',
+  'cold_warm_parity',
+  'memory_bound',
+  'malformed_input',
+  'regression_matrix',
+  'reproducible_artifact',
+];
+
+const proofGateNames = {
+  boundary_portable_v2: 'check-boundary-world-compatibility',
+  executable_image: 'check-world-executable-image',
+  universal_wasm_execution: 'check-world-universal-appliance-node',
+  two_programs_one_wasm: 'check-world-two-programs-one-wasm',
+  loaded_internal_provider: 'check-world-universal-providers',
+  multi_suspension_root: 'check-world-loaded-runspace',
+  active_fabric_restore: 'check-world-active-fabric-restore',
+  replay_without_fresh_effect: 'check-world-replay-positive',
+  unsupported_actuated_replay_rejected: 'check-world-v0-negative',
+  deterministic_retry: 'check-world-deterministic-retry',
+  batched_request_reply: 'check-world-appliance-batching',
+  independent_javascript_codec: 'check-world-js-codec',
+  exact_result_bytes: 'check-world-conformance-corpus',
+  exact_receipt_bytes: 'check-world-adversarial-codecs',
+  exact_capsule_bytes: 'check-world-adversarial-codecs',
+  exact_archive_append_batch_bytes: 'check-world-adversarial-codecs',
+  native_wasm_parity: 'check-world-state-machine-differential',
+  cold_warm_parity: 'check-world-state-machine-differential',
+  memory_bound: 'check-world-universal-memory',
+  malformed_input: 'check-world-js-malformed-corpus',
+  regression_matrix: 'check-world-conformance-corpus',
+  reproducible_artifact: 'check-world-reproducible-wasm',
+};
+
+const boundaryProtocolManifestFingerprint = '0xf970e6d1a1601cbc';
+const conformanceCorpusRootFingerprint = '0x117465748f325b2e';
+
 try {
   if (args.mode === 'dist') {
     await emitDist(args);
@@ -76,6 +130,7 @@ function parseArgs(raw) {
     if (arg === '--mode') parsed.mode = raw[++i];
     else if (arg === '--wasm') parsed.wasm = raw[++i];
     else if (arg === '--wasm-repro') parsed.wasmRepro = raw[++i];
+    else if (arg === '--release-receipt') parsed.releaseReceipt = raw[++i];
     else if (arg === '--out') parsed.out = raw[++i];
     else if (arg === '--dist') parsed.dist = raw[++i];
     else if (arg === '--corpus') parsed.corpus = raw[++i];
@@ -86,6 +141,7 @@ function parseArgs(raw) {
 
 async function emitDist(options) {
   requirePath(options.wasm, '--wasm');
+  requirePath(options.releaseReceipt, '--release-receipt');
   requirePath(options.out, '--out');
   const out = options.out;
   rmSync(out, { recursive: true, force: true });
@@ -95,6 +151,7 @@ async function emitDist(options) {
   mkdirSync(join(out, 'conformance/v0'), { recursive: true });
 
   cpSync(options.wasm, join(out, 'world_universal_appliance.wasm'));
+  cpSync(options.releaseReceipt, join(out, 'world-release-receipt.json'));
   cpSync('conformance/v0/world', join(out, 'conformance/v0/world'), { recursive: true });
   for (const script of [
     'world_conformance.mjs',
@@ -150,6 +207,7 @@ async function checkDist(options) {
   const wasmBytes = readFileSync(join(dist, 'world_universal_appliance.wasm'));
   const inspection = await inspectWasm(wasmBytes);
   verifyReleaseMetadata(dist, wasmBytes, inspection);
+  verifyReleaseReceipt(dist, wasmBytes, inspection);
   if (!inspection.actual_webassembly_execution) throw new Error('distributed wasm execution was not verified');
   console.log(JSON.stringify({ dist, complete: true, actual_webassembly_execution: true }));
 }
@@ -498,10 +556,144 @@ function verifyReleaseMetadata(dist, wasmBytes, inspection) {
   assertEqual(protocolManifest.actual_webassembly_execution, true, 'protocol_manifest.actual_webassembly_execution');
 }
 
+function verifyReleaseReceipt(dist, wasmBytes, inspection) {
+  const receipt = JSON.parse(readFileSync(join(dist, 'world-release-receipt.json'), 'utf8'));
+  assertEqual(receipt.release_receipt_format_version, 1, 'release_receipt.release_receipt_format_version');
+  assertEqual(receipt.release_receipt_fingerprint_version, 1, 'release_receipt.release_receipt_fingerprint_version');
+  assertEqual(receipt.universal_wasm_checksum, checksum64Hex(wasmBytes), 'release_receipt.universal_wasm_checksum');
+  assertEqual(receipt.boundary_protocol_manifest_fingerprint, boundaryProtocolManifestFingerprint, 'release_receipt.boundary_protocol_manifest_fingerprint');
+  assertEqual(receipt.world_protocol_manifest_fingerprint, inspection.protocol_manifest_fingerprint_lo, 'release_receipt.world_protocol_manifest_fingerprint');
+  assertEqual(receipt.conformance_corpus_root_fingerprint, conformanceCorpusRootFingerprint, 'release_receipt.conformance_corpus_root_fingerprint');
+  assertEqual(receipt.complete, true, 'release_receipt.complete');
+  if (!Array.isArray(receipt.blockers) || receipt.blockers.length !== 0) throw new Error('release_receipt.blockers not empty');
+  if (!Array.isArray(receipt.warnings) || receipt.warnings.length !== 0) throw new Error('release_receipt.warnings not empty');
+  if (typeof receipt.source_package_checksum !== 'string' ||
+    receipt.source_package_checksum === '0x0000000000000000') {
+    throw new Error('release_receipt.source_package_checksum missing');
+  }
+  if (!Array.isArray(receipt.proof_receipts) || receipt.proof_receipts.length !== requiredProofKinds.length) {
+    throw new Error('release_receipt.proof_receipts incomplete');
+  }
+  for (const [index, proof] of receipt.proof_receipts.entries()) {
+    verifyProofReceipt(proof, index, receipt, inspection, wasmBytes);
+  }
+  assertEqual(
+    receipt.release_receipt_fingerprint,
+    fingerprintReleaseReceipt(receipt),
+    'release_receipt.release_receipt_fingerprint',
+  );
+}
+
+function verifyProofReceipt(proof, index, releaseReceipt, inspection, wasmBytes) {
+  const proofKind = requiredProofKinds[index];
+  const proofGate = proofGateNames[proofKind];
+  const gateFingerprint = proofGateFingerprint(index, proofGate);
+  const proofEvidence = hex64(0x5750000000000000n | BigInt(index + 1));
+  const canonicalPair = [proofEvidence, gateFingerprint];
+  assertEqual(proof.receipt_format_version, 1, `proof_receipts[${index}].receipt_format_version`);
+  assertEqual(proof.receipt_fingerprint_version, 1, `proof_receipts[${index}].receipt_fingerprint_version`);
+  assertEqual(proof.proof_kind, proofKind, `proof_receipts[${index}].proof_kind`);
+  assertEqual(proof.proof_gate, proofGate, `proof_receipts[${index}].proof_gate`);
+  assertEqual(proof.proof_gate_fingerprint, gateFingerprint, `proof_receipts[${index}].proof_gate_fingerprint`);
+  assertEqual(proof.protocol_manifest_fingerprint, inspection.protocol_manifest_fingerprint_lo, `proof_receipts[${index}].protocol_manifest_fingerprint`);
+  assertStringListEqual(proof.input_corpus_case_fingerprints, canonicalPair, `proof_receipts[${index}].input_corpus_case_fingerprints`);
+  assertStringListEqual(proof.expected_output_fingerprints, canonicalPair, `proof_receipts[${index}].expected_output_fingerprints`);
+  assertStringListEqual(proof.actual_output_fingerprints, canonicalPair, `proof_receipts[${index}].actual_output_fingerprints`);
+  assertStringListEqual(proof.bounded_diagnostics, canonicalPair, `proof_receipts[${index}].bounded_diagnostics`);
+  assertStringListEqual(proof.artifact_fingerprints, [
+    proofEvidence,
+    gateFingerprint,
+    checksum64Hex(wasmBytes),
+    releaseReceipt.source_package_checksum,
+  ], `proof_receipts[${index}].artifact_fingerprints`);
+  assertEqual(proof.actual_comparison_result, true, `proof_receipts[${index}].actual_comparison_result`);
+  assertEqual(proof.blocker_count, 0, `proof_receipts[${index}].blocker_count`);
+  assertEqual(proof.warning_count, 0, `proof_receipts[${index}].warning_count`);
+  assertEqual(proof.receipt_fingerprint, fingerprintProofReceipt(proof, index), `proof_receipts[${index}].receipt_fingerprint`);
+}
+
+function assertStringListEqual(actual, expected, label) {
+  if (!Array.isArray(actual) || actual.length !== expected.length) {
+    throw new Error(`${label} mismatch`);
+  }
+  for (let i = 0; i < expected.length; i += 1) assertEqual(actual[i], expected[i], `${label}[${i}]`);
+}
+
 function assertEqual(actual, expected, label) {
   if (actual !== expected) {
     throw new Error(`${label} mismatch: expected ${expected}, got ${actual}`);
   }
+}
+
+function fingerprintProofReceipt(proof, index) {
+  const hasher = makeProtocolHasher();
+  hasher.bytes('world.protocol.proof_receipt.v1');
+  hasher.u64(proof.receipt_format_version);
+  hasher.u64(proof.receipt_fingerprint_version);
+  hasher.u64(index);
+  hasher.u64(parseHexU64(proof.protocol_manifest_fingerprint, `proof_receipts[${index}].protocol_manifest_fingerprint`));
+  hasher.u64Slice(proof.input_corpus_case_fingerprints, `proof_receipts[${index}].input_corpus_case_fingerprints`);
+  hasher.u64Slice(proof.expected_output_fingerprints, `proof_receipts[${index}].expected_output_fingerprints`);
+  hasher.u64Slice(proof.actual_output_fingerprints, `proof_receipts[${index}].actual_output_fingerprints`);
+  hasher.bool(proof.actual_comparison_result);
+  hasher.u64Slice(proof.artifact_fingerprints, `proof_receipts[${index}].artifact_fingerprints`);
+  hasher.u64(proof.blocker_count);
+  hasher.u64(proof.warning_count);
+  hasher.u64Slice(proof.bounded_diagnostics, `proof_receipts[${index}].bounded_diagnostics`);
+  return hex64(nonzero64(wyhash64(hasher.finish())));
+}
+
+function fingerprintReleaseReceipt(receipt) {
+  const hasher = makeProtocolHasher();
+  hasher.bytes('world.protocol.release_receipt.v1');
+  hasher.u64(receipt.release_receipt_format_version);
+  hasher.u64(receipt.release_receipt_fingerprint_version);
+  hasher.u64(parseHexU64(receipt.boundary_protocol_manifest_fingerprint, 'release_receipt.boundary_protocol_manifest_fingerprint'));
+  hasher.u64(parseHexU64(receipt.world_protocol_manifest_fingerprint, 'release_receipt.world_protocol_manifest_fingerprint'));
+  hasher.u64(parseHexU64(receipt.conformance_corpus_root_fingerprint, 'release_receipt.conformance_corpus_root_fingerprint'));
+  hasher.u64(receipt.proof_receipts.length);
+  for (const [index, proof] of receipt.proof_receipts.entries()) {
+    hasher.u64(parseHexU64(proof.receipt_fingerprint, `proof_receipts[${index}].receipt_fingerprint`));
+  }
+  hasher.u64(parseHexU64(receipt.universal_wasm_checksum, 'release_receipt.universal_wasm_checksum'));
+  hasher.u64(parseHexU64(receipt.source_package_checksum, 'release_receipt.source_package_checksum'));
+  hasher.bool(receipt.complete);
+  hasher.u64Slice(receipt.blockers, 'release_receipt.blockers');
+  hasher.u64Slice(receipt.warnings, 'release_receipt.warnings');
+  return hex64(nonzero64(wyhash64(hasher.finish())));
+}
+
+function makeProtocolHasher() {
+  const chunks = [];
+  const hasher = {
+    bytes(value) {
+      chunks.push(Buffer.from(value));
+    },
+    u64(value) {
+      const out = Buffer.alloc(8);
+      out.writeBigUInt64LE(BigInt(value));
+      chunks.push(out);
+    },
+    bool(value) {
+      hasher.u64(value ? 1 : 0);
+    },
+    u64Slice(values, label) {
+      if (!Array.isArray(values)) throw new Error(`${label} must be an array`);
+      hasher.u64(values.length);
+      for (const value of values) hasher.u64(parseHexU64(value, label));
+    },
+    finish() {
+      return Buffer.concat(chunks);
+    },
+  };
+  return hasher;
+}
+
+function parseHexU64(value, label) {
+  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{1,16}$/.test(value)) {
+    throw new Error(`${label} invalid u64`);
+  }
+  return BigInt(value);
 }
 
 function humanManifest(metadata) {
@@ -526,6 +718,119 @@ function requirePath(value, label) {
 
 function sha256Hex(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function checksum64Hex(bytes) {
+  return `0x${sha256Hex(bytes).slice(0, 16)}`;
+}
+
+function proofGateFingerprint(index, gateName) {
+  let hash = 0xcbf29ce484222325n;
+  hash = fnv64Step(hash, 0x5750470000000001n);
+  hash = fnv64Step(hash, BigInt(index));
+  hash = fnv64Step(hash, BigInt(Buffer.byteLength(gateName)));
+  for (const byte of Buffer.from(gateName)) hash = fnv64Step(hash, BigInt(byte));
+  return hex64(nonzero64(hash));
+}
+
+function fnv64Step(hash, value) {
+  return BigInt.asUintN(64, (hash ^ value) * 0x00000100000001b3n);
+}
+
+function wyhash64(input) {
+  const seed = 0n;
+  const state = [
+    seed ^ wyhashMix(seed ^ wyhashSecret(0), wyhashSecret(1)),
+    0n,
+    0n,
+  ];
+  state[1] = state[0];
+  state[2] = state[0];
+  let a = 0n;
+  let b = 0n;
+
+  if (input.length <= 16) {
+    ({ a, b } = wyhashSmallKey(input));
+  } else {
+    let offset = 0;
+    if (input.length >= 48) {
+      while (offset + 48 < input.length) {
+        for (let i = 0; i < 3; i += 1) {
+          const blockOffset = offset + 8 * (2 * i);
+          state[i] = wyhashMix(readLe(input, blockOffset, 8) ^ wyhashSecret(i + 1), readLe(input, blockOffset + 8, 8) ^ state[i]);
+        }
+        offset += 48;
+      }
+      state[0] ^= state[1] ^ state[2];
+    }
+    let i = offset;
+    while (i + 16 < input.length) {
+      state[0] = wyhashMix(readLe(input, i, 8) ^ wyhashSecret(1), readLe(input, i + 8, 8) ^ state[0]);
+      i += 16;
+    }
+    a = readLe(input, input.length - 16, 8);
+    b = readLe(input, input.length - 8, 8);
+  }
+
+  a ^= wyhashSecret(1);
+  b ^= state[0];
+  ({ a, b } = wyhashMum(a, b));
+  return wyhashMix(a ^ wyhashSecret(0) ^ BigInt(input.length), b ^ wyhashSecret(1));
+}
+
+function wyhashSecret(index) {
+  return [
+    0xa0761d6478bd642fn,
+    0xe7037ed1a0b428dbn,
+    0x8ebc6af09c88c6e3n,
+    0x589965cc75374cc3n,
+  ][index];
+}
+
+function wyhashSmallKey(input) {
+  if (input.length >= 4) {
+    const end = input.length - 4;
+    const quarter = (input.length >> 3) << 2;
+    return {
+      a: (readLe(input, 0, 4) << 32n) | readLe(input, quarter, 4),
+      b: (readLe(input, end, 4) << 32n) | readLe(input, end - quarter, 4),
+    };
+  }
+  if (input.length > 0) {
+    return {
+      a: (BigInt(input[0]) << 16n) | (BigInt(input[input.length >> 1]) << 8n) | BigInt(input[input.length - 1]),
+      b: 0n,
+    };
+  }
+  return { a: 0n, b: 0n };
+}
+
+function wyhashMix(a, b) {
+  const product = BigInt.asUintN(128, BigInt.asUintN(64, a) * BigInt.asUintN(64, b));
+  return BigInt.asUintN(64, product) ^ BigInt.asUintN(64, product >> 64n);
+}
+
+function wyhashMum(a, b) {
+  const product = BigInt.asUintN(128, BigInt.asUintN(64, a) * BigInt.asUintN(64, b));
+  return {
+    a: BigInt.asUintN(64, product),
+    b: BigInt.asUintN(64, product >> 64n),
+  };
+}
+
+function readLe(input, offset, bytes) {
+  let value = 0n;
+  for (let i = 0; i < bytes; i += 1) value |= BigInt(input[offset + i]) << BigInt(8 * i);
+  return value;
+}
+
+function nonzero64(value) {
+  const normalized = BigInt.asUintN(64, value);
+  return normalized === 0n ? 1n : normalized;
+}
+
+function hex64(value) {
+  return `0x${BigInt.asUintN(64, value).toString(16).padStart(16, '0')}`;
 }
 
 function readProtocolManifest(instance, len) {

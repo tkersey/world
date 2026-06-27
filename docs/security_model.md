@@ -50,4 +50,3 @@ Threat handling:
 - Artifact confusion: release packages include byte lengths, SHA-256 checksums,
   manifest fingerprints, ABI export summaries, import counts, and memory bounds.
   SHA-256 is an artifact checksum, not a signature.
-
