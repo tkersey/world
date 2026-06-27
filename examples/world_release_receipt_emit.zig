@@ -831,6 +831,76 @@ test "universal wasm artifact validation rejects empty result bodies" {
     try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
 }
 
+test "universal wasm artifact validation rejects stack underflow bodies" {
+    const allocator = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+    try bytes.appendSlice(allocator, "\x00asm");
+    try bytes.appendSlice(allocator, &.{ 1, 0, 0, 0 });
+
+    var type_section: std.ArrayList(u8) = .empty;
+    defer type_section.deinit(allocator);
+    try appendWasmU32(allocator, &type_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendExpectedWasmFuncType(allocator, &type_section, index);
+    }
+    try appendWasmSection(allocator, &bytes, 1, type_section.items);
+
+    var function_section: std.ArrayList(u8) = .empty;
+    defer function_section.deinit(allocator);
+    try appendWasmU32(allocator, &function_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendWasmU32(allocator, &function_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 3, function_section.items);
+
+    var memory_section: std.ArrayList(u8) = .empty;
+    defer memory_section.deinit(allocator);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try memory_section.append(allocator, 0x01);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmSection(allocator, &bytes, 5, memory_section.items);
+
+    var export_section: std.ArrayList(u8) = .empty;
+    defer export_section.deinit(allocator);
+    try appendWasmU32(allocator, &export_section, world.Appliance.Abi.universal_required_exports.len + 1);
+    try appendWasmName(allocator, &export_section, "memory");
+    try export_section.append(allocator, 2);
+    try appendWasmU32(allocator, &export_section, 0);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |name, index| {
+        try appendWasmName(allocator, &export_section, name);
+        try export_section.append(allocator, 0);
+        try appendWasmU32(allocator, &export_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 7, export_section.items);
+
+    var code_section: std.ArrayList(u8) = .empty;
+    defer code_section.deinit(allocator);
+    try appendWasmU32(allocator, &code_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(allocator);
+        try appendWasmU32(allocator, &body, 0);
+        try body.append(allocator, 0x1a);
+        if (expectedWasmResultType(index)) |result_type| {
+            if (result_type == 0x7e) {
+                try body.append(allocator, 0x42);
+                try appendWasmU32(allocator, &body, 0);
+            } else {
+                try body.append(allocator, 0x41);
+                try appendWasmU32(allocator, &body, 0);
+            }
+        }
+        try body.append(allocator, 0x0b);
+        try appendWasmU32(allocator, &code_section, @intCast(body.items.len));
+        try code_section.appendSlice(allocator, body.items);
+    }
+    try appendWasmSection(allocator, &bytes, 10, code_section.items);
+
+    try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
+}
+
 fn countWasmImports(section: []const u8) !u32 {
     var cursor: usize = 0;
     const count = try readWasmU32(section, &cursor);
@@ -999,25 +1069,57 @@ fn validateWasmCodeBody(body: []const u8, required_result_type: ?u8) !void {
 
     var depth: usize = 1;
     var required_result_seen = required_result_type == null;
+    var stack_known = true;
+    var stack_depth: usize = 0;
     while (depth != 0) {
         if (cursor >= body.len) return error.InvalidFrameEncoding;
         const opcode = try readWasmU8(body, &cursor);
         switch (opcode) {
-            0x00, 0x01, 0x0f, 0x1a, 0x1b => {},
+            0x00 => stack_known = false,
+            0x01 => {},
+            0x0f => {
+                if (required_result_type != null) try requireWasmStack(&stack_known, &stack_depth, 1);
+                stack_known = false;
+            },
+            0x1a => try requireWasmStack(&stack_known, &stack_depth, 1),
+            0x1b => {
+                try requireWasmStack(&stack_known, &stack_depth, 3);
+                if (stack_known) stack_depth += 1;
+                required_result_seen = true;
+            },
             0x02, 0x03, 0x04 => {
                 try readWasmBlockType(body, &cursor);
                 depth += 1;
+                stack_known = false;
             },
             0x05 => {
                 if (depth <= 1) return error.InvalidFrameEncoding;
+                stack_known = false;
             },
             0x0b => {
+                if (depth == 1 and required_result_type != null) {
+                    try requireWasmStack(&stack_known, &stack_depth, 1);
+                }
                 if (depth == 1 and !required_result_seen) return error.UniversalWasmInspectionFailed;
                 depth -= 1;
             },
             0x0c, 0x0d, 0x10, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0xd2 => {
                 _ = try readWasmU32(body, &cursor);
-                if (opcode == 0x10 or opcode == 0x20 or opcode == 0x22 or opcode == 0x23 or opcode == 0xd2) required_result_seen = true;
+                switch (opcode) {
+                    0x0c, 0x0d, 0x10, 0xd2 => stack_known = false,
+                    0x20, 0x23 => {
+                        if (stack_known) stack_depth += 1;
+                        required_result_seen = true;
+                    },
+                    0x21, 0x24 => try requireWasmStack(&stack_known, &stack_depth, 1),
+                    0x22 => {
+                        try requireWasmStack(&stack_known, &stack_depth, 1);
+                        if (stack_known) stack_depth += 1;
+                        required_result_seen = true;
+                    },
+                    0x25, 0x26 => stack_known = false,
+                    else => {},
+                }
             },
             0x0e => {
                 const count = try readWasmU32(body, &cursor);
@@ -1028,6 +1130,7 @@ fn validateWasmCodeBody(body: []const u8, required_result_type: ?u8) !void {
             0x11 => {
                 _ = try readWasmU32(body, &cursor);
                 _ = try readWasmU32(body, &cursor);
+                stack_known = false;
             },
             0x1c => {
                 const count = try readWasmU32(body, &cursor);
@@ -1035,34 +1138,62 @@ fn validateWasmCodeBody(body: []const u8, required_result_type: ?u8) !void {
                 while (index < count) : (index += 1) {
                     if (!validWasmValueType(try readWasmU8(body, &cursor))) return error.InvalidFrameEncoding;
                 }
+                stack_known = false;
             },
             0x28...0x3e => {
                 _ = try readWasmU32(body, &cursor);
                 _ = try readWasmU32(body, &cursor);
-                if (opcode <= 0x35) required_result_seen = true;
+                if (opcode <= 0x35) {
+                    try requireWasmStack(&stack_known, &stack_depth, 1);
+                    if (stack_known) stack_depth += 1;
+                    required_result_seen = true;
+                } else {
+                    try requireWasmStack(&stack_known, &stack_depth, 2);
+                }
             },
             0x3f, 0x40 => {
                 if (try readWasmU8(body, &cursor) != 0) return error.InvalidFrameEncoding;
             },
             0x41 => {
                 try readWasmLeb128(body, &cursor, 5);
+                if (stack_known) stack_depth += 1;
                 if (required_result_type == 0x7f) required_result_seen = true;
             },
             0x42 => {
                 try readWasmLeb128(body, &cursor, 10);
+                if (stack_known) stack_depth += 1;
                 if (required_result_type == 0x7e) required_result_seen = true;
             },
-            0x43 => try skipWasmBytes(body, &cursor, 4),
-            0x44 => try skipWasmBytes(body, &cursor, 8),
-            0x45...0xc4, 0xd1 => required_result_seen = true,
+            0x43 => {
+                try skipWasmBytes(body, &cursor, 4);
+                if (stack_known) stack_depth += 1;
+            },
+            0x44 => {
+                try skipWasmBytes(body, &cursor, 8);
+                if (stack_known) stack_depth += 1;
+            },
+            0x45...0xc4, 0xd1 => {
+                stack_known = false;
+                required_result_seen = true;
+            },
             0xd0 => {
                 if (!validWasmRefType(try readWasmU8(body, &cursor))) return error.InvalidFrameEncoding;
+                if (stack_known) stack_depth += 1;
             },
-            0xfc => try readWasmMiscInstruction(body, &cursor),
+            0xfc => {
+                try readWasmMiscInstruction(body, &cursor);
+                stack_known = false;
+            },
             else => return error.InvalidFrameEncoding,
         }
     }
     if (cursor != body.len) return error.InvalidFrameEncoding;
+}
+
+fn requireWasmStack(stack_known: *bool, stack_depth: *usize, count: usize) !void {
+    if (!stack_known.*) return;
+    if (stack_depth.* < count) return error.UniversalWasmInspectionFailed;
+    stack_depth.* -= count;
 }
 
 fn readWasmBlockType(bytes: []const u8, cursor: *usize) !void {
