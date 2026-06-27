@@ -492,6 +492,7 @@ pub fn build(b: *std.Build) void {
     emit_world_proof_receipts_run.addArgs(&.{
         "--proof-matrix",
         "zig-build-release-gates",
+        "--release-gates-completed",
         "--receipt-out",
     });
     const world_proof_receipts = emit_world_proof_receipts_run.addOutputFileArg("world-proof-receipts.json");

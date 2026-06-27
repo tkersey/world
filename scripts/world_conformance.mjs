@@ -83,6 +83,11 @@ const jsCorpusProofKinds = new Set([
   'regression_matrix',
 ]);
 
+const wasmDirectProofKinds = new Set([
+  'universal_wasm_execution',
+  'memory_bound',
+]);
+
 const expected = {
   positive: [
     'Protocol.Manifest',
@@ -244,6 +249,7 @@ try {
 receipt.complete = receiptComplete(receipt, args);
 if (args.proofMatrix) {
   receipt.proof_matrix_scope = args.proofMatrix;
+  receipt.release_gate_evidence = args.releaseGatesCompleted === true;
   receipt.proof_receipts = buildProofReceipts(receipt);
 }
 receipt.receipt_fingerprint = fnv64Hex(JSON.stringify(receipt));
@@ -268,7 +274,11 @@ function parseArgs(raw) {
         throw new Error(`unknown proof matrix scope: ${parsed.proofMatrix}`);
       }
     }
+    else if (arg === '--release-gates-completed') parsed.releaseGatesCompleted = true;
     else throw new Error(`unknown argument: ${arg}`);
+  }
+  if (parsed.releaseGatesCompleted && parsed.proofMatrix !== 'zig-build-release-gates') {
+    throw new Error('--release-gates-completed requires --proof-matrix zig-build-release-gates');
   }
   return parsed;
 }
@@ -317,17 +327,33 @@ function buildProofReceipts(receipt) {
 
 function proofKindPassedByReceipt(receipt, proofKind) {
   if (!receipt.complete) return false;
-  if (receipt.evidence_scope === 'js-corpus') return jsCorpusProofKinds.has(proofKind);
+  if (receipt.evidence_scope === 'js-corpus') return jsCorpusProofKindPassed(receipt, proofKind);
   if (receipt.evidence_scope === 'wasm-release') {
-    return receipt.positive_success &&
-      receipt.expected_rejection &&
-      receipt.byte_equality &&
-      receipt.semantic_fingerprint_equality &&
-      receipt.artifact_inspection &&
+    if (receipt.release_gate_evidence === true) {
+      return receipt.positive_success &&
+        receipt.expected_rejection &&
+        receipt.byte_equality &&
+        receipt.semantic_fingerprint_equality &&
+        receipt.artifact_inspection &&
+        receipt.actual_webassembly_execution &&
+        receipt.memory_limit_compliance;
+    }
+    if (!wasmDirectProofKinds.has(proofKind)) return false;
+    return receipt.artifact_inspection &&
       receipt.actual_webassembly_execution &&
       receipt.memory_limit_compliance;
   }
   return false;
+}
+
+function jsCorpusProofKindPassed(receipt, proofKind) {
+  if (!jsCorpusProofKinds.has(proofKind)) return false;
+  const positivePassed = receipt.positive_success &&
+    receipt.byte_equality &&
+    receipt.semantic_fingerprint_equality;
+  if (proofKind === 'malformed_input') return receipt.expected_rejection;
+  if (proofKind === 'regression_matrix') return positivePassed && receipt.expected_rejection;
+  return positivePassed;
 }
 
 function proofGateFingerprint(index, gateName) {

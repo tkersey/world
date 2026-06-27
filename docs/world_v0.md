@@ -4,7 +4,7 @@ World v0 is complete only when one quiescent Appliance turn is the complete port
 
 ## Completion Criteria
 
-`WorldV0Report` passes only when every required proof bit is true and there are no blockers: Boundary v0.5.0 portable-v2 baseline, canonical executable image, actual universal WASM execution, genuinely unrelated images, internal loaded provider, multi-suspension loaded root, active loaded Fabric restore, verified replay without fresh effect, unsupported actuated replay rejection, deterministic retry, batched request/reply, independent JavaScript codec, exact root-result bytes, exact receipt bytes, exact Capsule bytes, exact Archive.AppendBatch bytes, native/WASM parity, cold/warm parity, bounded memory, malformed-input suite, and historical regression matrix.
+`WorldV0Report` passes only when every required proof bit is true and there are no blockers: Boundary v0.5.0 portable-v2 baseline, canonical executable image, actual universal WASM execution, genuinely unrelated images, internal loaded provider, multi-suspension loaded root, active loaded Fabric restore, verified replay without fresh effect, unsupported actuated replay rejection, deterministic retry, batched request/reply, independent JavaScript codec, exact root-result bytes, exact receipt bytes, exact Capsule bytes, exact Archive.AppendBatch bytes, native/WASM parity, cold/warm parity, bounded memory, malformed-input suite, historical regression matrix, and reproducible release artifact.
 
 These are not completion evidence: replay final result false, active restore rejection, same ProgramPlan under different metadata, WASM artifact inspection without execution, or Node execution dependent on a native World reply helper. Unsupported actuated replay rejection is required only as a fail-closed boundary proof and does not substitute for the verified replay-without-fresh-effect lane.
 
@@ -19,6 +19,7 @@ These are not completion evidence: replay final result false, active restore rej
 - `zig build check-world-js-codec`: proves dependency-free ECMAScript codec/host execution without child-process reply construction.
 - `zig build check-world-two-programs-one-wasm`: proves two unrelated executable images run through unchanged universal WASM bytes.
 - `zig build check-world-universal-memory`: proves the shipped universal fixture profile stays within its bounded memory plan.
+- `zig build check-world-reproducible-wasm`: proves the release WASM artifact is rebuilt byte-for-byte from the current source package.
 - `zig build check-world-v0`: aggregates the positive completion gate and runs the `WorldV0Report` example.
 
 ## Negative Proof Matrix

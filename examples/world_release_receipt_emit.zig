@@ -355,6 +355,7 @@ const ProofReceipts = struct {
     warnings: []const []const u8,
     complete: bool,
     proof_matrix_scope: []const u8,
+    release_gate_evidence: bool = false,
     proof_receipts: []const ProofReceiptEvidence,
     receipt_fingerprint: []const u8,
 };
@@ -417,6 +418,7 @@ fn validateProofReceipts(allocator: std.mem.Allocator, bytes: []const u8, expect
     if (receipt.blockers.len != 0) return error.ProofReceiptsIncomplete;
     if (!receipt.complete) return error.ProofReceiptsIncomplete;
     if (!std.mem.eql(u8, receipt.proof_matrix_scope, "zig-build-release-gates")) return error.ProofReceiptsIncomplete;
+    if (!receipt.release_gate_evidence) return error.ProofReceiptsIncomplete;
 
     var checksum_buf: [18]u8 = undefined;
     const expected_checksum = try std.fmt.bufPrint(&checksum_buf, "0x{x:0>16}", .{expected_wasm_checksum});
@@ -692,6 +694,7 @@ test "proof receipts validation binds top-level artifact identity" {
         \\  "warnings": [],
         \\  "complete": true,
         \\  "proof_matrix_scope": "zig-build-release-gates",
+        \\  "release_gate_evidence": true,
         \\  "proof_receipts": [],
         \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
         \\}}
@@ -718,6 +721,7 @@ test "proof receipts validation binds top-level artifact identity" {
         \\  "warnings": [],
         \\  "complete": true,
         \\  "proof_matrix_scope": "zig-build-release-gates",
+        \\  "release_gate_evidence": true,
         \\  "proof_receipts": [],
         \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
         \\}}
@@ -953,7 +957,7 @@ test "universal wasm artifact validation rejects stack underflow bodies" {
         var body: std.ArrayList(u8) = .empty;
         defer body.deinit(allocator);
         try appendWasmU32(allocator, &body, 0);
-        try body.append(allocator, 0x1a);
+        try body.append(allocator, 0x6a);
         if (expectedWasmResultType(index)) |result_type| {
             if (result_type == 0x7e) {
                 try body.append(allocator, 0x42);
@@ -1243,10 +1247,7 @@ fn validateWasmCodeBody(body: []const u8, required_result_type: ?u8) !void {
                 try skipWasmBytes(body, &cursor, 8);
                 if (stack_known) stack_depth += 1;
             },
-            0x45...0xc4, 0xd1 => {
-                stack_known = false;
-                required_result_seen = true;
-            },
+            0x45...0xc4, 0xd1 => try applyWasmNumericStackEffect(opcode, &stack_known, &stack_depth, required_result_type, &required_result_seen),
             0xd0 => {
                 if (!validWasmRefType(try readWasmU8(body, &cursor))) return error.InvalidFrameEncoding;
                 if (stack_known) stack_depth += 1;
@@ -1265,6 +1266,37 @@ fn requireWasmStack(stack_known: *bool, stack_depth: *usize, count: usize) !void
     if (!stack_known.*) return;
     if (stack_depth.* < count) return error.UniversalWasmInspectionFailed;
     stack_depth.* -= count;
+}
+
+fn applyWasmNumericStackEffect(opcode: u8, stack_known: *bool, stack_depth: *usize, required_result_type: ?u8, required_result_seen: *bool) !void {
+    const effect = wasmNumericStackEffect(opcode) orelse return error.InvalidFrameEncoding;
+    try requireWasmStack(stack_known, stack_depth, effect.pop_count);
+    if (stack_known.*) stack_depth.* += 1;
+    if (required_result_type != null and required_result_type.? == effect.result_type) required_result_seen.* = true;
+}
+
+fn wasmNumericStackEffect(opcode: u8) ?struct { pop_count: usize, result_type: u8 } {
+    return switch (opcode) {
+        0x45 => .{ .pop_count = 1, .result_type = 0x7f },
+        0x46...0x66 => .{ .pop_count = 2, .result_type = 0x7f },
+        0x67...0x78 => .{ .pop_count = if (opcode <= 0x69) 1 else 2, .result_type = 0x7f },
+        0x79...0x8a => .{ .pop_count = if (opcode <= 0x7b) 1 else 2, .result_type = 0x7e },
+        0x8b...0x98 => .{ .pop_count = if (opcode <= 0x91) 1 else 2, .result_type = 0x7d },
+        0x99...0xa6 => .{ .pop_count = if (opcode <= 0x9f) 1 else 2, .result_type = 0x7c },
+        0xa7...0xc4 => .{ .pop_count = 1, .result_type = wasmConversionResultType(opcode) orelse return null },
+        0xd1 => .{ .pop_count = 1, .result_type = 0x7f },
+        else => null,
+    };
+}
+
+fn wasmConversionResultType(opcode: u8) ?u8 {
+    return switch (opcode) {
+        0xa7...0xab, 0xbc, 0xc0, 0xc1 => 0x7f,
+        0xac...0xb1, 0xbd, 0xc2...0xc4 => 0x7e,
+        0xb2...0xb6, 0xbe => 0x7d,
+        0xb7...0xbb, 0xbf => 0x7c,
+        else => null,
+    };
 }
 
 fn readWasmBlockType(bytes: []const u8, cursor: *usize) !void {
