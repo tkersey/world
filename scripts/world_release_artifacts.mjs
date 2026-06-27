@@ -48,6 +48,10 @@ const universalApplianceRequiredExports = [
   'world_appliance_reset',
   'world_appliance_alloc',
   'world_appliance_free',
+  'world_protocol_manifest_len',
+  'world_protocol_read_manifest',
+  'world_protocol_manifest_fingerprint_lo',
+  'world_protocol_manifest_fingerprint_hi',
 ];
 
 try {
@@ -176,6 +180,7 @@ async function inspectWasm(bytes) {
   const module = await WebAssembly.compile(bytes);
   const exports = WebAssembly.Module.exports(module);
   const imports = WebAssembly.Module.imports(module);
+  const signatureInspection = inspectWasmAbiSignatures(bytes);
   const exportNames = new Set(exports.map((entry) => entry.name));
   for (const name of [
     'world_protocol_manifest_len',
@@ -217,9 +222,198 @@ async function inspectWasm(bytes) {
     protocol_manifest_fingerprint_hi: `0x${hi.toString(16)}`,
     import_count: imports.length,
     export_count: exports.length,
+    required_signature_count: signatureInspection.signatureCount,
     memory_bytes: memory.buffer.byteLength,
     actual_webassembly_execution: true,
   };
+}
+
+function inspectWasmAbiSignatures(bytes) {
+  const data = new Uint8Array(bytes);
+  if (data.length < 8 ||
+    data[0] !== 0x00 ||
+    data[1] !== 0x61 ||
+    data[2] !== 0x73 ||
+    data[3] !== 0x6d ||
+    data[4] !== 0x01 ||
+    data[5] !== 0x00 ||
+    data[6] !== 0x00 ||
+    data[7] !== 0x00) {
+    throw new Error('invalid wasm header');
+  }
+
+  const types = [];
+  const functionTypeIndices = [];
+  let functionImportCount = 0;
+  const required = new Map(universalApplianceRequiredExports.map((name, index) => [name, index]));
+  const seen = new Set();
+  const signed = new Set();
+  let cursor = 8;
+
+  while (cursor < data.length) {
+    const sectionId = readU8(data, cursor);
+    cursor += 1;
+    const sectionLen = readVarU32At(data, cursor);
+    cursor = sectionLen.next;
+    if (sectionLen.value > data.length - cursor) throw new Error('invalid wasm section length');
+    const sectionEnd = cursor + sectionLen.value;
+    const state = { cursor, end: sectionEnd };
+    let handled = true;
+    if (sectionId === 1) {
+      inspectTypeSection(data, state, types);
+    } else if (sectionId === 2) {
+      functionImportCount = inspectImportSection(data, state, types.length, functionTypeIndices);
+    } else if (sectionId === 3) {
+      inspectFunctionSection(data, state, types.length, functionTypeIndices);
+    } else if (sectionId === 7) {
+      inspectExportSection(data, state, types, functionTypeIndices, functionImportCount, required, seen, signed);
+    } else {
+      handled = false;
+    }
+    if (handled && state.cursor !== sectionEnd) throw new Error(`invalid wasm section ${sectionId}`);
+    cursor = sectionEnd;
+  }
+
+  for (const name of universalApplianceRequiredExports) {
+    if (!seen.has(name)) throw new Error(`missing wasm protocol export: ${name}`);
+    if (!signed.has(name)) throw new Error(`wasm export signature mismatch: ${name}`);
+  }
+  return { signatureCount: signed.size };
+}
+
+function inspectTypeSection(data, state, types) {
+  const count = readVarU32(data, state);
+  for (let i = 0; i < count; i += 1) {
+    if (readU8State(data, state) !== 0x60) throw new Error('invalid wasm function type');
+    const params = readValueTypes(data, state);
+    const results = readValueTypes(data, state);
+    types.push({ params, results });
+  }
+}
+
+function inspectImportSection(data, state, typeCount, functionTypeIndices) {
+  const count = readVarU32(data, state);
+  let functionImportCount = 0;
+  for (let i = 0; i < count; i += 1) {
+    readWasmName(data, state);
+    readWasmName(data, state);
+    const kind = readU8State(data, state);
+    if (kind === 0) {
+      const typeIndex = readVarU32(data, state);
+      if (typeIndex >= typeCount) throw new Error('invalid wasm function import type index');
+      functionTypeIndices.push(typeIndex);
+      functionImportCount += 1;
+    } else if (kind === 1) {
+      readU8State(data, state);
+      skipLimits(data, state);
+    } else if (kind === 2) {
+      skipLimits(data, state);
+    } else if (kind === 3) {
+      readU8State(data, state);
+      readU8State(data, state);
+    } else {
+      throw new Error('invalid wasm import kind');
+    }
+  }
+  return functionImportCount;
+}
+
+function inspectFunctionSection(data, state, typeCount, functionTypeIndices) {
+  const count = readVarU32(data, state);
+  for (let i = 0; i < count; i += 1) {
+    const typeIndex = readVarU32(data, state);
+    if (typeIndex >= typeCount) throw new Error('invalid wasm function type index');
+    functionTypeIndices.push(typeIndex);
+  }
+}
+
+function inspectExportSection(data, state, types, functionTypeIndices, functionImportCount, required, seen, signed) {
+  const count = readVarU32(data, state);
+  for (let i = 0; i < count; i += 1) {
+    const name = readWasmName(data, state);
+    const kind = readU8State(data, state);
+    const exportIndex = readVarU32(data, state);
+    if (!required.has(name)) continue;
+    seen.add(name);
+    if (kind !== 0) continue;
+    if (exportIndex < functionImportCount) throw new Error(`wasm export is imported function: ${name}`);
+    const typeIndex = functionTypeIndices[exportIndex];
+    const type = types[typeIndex];
+    if (type && wasmSignatureMatches(type, expectedParamTypes(required.get(name)), expectedResultTypes(required.get(name)))) {
+      signed.add(name);
+    }
+  }
+}
+
+function wasmSignatureMatches(type, params, results) {
+  return sameByteList(type.params, params) && sameByteList(type.results, results);
+}
+
+function expectedParamTypes(index) {
+  if ([2, 3, 6, 7, 9, 11, 14, 16].includes(index)) return [0x7f, 0x7f];
+  if (index === 13) return [0x7f];
+  return [];
+}
+
+function expectedResultTypes(index) {
+  if (index === 14) return [];
+  if (index === 17 || index === 18) return [0x7e];
+  return [0x7f];
+}
+
+function sameByteList(actual, expected) {
+  return actual.length === expected.length && actual.every((value, index) => value === expected[index]);
+}
+
+function readValueTypes(data, state) {
+  const count = readVarU32(data, state);
+  const values = [];
+  for (let i = 0; i < count; i += 1) values.push(readU8State(data, state));
+  return values;
+}
+
+function readWasmName(data, state) {
+  const len = readVarU32(data, state);
+  if (len > state.end - state.cursor) throw new Error('invalid wasm name');
+  const name = textDecoder.decode(data.subarray(state.cursor, state.cursor + len));
+  state.cursor += len;
+  return name;
+}
+
+function skipLimits(data, state) {
+  const flags = readVarU32(data, state);
+  readVarU32(data, state);
+  if ((flags & 0x01) !== 0) readVarU32(data, state);
+}
+
+function readU8(data, offset) {
+  if (offset >= data.length) throw new Error('unexpected wasm eof');
+  return data[offset];
+}
+
+function readU8State(data, state) {
+  if (state.cursor >= state.end) throw new Error('unexpected wasm section eof');
+  return data[state.cursor++];
+}
+
+function readVarU32(data, state) {
+  const result = readVarU32At(data, state.cursor, state.end);
+  state.cursor = result.next;
+  return result.value;
+}
+
+function readVarU32At(data, offset, end = data.length) {
+  let result = 0;
+  let shift = 0;
+  let cursor = offset;
+  while (true) {
+    if (cursor >= end) throw new Error('unexpected wasm varuint eof');
+    const byte = data[cursor++];
+    result |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) return { value: result >>> 0, next: cursor };
+    shift += 7;
+    if (shift > 28) throw new Error('invalid wasm varuint32');
+  }
 }
 
 function writeChecksums(root) {
