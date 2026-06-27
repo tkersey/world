@@ -493,6 +493,7 @@ function verifyReleaseMetadata(dist, wasmBytes, inspection) {
   assertEqual(protocolManifest.protocol_manifest_fingerprint_hi, inspection.protocol_manifest_fingerprint_hi, 'protocol_manifest.protocol_manifest_fingerprint_hi');
   assertEqual(protocolManifest.import_count, inspection.import_count, 'protocol_manifest.import_count');
   assertEqual(protocolManifest.export_count, inspection.export_count, 'protocol_manifest.export_count');
+  assertEqual(protocolManifest.required_signature_count, inspection.required_signature_count, 'protocol_manifest.required_signature_count');
   assertEqual(protocolManifest.memory_bytes, inspection.memory_bytes, 'protocol_manifest.memory_bytes');
   assertEqual(protocolManifest.actual_webassembly_execution, true, 'protocol_manifest.actual_webassembly_execution');
 }

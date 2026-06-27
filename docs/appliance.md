@@ -96,9 +96,9 @@ Supervision remains the owner of permits, budgets, checks, usage ledgers, and re
 
 Appliance ABI v1 is a deployment ABI above Guest ABI v1. Required exports include ABI version, canonical Manifest byte length/read, command submission, output length/read, last-error length/read, and reset. Output-producing submit statuses include `needs_host`, `completed`, `failed`, `blocked`, `cancelled`, and `output_ready`; these leave canonical TurnOutput bytes readable. `Appliance.Native` mirrors those ABI-shaped operations directly over Core, including bounded last-error bytes for rejected commands. The canonical WASM artifact also exposes Capacity and MemoryPlan fingerprints plus required linear-memory bounds before command submission. The artifact requires no WASI, filesystem, network, clock, randomness, actuator imports, storage imports, or host allocator callbacks.
 
-## Universal Appliance ABI v3
+## Universal Appliance ABI v4
 
-`world_universal_appliance.wasm` is a target-neutral ABI v3 conformance artifact for the generic World Seed host surface. It is not compiled for a particular Boundary Target. It accepts canonical `world.Executable.Image` v2 bytes, decodes and validates the embedded Boundary module closure, derives the Appliance manifest from the loaded image, accepts untrusted Wire turn input, and executes through the existing Appliance/Core, Runspace, Fabric, Actuation, Capsule, Continuity, Chronicle, and Archive owners.
+`world_universal_appliance.wasm` is a target-neutral ABI v4 conformance artifact for the generic World Seed host surface. It is not compiled for a particular Boundary Target. It accepts canonical `world.Executable.Image` v2 bytes, decodes and validates the embedded Boundary module closure, derives the Appliance manifest from the loaded image, accepts untrusted Wire turn input, and executes through the existing Appliance/Core, Runspace, Fabric, Actuation, Capsule, Continuity, Chronicle, and Archive owners.
 
 - `world_appliance_abi_version`
 - `world_appliance_runtime_manifest_len`

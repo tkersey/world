@@ -3787,6 +3787,116 @@ test "appliance Core restore rehydrates outstanding HostRequest for continuation
     try std.testing.expectEqualSlices(u8, resident_output, restored.readOutput());
 }
 
+test "world state machine differential binds observed native cold and retry outputs" {
+    const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
+        .profile = world.Appliance.Profile.wasm_small,
+        .capacity = world.Appliance.Capacity.tiny_one_port,
+        .actuation_bindings = .{ApplianceActuationBinding},
+    });
+    const manifest = PortsAppliance.manifest();
+    var resident = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer resident.reset();
+
+    const boot = world.Appliance.Command.init(.{
+        .kind = .boot,
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 0,
+    });
+    const boot_bytes = try boot.encode(std.testing.allocator);
+    defer std.testing.allocator.free(boot_bytes);
+    try resident.submit(boot_bytes);
+    try resident.executeTurn();
+    try std.testing.expectEqual(world.Appliance.CoreState.waiting_host, resident.state);
+    const outstanding = resident.outstanding_host_request orelse return error.UnknownRequest;
+    const prior_receipt = resident.previous_turn_receipt_fingerprint.?;
+    const checkpoint = world.Appliance.Checkpoint.init(.{
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = resident.current_turn_sequence_number,
+        .capsule_fingerprint = 0xD5F0,
+        .pending_archive_append_batch_fingerprint = resident.pending_archive_append_batch_fingerprint,
+        .pending_archive_resulting_cursor = resident.pending_archive_resulting_cursor,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .outstanding_host_requests = &.{outstanding},
+    });
+    var checkpoint_bytes: std.ArrayList(u8) = .empty;
+    defer checkpoint_bytes.deinit(std.testing.allocator);
+    try checkpoint.encode(&checkpoint_bytes, std.testing.allocator);
+    var owned_checkpoint = try world.Appliance.Checkpoint.decode(
+        std.testing.allocator,
+        checkpoint_bytes.items,
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer owned_checkpoint.deinit(std.testing.allocator);
+
+    const reply = applianceHostReplyFor(outstanding, 0xD5F1);
+    const continue_command = world.Appliance.Command.init(.{
+        .kind = .@"continue",
+        .manifest_fingerprint = manifest.manifest_fingerprint,
+        .turn_sequence_number = 1,
+        .previous_turn_receipt_fingerprint = prior_receipt,
+        .host_replies = &.{reply},
+    });
+    const continue_bytes = try continue_command.encode(std.testing.allocator);
+    defer std.testing.allocator.free(continue_bytes);
+
+    try resident.submit(continue_bytes);
+    try resident.executeTurn();
+    const native_output = try std.testing.allocator.dupe(u8, resident.readOutput());
+    defer std.testing.allocator.free(native_output);
+
+    var cold = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer cold.reset();
+    try cold.restore(owned_checkpoint);
+    try cold.submit(continue_bytes);
+    try cold.executeTurn();
+    const cold_output = try std.testing.allocator.dupe(u8, cold.readOutput());
+    defer std.testing.allocator.free(cold_output);
+
+    var retry = world.Appliance.Core.initWithCapacity(
+        std.testing.allocator,
+        manifest,
+        PortsAppliance.memoryPlan(),
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer retry.reset();
+    var retry_checkpoint = try world.Appliance.Checkpoint.decode(
+        std.testing.allocator,
+        checkpoint_bytes.items,
+        manifest.manifest_fingerprint,
+        world.Appliance.Capacity.tiny_one_port,
+    );
+    defer retry_checkpoint.deinit(std.testing.allocator);
+    try retry.restore(retry_checkpoint);
+    try retry.submit(continue_bytes);
+    try retry.executeTurn();
+    const retry_output = try std.testing.allocator.dupe(u8, retry.readOutput());
+    defer std.testing.allocator.free(retry_output);
+
+    const native_fingerprint = std.hash.Wyhash.hash(0, native_output);
+    const cold_fingerprint = std.hash.Wyhash.hash(0, cold_output);
+    const retry_fingerprint = std.hash.Wyhash.hash(0, retry_output);
+    try std.testing.expectEqual(native_fingerprint, cold_fingerprint);
+    try std.testing.expectEqual(native_fingerprint, retry_fingerprint);
+    try std.testing.expectEqualSlices(u8, native_output, cold_output);
+    try std.testing.expectEqualSlices(u8, native_output, retry_output);
+
+    var mutated = try std.testing.allocator.dupe(u8, native_output);
+    defer std.testing.allocator.free(mutated);
+    mutated[mutated.len - 1] ^= 1;
+    try std.testing.expect(std.hash.Wyhash.hash(0, mutated) != native_fingerprint);
+}
+
 test "appliance Core continuation source state chains from prior output" {
     const PortsAppliance = world.Appliance.Define(fixtures.Ports.Target, .{
         .profile = world.Appliance.Profile.wasm_small,

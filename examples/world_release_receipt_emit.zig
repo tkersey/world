@@ -20,6 +20,7 @@ const source_package_dirs = [_][]const u8{
 
 const max_wasm_types = 256;
 const max_wasm_functions = 4096;
+const max_wasm_exports = 4096;
 
 const WasmSignature = struct {
     params: u32 = 0,
@@ -651,6 +652,33 @@ test "universal wasm artifact validation rejects non-function required exports" 
     try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
 }
 
+test "universal wasm artifact validation rejects duplicate export names" {
+    const allocator = std.testing.allocator;
+    var section: std.ArrayList(u8) = .empty;
+    defer section.deinit(allocator);
+    try appendWasmU32(allocator, &section, 2);
+    inline for (0..2) |_| {
+        try appendWasmName(allocator, &section, "memory");
+        try section.append(allocator, 2);
+        try appendWasmU32(allocator, &section, 0);
+    }
+
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+    try bytes.appendSlice(allocator, "\x00asm");
+    try bytes.appendSlice(allocator, &.{ 1, 0, 0, 0 });
+    var memory_section: std.ArrayList(u8) = .empty;
+    defer memory_section.deinit(allocator);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try memory_section.append(allocator, 0x01);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmSection(allocator, &bytes, 5, memory_section.items);
+    try appendWasmSection(allocator, &bytes, 7, section.items);
+
+    try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
+}
+
 test "universal wasm artifact validation rejects wrong required export signatures" {
     const allocator = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
@@ -824,9 +852,17 @@ fn inspectUniversalExports(
 ) !void {
     var cursor: usize = 0;
     const count = try readWasmU32(section, &cursor);
+    if (count > max_wasm_exports) return error.CapacityExceeded;
+    var export_names: [max_wasm_exports][]const u8 = undefined;
+    var export_name_count: usize = 0;
     var index: u32 = 0;
     while (index < count) : (index += 1) {
         const name = try readWasmName(section, &cursor);
+        for (export_names[0..export_name_count]) |seen_name| {
+            if (std.mem.eql(u8, seen_name, name)) return error.UniversalWasmInspectionFailed;
+        }
+        export_names[export_name_count] = name;
+        export_name_count += 1;
         const kind = try readWasmU8(section, &cursor);
         const export_index = try readWasmU32(section, &cursor);
         if (kind == 2 and std.mem.eql(u8, name, "memory")) {
@@ -837,6 +873,7 @@ fn inspectUniversalExports(
         for (world.Appliance.Abi.universal_required_exports, 0..) |required, required_index| {
             if (!std.mem.eql(u8, name, required)) continue;
             if (kind != 0) return error.UniversalWasmInspectionFailed;
+            if (required_seen[required_index]) return error.UniversalWasmInspectionFailed;
             if (!wasmSignatureMatches(
                 export_index,
                 type_sigs,

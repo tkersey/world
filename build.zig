@@ -454,17 +454,20 @@ pub fn build(b: *std.Build) void {
     dependOnNativeRunOrCompile(b, target, check_world_adversarial_codecs_step, world_adversarial_codec_tests, test_args.passthrough);
     const world_state_machine_differential_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/world.zig"),
+            .root_source_file = b.path("test/appliance_test.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "world", .module = host_world },
+                .{ .name = "world_fixtures", .module = host_fixtures },
             },
         }),
         .filters = &.{"world state machine differential"},
     });
     const check_world_state_machine_differential_step = b.step("check-world-state-machine-differential", "Run World state-machine differential classification checks.");
     dependOnNativeRunOrCompile(b, target, check_world_state_machine_differential_step, world_state_machine_differential_tests, test_args.passthrough);
+    check_world_state_machine_differential_step.dependOn(check_world_universal_appliance_node_step);
     const world_release_receipt_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),

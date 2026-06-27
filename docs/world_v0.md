@@ -29,7 +29,7 @@ Negative gates remain required, but they never substitute for successful executi
 
 ## Runtime Profile
 
-The supported v0 universal profile has ABI v3, exported memory, no imports, no WASI, no filesystem, no network, no clock, no randomness, no storage callback, no actuator callback, no generated application Target type, fixed-width ABI parameters, transactional image loading, reset that retains the immutable image, unload that clears image and execution, and output readable until the next mutating call.
+The supported v0 universal profile has ABI v4, exported memory, no imports, no WASI, no filesystem, no network, no clock, no randomness, no storage callback, no actuator callback, no generated application Target type, fixed-width ABI parameters, transactional image loading, reset that retains the immutable image, unload that clears image and execution, and output readable until the next mutating call.
 
 It supports one root module, zero or more provider modules, sealed loaded-module-export routes, nested provider routes within configured depth, residual external Actuation bindings, replay routes, reject routes where supported, and bounded memory with a 64 MiB shipped maximum.
 
