@@ -106,7 +106,7 @@ const proofGateNames = {
 };
 
 const boundaryProtocolManifestFingerprint = '0xf970e6d1a1601cbc';
-const conformanceCorpusRootFingerprint = '0x117465748f325b2e';
+const conformanceCorpusRootFingerprint = '0x3de41591452c3bb4';
 
 try {
   if (args.mode === 'dist') {
