@@ -341,6 +341,9 @@ const ProofReceipts = struct {
     receipt_format_version: u32,
     runner: []const u8,
     evidence_scope: []const u8,
+    universal_wasm_checksum: ?[]const u8 = null,
+    protocol_manifest_fingerprint_lo: ?[]const u8 = null,
+    protocol_manifest_fingerprint_hi: ?[]const u8 = null,
     artifact_inspection: bool,
     actual_webassembly_execution: bool,
     positive_success: bool,
@@ -394,7 +397,7 @@ fn validateWasmInspectionReceipt(allocator: std.mem.Allocator, bytes: []const u8
     if (!std.mem.eql(u8, receipt.protocol_manifest_fingerprint_hi, expected_manifest_hi)) return error.WasmInspectionReceiptArtifactMismatch;
 }
 
-fn validateProofReceipts(allocator: std.mem.Allocator, bytes: []const u8) !void {
+fn validateProofReceipts(allocator: std.mem.Allocator, bytes: []const u8, expected_wasm_checksum: u64) !void {
     const parsed = std.json.parseFromSlice(ProofReceipts, allocator, bytes, .{
         .ignore_unknown_fields = true,
     }) catch return error.ProofReceiptsIncomplete;
@@ -414,6 +417,19 @@ fn validateProofReceipts(allocator: std.mem.Allocator, bytes: []const u8) !void 
     if (receipt.blockers.len != 0) return error.ProofReceiptsIncomplete;
     if (!receipt.complete) return error.ProofReceiptsIncomplete;
     if (!std.mem.eql(u8, receipt.proof_matrix_scope, "zig-build-release-gates")) return error.ProofReceiptsIncomplete;
+
+    var checksum_buf: [18]u8 = undefined;
+    const expected_checksum = try std.fmt.bufPrint(&checksum_buf, "0x{x:0>16}", .{expected_wasm_checksum});
+    if (!std.mem.eql(u8, receipt.universal_wasm_checksum orelse return error.ProofReceiptsIncomplete, expected_checksum)) return error.ProofReceiptsArtifactMismatch;
+
+    var manifest_buf: [18]u8 = undefined;
+    const expected_manifest = try std.fmt.bufPrint(&manifest_buf, "0x{x}", .{Protocol.Manifest.manifestFingerprint().lo});
+    if (!std.mem.eql(u8, receipt.protocol_manifest_fingerprint_lo orelse return error.ProofReceiptsIncomplete, expected_manifest)) return error.ProofReceiptsArtifactMismatch;
+
+    var manifest_hi_buf: [18]u8 = undefined;
+    const expected_manifest_hi = try std.fmt.bufPrint(&manifest_hi_buf, "0x{x}", .{Protocol.Manifest.manifestFingerprint().hi});
+    if (!std.mem.eql(u8, receipt.protocol_manifest_fingerprint_hi orelse return error.ProofReceiptsIncomplete, expected_manifest_hi)) return error.ProofReceiptsArtifactMismatch;
+
     if (receipt.proof_receipts.len != Protocol.required_proof_kind_count) return error.ProofReceiptsIncomplete;
     if (receipt.receipt_fingerprint.len == 0) return error.ProofReceiptsIncomplete;
 }
@@ -431,7 +447,7 @@ fn buildProofReceiptsFromEvidence(
     diagnostics_evidence: *[Protocol.required_proof_kind_count][2]u64,
     artifact_evidence: *[Protocol.required_proof_kind_count][4]u64,
 ) !void {
-    try validateProofReceipts(allocator, bytes);
+    try validateProofReceipts(allocator, bytes, universal_wasm_checksum);
     const parsed = std.json.parseFromSlice(ProofReceipts, allocator, bytes, .{
         .ignore_unknown_fields = true,
     }) catch return error.ProofReceiptsIncomplete;
@@ -589,7 +605,7 @@ test "proof receipts validation requires complete corpus evidence" {
         \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
         \\}
     ;
-    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, valid));
+    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, valid, 0x1234));
 
     const decoy_complete =
         \\{
@@ -610,7 +626,7 @@ test "proof receipts validation requires complete corpus evidence" {
         \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
         \\}
     ;
-    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, decoy_complete));
+    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, decoy_complete, 0x1234));
 
     const partial_corpus =
         \\{
@@ -631,7 +647,7 @@ test "proof receipts validation requires complete corpus evidence" {
         \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
         \\}
     ;
-    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, partial_corpus));
+    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, partial_corpus, 0x1234));
 
     const js_only =
         \\{
@@ -652,7 +668,62 @@ test "proof receipts validation requires complete corpus evidence" {
         \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
         \\}
     ;
-    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, js_only));
+    try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, js_only, 0x1234));
+}
+
+test "proof receipts validation binds top-level artifact identity" {
+    const allocator = std.testing.allocator;
+    const stale_wasm_checksum = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "receipt_format_version": 1,
+        \\  "runner": "scripts/world_conformance.mjs",
+        \\  "evidence_scope": "wasm-release",
+        \\  "universal_wasm_checksum": "0x0000000000005678",
+        \\  "protocol_manifest_fingerprint_lo": "0x{x}",
+        \\  "protocol_manifest_fingerprint_hi": "0x{x}",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
+        \\  "positive_success": true,
+        \\  "expected_rejection": true,
+        \\  "byte_equality": true,
+        \\  "semantic_fingerprint_equality": true,
+        \\  "memory_limit_compliance": true,
+        \\  "blockers": [],
+        \\  "warnings": [],
+        \\  "complete": true,
+        \\  "proof_matrix_scope": "zig-build-release-gates",
+        \\  "proof_receipts": [],
+        \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
+        \\}}
+    , .{ Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
+    defer allocator.free(stale_wasm_checksum);
+    try std.testing.expectError(error.ProofReceiptsArtifactMismatch, validateProofReceipts(allocator, stale_wasm_checksum, 0x1234));
+
+    const stale_manifest = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "receipt_format_version": 1,
+        \\  "runner": "scripts/world_conformance.mjs",
+        \\  "evidence_scope": "wasm-release",
+        \\  "universal_wasm_checksum": "0x0000000000001234",
+        \\  "protocol_manifest_fingerprint_lo": "0x0",
+        \\  "protocol_manifest_fingerprint_hi": "0x{x}",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
+        \\  "positive_success": true,
+        \\  "expected_rejection": true,
+        \\  "byte_equality": true,
+        \\  "semantic_fingerprint_equality": true,
+        \\  "memory_limit_compliance": true,
+        \\  "blockers": [],
+        \\  "warnings": [],
+        \\  "complete": true,
+        \\  "proof_matrix_scope": "zig-build-release-gates",
+        \\  "proof_receipts": [],
+        \\  "receipt_fingerprint": "0x600b4a5cd40bcb72"
+        \\}}
+    , .{Protocol.Manifest.manifestFingerprint().hi});
+    defer allocator.free(stale_manifest);
+    try std.testing.expectError(error.ProofReceiptsArtifactMismatch, validateProofReceipts(allocator, stale_manifest, 0x1234));
 }
 
 test "universal wasm artifact validation rejects non-function required exports" {
