@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const textDecoder = new TextDecoder();
 
@@ -144,6 +144,7 @@ async function emitDist(options) {
   requirePath(options.releaseReceipt, '--release-receipt');
   requirePath(options.out, '--out');
   const out = options.out;
+  requireReleaseDistOutput(out);
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   mkdirSync(join(out, 'scripts'), { recursive: true });
@@ -714,6 +715,13 @@ function humanManifest(metadata) {
 
 function requirePath(value, label) {
   if (!value) throw new Error(`missing ${label}`);
+}
+
+function requireReleaseDistOutput(out) {
+  const expected = resolve('zig-out/dist/world-v0.1.0');
+  if (resolve(out) !== expected) {
+    throw new Error(`--out must be zig-out/dist/world-v0.1.0, got ${out}`);
+  }
 }
 
 function sha256Hex(bytes) {
