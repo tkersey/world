@@ -450,6 +450,7 @@ fn validateProofReceipts(allocator: std.mem.Allocator, bytes: []const u8, expect
 
     if (receipt.proof_receipts.len != Protocol.required_proof_kind_count) return error.ProofReceiptsIncomplete;
     if (receipt.receipt_fingerprint.len == 0) return error.ProofReceiptsIncomplete;
+    try validateProofReceiptsFingerprint(allocator, bytes, receipt.receipt_fingerprint);
 }
 
 fn buildProofReceiptsFromEvidence(
@@ -521,6 +522,89 @@ fn parseEvidencePair(values: []const []const u8) ![2]u64 {
 fn parseHexU64(value: []const u8) !u64 {
     if (!std.mem.startsWith(u8, value, "0x")) return error.ProofReceiptsIncomplete;
     return std.fmt.parseInt(u64, value[2..], 16) catch return error.ProofReceiptsIncomplete;
+}
+
+fn validateProofReceiptsFingerprint(allocator: std.mem.Allocator, bytes: []const u8, expected_fingerprint: []const u8) !void {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return error.ProofReceiptsIncomplete;
+    defer parsed.deinit();
+
+    var canonical: std.ArrayList(u8) = .empty;
+    defer canonical.deinit(allocator);
+    try appendCanonicalProofReceiptJson(allocator, &canonical, parsed.value);
+    if (fnv64(canonical.items) != try parseHexU64(expected_fingerprint)) return error.ProofReceiptsArtifactMismatch;
+}
+
+fn appendCanonicalProofReceiptJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: std.json.Value) anyerror!void {
+    if (value != .object) return error.ProofReceiptsIncomplete;
+    try appendCanonicalJsonObject(allocator, out, value.object, true);
+}
+
+fn appendCanonicalJsonValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: std.json.Value) anyerror!void {
+    switch (value) {
+        .null => try out.appendSlice(allocator, "null"),
+        .bool => |inner| try out.appendSlice(allocator, if (inner) "true" else "false"),
+        .integer => |inner| try out.print(allocator, "{d}", .{inner}),
+        .float => return error.ProofReceiptsIncomplete,
+        .number_string => |inner| try out.appendSlice(allocator, inner),
+        .string => |inner| try appendJsonString(allocator, out, inner),
+        .array => |inner| {
+            try out.append(allocator, '[');
+            for (inner.items, 0..) |item, index| {
+                if (index != 0) try out.append(allocator, ',');
+                try appendCanonicalJsonValue(allocator, out, item);
+            }
+            try out.append(allocator, ']');
+        },
+        .object => |inner| try appendCanonicalJsonObject(allocator, out, inner, false),
+    }
+}
+
+fn appendCanonicalJsonObject(allocator: std.mem.Allocator, out: *std.ArrayList(u8), object: std.json.ObjectMap, omit_receipt_fingerprint: bool) anyerror!void {
+    try out.append(allocator, '{');
+    var wrote_field = false;
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (omit_receipt_fingerprint and std.mem.eql(u8, key, "receipt_fingerprint")) continue;
+        if (wrote_field) try out.append(allocator, ',');
+        wrote_field = true;
+        try appendJsonString(allocator, out, key);
+        try out.append(allocator, ':');
+        try appendCanonicalJsonValue(allocator, out, entry.value_ptr.*);
+    }
+    try out.append(allocator, '}');
+}
+
+fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    try out.append(allocator, '"');
+    for (value) |byte| {
+        switch (byte) {
+            '"' => try out.appendSlice(allocator, "\\\""),
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            0x08 => try out.appendSlice(allocator, "\\b"),
+            0x09 => try out.appendSlice(allocator, "\\t"),
+            0x0a => try out.appendSlice(allocator, "\\n"),
+            0x0c => try out.appendSlice(allocator, "\\f"),
+            0x0d => try out.appendSlice(allocator, "\\r"),
+            else => {
+                if (byte < 0x20) {
+                    try out.print(allocator, "\\u{x:0>4}", .{byte});
+                } else {
+                    try out.append(allocator, byte);
+                }
+            },
+        }
+    }
+    try out.append(allocator, '"');
+}
+
+fn fnv64(bytes: []const u8) u64 {
+    var hash: u64 = 0xcbf29ce484222325;
+    for (bytes) |byte| {
+        hash ^= byte;
+        hash *%= 0x00000100000001b3;
+    }
+    return hash;
 }
 
 test "wasm inspection receipt validation uses parsed fields" {
@@ -744,6 +828,70 @@ test "proof receipts validation binds top-level artifact identity" {
     , .{Protocol.Manifest.manifestFingerprint().hi});
     defer allocator.free(stale_manifest);
     try std.testing.expectError(error.ProofReceiptsArtifactMismatch, validateProofReceipts(allocator, stale_manifest, 0x1234));
+}
+
+test "proof receipts validation binds producer fingerprint" {
+    const allocator = std.testing.allocator;
+    const valid = try proofReceiptsFixture(allocator, null);
+    defer allocator.free(valid);
+    try validateProofReceipts(allocator, valid, 0x1234);
+
+    const tampered_fingerprint = try proofReceiptsFixture(allocator, "0x0000000000000001");
+    defer allocator.free(tampered_fingerprint);
+    try std.testing.expectError(error.ProofReceiptsArtifactMismatch, validateProofReceipts(allocator, tampered_fingerprint, 0x1234));
+}
+
+fn proofReceiptsFixture(allocator: std.mem.Allocator, fingerprint_override: ?[]const u8) ![]u8 {
+    var prefix: std.ArrayList(u8) = .empty;
+    defer prefix.deinit(allocator);
+    try appendProofReceiptsFixturePrefix(allocator, &prefix);
+
+    var canonical: std.ArrayList(u8) = .empty;
+    defer canonical.deinit(allocator);
+    try canonical.appendSlice(allocator, prefix.items);
+    try canonical.append(allocator, '}');
+
+    var fingerprint_buf: [18]u8 = undefined;
+    const fingerprint = fingerprint_override orelse try std.fmt.bufPrint(&fingerprint_buf, "0x{x:0>16}", .{fnv64(canonical.items)});
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, prefix.items);
+    try out.print(allocator, ",\"receipt_fingerprint\":\"{s}\"}}", .{fingerprint});
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendProofReceiptsFixturePrefix(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+    try out.print(
+        allocator,
+        "{{\"receipt_format_version\":1,\"runner\":\"scripts/world_conformance.mjs\",\"evidence_scope\":\"wasm-release\",\"artifact_inspection\":true,\"actual_webassembly_execution\":true,\"positive_success\":true,\"expected_rejection\":true,\"byte_equality\":true,\"semantic_fingerprint_equality\":true,\"memory_limit_compliance\":true,\"blockers\":[],\"warnings\":[],\"universal_wasm_checksum\":\"0x0000000000001234\",\"protocol_manifest_fingerprint_lo\":\"0x{x}\",\"protocol_manifest_fingerprint_hi\":\"0x{x}\",\"complete\":true,\"proof_matrix_scope\":\"zig-build-release-gates\",\"release_gate_evidence\":true,\"proof_receipts\":[",
+        .{ Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi },
+    );
+    for (Protocol.required_proof_kinds, 0..) |kind, index| {
+        if (index != 0) try out.append(allocator, ',');
+        const gate_name = Protocol.proofGateName(kind);
+        const proof_kind_name = Protocol.proofKindName(kind);
+        const proof_kind_evidence = Protocol.proofKindEvidenceFingerprint(kind);
+        const gate_fingerprint = Protocol.proofGateFingerprint(kind);
+        try out.print(
+            allocator,
+            "{{\"proof_kind\":\"{s}\",\"proof_gate\":\"{s}\",\"proof_gate_fingerprint\":\"0x{x:0>16}\",\"input_corpus_case_fingerprints\":[\"0x{x:0>16}\",\"0x{x:0>16}\"],\"expected_output_fingerprints\":[\"0x{x:0>16}\",\"0x{x:0>16}\"],\"actual_output_fingerprints\":[\"0x{x:0>16}\",\"0x{x:0>16}\"],\"actual_comparison_result\":true,\"bounded_diagnostics\":[\"0x{x:0>16}\",\"0x{x:0>16}\"],\"blocker_count\":0,\"warning_count\":0}}",
+            .{
+                proof_kind_name,
+                gate_name,
+                gate_fingerprint,
+                proof_kind_evidence,
+                gate_fingerprint,
+                proof_kind_evidence,
+                gate_fingerprint,
+                proof_kind_evidence,
+                gate_fingerprint,
+                proof_kind_evidence,
+                gate_fingerprint,
+            },
+        );
+    }
+    try out.append(allocator, ']');
 }
 
 test "universal wasm artifact validation rejects non-function required exports" {
