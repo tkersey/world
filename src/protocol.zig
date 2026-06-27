@@ -401,7 +401,7 @@ pub fn Protocol(comptime W: type) type {
                     .actual_output_fingerprints = canonicalProofEvidence(kind),
                     .artifact_fingerprints = artifact_evidence[index][0..],
                     .bounded_diagnostics = canonicalProofEvidence(kind),
-                    .actual_comparison_result = true,
+                    .actual_comparison_result = false,
                 });
             }
             return out;

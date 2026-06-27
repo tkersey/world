@@ -1425,8 +1425,22 @@ test "world protocol release receipt validates required proof matrix exactly onc
     const test_source_package_checksum: u64 = 0x5750_5000_0000_0001;
     var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
     var artifact_evidence: [Protocol.required_proof_kind_count][4]u64 = undefined;
+    _ = Protocol.buildProofReceiptsForArtifacts(&proof_receipts, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum);
+    for (&proof_receipts) |*receipt| {
+        const source = receipt.*;
+        receipt.* = Protocol.ProofReceipt.init(.{
+            .proof_kind = source.proof_kind,
+            .protocol_manifest_fingerprint = source.protocol_manifest_fingerprint,
+            .input_corpus_case_fingerprints = source.input_corpus_case_fingerprints,
+            .expected_output_fingerprints = source.expected_output_fingerprints,
+            .actual_output_fingerprints = source.actual_output_fingerprints,
+            .actual_comparison_result = true,
+            .artifact_fingerprints = source.artifact_fingerprints,
+            .bounded_diagnostics = source.bounded_diagnostics,
+        });
+    }
     const release_receipt = Protocol.releaseReceiptForArtifacts(
-        Protocol.buildProofReceiptsForArtifacts(&proof_receipts, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum),
+        &proof_receipts,
         test_universal_wasm_checksum,
         test_source_package_checksum,
     );
@@ -1491,8 +1505,22 @@ test "world adversarial codecs reject malformed protocol receipt evidence fail c
     const test_source_package_checksum: u64 = 0x5750_5000_0000_0002;
     var proof_receipts: [Protocol.required_proof_kind_count]Protocol.ProofReceipt = undefined;
     var artifact_evidence: [Protocol.required_proof_kind_count][4]u64 = undefined;
+    _ = Protocol.buildProofReceiptsForArtifacts(&proof_receipts, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum);
+    for (&proof_receipts) |*receipt| {
+        const source = receipt.*;
+        receipt.* = Protocol.ProofReceipt.init(.{
+            .proof_kind = source.proof_kind,
+            .protocol_manifest_fingerprint = source.protocol_manifest_fingerprint,
+            .input_corpus_case_fingerprints = source.input_corpus_case_fingerprints,
+            .expected_output_fingerprints = source.expected_output_fingerprints,
+            .actual_output_fingerprints = source.actual_output_fingerprints,
+            .actual_comparison_result = true,
+            .artifact_fingerprints = source.artifact_fingerprints,
+            .bounded_diagnostics = source.bounded_diagnostics,
+        });
+    }
     const release_receipt = Protocol.releaseReceiptForArtifacts(
-        Protocol.buildProofReceiptsForArtifacts(&proof_receipts, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum),
+        &proof_receipts,
         test_universal_wasm_checksum,
         test_source_package_checksum,
     );

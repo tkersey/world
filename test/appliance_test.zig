@@ -10673,8 +10673,30 @@ test "WorldV0Report requires every completion proof bit" {
     const test_source_package_checksum: u64 = 0x5750_5000_0000_0003;
     var proof_receipt_storage: [world.Protocol.required_proof_kind_count]world.Protocol.ProofReceipt = undefined;
     var artifact_evidence: [world.Protocol.required_proof_kind_count][4]u64 = undefined;
+    _ = world.Protocol.buildProofReceiptsForArtifacts(&proof_receipt_storage, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum);
+    const synthetic_artifact_receipt = world.Protocol.releaseReceiptForArtifacts(
+        &proof_receipt_storage,
+        test_universal_wasm_checksum,
+        test_source_package_checksum,
+    );
+    try std.testing.expect(!synthetic_artifact_receipt.complete);
+    try std.testing.expectError(error.InvalidFrameEncoding, synthetic_artifact_receipt.validate());
+
+    for (&proof_receipt_storage) |*receipt| {
+        const source = receipt.*;
+        receipt.* = world.Protocol.ProofReceipt.init(.{
+            .proof_kind = source.proof_kind,
+            .protocol_manifest_fingerprint = source.protocol_manifest_fingerprint,
+            .input_corpus_case_fingerprints = source.input_corpus_case_fingerprints,
+            .expected_output_fingerprints = source.expected_output_fingerprints,
+            .actual_output_fingerprints = source.actual_output_fingerprints,
+            .actual_comparison_result = true,
+            .artifact_fingerprints = source.artifact_fingerprints,
+            .bounded_diagnostics = source.bounded_diagnostics,
+        });
+    }
     const release_receipt = world.Protocol.releaseReceiptForArtifacts(
-        world.Protocol.buildProofReceiptsForArtifacts(&proof_receipt_storage, &artifact_evidence, test_universal_wasm_checksum, test_source_package_checksum),
+        &proof_receipt_storage,
         test_universal_wasm_checksum,
         test_source_package_checksum,
     );
