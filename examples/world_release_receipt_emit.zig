@@ -17,6 +17,27 @@ const source_package_dirs = [_][]const u8{
     "conformance",
 };
 
+const max_wasm_types = 256;
+const max_wasm_functions = 4096;
+
+const WasmSignature = struct {
+    params: u32 = 0,
+    results: u32 = 0,
+    params_all_i32: bool = true,
+    results_all_i32: bool = true,
+    results_all_i64: bool = true,
+
+    fn matches(self: @This(), params: u32, results: u32, result_type: ?u8) bool {
+        if (self.params != params or self.results != results or !self.params_all_i32) return false;
+        return switch (result_type orelse 0) {
+            0 => results == 0,
+            0x7f => self.results_all_i32,
+            0x7e => self.results_all_i64,
+            else => false,
+        };
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.page_allocator;
     var args = std.process.Args.Iterator.init(init.minimal.args);
@@ -250,6 +271,10 @@ fn validateUniversalWasmArtifact(bytes: []const u8) !void {
     if (std.mem.readInt(u32, bytes[4..8], .little) != 1) return error.InvalidFrameEncoding;
 
     var required_seen = [_]bool{false} ** world.Appliance.Abi.universal_required_exports.len;
+    var type_sigs: [max_wasm_types]WasmSignature = undefined;
+    var type_count: usize = 0;
+    var function_type_indices: [max_wasm_functions]u32 = undefined;
+    var function_count: usize = 0;
     var import_count: u32 = 0;
     var cursor: usize = 8;
     while (cursor < bytes.len) {
@@ -257,8 +282,15 @@ fn validateUniversalWasmArtifact(bytes: []const u8) !void {
         const section_len = try readWasmU32(bytes, &cursor);
         if (section_len > bytes.len - cursor) return error.InvalidFrameEncoding;
         const section = bytes[cursor .. cursor + section_len];
+        if (section_id == 1) type_count = try inspectWasmTypes(section, &type_sigs);
         if (section_id == 2) import_count = try countWasmImports(section);
-        if (section_id == 7) try inspectUniversalExports(section, &required_seen);
+        if (section_id == 3) function_count = try inspectWasmFunctions(section, &function_type_indices, type_count);
+        if (section_id == 7) try inspectUniversalExports(
+            section,
+            type_sigs[0..type_count],
+            function_type_indices[0..function_count],
+            &required_seen,
+        );
         cursor += section_len;
     }
     if (import_count != 0) return error.UniversalWasmInspectionFailed;
@@ -571,6 +603,62 @@ test "proof receipts validation requires complete corpus evidence" {
     try std.testing.expectError(error.ProofReceiptsIncomplete, validateProofReceipts(allocator, partial_corpus));
 }
 
+test "universal wasm artifact validation rejects non-function required exports" {
+    const allocator = std.testing.allocator;
+    var section: std.ArrayList(u8) = .empty;
+    defer section.deinit(allocator);
+    try appendWasmU32(allocator, &section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports) |name| {
+        try appendWasmName(allocator, &section, name);
+        try section.append(allocator, 3);
+        try appendWasmU32(allocator, &section, 0);
+    }
+
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+    try bytes.appendSlice(allocator, "\x00asm");
+    try bytes.appendSlice(allocator, &.{ 1, 0, 0, 0 });
+    try bytes.append(allocator, 7);
+    try appendWasmU32(allocator, &bytes, @intCast(section.items.len));
+    try bytes.appendSlice(allocator, section.items);
+
+    try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
+}
+
+test "universal wasm artifact validation rejects wrong required export signatures" {
+    const allocator = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+    try bytes.appendSlice(allocator, "\x00asm");
+    try bytes.appendSlice(allocator, &.{ 1, 0, 0, 0 });
+
+    var type_section: std.ArrayList(u8) = .empty;
+    defer type_section.deinit(allocator);
+    try appendWasmU32(allocator, &type_section, 1);
+    try type_section.append(allocator, 0x60);
+    try appendWasmU32(allocator, &type_section, 0);
+    try appendWasmU32(allocator, &type_section, 0);
+    try appendWasmSection(allocator, &bytes, 1, type_section.items);
+
+    var function_section: std.ArrayList(u8) = .empty;
+    defer function_section.deinit(allocator);
+    try appendWasmU32(allocator, &function_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports) |_| try appendWasmU32(allocator, &function_section, 0);
+    try appendWasmSection(allocator, &bytes, 3, function_section.items);
+
+    var export_section: std.ArrayList(u8) = .empty;
+    defer export_section.deinit(allocator);
+    try appendWasmU32(allocator, &export_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |name, index| {
+        try appendWasmName(allocator, &export_section, name);
+        try export_section.append(allocator, 0);
+        try appendWasmU32(allocator, &export_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 7, export_section.items);
+
+    try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
+}
+
 fn countWasmImports(section: []const u8) !u32 {
     var cursor: usize = 0;
     const count = try readWasmU32(section, &cursor);
@@ -604,19 +692,147 @@ fn skipWasmLimits(bytes: []const u8, cursor: *usize) !void {
     if ((flags & ~@as(u8, 0x01)) != 0) return error.InvalidFrameEncoding;
 }
 
-fn inspectUniversalExports(section: []const u8, required_seen: *[world.Appliance.Abi.universal_required_exports.len]bool) !void {
+fn inspectWasmTypes(section: []const u8, out: *[max_wasm_types]WasmSignature) !usize {
+    var cursor: usize = 0;
+    const count = try readWasmU32(section, &cursor);
+    if (count > out.len) return error.CapacityExceeded;
+    var index: usize = 0;
+    while (index < count) : (index += 1) {
+        if (try readWasmU8(section, &cursor) != 0x60) return error.InvalidFrameEncoding;
+        const params = try readWasmU32(section, &cursor);
+        var params_all_i32 = true;
+        var param_index: u32 = 0;
+        while (param_index < params) : (param_index += 1) {
+            if (try readWasmU8(section, &cursor) != 0x7f) params_all_i32 = false;
+        }
+        const results = try readWasmU32(section, &cursor);
+        var results_all_i32 = true;
+        var results_all_i64 = true;
+        var result_index: u32 = 0;
+        while (result_index < results) : (result_index += 1) {
+            const result_type = try readWasmU8(section, &cursor);
+            if (result_type != 0x7f) results_all_i32 = false;
+            if (result_type != 0x7e) results_all_i64 = false;
+        }
+        out[index] = .{
+            .params = params,
+            .results = results,
+            .params_all_i32 = params_all_i32,
+            .results_all_i32 = results_all_i32,
+            .results_all_i64 = results_all_i64,
+        };
+    }
+    if (cursor != section.len) return error.InvalidFrameEncoding;
+    return @intCast(count);
+}
+
+fn inspectWasmFunctions(section: []const u8, out: *[max_wasm_functions]u32, type_count: usize) !usize {
+    var cursor: usize = 0;
+    const count = try readWasmU32(section, &cursor);
+    if (count > out.len) return error.CapacityExceeded;
+    var index: usize = 0;
+    while (index < count) : (index += 1) {
+        const type_index = try readWasmU32(section, &cursor);
+        if (type_index >= type_count) return error.InvalidFrameEncoding;
+        out[index] = type_index;
+    }
+    if (cursor != section.len) return error.InvalidFrameEncoding;
+    return @intCast(count);
+}
+
+fn inspectUniversalExports(
+    section: []const u8,
+    type_sigs: []const WasmSignature,
+    function_type_indices: []const u32,
+    required_seen: *[world.Appliance.Abi.universal_required_exports.len]bool,
+) !void {
     var cursor: usize = 0;
     const count = try readWasmU32(section, &cursor);
     var index: u32 = 0;
     while (index < count) : (index += 1) {
         const name = try readWasmName(section, &cursor);
-        _ = try readWasmU8(section, &cursor);
-        _ = try readWasmU32(section, &cursor);
+        const kind = try readWasmU8(section, &cursor);
+        const export_index = try readWasmU32(section, &cursor);
         for (world.Appliance.Abi.universal_required_exports, 0..) |required, required_index| {
-            if (std.mem.eql(u8, name, required)) required_seen[required_index] = true;
+            if (!std.mem.eql(u8, name, required)) continue;
+            if (kind != 0) return error.UniversalWasmInspectionFailed;
+            if (!wasmSignatureMatches(
+                export_index,
+                type_sigs,
+                function_type_indices,
+                expectedWasmParamCount(required_index),
+                expectedWasmResultCount(required_index),
+                expectedWasmResultType(required_index),
+            )) return error.UniversalWasmInspectionFailed;
+            required_seen[required_index] = true;
         }
     }
     if (cursor != section.len) return error.InvalidFrameEncoding;
+}
+
+fn wasmSignatureMatches(
+    function_index: u32,
+    type_sigs: []const WasmSignature,
+    function_type_indices: []const u32,
+    params: u32,
+    results: u32,
+    result_type: ?u8,
+) bool {
+    if (function_index >= function_type_indices.len) return false;
+    const type_index = function_type_indices[@intCast(function_index)];
+    if (type_index >= type_sigs.len) return false;
+    return type_sigs[@intCast(type_index)].matches(params, results, result_type);
+}
+
+fn expectedWasmParamCount(index: usize) u32 {
+    return switch (index) {
+        2, 3 => 2,
+        6 => 2,
+        7 => 2,
+        9 => 2,
+        11 => 2,
+        13 => 1,
+        14 => 2,
+        16 => 2,
+        else => 0,
+    };
+}
+
+fn expectedWasmResultCount(index: usize) u32 {
+    return switch (index) {
+        14 => 0,
+        else => 1,
+    };
+}
+
+fn expectedWasmResultType(index: usize) ?u8 {
+    return switch (index) {
+        14 => null,
+        17, 18 => 0x7e,
+        else => 0x7f,
+    };
+}
+
+fn appendWasmSection(allocator: std.mem.Allocator, out: *std.ArrayList(u8), id: u8, section: []const u8) !void {
+    try out.append(allocator, id);
+    try appendWasmU32(allocator, out, @intCast(section.len));
+    try out.appendSlice(allocator, section);
+}
+
+fn appendWasmName(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8) !void {
+    try appendWasmU32(allocator, out, @intCast(name.len));
+    try out.appendSlice(allocator, name);
+}
+
+fn appendWasmU32(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: u32) !void {
+    var remaining = value;
+    while (true) {
+        var byte: u8 = @intCast(remaining & 0x7f);
+        remaining >>= 7;
+        if (remaining != 0) byte |= 0x80;
+        try out.append(allocator, byte);
+        if (remaining == 0) break;
+    }
 }
 
 fn readWasmName(bytes: []const u8, cursor: *usize) ![]const u8 {
