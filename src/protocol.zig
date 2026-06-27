@@ -632,6 +632,12 @@ pub fn Protocol(comptime W: type) type {
             }
 
             fn encodeIdentity(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
+                try appendU32(out, allocator, format_version);
+                try appendU32(out, allocator, fingerprint_version);
+                try appendU32(out, allocator, world_protocol_proof_receipt_format_version);
+                try appendU32(out, allocator, world_protocol_proof_receipt_fingerprint_version);
+                try appendU32(out, allocator, world_protocol_release_receipt_format_version);
+                try appendU32(out, allocator, world_protocol_release_receipt_fingerprint_version);
                 try appendString(out, allocator, world_package_version);
                 try appendString(out, allocator, required_boundary_package_version);
                 try appendU64(out, allocator, required_boundary_protocol_manifest_fingerprint);

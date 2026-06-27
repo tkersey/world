@@ -1382,6 +1382,18 @@ test "world protocol manifest has deterministic canonical identity" {
     try std.testing.expect(fingerprint.hi != 0);
     try std.testing.expect(Protocol.Manifest.publicSurfaceFingerprint() != 0);
     try std.testing.expect(Protocol.Manifest.universalRuntimeProfileFingerprint() != 0);
+
+    const protocol_source = @embedFile("protocol.zig");
+    inline for (.{
+        "try appendU32(out, allocator, format_version);",
+        "try appendU32(out, allocator, fingerprint_version);",
+        "try appendU32(out, allocator, world_protocol_proof_receipt_format_version);",
+        "try appendU32(out, allocator, world_protocol_proof_receipt_fingerprint_version);",
+        "try appendU32(out, allocator, world_protocol_release_receipt_format_version);",
+        "try appendU32(out, allocator, world_protocol_release_receipt_fingerprint_version);",
+    }) |identity_binding| {
+        try std.testing.expect(std.mem.indexOf(u8, protocol_source, identity_binding) != null);
+    }
 }
 
 test "boundary world protocol compatibility rejects mismatched boundary evidence" {
