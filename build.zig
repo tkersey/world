@@ -501,17 +501,17 @@ pub fn build(b: *std.Build) void {
     emit_world_release_receipt_run.step.dependOn(world_universal_appliance_wasm_step);
     const world_release_receipt_emit_mod = b.createModule(.{
         .root_source_file = b.path("examples/world_release_receipt_emit.zig"),
-        .target = target,
+        .target = b.graph.host,
         .optimize = optimize,
     });
-    world_release_receipt_emit_mod.addImport("world", world);
+    world_release_receipt_emit_mod.addImport("world", host_world);
     const world_release_receipt_emit_exe = b.addExecutable(.{ .name = "world-release-receipt-emit", .root_module = world_release_receipt_emit_mod });
     const world_release_receipt_emit_test_mod = b.createModule(.{
         .root_source_file = b.path("examples/world_release_receipt_emit.zig"),
-        .target = target,
+        .target = b.graph.host,
         .optimize = optimize,
     });
-    world_release_receipt_emit_test_mod.addImport("world", world);
+    world_release_receipt_emit_test_mod.addImport("world", host_world);
     const world_release_receipt_emit_tests = b.addTest(.{ .root_module = world_release_receipt_emit_test_mod });
     const emit_world_protocol_release_receipt_run = b.addRunArtifact(world_release_receipt_emit_exe);
     emit_world_protocol_release_receipt_run.addArgs(&.{"--wasm"});
@@ -552,7 +552,7 @@ pub fn build(b: *std.Build) void {
     emit_world_release_receipt_step.dependOn(&emit_world_protocol_release_receipt_run.step);
     const check_world_release_receipt_step = b.step("check-world-release-receipt", "Validate the World v0 release receipt proof matrix.");
     dependOnNativeRunOrCompile(b, target, check_world_release_receipt_step, world_release_receipt_tests, test_args.passthrough);
-    dependOnNativeRunOrCompile(b, target, check_world_release_receipt_step, world_release_receipt_emit_tests, test_args.passthrough);
+    check_world_release_receipt_step.dependOn(&addRunArtifactWithArgs(b, world_release_receipt_emit_tests, test_args.passthrough).step);
     check_world_release_receipt_step.dependOn(emit_world_release_receipt_step);
     const world_v0_budget_tests = b.addTest(.{
         .root_module = b.createModule(.{
