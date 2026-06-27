@@ -21,6 +21,8 @@ const source_package_dirs = [_][]const u8{
 const max_wasm_types = 256;
 const max_wasm_functions = 4096;
 const max_wasm_exports = 4096;
+const max_wasm_stack_values = 4096;
+const max_wasm_locals = 4096;
 
 const WasmSignature = struct {
     params: u32 = 0,
@@ -986,6 +988,75 @@ test "universal wasm artifact validation rejects stack underflow bodies" {
     try std.testing.expectError(error.UniversalWasmInspectionFailed, validateUniversalWasmArtifact(bytes.items));
 }
 
+test "universal wasm artifact validation rejects final result type mismatches" {
+    const allocator = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+    try bytes.appendSlice(allocator, "\x00asm");
+    try bytes.appendSlice(allocator, &.{ 1, 0, 0, 0 });
+
+    var type_section: std.ArrayList(u8) = .empty;
+    defer type_section.deinit(allocator);
+    try appendWasmU32(allocator, &type_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendExpectedWasmFuncType(allocator, &type_section, index);
+    }
+    try appendWasmSection(allocator, &bytes, 1, type_section.items);
+
+    var function_section: std.ArrayList(u8) = .empty;
+    defer function_section.deinit(allocator);
+    try appendWasmU32(allocator, &function_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendWasmU32(allocator, &function_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 3, function_section.items);
+
+    var memory_section: std.ArrayList(u8) = .empty;
+    defer memory_section.deinit(allocator);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try memory_section.append(allocator, 0x01);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmSection(allocator, &bytes, 5, memory_section.items);
+
+    var export_section: std.ArrayList(u8) = .empty;
+    defer export_section.deinit(allocator);
+    try appendWasmU32(allocator, &export_section, world.Appliance.Abi.universal_required_exports.len + 1);
+    try appendWasmName(allocator, &export_section, "memory");
+    try export_section.append(allocator, 2);
+    try appendWasmU32(allocator, &export_section, 0);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |name, index| {
+        try appendWasmName(allocator, &export_section, name);
+        try export_section.append(allocator, 0);
+        try appendWasmU32(allocator, &export_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 7, export_section.items);
+
+    var code_section: std.ArrayList(u8) = .empty;
+    defer code_section.deinit(allocator);
+    try appendWasmU32(allocator, &code_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(allocator);
+        if (index == 0) {
+            try appendWasmU32(allocator, &body, 0);
+            try body.append(allocator, 0x41);
+            try appendWasmU32(allocator, &body, 0);
+            try body.append(allocator, 0x1a);
+            try body.append(allocator, 0x43);
+            try body.appendSlice(allocator, &.{ 0, 0, 0, 0 });
+            try body.append(allocator, 0x0b);
+        } else {
+            try appendWasmValidResultBody(allocator, &body, index);
+        }
+        try appendWasmU32(allocator, &code_section, @intCast(body.items.len));
+        try code_section.appendSlice(allocator, body.items);
+    }
+    try appendWasmSection(allocator, &bytes, 10, code_section.items);
+
+    try std.testing.expectError(error.InvalidFrameEncoding, validateUniversalWasmArtifact(bytes.items));
+}
+
 test "universal wasm artifact validation rejects code before exports" {
     const allocator = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
@@ -1272,6 +1343,7 @@ fn inspectWasmCode(
             section[cursor .. cursor + body_len],
             type_sigs,
             function_type_indices,
+            function_type_indices[@intCast(index)],
             required_result_types[index],
         );
         cursor += body_len;
@@ -1284,19 +1356,36 @@ fn validateWasmCodeBody(
     body: []const u8,
     type_sigs: []const WasmSignature,
     function_type_indices: []const u32,
+    function_type_index: u32,
     required_result_type: ?u8,
 ) !void {
     var cursor: usize = 0;
     const local_decl_count = try readWasmU32(body, &cursor);
+    var local_types: [max_wasm_locals]u8 = undefined;
+    if (function_type_index >= type_sigs.len) return error.InvalidFrameEncoding;
+    const signature = type_sigs[@intCast(function_type_index)];
+    var local_count: usize = 0;
+    while (local_count < signature.params and local_count < local_types.len) : (local_count += 1) {
+        local_types[local_count] = 0x7f;
+    }
+    if (!signature.params_all_i32) local_count = 0;
     var local_decl_index: u32 = 0;
     while (local_decl_index < local_decl_count) : (local_decl_index += 1) {
-        _ = try readWasmU32(body, &cursor);
-        if (!validWasmValueType(try readWasmU8(body, &cursor))) return error.InvalidFrameEncoding;
+        const group_count = try readWasmU32(body, &cursor);
+        const value_type = try readWasmU8(body, &cursor);
+        if (!validWasmValueType(value_type)) return error.InvalidFrameEncoding;
+        if (group_count > local_types.len - local_count) return error.CapacityExceeded;
+        var group_index: u32 = 0;
+        while (group_index < group_count) : (group_index += 1) {
+            local_types[local_count] = value_type;
+            local_count += 1;
+        }
     }
 
     var depth: usize = 1;
     var required_result_seen = required_result_type == null;
     var stack_known = true;
+    var stack: [max_wasm_stack_values]u8 = undefined;
     var stack_depth: usize = 0;
     while (depth != 0) {
         if (cursor >= body.len) return error.InvalidFrameEncoding;
@@ -1305,18 +1394,24 @@ fn validateWasmCodeBody(
             0x00 => stack_known = false,
             0x01 => {},
             0x0f => {
-                if (required_result_type != null) try requireWasmStack(&stack_known, &stack_depth, 1);
+                if (required_result_type) |result_type| try popWasmValue(&stack_known, &stack, &stack_depth, result_type);
                 stack_known = false;
             },
-            0x1a => try requireWasmStack(&stack_known, &stack_depth, 1),
+            0x1a => _ = try popWasmAny(&stack_known, &stack, &stack_depth),
             0x1b => {
-                try requireWasmStack(&stack_known, &stack_depth, 3);
-                if (stack_known) stack_depth += 1;
-                required_result_seen = true;
+                try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
+                const rhs = try popWasmAny(&stack_known, &stack, &stack_depth);
+                const lhs = try popWasmAny(&stack_known, &stack, &stack_depth);
+                const result_type = rhs orelse lhs;
+                if (lhs != null and rhs != null and lhs.? != rhs.?) return error.InvalidFrameEncoding;
+                if (result_type) |value_type| {
+                    try pushWasmValue(&stack_known, &stack, &stack_depth, value_type);
+                    if (required_result_type != null and required_result_type.? == value_type) required_result_seen = true;
+                }
             },
             0x02, 0x03, 0x04 => {
                 try readWasmBlockType(body, &cursor);
-                if (opcode == 0x04) try requireWasmStack(&stack_known, &stack_depth, 1);
+                if (opcode == 0x04) try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
                 depth += 1;
                 stack_known = false;
             },
@@ -1326,7 +1421,7 @@ fn validateWasmCodeBody(
             },
             0x0b => {
                 if (depth == 1 and required_result_type != null) {
-                    try requireWasmStack(&stack_known, &stack_depth, 1);
+                    try requireWasmFinalResult(&stack_known, &stack, &stack_depth, required_result_type.?);
                 }
                 if (depth == 1 and !required_result_seen) return error.UniversalWasmInspectionFailed;
                 depth -= 1;
@@ -1336,20 +1431,32 @@ fn validateWasmCodeBody(
                 switch (opcode) {
                     0x0c => stack_known = false,
                     0x0d => {
-                        try requireWasmStack(&stack_known, &stack_depth, 1);
+                        try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
                         stack_known = false;
                     },
-                    0x10 => try applyWasmCallStackEffect(immediate, type_sigs, function_type_indices, &stack_known, &stack_depth, required_result_type, &required_result_seen),
+                    0x10 => try applyWasmCallStackEffect(immediate, type_sigs, function_type_indices, &stack_known, &stack, &stack_depth, required_result_type, &required_result_seen),
                     0xd2 => stack_known = false,
                     0x20, 0x23 => {
-                        if (stack_known) stack_depth += 1;
-                        required_result_seen = true;
+                        const value_type = if (opcode == 0x20) localType(local_types[0..local_count], immediate) else null;
+                        if (value_type) |known_type| {
+                            try pushWasmValue(&stack_known, &stack, &stack_depth, known_type);
+                            if (required_result_type != null and required_result_type.? == known_type) required_result_seen = true;
+                        } else {
+                            stack_known = false;
+                        }
                     },
-                    0x21, 0x24 => try requireWasmStack(&stack_known, &stack_depth, 1),
+                    0x21 => {
+                        _ = try popWasmAny(&stack_known, &stack, &stack_depth);
+                    },
+                    0x24 => _ = try popWasmAny(&stack_known, &stack, &stack_depth),
                     0x22 => {
-                        try requireWasmStack(&stack_known, &stack_depth, 1);
-                        if (stack_known) stack_depth += 1;
-                        required_result_seen = true;
+                        if (localType(local_types[0..local_count], immediate)) |value_type| {
+                            _ = try popWasmAny(&stack_known, &stack, &stack_depth);
+                            try pushWasmValue(&stack_known, &stack, &stack_depth, value_type);
+                            if (required_result_type != null and required_result_type.? == value_type) required_result_seen = true;
+                        } else {
+                            stack_known = false;
+                        }
                     },
                     0x25, 0x26 => stack_known = false,
                     else => {},
@@ -1360,14 +1467,14 @@ fn validateWasmCodeBody(
                 var index: u32 = 0;
                 while (index < count) : (index += 1) _ = try readWasmU32(body, &cursor);
                 _ = try readWasmU32(body, &cursor);
-                try requireWasmStack(&stack_known, &stack_depth, 1);
+                try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
                 stack_known = false;
             },
             0x11 => {
                 const type_index = try readWasmU32(body, &cursor);
                 if (try readWasmU32(body, &cursor) != 0) return error.InvalidFrameEncoding;
-                try applyWasmSignatureStackEffect(type_index, type_sigs, &stack_known, &stack_depth, required_result_type, &required_result_seen);
-                try requireWasmStack(&stack_known, &stack_depth, 1);
+                try applyWasmSignatureStackEffect(type_index, type_sigs, &stack_known, &stack, &stack_depth, required_result_type, &required_result_seen);
+                try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
             },
             0x1c => {
                 const count = try readWasmU32(body, &cursor);
@@ -1375,19 +1482,30 @@ fn validateWasmCodeBody(
                 while (index < count) : (index += 1) {
                     if (!validWasmValueType(try readWasmU8(body, &cursor))) return error.InvalidFrameEncoding;
                 }
-                try requireWasmStack(&stack_known, &stack_depth, 3);
-                if (stack_known) stack_depth += 1;
+                try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
+                const rhs = try popWasmAny(&stack_known, &stack, &stack_depth);
+                const lhs = try popWasmAny(&stack_known, &stack, &stack_depth);
+                const result_type = rhs orelse lhs;
+                if (lhs != null and rhs != null and lhs.? != rhs.?) return error.InvalidFrameEncoding;
+                if (result_type) |value_type| try pushWasmValue(&stack_known, &stack, &stack_depth, value_type);
                 stack_known = false;
             },
             0x28...0x3e => {
                 _ = try readWasmU32(body, &cursor);
                 _ = try readWasmU32(body, &cursor);
                 if (opcode <= 0x35) {
-                    try requireWasmStack(&stack_known, &stack_depth, 1);
-                    if (stack_known) stack_depth += 1;
-                    required_result_seen = true;
+                    try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
+                    const result_type: u8 = switch (opcode) {
+                        0x29, 0x30...0x35 => 0x7e,
+                        0x2a => 0x7d,
+                        0x2b => 0x7c,
+                        else => 0x7f,
+                    };
+                    try pushWasmValue(&stack_known, &stack, &stack_depth, result_type);
+                    if (required_result_type != null and required_result_type.? == result_type) required_result_seen = true;
                 } else {
-                    try requireWasmStack(&stack_known, &stack_depth, 2);
+                    _ = try popWasmAny(&stack_known, &stack, &stack_depth);
+                    try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
                 }
             },
             0x3f, 0x40 => {
@@ -1395,26 +1513,26 @@ fn validateWasmCodeBody(
             },
             0x41 => {
                 try readWasmLeb128(body, &cursor, 5);
-                if (stack_known) stack_depth += 1;
+                try pushWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
                 if (required_result_type == 0x7f) required_result_seen = true;
             },
             0x42 => {
                 try readWasmLeb128(body, &cursor, 10);
-                if (stack_known) stack_depth += 1;
+                try pushWasmValue(&stack_known, &stack, &stack_depth, 0x7e);
                 if (required_result_type == 0x7e) required_result_seen = true;
             },
             0x43 => {
                 try skipWasmBytes(body, &cursor, 4);
-                if (stack_known) stack_depth += 1;
+                try pushWasmValue(&stack_known, &stack, &stack_depth, 0x7d);
             },
             0x44 => {
                 try skipWasmBytes(body, &cursor, 8);
-                if (stack_known) stack_depth += 1;
+                try pushWasmValue(&stack_known, &stack, &stack_depth, 0x7c);
             },
-            0x45...0xc4, 0xd1 => try applyWasmNumericStackEffect(opcode, &stack_known, &stack_depth, required_result_type, &required_result_seen),
+            0x45...0xc4, 0xd1 => try applyWasmNumericStackEffect(opcode, &stack_known, &stack, &stack_depth, required_result_type, &required_result_seen),
             0xd0 => {
                 if (!validWasmRefType(try readWasmU8(body, &cursor))) return error.InvalidFrameEncoding;
-                if (stack_known) stack_depth += 1;
+                stack_known = false;
             },
             0xfc => {
                 try readWasmMiscInstruction(body, &cursor);
@@ -1426,16 +1544,44 @@ fn validateWasmCodeBody(
     if (cursor != body.len) return error.InvalidFrameEncoding;
 }
 
-fn requireWasmStack(stack_known: *bool, stack_depth: *usize, count: usize) !void {
-    if (!stack_known.*) return;
-    if (stack_depth.* < count) return error.UniversalWasmInspectionFailed;
-    stack_depth.* -= count;
+fn localType(local_types: []const u8, index: u32) ?u8 {
+    if (index >= local_types.len) return null;
+    return local_types[@intCast(index)];
 }
 
-fn applyWasmNumericStackEffect(opcode: u8, stack_known: *bool, stack_depth: *usize, required_result_type: ?u8, required_result_seen: *bool) !void {
+fn pushWasmValue(stack_known: *bool, stack: *[max_wasm_stack_values]u8, stack_depth: *usize, value_type: u8) !void {
+    if (!stack_known.*) return;
+    if (stack_depth.* == stack.len) return error.CapacityExceeded;
+    stack[stack_depth.*] = value_type;
+    stack_depth.* += 1;
+}
+
+fn popWasmAny(stack_known: *bool, stack: *[max_wasm_stack_values]u8, stack_depth: *usize) !?u8 {
+    if (!stack_known.*) return null;
+    if (stack_depth.* == 0) return error.UniversalWasmInspectionFailed;
+    stack_depth.* -= 1;
+    return stack[stack_depth.*];
+}
+
+fn popWasmValue(stack_known: *bool, stack: *[max_wasm_stack_values]u8, stack_depth: *usize, expected_type: u8) !void {
+    const actual = try popWasmAny(stack_known, stack, stack_depth);
+    if (actual != null and actual.? != expected_type) return error.InvalidFrameEncoding;
+}
+
+fn requireWasmFinalResult(stack_known: *bool, stack: *[max_wasm_stack_values]u8, stack_depth: *usize, expected_type: u8) !void {
+    if (!stack_known.*) return;
+    if (stack_depth.* != 1) return error.UniversalWasmInspectionFailed;
+    if (stack[0] != expected_type) return error.InvalidFrameEncoding;
+    stack_depth.* = 0;
+}
+
+fn applyWasmNumericStackEffect(opcode: u8, stack_known: *bool, stack: *[max_wasm_stack_values]u8, stack_depth: *usize, required_result_type: ?u8, required_result_seen: *bool) !void {
     const effect = wasmNumericStackEffect(opcode) orelse return error.InvalidFrameEncoding;
-    try requireWasmStack(stack_known, stack_depth, effect.pop_count);
-    if (stack_known.*) stack_depth.* += 1;
+    var pop_index: usize = 0;
+    while (pop_index < effect.pop_count) : (pop_index += 1) {
+        _ = try popWasmAny(stack_known, stack, stack_depth);
+    }
+    try pushWasmValue(stack_known, stack, stack_depth, effect.result_type);
     if (required_result_type != null and required_result_type.? == effect.result_type) required_result_seen.* = true;
 }
 
@@ -1444,6 +1590,7 @@ fn applyWasmCallStackEffect(
     type_sigs: []const WasmSignature,
     function_type_indices: []const u32,
     stack_known: *bool,
+    stack: *[max_wasm_stack_values]u8,
     stack_depth: *usize,
     required_result_type: ?u8,
     required_result_seen: *bool,
@@ -1453,6 +1600,7 @@ fn applyWasmCallStackEffect(
         function_type_indices[@intCast(function_index)],
         type_sigs,
         stack_known,
+        stack,
         stack_depth,
         required_result_type,
         required_result_seen,
@@ -1463,18 +1611,30 @@ fn applyWasmSignatureStackEffect(
     type_index: u32,
     type_sigs: []const WasmSignature,
     stack_known: *bool,
+    stack: *[max_wasm_stack_values]u8,
     stack_depth: *usize,
     required_result_type: ?u8,
     required_result_seen: *bool,
 ) !void {
     if (type_index >= type_sigs.len) return error.UniversalWasmInspectionFailed;
     const signature = type_sigs[@intCast(type_index)];
-    try requireWasmStack(stack_known, stack_depth, signature.params);
+    var param_index: u32 = 0;
+    while (param_index < signature.params) : (param_index += 1) {
+        _ = try popWasmAny(stack_known, stack, stack_depth);
+    }
     if (signature.results > 1) return error.UniversalWasmInspectionFailed;
     if (stack_known.*) stack_depth.* += signature.results;
     if (signature.results == 1) {
-        if (signature.results_all_i32 and required_result_type == 0x7f) required_result_seen.* = true;
-        if (signature.results_all_i64 and required_result_type == 0x7e) required_result_seen.* = true;
+        const result_type: ?u8 = if (signature.results_all_i32) 0x7f else if (signature.results_all_i64) 0x7e else null;
+        if (result_type) |value_type| {
+            if (stack_known.*) {
+                stack_depth.* -= 1;
+                try pushWasmValue(stack_known, stack, stack_depth, value_type);
+            }
+            if (required_result_type == value_type) required_result_seen.* = true;
+        } else {
+            stack_known.* = false;
+        }
     }
 }
 
