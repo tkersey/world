@@ -1573,6 +1573,90 @@ test "universal wasm artifact validation rejects call argument type mismatches" 
     try std.testing.expectError(error.InvalidFrameEncoding, validateUniversalWasmArtifact(bytes.items));
 }
 
+test "universal wasm artifact validation accepts call_indirect stack order" {
+    const allocator = std.testing.allocator;
+    var bytes: std.ArrayList(u8) = .empty;
+    defer bytes.deinit(allocator);
+    try bytes.appendSlice(allocator, "\x00asm");
+    try bytes.appendSlice(allocator, &.{ 1, 0, 0, 0 });
+
+    var type_section: std.ArrayList(u8) = .empty;
+    defer type_section.deinit(allocator);
+    try appendWasmU32(allocator, &type_section, world.Appliance.Abi.universal_required_exports.len + 1);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendExpectedWasmFuncType(allocator, &type_section, index);
+    }
+    try type_section.append(allocator, 0x60);
+    try appendWasmU32(allocator, &type_section, 1);
+    try type_section.append(allocator, 0x7f);
+    try appendWasmU32(allocator, &type_section, 1);
+    try type_section.append(allocator, 0x7e);
+    try appendWasmSection(allocator, &bytes, 1, type_section.items);
+
+    var function_section: std.ArrayList(u8) = .empty;
+    defer function_section.deinit(allocator);
+    try appendWasmU32(allocator, &function_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        try appendWasmU32(allocator, &function_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 3, function_section.items);
+
+    var table_section: std.ArrayList(u8) = .empty;
+    defer table_section.deinit(allocator);
+    try appendWasmU32(allocator, &table_section, 1);
+    try table_section.append(allocator, 0x70);
+    try table_section.append(allocator, 0x00);
+    try appendWasmU32(allocator, &table_section, 1);
+    try appendWasmSection(allocator, &bytes, 4, table_section.items);
+
+    var memory_section: std.ArrayList(u8) = .empty;
+    defer memory_section.deinit(allocator);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try memory_section.append(allocator, 0x01);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmU32(allocator, &memory_section, 1);
+    try appendWasmSection(allocator, &bytes, 5, memory_section.items);
+
+    var export_section: std.ArrayList(u8) = .empty;
+    defer export_section.deinit(allocator);
+    try appendWasmU32(allocator, &export_section, world.Appliance.Abi.universal_required_exports.len + 1);
+    try appendWasmName(allocator, &export_section, "memory");
+    try export_section.append(allocator, 2);
+    try appendWasmU32(allocator, &export_section, 0);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |name, index| {
+        try appendWasmName(allocator, &export_section, name);
+        try export_section.append(allocator, 0);
+        try appendWasmU32(allocator, &export_section, @intCast(index));
+    }
+    try appendWasmSection(allocator, &bytes, 7, export_section.items);
+
+    var code_section: std.ArrayList(u8) = .empty;
+    defer code_section.deinit(allocator);
+    try appendWasmU32(allocator, &code_section, world.Appliance.Abi.universal_required_exports.len);
+    for (world.Appliance.Abi.universal_required_exports, 0..) |_, index| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(allocator);
+        if (index == 17) {
+            try appendWasmU32(allocator, &body, 0);
+            try body.append(allocator, 0x41);
+            try appendWasmU32(allocator, &body, 0);
+            try body.append(allocator, 0x41);
+            try appendWasmU32(allocator, &body, 0);
+            try body.append(allocator, 0x11);
+            try appendWasmU32(allocator, &body, world.Appliance.Abi.universal_required_exports.len);
+            try appendWasmU32(allocator, &body, 0);
+            try body.append(allocator, 0x0b);
+        } else {
+            try appendWasmValidResultBody(allocator, &body, index);
+        }
+        try appendWasmU32(allocator, &code_section, @intCast(body.items.len));
+        try code_section.appendSlice(allocator, body.items);
+    }
+    try appendWasmSection(allocator, &bytes, 10, code_section.items);
+
+    try validateUniversalWasmArtifact(bytes.items);
+}
+
 test "universal wasm artifact validation rejects leftover values in void exports" {
     const allocator = std.testing.allocator;
     var bytes: std.ArrayList(u8) = .empty;
@@ -2165,8 +2249,8 @@ fn validateWasmCodeBody(
             0x11 => {
                 const type_index = try readWasmU32(body, &cursor);
                 if (try readWasmU32(body, &cursor) != 0) return error.InvalidFrameEncoding;
-                try applyWasmSignatureStackEffect(type_index, type_sigs, &stack_known, &stack, &stack_depth, required_result_type, &required_result_seen);
                 try popWasmValue(&stack_known, &stack, &stack_depth, 0x7f);
+                try applyWasmSignatureStackEffect(type_index, type_sigs, &stack_known, &stack, &stack_depth, required_result_type, &required_result_seen);
             },
             0x1c => {
                 const count = try readWasmU32(body, &cursor);
