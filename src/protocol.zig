@@ -436,6 +436,7 @@ pub fn Protocol(comptime W: type) type {
                 const name = proofKindName(kind);
                 hashU64(&hasher, name.len);
                 hashBytes(&hasher, name);
+                hashU64(&hasher, proofGateFingerprint(kind));
             }
             hashU64(&hasher, Manifest.limits.max_universal_wasm_linear_memory_bytes);
             hashU64(&hasher, Manifest.limits.max_executable_image_bytes);
