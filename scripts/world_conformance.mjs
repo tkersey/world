@@ -26,10 +26,22 @@ import {
 
 const textDecoder = new TextDecoder();
 
-const requiredExports = [
+const universalApplianceRequiredExports = [
   'world_appliance_abi_version',
   'world_appliance_runtime_manifest_len',
   'world_appliance_read_runtime_manifest',
+  'world_appliance_load_executable',
+  'world_appliance_unload_executable',
+  'world_appliance_manifest_len',
+  'world_appliance_read_manifest',
+  'world_appliance_submit_turn',
+  'world_appliance_closure_len',
+  'world_appliance_read_closure',
+  'world_appliance_last_error_len',
+  'world_appliance_read_last_error',
+  'world_appliance_reset',
+  'world_appliance_alloc',
+  'world_appliance_free',
   'world_protocol_manifest_len',
   'world_protocol_read_manifest',
   'world_protocol_manifest_fingerprint_lo',
@@ -381,25 +393,13 @@ async function inspectAndExecuteWasm(path) {
   const module = await WebAssembly.compile(bytes);
   const exports = WebAssembly.Module.exports(module);
   const exportNames = new Set(exports.map((entry) => entry.name));
-  for (const name of requiredExports) {
+  for (const name of universalApplianceRequiredExports) {
     if (!exportNames.has(name)) throw new Error(`missing wasm export: ${name}`);
-  }
-  for (const name of [
-    'world_appliance_abi_version',
-    'world_appliance_alloc',
-    'world_appliance_free',
-  ]) {
-    if (!exportNames.has(name)) throw new Error(`missing wasm appliance export: ${name}`);
   }
   const imports = WebAssembly.Module.imports(module);
   if (imports.length !== 0) throw new Error('universal wasm must not import host functions');
   const instance = await WebAssembly.instantiate(module, {});
-  for (const name of [
-    ...requiredExports,
-    'world_appliance_abi_version',
-    'world_appliance_alloc',
-    'world_appliance_free',
-  ]) {
+  for (const name of universalApplianceRequiredExports) {
     if (typeof instance.exports[name] !== 'function') throw new Error(`wasm export is not callable: ${name}`);
   }
   const manifestLen = Number(instance.exports.world_protocol_manifest_len());
