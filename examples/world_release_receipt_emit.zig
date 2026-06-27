@@ -205,6 +205,7 @@ fn validateUniversalWasmArtifact(bytes: []const u8) !void {
 const WasmInspectionReceipt = struct {
     universal_wasm_checksum: []const u8,
     protocol_manifest_fingerprint_lo: []const u8,
+    protocol_manifest_fingerprint_hi: []const u8,
     artifact_inspection: bool,
     actual_webassembly_execution: bool,
     memory_limit_compliance: bool,
@@ -230,6 +231,10 @@ fn validateWasmInspectionReceipt(allocator: std.mem.Allocator, bytes: []const u8
     var manifest_buf: [18]u8 = undefined;
     const expected_manifest = try std.fmt.bufPrint(&manifest_buf, "0x{x}", .{Protocol.Manifest.manifestFingerprint().lo});
     if (!std.mem.eql(u8, receipt.protocol_manifest_fingerprint_lo, expected_manifest)) return error.WasmInspectionReceiptArtifactMismatch;
+
+    var manifest_hi_buf: [18]u8 = undefined;
+    const expected_manifest_hi = try std.fmt.bufPrint(&manifest_hi_buf, "0x{x}", .{Protocol.Manifest.manifestFingerprint().hi});
+    if (!std.mem.eql(u8, receipt.protocol_manifest_fingerprint_hi, expected_manifest_hi)) return error.WasmInspectionReceiptArtifactMismatch;
 }
 
 test "wasm inspection receipt validation uses parsed fields" {
@@ -238,12 +243,13 @@ test "wasm inspection receipt validation uses parsed fields" {
         \\{{
         \\  "universal_wasm_checksum": "0x0000000000001234",
         \\  "protocol_manifest_fingerprint_lo": "0x{x}",
+        \\  "protocol_manifest_fingerprint_hi": "0x{x}",
         \\  "artifact_inspection": true,
         \\  "actual_webassembly_execution": true,
         \\  "memory_limit_compliance": true,
         \\  "complete": true
         \\}}
-    , .{Protocol.Manifest.manifestFingerprint().lo});
+    , .{ Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
     defer allocator.free(valid);
     try validateWasmInspectionReceipt(allocator, valid, 0x1234);
 
@@ -252,12 +258,13 @@ test "wasm inspection receipt validation uses parsed fields" {
         \\  "not_complete": true,
         \\  "universal_wasm_checksum": "0x0000000000001234",
         \\  "protocol_manifest_fingerprint_lo": "0x{x}",
+        \\  "protocol_manifest_fingerprint_hi": "0x{x}",
         \\  "artifact_inspection": true,
         \\  "actual_webassembly_execution": true,
         \\  "memory_limit_compliance": true,
         \\  "complete": false
         \\}}
-    , .{Protocol.Manifest.manifestFingerprint().lo});
+    , .{ Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
     defer allocator.free(decoy_complete);
     try std.testing.expectError(error.WasmInspectionReceiptIncomplete, validateWasmInspectionReceipt(allocator, decoy_complete, 0x1234));
 
@@ -266,14 +273,29 @@ test "wasm inspection receipt validation uses parsed fields" {
         \\  "not_universal_wasm_checksum": "0x0000000000001234",
         \\  "universal_wasm_checksum": "0x0000000000005678",
         \\  "protocol_manifest_fingerprint_lo": "0x{x}",
+        \\  "protocol_manifest_fingerprint_hi": "0x{x}",
+        \\  "artifact_inspection": true,
+        \\  "actual_webassembly_execution": true,
+        \\  "memory_limit_compliance": true,
+        \\  "complete": true
+        \\}}
+    , .{ Protocol.Manifest.manifestFingerprint().lo, Protocol.Manifest.manifestFingerprint().hi });
+    defer allocator.free(decoy_checksum);
+    try std.testing.expectError(error.WasmInspectionReceiptArtifactMismatch, validateWasmInspectionReceipt(allocator, decoy_checksum, 0x1234));
+
+    const wrong_manifest_hi = try std.fmt.allocPrint(allocator,
+        \\{{
+        \\  "universal_wasm_checksum": "0x0000000000001234",
+        \\  "protocol_manifest_fingerprint_lo": "0x{x}",
+        \\  "protocol_manifest_fingerprint_hi": "0x0",
         \\  "artifact_inspection": true,
         \\  "actual_webassembly_execution": true,
         \\  "memory_limit_compliance": true,
         \\  "complete": true
         \\}}
     , .{Protocol.Manifest.manifestFingerprint().lo});
-    defer allocator.free(decoy_checksum);
-    try std.testing.expectError(error.WasmInspectionReceiptArtifactMismatch, validateWasmInspectionReceipt(allocator, decoy_checksum, 0x1234));
+    defer allocator.free(wrong_manifest_hi);
+    try std.testing.expectError(error.WasmInspectionReceiptArtifactMismatch, validateWasmInspectionReceipt(allocator, wrong_manifest_hi, 0x1234));
 }
 
 fn countWasmImports(section: []const u8) !u32 {
