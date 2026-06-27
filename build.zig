@@ -640,6 +640,9 @@ pub fn build(b: *std.Build) void {
         "zig-out/dist/world-v0.1.0/conformance/v0/world",
         "--receipt-out",
     });
+    run_check_world_v0_1_standalone.addFileInput(b.path("zig-out/dist/world-v0.1.0/scripts/world_conformance.mjs"));
+    run_check_world_v0_1_standalone.addFileInput(b.path("zig-out/dist/world-v0.1.0/world_universal_appliance.wasm"));
+    run_check_world_v0_1_standalone.addFileInput(b.path("zig-out/dist/world-v0.1.0/conformance/v0/world/corpus.json"));
     _ = run_check_world_v0_1_standalone.addOutputFileArg("world-distributed-conformance-receipt.json");
     run_check_world_v0_1_standalone.step.dependOn(&run_dist_world_v0.step);
     const check_world_v0_1_release_step = b.step("check-world-v0.1-release", "Validate packaged World v0.1.0 artifacts and source-free conformance.");
