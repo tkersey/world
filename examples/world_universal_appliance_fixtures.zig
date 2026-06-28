@@ -17,6 +17,12 @@ pub fn main(init: std.process.Init) !void {
             try exportAgentRuntimeArtifacts(init.io, allocator, out_dir);
             return;
         }
+        if (std.mem.eql(u8, first_arg, "--check-agent-runtime")) {
+            const out_dir = args.next() orelse return error.InvalidArguments;
+            if (args.next() != null) return error.InvalidArguments;
+            try checkAgentRuntimeArtifacts(init.io, allocator, out_dir);
+            return;
+        }
         if (std.mem.eql(u8, first_arg, "--reply")) {
             const output_path = args.next() orelse return error.InvalidArguments;
             const command_path = args.next() orelse return error.InvalidArguments;
@@ -282,6 +288,68 @@ fn exportAgentRuntimeArtifacts(io: std.Io, allocator: std.mem.Allocator, out_dir
     try writeJoined(io, allocator, out_dir, "agent-runtime-world-artifacts.json", metadata);
 }
 
+const AgentRuntimeMetadata = struct {
+    world_package_version: []const u8,
+    world_executable_image_format_version: u32,
+    world_executable_image_fingerprint_version: u32,
+    world_executable_image_fingerprint: []const u8,
+    world_appliance_manifest_fingerprint: []const u8,
+    world_appliance_abi_version: u32,
+    world_turn_closure_format_version: u32,
+    world_archive_format_version: u32,
+    root_module_fingerprint: []const u8,
+    dispatch_fingerprint: []const u8,
+    required_actuator_refs: []const []const u8,
+    required_descriptor_fingerprints: []const []const u8,
+    required_actuator_ref_fingerprints: []const []const u8,
+    required_world_port_ids: []const []const u8,
+    metadata: []const u8,
+};
+
+fn checkAgentRuntimeArtifacts(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8) !void {
+    const image_bytes = try readJoined(io, allocator, out_dir, "agent.executable-image", 16 * 1024 * 1024);
+    const manifest_bytes = try readJoined(io, allocator, out_dir, "appliance-manifest.bin", 1024 * 1024);
+    const metadata_bytes = try readJoined(io, allocator, out_dir, "agent-runtime-world-artifacts.json", 1024 * 1024);
+
+    var image = try world.Executable.Image.decode(allocator, image_bytes, .{ .max_image_bytes = image_bytes.len });
+    defer image.deinit(allocator);
+    const compatibility = try image.validateWithAllocator(allocator, universal.executable_runtime_profile);
+    if (!compatibility.compatible) return error.ExecutableLoadRejected;
+
+    var expected_core = try world.Appliance.Core.initExecutable(allocator, image, .{
+        .profile = .wasm_small,
+        .capacity = universal.abi_capacity,
+        .supported_runtime_profile = universal.executable_runtime_profile,
+        .metadata = "world-universal-appliance",
+    });
+    defer expected_core.deinit();
+    const expected_manifest = expected_core.readManifest();
+    const expected_manifest_bytes = try expected_manifest.encode(allocator);
+    if (!std.mem.eql(u8, manifest_bytes, expected_manifest_bytes)) return error.InvalidFrameEncoding;
+
+    var manifest = try world.Appliance.Manifest.decode(allocator, manifest_bytes);
+    defer manifest.deinit(allocator);
+    const parsed = try std.json.parseFromSlice(AgentRuntimeMetadata, allocator, metadata_bytes, .{});
+    defer parsed.deinit();
+    const metadata = parsed.value;
+
+    try expectStringEquals("v0.1.0", metadata.world_package_version);
+    try expectStringEquals("world-owned agent runtime export", metadata.metadata);
+    try expectEqualU32(world.world_executable_image_format_version, metadata.world_executable_image_format_version);
+    try expectEqualU32(world.world_executable_image_fingerprint_version, metadata.world_executable_image_fingerprint_version);
+    try expectEqualU32(world.world_appliance_abi_version, metadata.world_appliance_abi_version);
+    try expectEqualU32(world.world_appliance_turn_closure_format_version, metadata.world_turn_closure_format_version);
+    try expectEqualU32(world.Archive.world_archive_format_version, metadata.world_archive_format_version);
+    try expectEqualU64(image.image_fingerprint, try parseHexU64(metadata.world_executable_image_fingerprint));
+    try expectEqualU64(manifest.manifest_fingerprint, try parseHexU64(metadata.world_appliance_manifest_fingerprint));
+    try expectEqualU64((image.module_set.root() orelse return error.InvalidFrameEncoding).module_ref.boundary_module_fingerprint, try parseHexU64(metadata.root_module_fingerprint));
+    try expectEqualU64(image.dispatch_image.dispatch_fingerprint, try parseHexU64(metadata.dispatch_fingerprint));
+    try expectActuatorRefLabels(metadata.required_actuator_refs, image.external_bindings);
+    try expectHexArrayEquals(manifest.actuation_descriptor_fingerprints, metadata.required_descriptor_fingerprints);
+    try expectHexArrayEquals(manifest.actuation_actuator_ref_fingerprints, metadata.required_actuator_ref_fingerprints);
+    try expectHexArrayEquals(manifest.actuation_world_port_ids, metadata.required_world_port_ids);
+}
+
 fn agentRuntimeMetadataJson(
     allocator: std.mem.Allocator,
     image: world.Executable.Image,
@@ -345,6 +413,65 @@ fn writeU64Array(allocator: std.mem.Allocator, out: *std.ArrayList(u8), values: 
 fn writeJoined(io: std.Io, allocator: std.mem.Allocator, dir: []const u8, basename: []const u8, data: []const u8) !void {
     const path = try std.fs.path.join(allocator, &.{ dir, basename });
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+}
+
+fn readJoined(io: std.Io, allocator: std.mem.Allocator, dir: []const u8, basename: []const u8, limit: usize) ![]u8 {
+    const path = try std.fs.path.join(allocator, &.{ dir, basename });
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(limit));
+}
+
+fn expectStringEquals(expected: []const u8, actual: []const u8) !void {
+    if (!std.mem.eql(u8, expected, actual)) return error.InvalidFrameEncoding;
+}
+
+fn expectEqualU32(expected: u32, actual: u32) !void {
+    if (expected != actual) return error.InvalidFrameEncoding;
+}
+
+fn expectEqualU64(expected: u64, actual: u64) !void {
+    if (expected != actual) return error.InvalidFrameEncoding;
+}
+
+fn expectHexArrayEquals(expected: []const u64, actual: []const []const u8) !void {
+    if (expected.len != actual.len) return error.InvalidFrameEncoding;
+    for (expected, actual) |expected_value, actual_value| {
+        try expectEqualU64(expected_value, try parseHexU64(actual_value));
+    }
+}
+
+fn expectActuatorRefLabels(expected: []const []const u8, bindings: []const world.Executable.ExternalBinding) !void {
+    if (expected.len != bindings.len) return error.InvalidFrameEncoding;
+    for (expected, 0..) |label, index| {
+        for (expected[0..index]) |previous| {
+            if (std.mem.eql(u8, label, previous)) break;
+        } else {
+            var expected_count: usize = 0;
+            var binding_count: usize = 0;
+            for (expected) |candidate| {
+                if (std.mem.eql(u8, label, candidate)) expected_count += 1;
+            }
+            for (bindings) |binding| {
+                if (std.mem.eql(u8, label, binding.actuator_ref.label)) binding_count += 1;
+            }
+            if (expected_count != binding_count) return error.InvalidFrameEncoding;
+            continue;
+        }
+    }
+    for (bindings) |binding| {
+        var found = false;
+        for (expected) |label| {
+            if (std.mem.eql(u8, label, binding.actuator_ref.label)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return error.InvalidFrameEncoding;
+    }
+}
+
+fn parseHexU64(value: []const u8) !u64 {
+    if (value.len != 18 or value[0] != '0' or value[1] != 'x') return error.InvalidFrameEncoding;
+    return std.fmt.parseInt(u64, value[2..], 16) catch error.InvalidFrameEncoding;
 }
 
 fn bootCommandBytes(allocator: std.mem.Allocator, manifest_fingerprint: u64, metadata: []const u8) ![]const u8 {

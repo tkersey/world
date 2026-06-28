@@ -283,11 +283,9 @@ pub fn build(b: *std.Build) void {
         "--agent-runtime",
         world_agent_runtime_dist_dir,
     });
-    const check_world_agent_runtime_artifacts_cmd = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        "test -s \"$1/agent.executable-image\" && test -s \"$1/appliance-manifest.bin\" && test -s \"$1/agent-runtime-world-artifacts.json\"",
-        "check-world-agent-runtime-artifacts",
+    const check_world_agent_runtime_artifacts_cmd = b.addRunArtifact(universal_fixture_gen);
+    check_world_agent_runtime_artifacts_cmd.addArgs(&.{
+        "--check-agent-runtime",
         world_agent_runtime_dist_dir,
     });
     check_world_agent_runtime_artifacts_cmd.step.dependOn(&run_world_agent_runtime_artifact_gen.step);
@@ -681,6 +679,7 @@ pub fn build(b: *std.Build) void {
     const check_world_v0_1_release_step = b.step("check-world-v0.1-release", "Validate packaged World v0.1.0 artifacts and source-free conformance.");
     check_world_v0_1_release_step.dependOn(&run_check_world_v0_1_dist.step);
     check_world_v0_1_release_step.dependOn(&run_check_world_v0_1_standalone.step);
+    run_world_agent_runtime_artifact_gen.step.dependOn(&run_dist_world_v0.step);
     const wasm_guest_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("examples/world_wasm_guest_one_port.zig"),
@@ -1067,6 +1066,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(check_world_agent_replay_step);
     check_step.dependOn(check_world_agent_migration_step);
     check_step.dependOn(check_world_agent_conformance_corpus_step);
+    check_step.dependOn(check_world_agent_runtime_artifacts_step);
     check_step.dependOn(check_world_js_corpus_step);
     check_step.dependOn(check_world_js_malformed_corpus_step);
     check_step.dependOn(check_world_adversarial_codecs_step);
