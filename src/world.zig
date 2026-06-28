@@ -1476,7 +1476,7 @@ test "world protocol release receipt validates required proof matrix exactly onc
 }
 
 test "world conformance corpus fingerprint covers positive negative and transition vectors" {
-    try std.testing.expectEqual(@as(usize, 23), Protocol.positive_vector_names.len);
+    try std.testing.expectEqual(@as(usize, 29), Protocol.positive_vector_names.len);
     try std.testing.expectEqual(@as(usize, 19), Protocol.negative_vector_names.len);
     try std.testing.expectEqual(@as(usize, 9), Protocol.transition_vector_names.len);
     try std.testing.expectEqual(@as(usize, 9), Protocol.wire_record_names.len);
