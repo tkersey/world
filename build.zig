@@ -268,8 +268,15 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .optimize = optimize,
     });
+    const boundary_agent_runtime_mod = b.createModule(.{
+        .root_source_file = host_boundary_dep.path("examples/agent_loop.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    boundary_agent_runtime_mod.addImport("boundary", host_boundary);
     universal_fixture_mod.addImport("world", host_world);
     universal_fixture_mod.addImport("world_fixtures", host_fixtures);
+    universal_fixture_mod.addImport("boundary_agent_runtime", boundary_agent_runtime_mod);
     const universal_fixture_gen = b.addExecutable(.{ .name = "world-universal-appliance-fixtures", .root_module = universal_fixture_mod });
     const run_universal_fixture_gen = b.addRunArtifact(universal_fixture_gen);
     const universal_image_a = run_universal_fixture_gen.addOutputFileArg("world-universal-image-a.bin");
@@ -1066,7 +1073,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(check_world_agent_replay_step);
     check_step.dependOn(check_world_agent_migration_step);
     check_step.dependOn(check_world_agent_conformance_corpus_step);
-    check_step.dependOn(check_world_agent_runtime_artifacts_step);
+    if (target.query.isNative()) check_step.dependOn(check_world_agent_runtime_artifacts_step);
     check_step.dependOn(check_world_js_corpus_step);
     check_step.dependOn(check_world_js_malformed_corpus_step);
     check_step.dependOn(check_world_adversarial_codecs_step);

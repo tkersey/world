@@ -31,7 +31,11 @@ const requiredDistFiles = [
   'docs/security_model.md',
 ];
 
-const checksumCoveredDistFiles = requiredDistFiles.filter((rel) => rel !== 'checksums.txt');
+const agentRuntimeDistFiles = [
+  'agent-runtime/agent.executable-image',
+  'agent-runtime/appliance-manifest.bin',
+  'agent-runtime/agent-runtime-world-artifacts.json',
+];
 
 const universalApplianceRequiredExports = [
   'world_appliance_abi_version',
@@ -200,12 +204,14 @@ async function emitDist(options) {
 async function checkDist(options) {
   requirePath(options.dist, '--dist');
   const dist = options.dist;
-  for (const rel of requiredDistFiles) {
+  const required = requiredFilesForDist(dist);
+  const checksumCovered = required.filter((rel) => rel !== 'checksums.txt');
+  for (const rel of required) {
     const path = join(dist, rel);
     if (!existsSync(path)) throw new Error(`missing dist file: ${rel}`);
   }
-  verifyDistFileSet(dist, requiredDistFiles);
-  verifyChecksums(dist, checksumCoveredDistFiles);
+  verifyDistFileSet(dist, required);
+  verifyChecksums(dist, checksumCovered);
   const wasmBytes = readFileSync(join(dist, 'world_universal_appliance.wasm'));
   const inspection = await inspectWasm(wasmBytes);
   verifyReleaseMetadata(dist, wasmBytes, inspection);
@@ -479,8 +485,15 @@ function readVarU32At(data, offset, end = data.length) {
 }
 
 function writeChecksums(root) {
-  const lines = checksumCoveredDistFiles.map((rel) => `${sha256Hex(readFileSync(join(root, rel)))}  ${rel}`);
+  const lines = requiredDistFiles
+    .filter((rel) => rel !== 'checksums.txt')
+    .map((rel) => `${sha256Hex(readFileSync(join(root, rel)))}  ${rel}`);
   writeFileSync(join(root, 'checksums.txt'), `${lines.join('\n')}\n`);
+}
+
+function requiredFilesForDist(root) {
+  if (!existsSync(join(root, 'agent-runtime'))) return requiredDistFiles;
+  return [...requiredDistFiles, ...agentRuntimeDistFiles];
 }
 
 function verifyChecksums(root, requiredFiles) {
