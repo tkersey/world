@@ -101,7 +101,8 @@ fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const requested_target = b.standardTargetOptions(.{});
+    const target = if (requested_target.result.os.tag == .freestanding) b.graph.host else requested_target;
     const optimize = b.standardOptimizeOption(.{});
     const test_args = parseTestArgs(b);
     const boundary_dep = b.dependency("boundary", .{
