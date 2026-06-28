@@ -113,6 +113,12 @@ const expected = {
     'root result object',
     'RunReceipt',
     'Actuation receipts',
+    'Agent Closure skeleton',
+    'Agent Closure fixture',
+    'Agent Closure replay',
+    'Agent Closure deterministic retry',
+    'Agent Closure migration',
+    'Agent Closure branching',
   ],
   negative: [
     'malformed Executable.Image',

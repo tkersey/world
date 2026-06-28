@@ -62,7 +62,7 @@ Every root/provider residual requirement must be covered exactly once by a seale
 
 ## Runtime Ownership
 
-Boundary owns loaded executable semantics: executable plan images, schema-driven loaded values, target-neutral `LoadedModule.Session`, continuation images, stable failure identities, and generated-versus-loaded parity. The reviewed Boundary v0.5.0 portable-v2 profile extends the v0.4.1 reachability, codec, exact residual-site binding, executable-plan validation, session-image validation, and response-safety hardening. World does not reinterpret Boundary `ProgramPlan` internals and does not add a second interpreter.
+Boundary owns loaded executable semantics: executable plan images, schema-driven loaded values, target-neutral `LoadedModule.Session`, continuation images, stable failure identities, and generated-versus-loaded parity. The reviewed Boundary v0.6.2 portable-v2 profile extends the v0.4.1 reachability, codec, exact residual-site binding, executable-plan validation, session-image validation, response-safety hardening, and Agent Profile v0 proof surface. World does not reinterpret Boundary `ProgramPlan` internals and does not add a second interpreter.
 
 World owns admission, closed provider selection, Linker route synthesis, Runspace installation, Fabric execution, external Actuation, Capsule composition, Continuity/Chronicle/Archive evidence, Appliance turns, and the deployment ABI. Loaded roots and loaded providers enter through the same Runspace, Fabric, Actuation, and Capsule owners as generated targets.
 

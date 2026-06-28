@@ -419,6 +419,14 @@ pub fn build(b: *std.Build) void {
         "conformance/v0/world",
     });
     check_world_conformance_corpus_step.dependOn(&run_world_conformance_corpus_node.step);
+    const check_world_agent_closure_step = b.step("check-world-agent-closure", "Run World Agent Closure skeleton and fixture proof surfaces.");
+    const check_world_agent_replay_step = b.step("check-world-agent-replay", "Run World Agent Closure replay and deterministic retry proof surfaces.");
+    const check_world_agent_migration_step = b.step("check-world-agent-migration", "Run World Agent Closure migration and branching proof surfaces.");
+    const check_world_agent_conformance_corpus_step = b.step("check-world-agent-conformance-corpus", "Validate World Agent Closure named conformance vectors.");
+    check_world_agent_conformance_corpus_step.dependOn(check_world_conformance_corpus_step);
+    check_world_agent_conformance_corpus_step.dependOn(check_world_agent_closure_step);
+    check_world_agent_conformance_corpus_step.dependOn(check_world_agent_replay_step);
+    check_world_agent_conformance_corpus_step.dependOn(check_world_agent_migration_step);
     const run_world_js_corpus = b.addSystemCommand(&.{
         "node",
         "scripts/world_conformance.mjs",
@@ -623,6 +631,9 @@ pub fn build(b: *std.Build) void {
     emit_world_release_artifacts_step.dependOn(&run_dist_world_v0.step);
     const dist_world_v0_1_step = b.step("dist-world-v0.1.0", "Package World v0.1.0 release artifacts.");
     dist_world_v0_1_step.dependOn(&run_dist_world_v0.step);
+    const dist_world_agent_v0_step = b.step("dist-world-agent-v0", "Package World v0 artifacts with Agent Closure proof gates completed.");
+    dist_world_agent_v0_step.dependOn(dist_world_v0_1_step);
+    dist_world_agent_v0_step.dependOn(check_world_agent_conformance_corpus_step);
     const run_check_world_v0_1_dist = b.addSystemCommand(&.{
         "node",
         "scripts/world_release_artifacts.mjs",
@@ -1033,6 +1044,10 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(check_world_protocol_manifest_step);
     check_step.dependOn(check_boundary_world_compatibility_step);
     check_step.dependOn(check_world_conformance_corpus_step);
+    check_step.dependOn(check_world_agent_closure_step);
+    check_step.dependOn(check_world_agent_replay_step);
+    check_step.dependOn(check_world_agent_migration_step);
+    check_step.dependOn(check_world_agent_conformance_corpus_step);
     check_step.dependOn(check_world_js_corpus_step);
     check_step.dependOn(check_world_js_malformed_corpus_step);
     check_step.dependOn(check_world_adversarial_codecs_step);
@@ -1274,6 +1289,20 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-agent-closure-fixture",
+            .path = "examples/world_agent_loop.zig",
+            .step = "run-world-agent-closure-fixture",
+            .desc = "Run the World Agent Closure fixture proof surface.",
+            .serial_after_tests = true,
+            .expected_stdout =
+            \\skeleton final=final=actuate skeleton complete events=6 tool_calls=1 responses=3
+            \\fixture final=final=fixture updated events=10 tool_calls=2 responses=5
+            \\fixture output=actuate updated the fixture
+            \\replay fresh_handler_calls=0
+            \\
+            ,
+        },
+        .{
             .name = "world-frame-ports",
             .path = "examples/world_frame_ports.zig",
             .step = "run-world-frame-ports",
@@ -1329,6 +1358,20 @@ pub fn build(b: *std.Build) void {
             .path = "examples/world_agent_branch.zig",
             .step = "run-world-agent-branch",
             .desc = "Run the agent branch World example.",
+            .expected_stdout =
+            \\checkpoint_fingerprint=2b11bbc8bca81ece
+            \\baseline_transcript_fingerprint=aa3dd05381fca5cb
+            \\branch_transcript_fingerprint=7cc91fbb223c4ca
+            \\baseline_final_result=final=actuate skeleton complete
+            \\branch_final_result=final=branch alternate
+            \\
+            ,
+        },
+        .{
+            .name = "world-agent-closure-branch",
+            .path = "examples/world_agent_branch.zig",
+            .step = "run-world-agent-closure-branch",
+            .desc = "Run the World Agent Closure branching proof surface.",
             .expected_stdout =
             \\checkpoint_fingerprint=2b11bbc8bca81ece
             \\baseline_transcript_fingerprint=aa3dd05381fca5cb
@@ -1964,6 +2007,21 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-agent-closure-skeleton",
+            .path = "examples/world_turn_closure_agent.zig",
+            .step = "run-world-agent-closure-skeleton",
+            .desc = "Run the World Agent Closure skeleton proof surface.",
+            .expected_stdout =
+            \\root_loaded=true
+            \\provider_loaded=true
+            \\external_model_requests=2
+            \\internal_tool_invocations=1
+            \\final_result=final=actuate skeleton complete
+            \\closure_valid=true
+            \\
+            ,
+        },
+        .{
             .name = "world-turn-closure-active-fabric-migrate",
             .path = "examples/world_turn_closure_active_fabric_migrate.zig",
             .step = "run-world-turn-closure-active-fabric-migrate",
@@ -1979,10 +2037,37 @@ pub fn build(b: *std.Build) void {
             ,
         },
         .{
+            .name = "world-agent-closure-migrate",
+            .path = "examples/world_turn_closure_active_fabric_migrate.zig",
+            .step = "run-world-agent-closure-migrate",
+            .desc = "Run the World Agent Closure migration proof surface.",
+            .expected_stdout =
+            \\provider_parked=true
+            \\source_destroyed=true
+            \\restore_accepted=true
+            \\active_fabric_restore_accepted=true
+            \\provider_completed=true
+            \\root_completed=true
+            \\
+            ,
+        },
+        .{
             .name = "world-turn-closure-replay",
             .path = "examples/world_turn_closure_replay.zig",
             .step = "run-world-turn-closure-replay",
             .desc = "Run the World Turn Closure actuated replay rejection example.",
+            .expected_stdout =
+            \\fresh_host_requests=1
+            \\replay_supported=false
+            \\actuated_replay_rejected=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-agent-closure-replay",
+            .path = "examples/world_turn_closure_replay.zig",
+            .step = "run-world-agent-closure-replay",
+            .desc = "Run the World Agent Closure replay proof surface.",
             .expected_stdout =
             \\fresh_host_requests=1
             \\replay_supported=false
@@ -2008,6 +2093,18 @@ pub fn build(b: *std.Build) void {
             .path = "examples/world_turn_closure_retry.zig",
             .step = "run-world-turn-closure-retry",
             .desc = "Run the World Turn Closure deterministic retry example.",
+            .expected_stdout =
+            \\effect_call_count=1
+            \\closure_retry_equal=true
+            \\archive_batch_retry_equal=true
+            \\
+            ,
+        },
+        .{
+            .name = "world-agent-closure-retry",
+            .path = "examples/world_turn_closure_retry.zig",
+            .step = "run-world-agent-closure-retry",
+            .desc = "Run the World Agent Closure deterministic retry proof surface.",
             .expected_stdout =
             \\effect_call_count=1
             \\closure_retry_equal=true
@@ -2334,6 +2431,21 @@ pub fn build(b: *std.Build) void {
         }
         if (std.mem.eql(u8, example.step, "run-world-turn-closure-js-host")) {
             check_world_js_codec_step.dependOn(run_step);
+        }
+        if (std.mem.eql(u8, example.step, "run-world-agent-closure-skeleton") or
+            std.mem.eql(u8, example.step, "run-world-agent-closure-fixture"))
+        {
+            check_world_agent_closure_step.dependOn(run_step);
+        }
+        if (std.mem.eql(u8, example.step, "run-world-agent-closure-replay") or
+            std.mem.eql(u8, example.step, "run-world-agent-closure-retry"))
+        {
+            check_world_agent_replay_step.dependOn(run_step);
+        }
+        if (std.mem.eql(u8, example.step, "run-world-agent-closure-migrate") or
+            std.mem.eql(u8, example.step, "run-world-agent-closure-branch"))
+        {
+            check_world_agent_migration_step.dependOn(run_step);
         }
         if (std.mem.eql(u8, example.step, "run-world-v0-report")) {
             check_world_v0_step.dependOn(run_step);
