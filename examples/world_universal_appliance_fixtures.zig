@@ -11,6 +11,12 @@ pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next();
     if (args.next()) |first_arg| {
+        if (std.mem.eql(u8, first_arg, "--agent-runtime")) {
+            const out_dir = args.next() orelse return error.InvalidArguments;
+            if (args.next() != null) return error.InvalidArguments;
+            try exportAgentRuntimeArtifacts(init.io, allocator, out_dir);
+            return;
+        }
         if (std.mem.eql(u8, first_arg, "--reply")) {
             const output_path = args.next() orelse return error.InvalidArguments;
             const command_path = args.next() orelse return error.InvalidArguments;
@@ -96,6 +102,69 @@ fn buildExecutableImage(allocator: std.mem.Allocator, image_metadata: []const u8
         .descriptor = descriptor,
         .label = binding_label,
     }));
+
+    var prepared = try builder.prepare();
+    defer prepared.deinit();
+    return try prepared.seal();
+}
+
+fn buildAgentRuntimeImage(allocator: std.mem.Allocator) !world.Executable.Image {
+    const root_bytes = try fixtures.Agent.Target.Module.fullImage(allocator);
+    defer allocator.free(root_bytes);
+
+    var builder = world.Executable.Builder.init(allocator, .{
+        .runtime_profile = universal.executable_runtime_profile,
+        .metadata = "agent-runtime-v0.1.world-agent",
+    });
+    defer builder.deinit();
+    try builder.addRootModule(root_bytes);
+
+    const root_module = builder.modules.items[0];
+    for (root_module.imports) |root_import| {
+        const is_tool_port = root_import.world_port_id == world.ImportRequirement.fromTargetPort(fixtures.Agent.Target, 1).world_port_id;
+        const actuator_ref = if (is_tool_port)
+            world.Actuation.Ref.init(.{
+                .kind = .tool_like,
+                .class = .idempotent_mutation,
+                .label = "sandbox:file",
+                .supported_modes = .all,
+                .supported_response_statuses = .all,
+                .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+            })
+        else
+            world.Actuation.Ref.init(.{
+                .kind = .model_like,
+                .class = .deterministic_fixture,
+                .label = "fixture:agent-model",
+                .supported_modes = .all,
+                .supported_response_statuses = .all,
+                .value_policy_fingerprint = world.Actuation.valuePolicyFingerprint(.portable),
+            });
+        const binding_label = if (is_tool_port) "agent-runtime.tool" else "agent-runtime.model";
+        const descriptor = world.Actuation.Descriptor.init(.{
+            .actuator_ref = actuator_ref,
+            .world_surface_fingerprint = root_module.target_ref.world_surface_fingerprint,
+            .target_ref_fingerprint = root_module.target_ref.target_ref_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .source_effect_shape_ref_fingerprint = root_import.source_effect_shape_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .response_value_table_id = root_import.response_value_table_id,
+            .label = binding_label,
+        });
+        try builder.addExternalBinding(world.Executable.ExternalBinding.init(.{
+            .parent_module_fingerprint = root_module.module_ref.boundary_module_fingerprint,
+            .world_port_id = root_import.world_port_id,
+            .world_port_ref_fingerprint = root_import.world_port_ref_fingerprint,
+            .payload_value_table_id = root_import.payload_value_table_id,
+            .payload_value_ref_fingerprint = root_import.payload_value_ref_fingerprint,
+            .response_value_table_id = root_import.response_value_table_id,
+            .response_value_ref_fingerprint = root_import.response_value_ref_fingerprint,
+            .actuator_ref = actuator_ref,
+            .descriptor = descriptor,
+            .label = binding_label,
+        }));
+    }
 
     var prepared = try builder.prepare();
     defer prepared.deinit();
@@ -188,6 +257,94 @@ fn manifestFingerprintForImage(allocator: std.mem.Allocator, image: world.Execut
     });
     defer core.deinit();
     return core.readManifest().manifest_fingerprint;
+}
+
+fn exportAgentRuntimeArtifacts(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(io, out_dir);
+
+    var image = try buildAgentRuntimeImage(allocator);
+    defer image.deinit(allocator);
+    var core = try world.Appliance.Core.initExecutable(allocator, image, .{
+        .profile = .wasm_small,
+        .capacity = universal.abi_capacity,
+        .supported_runtime_profile = universal.executable_runtime_profile,
+        .metadata = "world-universal-appliance",
+    });
+    defer core.deinit();
+
+    const image_bytes = try image.encode(allocator);
+    const manifest = core.readManifest();
+    const manifest_bytes = try manifest.encode(allocator);
+    const metadata = try agentRuntimeMetadataJson(allocator, image, manifest);
+
+    try writeJoined(io, allocator, out_dir, "agent.executable-image", image_bytes);
+    try writeJoined(io, allocator, out_dir, "appliance-manifest.bin", manifest_bytes);
+    try writeJoined(io, allocator, out_dir, "agent-runtime-world-artifacts.json", metadata);
+}
+
+fn agentRuntimeMetadataJson(
+    allocator: std.mem.Allocator,
+    image: world.Executable.Image,
+    manifest: world.Appliance.Manifest,
+) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.print(allocator,
+        \\{{
+        \\  "world_package_version": "v0.1.0",
+        \\  "world_executable_image_format_version": {d},
+        \\  "world_executable_image_fingerprint_version": {d},
+        \\  "world_executable_image_fingerprint": "0x{x:0>16}",
+        \\  "world_appliance_manifest_fingerprint": "0x{x:0>16}",
+        \\  "world_appliance_abi_version": {d},
+        \\  "world_turn_closure_format_version": {d},
+        \\  "world_archive_format_version": {d},
+        \\  "root_module_fingerprint": "0x{x:0>16}",
+        \\  "dispatch_fingerprint": "0x{x:0>16}",
+        \\  "required_actuator_refs":
+    , .{
+        world.world_executable_image_format_version,
+        world.world_executable_image_fingerprint_version,
+        image.image_fingerprint,
+        manifest.manifest_fingerprint,
+        world.world_appliance_abi_version,
+        world.world_appliance_turn_closure_format_version,
+        world.Archive.world_archive_format_version,
+        (image.module_set.root() orelse return error.InvalidFrameEncoding).module_ref.boundary_module_fingerprint,
+        image.dispatch_image.dispatch_fingerprint,
+    });
+    try writeStringArray(allocator, &out, &.{ "fixture:agent-model", "sandbox:file" });
+    try out.appendSlice(allocator, ",\n  \"required_descriptor_fingerprints\": ");
+    try writeU64Array(allocator, &out, manifest.actuation_descriptor_fingerprints);
+    try out.appendSlice(allocator, ",\n  \"required_actuator_ref_fingerprints\": ");
+    try writeU64Array(allocator, &out, manifest.actuation_actuator_ref_fingerprints);
+    try out.appendSlice(allocator, ",\n  \"required_world_port_ids\": ");
+    try writeU64Array(allocator, &out, manifest.actuation_world_port_ids);
+    try out.appendSlice(allocator, ",\n  \"metadata\": \"world-owned agent runtime export\"\n}\n");
+    return try out.toOwnedSlice(allocator);
+}
+
+fn writeStringArray(allocator: std.mem.Allocator, out: *std.ArrayList(u8), values: []const []const u8) !void {
+    try out.append(allocator, '[');
+    for (values, 0..) |value, index| {
+        if (index != 0) try out.appendSlice(allocator, ", ");
+        try out.print(allocator, "\"{s}\"", .{value});
+    }
+    try out.append(allocator, ']');
+}
+
+fn writeU64Array(allocator: std.mem.Allocator, out: *std.ArrayList(u8), values: []const u64) !void {
+    try out.append(allocator, '[');
+    for (values, 0..) |value, index| {
+        if (index != 0) try out.appendSlice(allocator, ", ");
+        try out.print(allocator, "\"0x{x:0>16}\"", .{value});
+    }
+    try out.append(allocator, ']');
+}
+
+fn writeJoined(io: std.Io, allocator: std.mem.Allocator, dir: []const u8, basename: []const u8, data: []const u8) !void {
+    const path = try std.fs.path.join(allocator, &.{ dir, basename });
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
 }
 
 fn bootCommandBytes(allocator: std.mem.Allocator, manifest_fingerprint: u64, metadata: []const u8) ![]const u8 {

@@ -277,6 +277,24 @@ pub fn build(b: *std.Build) void {
     const universal_image_b = run_universal_fixture_gen.addOutputFileArg("world-universal-image-b.bin");
     const universal_command_b = run_universal_fixture_gen.addOutputFileArg("world-universal-command-b.bin");
     const universal_proof = run_universal_fixture_gen.addOutputFileArg("world-universal-proof.txt");
+    const world_agent_runtime_dist_dir = "zig-out/dist/world-v0.1.0/agent-runtime";
+    const run_world_agent_runtime_artifact_gen = b.addRunArtifact(universal_fixture_gen);
+    run_world_agent_runtime_artifact_gen.addArgs(&.{
+        "--agent-runtime",
+        world_agent_runtime_dist_dir,
+    });
+    const check_world_agent_runtime_artifacts_cmd = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        "test -s \"$1/agent.executable-image\" && test -s \"$1/appliance-manifest.bin\" && test -s \"$1/agent-runtime-world-artifacts.json\"",
+        "check-world-agent-runtime-artifacts",
+        world_agent_runtime_dist_dir,
+    });
+    check_world_agent_runtime_artifacts_cmd.step.dependOn(&run_world_agent_runtime_artifact_gen.step);
+    const emit_world_agent_runtime_artifacts_step = b.step("emit-world-agent-runtime-artifacts", "Emit World-owned Agent Runtime executable image and appliance manifest artifacts.");
+    emit_world_agent_runtime_artifacts_step.dependOn(&run_world_agent_runtime_artifact_gen.step);
+    const check_world_agent_runtime_artifacts_step = b.step("check-world-agent-runtime-artifacts", "Validate World-owned Agent Runtime export artifacts exist and are non-empty.");
+    check_world_agent_runtime_artifacts_step.dependOn(&check_world_agent_runtime_artifacts_cmd.step);
     const run_universal_appliance_node = b.addSystemCommand(&.{
         "node",
         "scripts/world_universal_appliance_conformance.mjs",
@@ -634,6 +652,7 @@ pub fn build(b: *std.Build) void {
     const dist_world_agent_v0_step = b.step("dist-world-agent-v0", "Package World v0 artifacts with Agent Closure proof gates completed.");
     dist_world_agent_v0_step.dependOn(dist_world_v0_1_step);
     dist_world_agent_v0_step.dependOn(check_world_agent_conformance_corpus_step);
+    dist_world_agent_v0_step.dependOn(check_world_agent_runtime_artifacts_step);
     const run_check_world_v0_1_dist = b.addSystemCommand(&.{
         "node",
         "scripts/world_release_artifacts.mjs",
