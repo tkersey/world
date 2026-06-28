@@ -542,8 +542,8 @@ pub fn Protocol(comptime W: type) type {
             pub const format_version: u32 = world_protocol_manifest_format_version;
             pub const fingerprint_version: u32 = world_protocol_manifest_fingerprint_version;
             pub const world_package_version = "0.1.0";
-            pub const required_boundary_package_version = "0.5.0";
-            pub const required_boundary_protocol_manifest_fingerprint: u64 = 0xf970e6d1a1601cbc;
+            pub const required_boundary_package_version = "0.6.2";
+            pub const required_boundary_protocol_manifest_fingerprint: u64 = 0x68ce6ebd4448144f;
             pub const minimum_zig_version = "0.16.0";
             pub const required_feature_flags = &.{
                 "boundary-portable-v2-loaded-execution-profile",

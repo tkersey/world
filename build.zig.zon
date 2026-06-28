@@ -4,8 +4,8 @@
     .fingerprint = 0x3a77114378d4745d,
     .dependencies = .{
         .boundary = .{
-            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v0.5.0.tar.gz",
-            .hash = "boundary-0.5.0-flclaARBgQDsFsxpu28gZTilr3FpqI_fGWgV4ezoIzMX",
+            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v0.6.2.tar.gz",
+            .hash = "boundary-0.6.2-flclaA4FhQCQL_ODFaXPP7HtNOn21toNs6rc14-cQqYJ",
         },
     },
     .minimum_zig_version = "0.16.0",

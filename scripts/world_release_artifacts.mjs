@@ -105,7 +105,7 @@ const proofGateNames = {
   reproducible_artifact: 'check-world-reproducible-wasm',
 };
 
-const boundaryProtocolManifestFingerprint = '0xf970e6d1a1601cbc';
+const boundaryProtocolManifestFingerprint = '0x68ce6ebd4448144f';
 const conformanceCorpusRootFingerprint = '0x3de41591452c3bb4';
 
 try {
@@ -188,7 +188,7 @@ async function emitDist(options) {
       sha256: sha256Hex(corpusBytes),
     },
     zig_version: '0.16.0',
-    boundary_package: '0.5.0',
+    boundary_package: '0.6.2',
   };
   writeFileSync(join(out, 'world-protocol-manifest.json'), `${JSON.stringify(wasmInspection, null, 2)}\n`);
   writeFileSync(join(out, 'world-release-artifact.json'), `${JSON.stringify(metadata, null, 2)}\n`);
@@ -538,7 +538,7 @@ function verifyReleaseMetadata(dist, wasmBytes, inspection) {
   assertEqual(artifact.release_artifact_format_version, 1, 'release_artifact_format_version');
   assertEqual(artifact.package, 'world-v0.1.0', 'package');
   assertEqual(artifact.zig_version, '0.16.0', 'zig_version');
-  assertEqual(artifact.boundary_package, '0.5.0', 'boundary_package');
+  assertEqual(artifact.boundary_package, '0.6.2', 'boundary_package');
   assertEqual(artifact.wasm.byte_length, wasmBytes.length, 'wasm.byte_length');
   assertEqual(artifact.wasm.sha256, sha256Hex(wasmBytes), 'wasm.sha256');
   assertEqual(artifact.wasm.abi_version, inspection.abi_version, 'wasm.abi_version');

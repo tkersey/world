@@ -14,7 +14,7 @@ deterministic real World execution
 
 ## Baseline Invariants
 
-World pins the reviewed Boundary v0.5.0 release that carries portable-v2 loaded execution. The v0.4.1 hardening remains baseline law: entry-reachable profile validation, runtime-profile codec enforcement, exact residual-site binding, executable-plan validation, loaded-session image validation, and response safety all remain fail-closed.
+World pins the reviewed Boundary v0.6.2 release that carries portable-v2 loaded execution and Agent Profile v0 proof surface. The v0.4.1 hardening remains baseline law: entry-reachable profile validation, runtime-profile codec enforcement, exact residual-site binding, executable-plan validation, loaded-session image validation, and response safety all remain fail-closed.
 
 ## Portable-v2 Loaded Execution
 
