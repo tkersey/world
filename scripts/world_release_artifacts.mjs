@@ -650,6 +650,7 @@ function verifyAgentRuntimeDist(dist) {
   assertStringSetEqual(image.external_binding_descriptor_fingerprints, metadata.required_descriptor_fingerprints, 'agent_runtime.image.required_descriptor_fingerprints');
   assertStringSetEqual(image.external_binding_actuator_ref_fingerprints, metadata.required_actuator_ref_fingerprints, 'agent_runtime.image.required_actuator_ref_fingerprints');
   assertStringSetEqual(image.external_binding_world_port_ids, metadata.required_world_port_ids, 'agent_runtime.image.required_world_port_ids');
+  assertStringSetEqual(image.external_binding_actuator_ref_labels, metadata.required_actuator_refs, 'agent_runtime.image.required_actuator_refs');
   assertEqual(image.link_plan_fingerprint, manifest.link_plan_fingerprint, 'agent_runtime.image.link_plan_fingerprint');
   assertEqual(image.linker_certificate_fingerprint, manifest.link_certificate_fingerprint, 'agent_runtime.image.linker_certificate_fingerprint');
   assertEqual(image.assembly_fingerprint, manifest.assembly_fingerprint, 'agent_runtime.image.assembly_fingerprint');
@@ -745,6 +746,8 @@ function parseAgentRuntimeExecutableImage(bytes) {
     external_binding_descriptor_fingerprints: externalBindings.map((binding) => binding.descriptor_fingerprint),
     external_binding_actuator_ref_fingerprints: externalBindings.map((binding) => binding.actuator_ref_fingerprint),
     external_binding_world_port_ids: externalBindings.map((binding) => hex64(BigInt(binding.world_port_id))),
+    external_binding_labels: externalBindings.map((binding) => binding.label),
+    external_binding_actuator_ref_labels: externalBindings.map((binding) => binding.actuator_ref_label),
     memory_plan_fingerprint: memoryPlan.memory_plan_fingerprint,
     certificate,
     metadata,
@@ -944,13 +947,15 @@ function readExecutableExternalBinding(reader) {
   readExecutableValuePolicy(reader);
   reader.optionalU64();
   reader.optionalU64();
-  reader.bytes64();
+  const label = textDecoder.decode(reader.bytes64());
   reader.bytes64();
   return {
     binding_fingerprint: bindingFingerprint,
     world_port_id: worldPortId,
     actuator_ref_fingerprint: actuatorRef.ref_fingerprint,
+    actuator_ref_label: actuatorRef.label,
     descriptor_fingerprint: descriptor.descriptor_fingerprint,
+    label,
   };
 }
 
@@ -960,7 +965,7 @@ function readExecutableActuatorRef(reader) {
   const refFingerprint = hex64(reader.u64());
   reader.u8();
   reader.u8();
-  reader.bytes64();
+  const label = textDecoder.decode(reader.bytes64());
   readExecutableModeSet(reader);
   readExecutableResponseStatusSet(reader);
   reader.u64();
@@ -969,6 +974,7 @@ function readExecutableActuatorRef(reader) {
   reader.bytes64();
   return {
     ref_fingerprint: refFingerprint,
+    label,
   };
 }
 
