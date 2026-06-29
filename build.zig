@@ -102,20 +102,43 @@ fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    const validation_target = if (target.result.os.tag == .freestanding) b.graph.host else target;
     const optimize = b.standardOptimizeOption(.{});
     const test_args = parseTestArgs(b);
-    const boundary_dep = b.dependency("boundary", .{
+    const exported_boundary_dep = b.dependency("boundary", .{
         .target = target,
         .optimize = optimize,
     });
-    const boundary = boundary_dep.module("boundary");
+    const exported_boundary = exported_boundary_dep.module("boundary");
 
-    const world = b.addModule("world", .{
+    const exported_world = b.addModule("world", .{
         .root_source_file = b.path("src/world.zig"),
         .target = target,
         .optimize = optimize,
     });
-    world.addImport("boundary", boundary);
+    exported_world.addImport("boundary", exported_boundary);
+
+    const boundary_dep = b.dependency("boundary", .{
+        .target = validation_target,
+        .optimize = optimize,
+    });
+    const boundary = boundary_dep.module("boundary");
+    const world = if (target.result.os.tag == .freestanding) blk: {
+        const validation_world = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+        });
+        validation_world.addImport("boundary", boundary);
+        break :blk validation_world;
+    } else exported_world;
+    const world_target_check = b.addLibrary(.{
+        .linkage = .static,
+        .name = "world-target-check",
+        .root_module = exported_world,
+    });
+    const check_world_target_step = b.step("check-world-target", "Compile the exported World module for the requested target.");
+    check_world_target_step.dependOn(&world_target_check.step);
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -173,7 +196,7 @@ pub fn build(b: *std.Build) void {
 
     const fixtures = b.createModule(.{
         .root_source_file = b.path("test/fixtures.zig"),
-        .target = target,
+        .target = validation_target,
         .optimize = optimize,
     });
     fixtures.addImport("world", world);
@@ -268,8 +291,15 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .optimize = optimize,
     });
+    const boundary_agent_runtime_mod = b.createModule(.{
+        .root_source_file = host_boundary_dep.path("examples/agent_loop.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    boundary_agent_runtime_mod.addImport("boundary", host_boundary);
     universal_fixture_mod.addImport("world", host_world);
     universal_fixture_mod.addImport("world_fixtures", host_fixtures);
+    universal_fixture_mod.addImport("boundary_agent_runtime", boundary_agent_runtime_mod);
     const universal_fixture_gen = b.addExecutable(.{ .name = "world-universal-appliance-fixtures", .root_module = universal_fixture_mod });
     const run_universal_fixture_gen = b.addRunArtifact(universal_fixture_gen);
     const universal_image_a = run_universal_fixture_gen.addOutputFileArg("world-universal-image-a.bin");
@@ -277,6 +307,28 @@ pub fn build(b: *std.Build) void {
     const universal_image_b = run_universal_fixture_gen.addOutputFileArg("world-universal-image-b.bin");
     const universal_command_b = run_universal_fixture_gen.addOutputFileArg("world-universal-command-b.bin");
     const universal_proof = run_universal_fixture_gen.addOutputFileArg("world-universal-proof.txt");
+    const world_agent_runtime_dist_dir = "zig-out/dist/world-v0.1.0/agent-runtime";
+    const world_agent_runtime_check_dir = "zig-out/check/world-agent-runtime";
+    const run_world_agent_runtime_artifact_gen = b.addRunArtifact(universal_fixture_gen);
+    run_world_agent_runtime_artifact_gen.addArgs(&.{
+        "--agent-runtime",
+        world_agent_runtime_dist_dir,
+    });
+    const run_world_agent_runtime_artifact_check_gen = b.addRunArtifact(universal_fixture_gen);
+    run_world_agent_runtime_artifact_check_gen.addArgs(&.{
+        "--agent-runtime",
+        world_agent_runtime_check_dir,
+    });
+    const check_world_agent_runtime_artifacts_cmd = b.addRunArtifact(universal_fixture_gen);
+    check_world_agent_runtime_artifacts_cmd.addArgs(&.{
+        "--check-agent-runtime",
+        world_agent_runtime_check_dir,
+    });
+    check_world_agent_runtime_artifacts_cmd.step.dependOn(&run_world_agent_runtime_artifact_check_gen.step);
+    const emit_world_agent_runtime_artifacts_step = b.step("emit-world-agent-runtime-artifacts", "Emit World-owned Agent Runtime executable image and appliance manifest artifacts.");
+    emit_world_agent_runtime_artifacts_step.dependOn(&run_world_agent_runtime_artifact_gen.step);
+    const check_world_agent_runtime_artifacts_step = b.step("check-world-agent-runtime-artifacts", "Validate World-owned Agent Runtime export artifacts exist and are non-empty.");
+    check_world_agent_runtime_artifacts_step.dependOn(&check_world_agent_runtime_artifacts_cmd.step);
     const run_universal_appliance_node = b.addSystemCommand(&.{
         "node",
         "scripts/world_universal_appliance_conformance.mjs",
@@ -327,7 +379,7 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -340,7 +392,7 @@ pub fn build(b: *std.Build) void {
     const archive_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/archive_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -351,7 +403,7 @@ pub fn build(b: *std.Build) void {
     const appliance_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -362,7 +414,7 @@ pub fn build(b: *std.Build) void {
     });
     const world_module_test_module = b.createModule(.{
         .root_source_file = b.path("src/world.zig"),
-        .target = target,
+        .target = validation_target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "boundary", .module = boundary },
@@ -375,7 +427,7 @@ pub fn build(b: *std.Build) void {
     const world_protocol_manifest_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -384,12 +436,12 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"world protocol manifest"},
     });
     const check_world_protocol_manifest_step = b.step("check-world-protocol-manifest", "Run World Protocol.Manifest canonical encoding and WASM export checks.");
-    dependOnNativeRunOrCompile(b, target, check_world_protocol_manifest_step, world_protocol_manifest_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_protocol_manifest_step, world_protocol_manifest_tests, test_args.passthrough);
     check_world_protocol_manifest_step.dependOn(check_world_universal_appliance_wasm_step);
     const boundary_world_compatibility_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -398,11 +450,11 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"boundary world protocol compatibility"},
     });
     const check_boundary_world_compatibility_step = b.step("check-boundary-world-compatibility", "Run World checks that bind the frozen Boundary v0 protocol manifest evidence.");
-    dependOnNativeRunOrCompile(b, target, check_boundary_world_compatibility_step, boundary_world_compatibility_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_boundary_world_compatibility_step, boundary_world_compatibility_tests, test_args.passthrough);
     const world_conformance_corpus_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -411,7 +463,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"world conformance corpus"},
     });
     const check_world_conformance_corpus_step = b.step("check-world-conformance-corpus", "Validate the World v0 conformance corpus case inventory.");
-    dependOnNativeRunOrCompile(b, target, check_world_conformance_corpus_step, world_conformance_corpus_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_conformance_corpus_step, world_conformance_corpus_tests, test_args.passthrough);
     const run_world_conformance_corpus_node = b.addSystemCommand(&.{
         "node",
         "scripts/world_conformance.mjs",
@@ -450,7 +502,7 @@ pub fn build(b: *std.Build) void {
     const world_adversarial_codec_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -459,7 +511,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"world adversarial codecs"},
     });
     const check_world_adversarial_codecs_step = b.step("check-world-adversarial-codecs", "Run World v0 adversarial protocol codec checks.");
-    dependOnNativeRunOrCompile(b, target, check_world_adversarial_codecs_step, world_adversarial_codec_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_adversarial_codecs_step, world_adversarial_codec_tests, test_args.passthrough);
     const world_state_machine_differential_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
@@ -580,7 +632,7 @@ pub fn build(b: *std.Build) void {
     const world_v0_budget_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -589,7 +641,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"world v0 budgets"},
     });
     const check_world_v0_budgets_step = b.step("check-world-v0-budgets", "Validate World v0 structural budget baselines.");
-    dependOnNativeRunOrCompile(b, target, check_world_v0_budgets_step, world_v0_budget_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_v0_budgets_step, world_v0_budget_tests, test_args.passthrough);
     const run_world_reproducible_wasm_check = b.addSystemCommand(&.{
         "node",
         "scripts/world_release_artifacts.mjs",
@@ -634,6 +686,7 @@ pub fn build(b: *std.Build) void {
     const dist_world_agent_v0_step = b.step("dist-world-agent-v0", "Package World v0 artifacts with Agent Closure proof gates completed.");
     dist_world_agent_v0_step.dependOn(dist_world_v0_1_step);
     dist_world_agent_v0_step.dependOn(check_world_agent_conformance_corpus_step);
+    dist_world_agent_v0_step.dependOn(check_world_agent_runtime_artifacts_step);
     const run_check_world_v0_1_dist = b.addSystemCommand(&.{
         "node",
         "scripts/world_release_artifacts.mjs",
@@ -643,6 +696,16 @@ pub fn build(b: *std.Build) void {
         "zig-out/dist/world-v0.1.0",
     });
     run_check_world_v0_1_dist.step.dependOn(&run_dist_world_v0.step);
+    const run_check_world_agent_v0_dist = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_release_artifacts.mjs",
+        "--mode",
+        "check-dist",
+        "--dist",
+        "zig-out/dist/world-v0.1.0",
+    });
+    run_check_world_agent_v0_dist.step.dependOn(&run_world_agent_runtime_artifact_gen.step);
+    dist_world_agent_v0_step.dependOn(&run_check_world_agent_v0_dist.step);
     const run_check_world_v0_1_standalone = b.addSystemCommand(&.{
         "node",
         "zig-out/dist/world-v0.1.0/scripts/world_conformance.mjs",
@@ -662,6 +725,7 @@ pub fn build(b: *std.Build) void {
     const check_world_v0_1_release_step = b.step("check-world-v0.1-release", "Validate packaged World v0.1.0 artifacts and source-free conformance.");
     check_world_v0_1_release_step.dependOn(&run_check_world_v0_1_dist.step);
     check_world_v0_1_release_step.dependOn(&run_check_world_v0_1_standalone.step);
+    run_world_agent_runtime_artifact_gen.step.dependOn(&run_dist_world_v0.step);
     const wasm_guest_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("examples/world_wasm_guest_one_port.zig"),
@@ -671,8 +735,10 @@ pub fn build(b: *std.Build) void {
         .filters = test_args.filters,
     });
     const test_step = b.step("test", "Run world tests.");
+    b.default_step.dependOn(check_world_target_step);
+    test_step.dependOn(check_world_target_step);
     test_step.dependOn(&addRunArtifactWithArgs(b, wasm_guest_tests, test_args.passthrough).step);
-    if (target.query.isNative()) {
+    if (validation_target.query.isNative()) {
         test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
         test_step.dependOn(&addRunArtifactWithArgs(b, archive_tests, test_args.passthrough).step);
         test_step.dependOn(&addRunArtifactWithArgs(b, appliance_tests, test_args.passthrough).step);
@@ -693,7 +759,7 @@ pub fn build(b: *std.Build) void {
     const turn_closure_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -702,13 +768,13 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{ "TurnClosure", "Wire TurnInput", "Continuity object kinds" },
     });
-    dependOnNativeRunOrCompile(b, target, check_world_turn_closure_step, turn_closure_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_turn_closure_step, turn_closure_tests, test_args.passthrough);
 
     const check_world_executable_image_step = b.step("check-world-executable-image", "Run World Executable image tests.");
     const executable_image_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -718,13 +784,13 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Executable Builder"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_executable_image_step, executable_image_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_executable_image_step, executable_image_tests, test_args.passthrough);
 
     const check_world_loaded_runspace_step = b.step("check-world-loaded-runspace", "Run World loaded Runspace tests.");
     const loaded_runspace_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -734,13 +800,13 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Runspace"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_runspace_step, loaded_runspace_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_runspace_step, loaded_runspace_tests, test_args.passthrough);
 
     const check_world_loaded_linker_step = b.step("check-world-loaded-linker", "Run World loaded Linker tests.");
     const loaded_linker_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -750,13 +816,13 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Linker"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_linker_step, loaded_linker_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_linker_step, loaded_linker_tests, test_args.passthrough);
 
     const check_world_loaded_admission_step = b.step("check-world-loaded-admission", "Run World loaded Admission tests.");
     const loaded_admission_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -766,13 +832,13 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Admission"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_admission_step, loaded_admission_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_admission_step, loaded_admission_tests, test_args.passthrough);
 
     const check_world_loaded_fabric_step = b.step("check-world-loaded-fabric", "Run World loaded Fabric tests.");
     const loaded_fabric_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -782,13 +848,13 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Fabric"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_fabric_step, loaded_fabric_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_fabric_step, loaded_fabric_tests, test_args.passthrough);
 
     const check_world_loaded_capsule_step = b.step("check-world-loaded-capsule", "Run World loaded Capsule tests.");
     const loaded_capsule_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -798,13 +864,13 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Capsule"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_capsule_step, loaded_capsule_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_capsule_step, loaded_capsule_tests, test_args.passthrough);
 
     const check_world_seed_migration_step = b.step("check-world-seed-migration", "Run World Seed migration tests.");
     const world_seed_migration_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -814,13 +880,13 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"World Seed Migration"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_seed_migration_step, world_seed_migration_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_seed_migration_step, world_seed_migration_tests, test_args.passthrough);
 
     const check_world_universal_runtime_step = b.step("check-world-universal-runtime", "Run World universal executable Appliance runtime tests.");
     const world_universal_runtime_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -829,13 +895,13 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Universal Runtime"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_universal_runtime_step, world_universal_runtime_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_universal_runtime_step, world_universal_runtime_tests, test_args.passthrough);
 
     const check_world_seed_replay_step = b.step("check-world-seed-replay", "Run World Seed replay and batched host closure tests.");
     const world_seed_replay_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -844,12 +910,12 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"World Seed Replay"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_seed_replay_step, world_seed_replay_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_seed_replay_step, world_seed_replay_tests, test_args.passthrough);
     const check_world_replay_positive_step = b.step("check-world-replay-positive", "Run World Appliance positive replay proof.");
     const world_replay_positive_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -860,12 +926,12 @@ pub fn build(b: *std.Build) void {
             "appliance Core accepts replay evidence with verified transcript support",
         },
     });
-    dependOnNativeRunOrCompile(b, target, check_world_replay_positive_step, world_replay_positive_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_replay_positive_step, world_replay_positive_tests, test_args.passthrough);
     const check_world_appliance_batching_step = b.step("check-world-appliance-batching", "Run World Appliance batched host turn proof.");
     const world_appliance_batching_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -878,7 +944,7 @@ pub fn build(b: *std.Build) void {
             "appliance Wire TurnInput canonicalizes resolution input order",
         },
     });
-    dependOnNativeRunOrCompile(b, target, check_world_appliance_batching_step, world_appliance_batching_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_appliance_batching_step, world_appliance_batching_tests, test_args.passthrough);
     const check_world_deterministic_retry_step = b.step("check-world-deterministic-retry", "Run World Appliance deterministic retry proof.");
     const check_world_universal_step = b.step("check-world-universal", "Run World universal Appliance runtime and WASM conformance checks.");
     check_world_universal_step.dependOn(check_world_universal_runtime_step);
@@ -904,7 +970,7 @@ pub fn build(b: *std.Build) void {
     const forged_descriptor_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/forged_descriptor_metadata.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -918,7 +984,7 @@ pub fn build(b: *std.Build) void {
     const appliance_missing_binding_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_missing_actuation_binding.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -932,7 +998,7 @@ pub fn build(b: *std.Build) void {
     const appliance_covered_port_bound_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_covered_port_also_bound.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -946,7 +1012,7 @@ pub fn build(b: *std.Build) void {
     const appliance_invalid_capacity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_invalid_capacity.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -960,7 +1026,7 @@ pub fn build(b: *std.Build) void {
     const appliance_actuation_disabled_binding_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_actuation_disabled_binding.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -974,7 +1040,7 @@ pub fn build(b: *std.Build) void {
     const appliance_zero_host_request_capacity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_zero_host_request_capacity.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -988,7 +1054,7 @@ pub fn build(b: *std.Build) void {
     const appliance_zero_host_reply_capacity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_zero_host_reply_capacity.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -1002,7 +1068,7 @@ pub fn build(b: *std.Build) void {
     const appliance_zero_actuation_record_capacity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_zero_actuation_record_capacity.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -1026,6 +1092,7 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
     check_step.dependOn(test_step);
     check_step.dependOn(compile_fail_step);
+    check_step.dependOn(check_world_target_step);
     check_step.dependOn(check_world_turn_closure_step);
     check_step.dependOn(check_world_executable_image_step);
     check_step.dependOn(check_world_loaded_runspace_step);
@@ -1048,6 +1115,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(check_world_agent_replay_step);
     check_step.dependOn(check_world_agent_migration_step);
     check_step.dependOn(check_world_agent_conformance_corpus_step);
+    check_step.dependOn(check_world_agent_runtime_artifacts_step);
     check_step.dependOn(check_world_js_corpus_step);
     check_step.dependOn(check_world_js_malformed_corpus_step);
     check_step.dependOn(check_world_adversarial_codecs_step);
@@ -2380,7 +2448,7 @@ pub fn build(b: *std.Build) void {
     inline for (examples) |example| {
         const exe_mod = b.createModule(.{
             .root_source_file = b.path(example.path),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
         });
         exe_mod.addImport("world", world);
@@ -2388,7 +2456,7 @@ pub fn build(b: *std.Build) void {
         exe_mod.addImport("world_fixtures", fixtures);
         const exe = b.addExecutable(.{ .name = example.name, .root_module = exe_mod });
         const run_step = b.step(example.step, example.desc);
-        if (target.query.isNative()) {
+        if (validation_target.query.isNative()) {
             const run = addRunArtifactWithArgs(b, exe, if (b.args) |args| args else &.{});
             run.expectStdOutEqual(example.expected_stdout);
             if (example.serial_after_tests) run.step.dependOn(test_step);

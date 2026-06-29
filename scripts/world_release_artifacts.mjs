@@ -31,7 +31,14 @@ const requiredDistFiles = [
   'docs/security_model.md',
 ];
 
-const checksumCoveredDistFiles = requiredDistFiles.filter((rel) => rel !== 'checksums.txt');
+const agentRuntimeDistFiles = [
+  'agent-runtime/agent.executable-image',
+  'agent-runtime/appliance-manifest.bin',
+  'agent-runtime/agent-runtime-world-artifacts.json',
+];
+
+const agentRuntimeMetadataLabel = 'agent-runtime-v0.1.world-agent';
+const executableImageMagic = Buffer.from('world.Executable.Image.v2\0', 'utf8');
 
 const universalApplianceRequiredExports = [
   'world_appliance_abi_version',
@@ -106,7 +113,7 @@ const proofGateNames = {
 };
 
 const boundaryProtocolManifestFingerprint = '0x68ce6ebd4448144f';
-const conformanceCorpusRootFingerprint = '0x3de41591452c3bb4';
+const conformanceCorpusRootFingerprint = '0xe727536b60a5e286';
 
 try {
   if (args.mode === 'dist') {
@@ -200,16 +207,19 @@ async function emitDist(options) {
 async function checkDist(options) {
   requirePath(options.dist, '--dist');
   const dist = options.dist;
-  for (const rel of requiredDistFiles) {
+  const required = requiredFilesForDist(dist);
+  const checksumCovered = required.filter((rel) => rel !== 'checksums.txt');
+  for (const rel of required) {
     const path = join(dist, rel);
     if (!existsSync(path)) throw new Error(`missing dist file: ${rel}`);
   }
-  verifyDistFileSet(dist, requiredDistFiles);
-  verifyChecksums(dist, checksumCoveredDistFiles);
+  verifyDistFileSet(dist, required);
+  verifyChecksums(dist, checksumCovered);
   const wasmBytes = readFileSync(join(dist, 'world_universal_appliance.wasm'));
   const inspection = await inspectWasm(wasmBytes);
   verifyReleaseMetadata(dist, wasmBytes, inspection);
   verifyReleaseReceipt(dist, wasmBytes, inspection);
+  verifyAgentRuntimeDist(dist);
   if (!inspection.actual_webassembly_execution) throw new Error('distributed wasm execution was not verified');
   console.log(JSON.stringify({ dist, complete: true, actual_webassembly_execution: true }));
 }
@@ -479,8 +489,15 @@ function readVarU32At(data, offset, end = data.length) {
 }
 
 function writeChecksums(root) {
-  const lines = checksumCoveredDistFiles.map((rel) => `${sha256Hex(readFileSync(join(root, rel)))}  ${rel}`);
+  const lines = requiredDistFiles
+    .filter((rel) => rel !== 'checksums.txt')
+    .map((rel) => `${sha256Hex(readFileSync(join(root, rel)))}  ${rel}`);
   writeFileSync(join(root, 'checksums.txt'), `${lines.join('\n')}\n`);
+}
+
+function requiredFilesForDist(root) {
+  if (!existsSync(join(root, 'agent-runtime'))) return requiredDistFiles;
+  return [...requiredDistFiles, ...agentRuntimeDistFiles];
 }
 
 function verifyChecksums(root, requiredFiles) {
@@ -592,6 +609,544 @@ function verifyReleaseReceipt(dist, wasmBytes, inspection) {
   );
 }
 
+function verifyAgentRuntimeDist(dist) {
+  const root = join(dist, 'agent-runtime');
+  if (!existsSync(root)) return;
+
+  const imageBytes = readFileSync(join(root, 'agent.executable-image'));
+  const manifestBytes = readFileSync(join(root, 'appliance-manifest.bin'));
+  const metadata = JSON.parse(readFileSync(join(root, 'agent-runtime-world-artifacts.json'), 'utf8'));
+  const image = parseAgentRuntimeExecutableImage(imageBytes);
+  const manifest = parseAgentRuntimeManifest(manifestBytes);
+
+  assertEqual(metadata.world_package_version, 'v0.1.0', 'agent_runtime.world_package_version');
+  assertEqual(metadata.metadata, agentRuntimeMetadataLabel, 'agent_runtime.metadata');
+  assertEqual(metadata.agent_executable_image_sha256, sha256Hex(imageBytes), 'agent_runtime.agent_executable_image_sha256');
+  assertEqual(metadata.appliance_manifest_sha256, sha256Hex(manifestBytes), 'agent_runtime.appliance_manifest_sha256');
+  assertEqual(image.format_version, metadata.world_executable_image_format_version, 'agent_runtime.image.format_version');
+  assertEqual(image.fingerprint_version, metadata.world_executable_image_fingerprint_version, 'agent_runtime.image.fingerprint_version');
+  assertEqual(image.image_fingerprint, metadata.world_executable_image_fingerprint, 'agent_runtime.image.image_fingerprint');
+  assertEqual(image.metadata, agentRuntimeMetadataLabel, 'agent_runtime.image.metadata');
+  assertEqual(image.root_module_fingerprint, metadata.root_module_fingerprint, 'agent_runtime.image.root_module_fingerprint');
+  assertEqual(image.dispatch_fingerprint, metadata.dispatch_fingerprint, 'agent_runtime.image.dispatch_fingerprint');
+
+  assertEqual(manifest.manifest_format_version, 3, 'agent_runtime.manifest.manifest_format_version');
+  assertEqual(manifest.manifest_fingerprint_version, 3, 'agent_runtime.manifest.manifest_fingerprint_version');
+  assertEqual(manifest.appliance_abi_version, metadata.world_appliance_abi_version, 'agent_runtime.manifest.appliance_abi_version');
+  assertEqual(manifest.manifest_fingerprint, metadata.world_appliance_manifest_fingerprint, 'agent_runtime.manifest.manifest_fingerprint');
+  assertEqual(fingerprintAgentRuntimeManifest(manifest), manifest.manifest_fingerprint, 'agent_runtime.manifest.computed_fingerprint');
+  assertEqual(manifest.metadata, agentRuntimeMetadataLabel, 'agent_runtime.manifest.metadata');
+  if (manifest.root_target_ref_fingerprint === '0x0000000000000000' ||
+    manifest.root_world_surface_fingerprint === '0x0000000000000000' ||
+    manifest.root_target_certificate_fingerprint === '0x0000000000000000') {
+    throw new Error('agent_runtime.manifest root identity missing');
+  }
+  assertStringListEqual(manifest.actuation_descriptor_fingerprints, metadata.required_descriptor_fingerprints, 'agent_runtime.required_descriptor_fingerprints');
+  assertStringListEqual(manifest.actuation_actuator_ref_fingerprints, metadata.required_actuator_ref_fingerprints, 'agent_runtime.required_actuator_ref_fingerprints');
+  assertStringListEqual(manifest.actuation_world_port_ids, metadata.required_world_port_ids, 'agent_runtime.required_world_port_ids');
+  if (image.dispatch_external_binding_fingerprints.length !== manifest.actuation_binding_fingerprints.length) {
+    throw new Error('agent_runtime.image dispatch external binding count mismatch');
+  }
+  assertStringSetEqual(image.external_binding_descriptor_fingerprints, metadata.required_descriptor_fingerprints, 'agent_runtime.image.required_descriptor_fingerprints');
+  assertStringSetEqual(image.external_binding_actuator_ref_fingerprints, metadata.required_actuator_ref_fingerprints, 'agent_runtime.image.required_actuator_ref_fingerprints');
+  assertStringSetEqual(image.external_binding_world_port_ids, metadata.required_world_port_ids, 'agent_runtime.image.required_world_port_ids');
+  assertStringSetEqual(image.external_binding_actuator_ref_labels, metadata.required_actuator_refs, 'agent_runtime.image.required_actuator_refs');
+  assertEqual(image.link_plan_fingerprint, manifest.link_plan_fingerprint, 'agent_runtime.image.link_plan_fingerprint');
+  assertEqual(image.linker_certificate_fingerprint, manifest.link_certificate_fingerprint, 'agent_runtime.image.linker_certificate_fingerprint');
+  assertEqual(image.assembly_fingerprint, manifest.assembly_fingerprint, 'agent_runtime.image.assembly_fingerprint');
+  if (!Array.isArray(metadata.required_actuator_refs) ||
+    metadata.required_actuator_refs.length !== manifest.actuation_world_port_ids.length ||
+    metadata.required_actuator_refs.length === 0) {
+    throw new Error('agent_runtime.required_actuator_refs mismatch');
+  }
+  if (image.external_binding_count !== metadata.required_actuator_refs.length) {
+    throw new Error('agent_runtime.image external binding count mismatch');
+  }
+}
+
+function parseAgentRuntimeExecutableImage(bytes) {
+  const reader = makeByteReader(bytes, 'agent_runtime.image');
+  const magic = reader.raw(executableImageMagic.length);
+  if (Buffer.compare(magic, executableImageMagic) !== 0) throw new Error('agent_runtime.image invalid magic');
+  const formatVersion = reader.u32();
+  const fingerprintVersion = reader.u32();
+  const codecVersion = reader.u32();
+  const totalLen = reader.u64();
+  const imageFingerprint = reader.u64();
+  if (totalLen !== BigInt(bytes.length)) throw new Error('agent_runtime.image total length mismatch');
+  if (codecVersion !== 1) throw new Error('agent_runtime.image codec version mismatch');
+  const runtimeProfile = readExecutableRuntimeProfile(reader);
+  const moduleSet = readExecutableModuleSet(reader);
+  const linkPlanFingerprint = hex64(reader.u64());
+  const linkerCertificateFingerprint = hex64(reader.u64());
+  const assemblyFingerprint = hex64(reader.u64());
+  const dispatchImage = readExecutableDispatchImage(reader);
+  const externalBindings = readExecutableExternalBindings(reader);
+  const memoryPlan = readExecutableMemoryPlan(reader);
+  const compatibilityReport = readExecutableCompatibilityReport(reader);
+  const certificate = readExecutableCertificate(reader);
+  const metadataBytes = reader.bytes64();
+  const metadata = textDecoder.decode(metadataBytes);
+  reader.done();
+
+  const rootModule = moduleSet.modules.find((module) => module.module_id === moduleSet.root_module_id);
+  if (!rootModule) throw new Error('agent_runtime.image root module missing');
+  if (moduleSet.module_count === 0) throw new Error('agent_runtime.image module set empty');
+  if (dispatchImage.module_fingerprints.length !== moduleSet.module_count) {
+    throw new Error('agent_runtime.image dispatch module count mismatch');
+  }
+  assertEqual(dispatchImage.root_module_id, moduleSet.root_module_id, 'agent_runtime.image.dispatch.root_module_id');
+  assertEqual(dispatchImage.link_plan_fingerprint, linkPlanFingerprint, 'agent_runtime.image.dispatch.link_plan_fingerprint');
+  assertEqual(dispatchImage.linker_certificate_fingerprint, linkerCertificateFingerprint, 'agent_runtime.image.dispatch.linker_certificate_fingerprint');
+  assertEqual(dispatchImage.assembly_fingerprint, assemblyFingerprint, 'agent_runtime.image.dispatch.assembly_fingerprint');
+  if (dispatchImage.external_binding_fingerprints.length !== externalBindings.length) {
+    throw new Error('agent_runtime.image dispatch external binding count mismatch');
+  }
+  if (compatibilityReport.compatible !== true ||
+    compatibilityReport.image_format_compatible !== true ||
+    compatibilityReport.boundary_module_compatible !== true ||
+    compatibilityReport.executable_plan_compatible !== true ||
+    compatibilityReport.instruction_feature_compatible !== true ||
+    compatibilityReport.value_codec_compatible !== true ||
+    compatibilityReport.profile_compatible !== true ||
+    compatibilityReport.capacity_compatible !== true ||
+    compatibilityReport.memory_compatible !== true ||
+    compatibilityReport.hard_blockers !== 0) {
+    throw new Error('agent_runtime.image compatibility report has hard blockers');
+  }
+  assertEqual(certificate.image_fingerprint, hex64(imageFingerprint), 'agent_runtime.image.certificate.image_fingerprint');
+  assertEqual(certificate.module_set_fingerprint, moduleSet.module_set_fingerprint, 'agent_runtime.image.certificate.module_set_fingerprint');
+  assertEqual(certificate.runtime_profile_fingerprint, runtimeProfile.profile_fingerprint, 'agent_runtime.image.certificate.runtime_profile_fingerprint');
+  assertEqual(certificate.dispatch_fingerprint, dispatchImage.dispatch_fingerprint, 'agent_runtime.image.certificate.dispatch_fingerprint');
+  assertEqual(certificate.memory_plan_fingerprint, memoryPlan.memory_plan_fingerprint, 'agent_runtime.image.certificate.memory_plan_fingerprint');
+  assertEqual(certificate.compatibility_report_fingerprint, compatibilityReport.report_fingerprint, 'agent_runtime.image.certificate.compatibility_report_fingerprint');
+  assertEqual(certificate.link_plan_fingerprint, linkPlanFingerprint, 'agent_runtime.image.certificate.link_plan_fingerprint');
+  assertEqual(certificate.linker_certificate_fingerprint, linkerCertificateFingerprint, 'agent_runtime.image.certificate.linker_certificate_fingerprint');
+  assertEqual(certificate.assembly_fingerprint, assemblyFingerprint, 'agent_runtime.image.certificate.assembly_fingerprint');
+  assertEqual(certificate.module_count, moduleSet.module_count, 'agent_runtime.image.certificate.module_count');
+  assertEqual(certificate.residual_external_binding_count, externalBindings.length, 'agent_runtime.image.certificate.residual_external_binding_count');
+  assertEqual(certificate.blocker_count, compatibilityReport.hard_blockers, 'agent_runtime.image.certificate.blocker_count');
+  assertEqual(certificate.warning_count, compatibilityReport.warnings, 'agent_runtime.image.certificate.warning_count');
+
+  return {
+    format_version: formatVersion,
+    fingerprint_version: fingerprintVersion,
+    image_fingerprint: hex64(imageFingerprint),
+    runtime_profile_fingerprint: runtimeProfile.profile_fingerprint,
+    module_set_fingerprint: moduleSet.module_set_fingerprint,
+    module_count: moduleSet.module_count,
+    root_module_fingerprint: rootModule.boundary_module_fingerprint,
+    link_plan_fingerprint: linkPlanFingerprint,
+    linker_certificate_fingerprint: linkerCertificateFingerprint,
+    assembly_fingerprint: assemblyFingerprint,
+    dispatch_fingerprint: dispatchImage.dispatch_fingerprint,
+    dispatch_external_binding_fingerprints: dispatchImage.external_binding_fingerprints,
+    external_binding_count: externalBindings.length,
+    external_binding_fingerprints: externalBindings.map((binding) => binding.binding_fingerprint),
+    external_binding_descriptor_fingerprints: externalBindings.map((binding) => binding.descriptor_fingerprint),
+    external_binding_actuator_ref_fingerprints: externalBindings.map((binding) => binding.actuator_ref_fingerprint),
+    external_binding_world_port_ids: externalBindings.map((binding) => hex64(BigInt(binding.world_port_id))),
+    external_binding_labels: externalBindings.map((binding) => binding.label),
+    external_binding_actuator_ref_labels: externalBindings.map((binding) => binding.actuator_ref_label),
+    memory_plan_fingerprint: memoryPlan.memory_plan_fingerprint,
+    certificate,
+    metadata,
+  };
+}
+
+function readExecutableRuntimeProfile(reader) {
+  const profile = {
+    profile_fingerprint: hex64(reader.u64()),
+    supports_loaded_execution: reader.bool(),
+    supports_internal_providers: reader.bool(),
+    supports_external_actuation: reader.bool(),
+    max_modules: reader.count(),
+    max_provider_depth: reader.count(),
+    max_external_bindings: reader.count(),
+    max_module_bytes: reader.count(Number.MAX_SAFE_INTEGER),
+    max_image_bytes: reader.count(Number.MAX_SAFE_INTEGER),
+    max_command_bytes: reader.count(Number.MAX_SAFE_INTEGER),
+    max_output_bytes: reader.count(Number.MAX_SAFE_INTEGER),
+    max_linear_memory_pages: reader.count(),
+  };
+  profile.metadata = textDecoder.decode(reader.bytes64());
+  return profile;
+}
+
+function readExecutableModuleSet(reader) {
+  const moduleCount = reader.count();
+  const rootModuleId = reader.u32();
+  const moduleSetFingerprint = hex64(reader.u64());
+  const modules = [];
+  for (let i = 0; i < moduleCount; i += 1) modules.push(readExecutableModule(reader));
+  return {
+    module_count: moduleCount,
+    root_module_id: rootModuleId,
+    module_set_fingerprint: moduleSetFingerprint,
+    modules,
+  };
+}
+
+function readExecutableModule(reader) {
+  const moduleId = reader.u32();
+  reader.u8();
+  const moduleRef = readExecutableModuleRef(reader);
+  readExecutableTargetRef(reader);
+  readExecutableImportSet(reader);
+  const importCount = reader.count();
+  for (let i = 0; i < importCount; i += 1) readExecutableImportRequirement(reader);
+  readExecutableExportSummary(reader);
+  reader.u64();
+  reader.u64();
+  reader.u64();
+  reader.bytes64();
+  return {
+    module_id: moduleId,
+    module_ref_fingerprint: moduleRef.module_ref_fingerprint,
+    boundary_module_fingerprint: moduleRef.boundary_module_fingerprint,
+  };
+}
+
+function readExecutableModuleRef(reader) {
+  reader.u32();
+  reader.u32();
+  const moduleRefFingerprint = hex64(reader.u64());
+  const boundaryModuleFingerprint = hex64(reader.u64());
+  reader.u8();
+  reader.u64();
+  reader.u64();
+  reader.u64();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.u8();
+  reader.count();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.optionalBytes64();
+  reader.bytes64();
+  return {
+    module_ref_fingerprint: moduleRefFingerprint,
+    boundary_module_fingerprint: boundaryModuleFingerprint,
+  };
+}
+
+function readExecutableTargetRef(reader) {
+  reader.u32();
+  reader.u32();
+  reader.u64();
+  reader.optionalBytes64();
+  reader.u64();
+  reader.optionalU64();
+  reader.u64();
+  reader.optionalU64();
+  reader.u8();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.bytes64();
+}
+
+function readExecutableImportSet(reader) {
+  reader.u64();
+  reader.u64();
+  reader.count();
+  reader.count();
+  reader.count();
+  reader.count();
+  reader.optionalU64();
+}
+
+function readExecutableImportRequirement(reader) {
+  reader.u64();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.u64();
+  reader.u32();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.count();
+  reader.u64();
+  reader.optionalU32();
+  reader.optionalU64();
+  reader.optionalU32();
+  reader.optionalU64();
+  reader.u8();
+  reader.u8();
+  reader.optionalU64();
+  reader.optionalBytes64();
+  reader.bool();
+  reader.stringSlice64();
+  reader.bytes64();
+}
+
+function readExecutableExportSummary(reader) {
+  reader.u64();
+  reader.u64();
+  reader.optionalU64();
+  reader.bool();
+  reader.optionalU64();
+  reader.count();
+  reader.u8();
+  reader.optionalBytes64();
+  reader.bool();
+  reader.optionalBytes64();
+}
+
+function readExecutableDispatchImage(reader) {
+  reader.u32();
+  reader.u32();
+  const dispatchFingerprint = hex64(reader.u64());
+  const rootModuleId = reader.u32();
+  const moduleFingerprints = reader.u64Array();
+  const externalBindingFingerprints = reader.u64Array();
+  reader.u64Array();
+  reader.u64Array();
+  reader.u64Array();
+  const routeKindCount = reader.count();
+  for (let i = 0; i < routeKindCount; i += 1) reader.u8();
+  reader.u32Array();
+  reader.u64Array();
+  reader.u64Array();
+  readExecutablePolicy(reader);
+  return {
+    dispatch_fingerprint: dispatchFingerprint,
+    root_module_id: rootModuleId,
+    module_fingerprints: moduleFingerprints,
+    external_binding_fingerprints: externalBindingFingerprints,
+    link_plan_fingerprint: hex64(reader.u64()),
+    linker_certificate_fingerprint: hex64(reader.u64()),
+    assembly_fingerprint: hex64(reader.u64()),
+  };
+}
+
+function readExecutableExternalBindings(reader) {
+  const count = reader.count();
+  const bindings = [];
+  for (let i = 0; i < count; i += 1) bindings.push(readExecutableExternalBinding(reader));
+  return bindings;
+}
+
+function readExecutableExternalBinding(reader) {
+  const bindingFingerprint = hex64(reader.u64());
+  reader.u64();
+  const worldPortId = reader.u32();
+  reader.optionalU64();
+  reader.optionalU32();
+  reader.optionalU64();
+  reader.optionalU32();
+  reader.optionalU64();
+  const actuatorRef = readExecutableActuatorRef(reader);
+  const descriptor = readExecutableDescriptor(reader);
+  readExecutableResponseStatusSet(reader);
+  reader.u8();
+  readExecutableValuePolicy(reader);
+  reader.optionalU64();
+  reader.optionalU64();
+  const label = textDecoder.decode(reader.bytes64());
+  reader.bytes64();
+  return {
+    binding_fingerprint: bindingFingerprint,
+    world_port_id: worldPortId,
+    actuator_ref_fingerprint: actuatorRef.ref_fingerprint,
+    actuator_ref_label: actuatorRef.label,
+    descriptor_fingerprint: descriptor.descriptor_fingerprint,
+    label,
+  };
+}
+
+function readExecutableActuatorRef(reader) {
+  reader.u32();
+  reader.u32();
+  const refFingerprint = hex64(reader.u64());
+  reader.u8();
+  reader.u8();
+  const label = textDecoder.decode(reader.bytes64());
+  readExecutableModeSet(reader);
+  readExecutableResponseStatusSet(reader);
+  reader.u64();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.bytes64();
+  return {
+    ref_fingerprint: refFingerprint,
+    label,
+  };
+}
+
+function readExecutableDescriptor(reader) {
+  reader.u32();
+  reader.u32();
+  const descriptorFingerprint = hex64(reader.u64());
+  reader.u64();
+  reader.u64();
+  reader.optionalU64();
+  reader.optionalU32();
+  reader.optionalU64();
+  reader.optionalU64();
+  reader.optionalU32();
+  reader.optionalU32();
+  reader.optionalU32();
+  reader.optionalU32();
+  readExecutableModeSet(reader);
+  readExecutableResponseStatusSet(reader);
+  reader.u8();
+  reader.u8();
+  readExecutableValuePolicy(reader);
+  reader.bytes64();
+  reader.bytes64();
+  return {
+    descriptor_fingerprint: descriptorFingerprint,
+  };
+}
+
+function readExecutableMemoryPlan(reader) {
+  const plan = {
+    memory_plan_fingerprint: hex64(reader.u64()),
+  };
+  for (let i = 0; i < 13; i += 1) reader.count(Number.MAX_SAFE_INTEGER);
+  return plan;
+}
+
+function readExecutableCompatibilityReport(reader) {
+  const report = {
+    report_fingerprint: hex64(reader.u64()),
+    compatible: reader.bool(),
+    image_format_compatible: reader.bool(),
+    boundary_module_compatible: reader.bool(),
+    executable_plan_compatible: reader.bool(),
+    instruction_feature_compatible: reader.bool(),
+    value_codec_compatible: reader.bool(),
+    profile_compatible: reader.bool(),
+    capacity_compatible: reader.bool(),
+    memory_compatible: reader.bool(),
+    missing_optional_features: reader.count(),
+    hard_blockers: reader.count(),
+    warnings: reader.count(),
+  };
+  reader.bytes64();
+  return report;
+}
+
+function readExecutableCertificate(reader) {
+  return {
+    format_version: reader.u32(),
+    fingerprint_version: reader.u32(),
+    certificate_fingerprint: hex64(reader.u64()),
+    image_fingerprint: hex64(reader.u64()),
+    module_set_fingerprint: hex64(reader.u64()),
+    runtime_profile_fingerprint: hex64(reader.u64()),
+    dispatch_fingerprint: hex64(reader.u64()),
+    memory_plan_fingerprint: hex64(reader.u64()),
+    compatibility_report_fingerprint: hex64(reader.u64()),
+    link_plan_fingerprint: hex64(reader.u64()),
+    linker_certificate_fingerprint: hex64(reader.u64()),
+    assembly_fingerprint: hex64(reader.u64()),
+    module_count: reader.count(),
+    residual_external_binding_count: reader.count(),
+    blocker_count: reader.count(),
+    warning_count: reader.count(),
+  };
+}
+
+function readExecutablePolicy(reader) {
+  for (let i = 0; i < 14; i += 1) reader.bool();
+  for (let i = 0; i < 4; i += 1) reader.count();
+  for (let i = 0; i < 3; i += 1) reader.bool();
+}
+
+function readExecutableValuePolicy(reader) {
+  for (let i = 0; i < 4; i += 1) reader.bool();
+  reader.optionalCount(Number.MAX_SAFE_INTEGER);
+}
+
+function readExecutableModeSet(reader) {
+  for (let i = 0; i < 4; i += 1) reader.bool();
+}
+
+function readExecutableResponseStatusSet(reader) {
+  for (let i = 0; i < 6; i += 1) reader.bool();
+}
+
+function parseAgentRuntimeManifest(bytes) {
+  const reader = makeByteReader(bytes, 'agent_runtime.manifest');
+  const manifest = {
+    manifest_format_version: reader.u32(),
+    manifest_fingerprint_version: reader.u32(),
+    manifest_fingerprint: hex64(reader.u64()),
+    appliance_abi_version: reader.u32(),
+    root_target_ref_fingerprint: hex64(reader.u64()),
+    root_world_surface_fingerprint: hex64(reader.u64()),
+    root_target_certificate_fingerprint: hex64(reader.u64()),
+    link_plan_fingerprint: hex64(reader.u64()),
+    link_certificate_fingerprint: hex64(reader.u64()),
+    assembly_fingerprint: hex64(reader.u64()),
+    provider_target_ref_fingerprints: reader.u64Array(),
+    fabric_plan_fingerprints: reader.u64Array(),
+    residual_import_set_fingerprint: hex64(reader.u64()),
+    actuation_descriptor_fingerprints: reader.u64Array(),
+    actuation_binding_fingerprints: reader.u64Array(),
+    actuation_actuator_ref_fingerprints: reader.u64Array(),
+    actuation_world_port_ids: reader.u64Array(),
+    actuation_payload_value_ref_fingerprints: reader.u64Array(),
+    actuation_response_value_ref_fingerprints: reader.u64Array(),
+    actuation_classes: reader.byteArray(),
+    actuation_allowed_response_statuses: reader.byteArray(),
+    supervision_policy_fingerprint: hex64(reader.u64()),
+    default_permit_requirement_fingerprints: reader.u64Array(),
+    capsule_profile_fingerprint: hex64(reader.u64()),
+    archive_profile_fingerprint: hex64(reader.u64()),
+    supported_execution_modes: reader.u8(),
+    enabled_features: reader.u16(),
+    capacity_fingerprint: hex64(reader.u64()),
+    memory_plan_fingerprint: hex64(reader.u64()),
+    required_host_capabilities: reader.u8(),
+  };
+  manifest.metadata_bytes = reader.bytes();
+  manifest.metadata = textDecoder.decode(manifest.metadata_bytes);
+  reader.done();
+  return manifest;
+}
+
+function fingerprintAgentRuntimeManifest(manifest) {
+  const hasher = makeWorldHasher();
+  hasher.u64(manifest.manifest_format_version);
+  hasher.u64(manifest.manifest_fingerprint_version);
+  hasher.u64(manifest.appliance_abi_version);
+  hasher.u64(parseHexU64(manifest.root_target_ref_fingerprint, 'agent_runtime.manifest.root_target_ref_fingerprint'));
+  hasher.u64(parseHexU64(manifest.root_world_surface_fingerprint, 'agent_runtime.manifest.root_world_surface_fingerprint'));
+  hasher.u64(parseHexU64(manifest.root_target_certificate_fingerprint, 'agent_runtime.manifest.root_target_certificate_fingerprint'));
+  hasher.u64(parseHexU64(manifest.link_plan_fingerprint, 'agent_runtime.manifest.link_plan_fingerprint'));
+  hasher.u64(parseHexU64(manifest.link_certificate_fingerprint, 'agent_runtime.manifest.link_certificate_fingerprint'));
+  hasher.u64(parseHexU64(manifest.assembly_fingerprint, 'agent_runtime.manifest.assembly_fingerprint'));
+  hasher.u64Slice(manifest.provider_target_ref_fingerprints, 'agent_runtime.manifest.provider_target_ref_fingerprints');
+  hasher.u64Slice(manifest.fabric_plan_fingerprints, 'agent_runtime.manifest.fabric_plan_fingerprints');
+  hasher.u64(parseHexU64(manifest.residual_import_set_fingerprint, 'agent_runtime.manifest.residual_import_set_fingerprint'));
+  hasher.u64Slice(manifest.actuation_descriptor_fingerprints, 'agent_runtime.manifest.actuation_descriptor_fingerprints');
+  hasher.u64Slice(manifest.actuation_binding_fingerprints, 'agent_runtime.manifest.actuation_binding_fingerprints');
+  hasher.u64Slice(manifest.actuation_actuator_ref_fingerprints, 'agent_runtime.manifest.actuation_actuator_ref_fingerprints');
+  hasher.u64Slice(manifest.actuation_world_port_ids, 'agent_runtime.manifest.actuation_world_port_ids');
+  hasher.u64Slice(manifest.actuation_payload_value_ref_fingerprints, 'agent_runtime.manifest.actuation_payload_value_ref_fingerprints');
+  hasher.u64Slice(manifest.actuation_response_value_ref_fingerprints, 'agent_runtime.manifest.actuation_response_value_ref_fingerprints');
+  hasher.byteEnumSlice(manifest.actuation_classes);
+  hasher.byteEnumSlice(manifest.actuation_allowed_response_statuses);
+  hasher.u64(parseHexU64(manifest.supervision_policy_fingerprint, 'agent_runtime.manifest.supervision_policy_fingerprint'));
+  hasher.u64Slice(manifest.default_permit_requirement_fingerprints, 'agent_runtime.manifest.default_permit_requirement_fingerprints');
+  hasher.u64(parseHexU64(manifest.capsule_profile_fingerprint, 'agent_runtime.manifest.capsule_profile_fingerprint'));
+  hasher.u64(parseHexU64(manifest.archive_profile_fingerprint, 'agent_runtime.manifest.archive_profile_fingerprint'));
+  hasher.u64(manifest.supported_execution_modes);
+  hasher.u64(manifest.enabled_features);
+  hasher.u64(parseHexU64(manifest.capacity_fingerprint, 'agent_runtime.manifest.capacity_fingerprint'));
+  hasher.u64(parseHexU64(manifest.memory_plan_fingerprint, 'agent_runtime.manifest.memory_plan_fingerprint'));
+  hasher.u64(manifest.required_host_capabilities);
+  hasher.bytesWithLen(manifest.metadata_bytes);
+  return hex64(nonzero64(wyhash64(hasher.finish())));
+}
+
 function verifyProofReceipt(proof, index, releaseReceipt, inspection, wasmBytes) {
   const proofKind = requiredProofKinds[index];
   const proofGate = proofGateNames[proofKind];
@@ -625,6 +1180,17 @@ function assertStringListEqual(actual, expected, label) {
     throw new Error(`${label} mismatch`);
   }
   for (let i = 0; i < expected.length; i += 1) assertEqual(actual[i], expected[i], `${label}[${i}]`);
+}
+
+function assertStringSetEqual(actual, expected, label) {
+  if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length) {
+    throw new Error(`${label} mismatch`);
+  }
+  const actualSorted = [...actual].sort();
+  const expectedSorted = [...expected].sort();
+  for (let i = 0; i < expectedSorted.length; i += 1) {
+    assertEqual(actualSorted[i], expectedSorted[i], `${label}[${i}]`);
+  }
 }
 
 function assertEqual(actual, expected, label) {
@@ -695,6 +1261,142 @@ function makeProtocolHasher() {
     },
   };
   return hasher;
+}
+
+function makeWorldHasher() {
+  const chunks = [];
+  const hasher = {
+    u64(value) {
+      const out = Buffer.alloc(8);
+      out.writeBigUInt64LE(BigInt(value));
+      chunks.push(out);
+    },
+    u64Slice(values, label) {
+      if (!Array.isArray(values)) throw new Error(`${label} must be an array`);
+      hasher.u64(values.length);
+      for (const value of values) hasher.u64(parseHexU64(value, label));
+    },
+    byteEnumSlice(values) {
+      if (!Array.isArray(values)) throw new Error('byte enum slice must be an array');
+      hasher.u64(values.length);
+      for (const value of values) hasher.u64(value);
+    },
+    bytesWithLen(value) {
+      hasher.u64(value.length);
+      chunks.push(Buffer.from(value));
+    },
+    finish() {
+      return Buffer.concat(chunks);
+    },
+  };
+  return hasher;
+}
+
+function makeByteReader(bytes, label) {
+  let cursor = 0;
+  const ensure = (amount) => {
+    if (cursor + amount > bytes.length) throw new Error(`${label} truncated`);
+  };
+  const count = (max = 4096) => {
+    const value = reader.u64();
+    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value > BigInt(max)) throw new Error(`${label} count out of range`);
+    return Number(value);
+  };
+  const reader = {
+    count,
+    raw(amount) {
+      ensure(amount);
+      const value = bytes.subarray(cursor, cursor + amount);
+      cursor += amount;
+      return value;
+    },
+    u8() {
+      ensure(1);
+      return bytes[cursor++];
+    },
+    u16() {
+      ensure(2);
+      const value = readU16LeAt(bytes, cursor);
+      cursor += 2;
+      return value;
+    },
+    u32() {
+      ensure(4);
+      const value = readU32LeAt(bytes, cursor);
+      cursor += 4;
+      return value;
+    },
+    u64() {
+      ensure(8);
+      const value = readU64Le(bytes, cursor);
+      cursor += 8;
+      return value;
+    },
+    bool() {
+      const value = reader.u8();
+      if (value !== 0 && value !== 1) throw new Error(`${label} invalid bool`);
+      return value === 1;
+    },
+    optionalU32() {
+      if (!reader.bool()) return null;
+      return reader.u32();
+    },
+    optionalU64() {
+      if (!reader.bool()) return null;
+      return reader.u64();
+    },
+    optionalCount(max = 4096) {
+      if (!reader.bool()) return null;
+      return count(max);
+    },
+    u32Array(max = 4096) {
+      const len = count(max);
+      const values = [];
+      for (let i = 0; i < len; i += 1) values.push(reader.u32());
+      return values;
+    },
+    u64Array(max = 4096) {
+      const len = count(max);
+      const values = [];
+      for (let i = 0; i < len; i += 1) values.push(hex64(reader.u64()));
+      return values;
+    },
+    byteArray(max = 4096) {
+      const len = count(max);
+      ensure(len);
+      const values = Array.from(bytes.subarray(cursor, cursor + len));
+      cursor += len;
+      return values;
+    },
+    bytes() {
+      const len = reader.u32();
+      ensure(len);
+      const value = bytes.subarray(cursor, cursor + len);
+      cursor += len;
+      return value;
+    },
+    bytes64(max = Number.MAX_SAFE_INTEGER) {
+      const len = count(max);
+      ensure(len);
+      const value = bytes.subarray(cursor, cursor + len);
+      cursor += len;
+      return value;
+    },
+    optionalBytes64(max = Number.MAX_SAFE_INTEGER) {
+      if (!reader.bool()) return null;
+      return reader.bytes64(max);
+    },
+    stringSlice64(maxCount = 4096, maxBytes = Number.MAX_SAFE_INTEGER) {
+      const len = count(maxCount);
+      const values = [];
+      for (let i = 0; i < len; i += 1) values.push(reader.bytes64(maxBytes));
+      return values;
+    },
+    done() {
+      if (cursor !== bytes.length) throw new Error(`${label} trailing bytes`);
+    },
+  };
+  return reader;
 }
 
 function parseHexU64(value, label) {
@@ -872,6 +1574,16 @@ function assertMemoryCannotGrow(memory) {
 function readU64Le(bytes, offset) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return view.getBigUint64(offset, true);
+}
+
+function readU32LeAt(bytes, offset) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getUint32(offset, true);
+}
+
+function readU16LeAt(bytes, offset) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getUint16(offset, true);
 }
 
 function and(...values) {
