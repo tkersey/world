@@ -317,10 +317,10 @@ fn checkAgentRuntimeArtifacts(io: std.Io, allocator: std.mem.Allocator, out_dir:
     const manifest_bytes = try readJoined(io, allocator, out_dir, "appliance-manifest.bin", 1024 * 1024);
     const metadata_bytes = try readJoined(io, allocator, out_dir, "agent-runtime-world-artifacts.json", 1024 * 1024);
 
-    var image = try world.Executable.Image.decode(allocator, image_bytes, .{ .max_image_bytes = image_bytes.len });
+    var image = try buildAgentRuntimeImage(allocator);
     defer image.deinit(allocator);
-    const compatibility = try image.validateWithAllocator(allocator, universal.executable_runtime_profile);
-    if (!compatibility.compatible) return error.ExecutableLoadRejected;
+    const expected_image_bytes = try image.encode(allocator);
+    if (!std.mem.eql(u8, image_bytes, expected_image_bytes)) return error.InvalidFrameEncoding;
 
     var expected_core = try world.Appliance.Core.initExecutable(allocator, image, .{
         .profile = .wasm_small,
@@ -332,6 +332,8 @@ fn checkAgentRuntimeArtifacts(io: std.Io, allocator: std.mem.Allocator, out_dir:
     const expected_manifest = expected_core.readManifest();
     const expected_manifest_bytes = try expected_manifest.encode(allocator);
     if (!std.mem.eql(u8, manifest_bytes, expected_manifest_bytes)) return error.InvalidFrameEncoding;
+    const expected_metadata_bytes = try agentRuntimeMetadataJson(allocator, image, expected_manifest);
+    if (!std.mem.eql(u8, metadata_bytes, expected_metadata_bytes)) return error.InvalidFrameEncoding;
 
     var manifest = try world.Appliance.Manifest.decode(allocator, manifest_bytes);
     defer manifest.deinit(allocator);
