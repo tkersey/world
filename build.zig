@@ -720,6 +720,7 @@ pub fn build(b: *std.Build) void {
     });
     const test_step = b.step("test", "Run world tests.");
     b.default_step.dependOn(check_world_target_step);
+    test_step.dependOn(check_world_target_step);
     test_step.dependOn(&addRunArtifactWithArgs(b, wasm_guest_tests, test_args.passthrough).step);
     if (validation_target.query.isNative()) {
         test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
