@@ -4,6 +4,7 @@ const fixtures = @import("world_fixtures");
 const boundary_agent_runtime = @import("boundary_agent_runtime");
 const universal = @import("world_universal_appliance_wasm.zig");
 
+const universal_appliance_metadata = "world-universal-appliance";
 const agent_runtime_metadata = "agent-runtime-v0.1.world-agent";
 
 pub fn main(init: std.process.Init) !void {
@@ -262,7 +263,7 @@ fn manifestFingerprintForImage(allocator: std.mem.Allocator, image: world.Execut
         .profile = .wasm_small,
         .capacity = universal.abi_capacity,
         .supported_runtime_profile = universal.executable_runtime_profile,
-        .metadata = agent_runtime_metadata,
+        .metadata = universal_appliance_metadata,
     });
     defer core.deinit();
     return core.readManifest().manifest_fingerprint;
@@ -586,7 +587,7 @@ fn replyCommandBytesForBoot(
         .profile = .wasm_small,
         .capacity = universal.abi_capacity,
         .supported_runtime_profile = universal.executable_runtime_profile,
-        .metadata = "world-universal-appliance",
+        .metadata = universal_appliance_metadata,
     });
     defer core.deinit();
 
