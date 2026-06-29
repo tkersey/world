@@ -101,22 +101,44 @@ fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
 }
 
 pub fn build(b: *std.Build) void {
-    const requested_target = b.standardTargetOptions(.{});
-    const target = if (requested_target.result.os.tag == .freestanding) b.graph.host else requested_target;
+    const target = b.standardTargetOptions(.{});
+    const validation_target = if (target.result.os.tag == .freestanding) b.graph.host else target;
     const optimize = b.standardOptimizeOption(.{});
     const test_args = parseTestArgs(b);
-    const boundary_dep = b.dependency("boundary", .{
+    const exported_boundary_dep = b.dependency("boundary", .{
         .target = target,
         .optimize = optimize,
     });
-    const boundary = boundary_dep.module("boundary");
+    const exported_boundary = exported_boundary_dep.module("boundary");
 
-    const world = b.addModule("world", .{
+    const exported_world = b.addModule("world", .{
         .root_source_file = b.path("src/world.zig"),
         .target = target,
         .optimize = optimize,
     });
-    world.addImport("boundary", boundary);
+    exported_world.addImport("boundary", exported_boundary);
+
+    const boundary_dep = b.dependency("boundary", .{
+        .target = validation_target,
+        .optimize = optimize,
+    });
+    const boundary = boundary_dep.module("boundary");
+    const world = if (target.result.os.tag == .freestanding) blk: {
+        const validation_world = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+        });
+        validation_world.addImport("boundary", boundary);
+        break :blk validation_world;
+    } else exported_world;
+    const world_target_check = b.addLibrary(.{
+        .linkage = .static,
+        .name = "world-target-check",
+        .root_module = exported_world,
+    });
+    const check_world_target_step = b.step("check-world-target", "Compile the exported World module for the requested target.");
+    check_world_target_step.dependOn(&world_target_check.step);
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -174,7 +196,7 @@ pub fn build(b: *std.Build) void {
 
     const fixtures = b.createModule(.{
         .root_source_file = b.path("test/fixtures.zig"),
-        .target = target,
+        .target = validation_target,
         .optimize = optimize,
     });
     fixtures.addImport("world", world);
@@ -351,7 +373,7 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -364,7 +386,7 @@ pub fn build(b: *std.Build) void {
     const archive_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/archive_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -375,7 +397,7 @@ pub fn build(b: *std.Build) void {
     const appliance_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -386,7 +408,7 @@ pub fn build(b: *std.Build) void {
     });
     const world_module_test_module = b.createModule(.{
         .root_source_file = b.path("src/world.zig"),
-        .target = target,
+        .target = validation_target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "boundary", .module = boundary },
@@ -399,7 +421,7 @@ pub fn build(b: *std.Build) void {
     const world_protocol_manifest_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -413,7 +435,7 @@ pub fn build(b: *std.Build) void {
     const boundary_world_compatibility_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -426,7 +448,7 @@ pub fn build(b: *std.Build) void {
     const world_conformance_corpus_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -474,7 +496,7 @@ pub fn build(b: *std.Build) void {
     const world_adversarial_codec_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -604,7 +626,7 @@ pub fn build(b: *std.Build) void {
     const world_v0_budget_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
@@ -719,7 +741,7 @@ pub fn build(b: *std.Build) void {
     const turn_closure_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -734,7 +756,7 @@ pub fn build(b: *std.Build) void {
     const executable_image_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -750,7 +772,7 @@ pub fn build(b: *std.Build) void {
     const loaded_runspace_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -766,7 +788,7 @@ pub fn build(b: *std.Build) void {
     const loaded_linker_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -782,7 +804,7 @@ pub fn build(b: *std.Build) void {
     const loaded_admission_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -798,7 +820,7 @@ pub fn build(b: *std.Build) void {
     const loaded_fabric_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -814,7 +836,7 @@ pub fn build(b: *std.Build) void {
     const loaded_capsule_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -830,7 +852,7 @@ pub fn build(b: *std.Build) void {
     const world_seed_migration_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/world_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -846,7 +868,7 @@ pub fn build(b: *std.Build) void {
     const world_universal_runtime_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -861,7 +883,7 @@ pub fn build(b: *std.Build) void {
     const world_seed_replay_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -875,7 +897,7 @@ pub fn build(b: *std.Build) void {
     const world_replay_positive_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -891,7 +913,7 @@ pub fn build(b: *std.Build) void {
     const world_appliance_batching_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -930,7 +952,7 @@ pub fn build(b: *std.Build) void {
     const forged_descriptor_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/forged_descriptor_metadata.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -944,7 +966,7 @@ pub fn build(b: *std.Build) void {
     const appliance_missing_binding_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_missing_actuation_binding.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -958,7 +980,7 @@ pub fn build(b: *std.Build) void {
     const appliance_covered_port_bound_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_covered_port_also_bound.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -972,7 +994,7 @@ pub fn build(b: *std.Build) void {
     const appliance_invalid_capacity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_invalid_capacity.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -986,7 +1008,7 @@ pub fn build(b: *std.Build) void {
     const appliance_actuation_disabled_binding_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_actuation_disabled_binding.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -1000,7 +1022,7 @@ pub fn build(b: *std.Build) void {
     const appliance_zero_host_request_capacity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_zero_host_request_capacity.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -1014,7 +1036,7 @@ pub fn build(b: *std.Build) void {
     const appliance_zero_host_reply_capacity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_zero_host_reply_capacity.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -1028,7 +1050,7 @@ pub fn build(b: *std.Build) void {
     const appliance_zero_actuation_record_capacity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_zero_actuation_record_capacity.zig"),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
@@ -1052,6 +1074,7 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
     check_step.dependOn(test_step);
     check_step.dependOn(compile_fail_step);
+    check_step.dependOn(check_world_target_step);
     check_step.dependOn(check_world_turn_closure_step);
     check_step.dependOn(check_world_executable_image_step);
     check_step.dependOn(check_world_loaded_runspace_step);
@@ -2407,7 +2430,7 @@ pub fn build(b: *std.Build) void {
     inline for (examples) |example| {
         const exe_mod = b.createModule(.{
             .root_source_file = b.path(example.path),
-            .target = target,
+            .target = validation_target,
             .optimize = optimize,
         });
         exe_mod.addImport("world", world);
