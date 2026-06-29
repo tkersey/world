@@ -308,17 +308,23 @@ pub fn build(b: *std.Build) void {
     const universal_command_b = run_universal_fixture_gen.addOutputFileArg("world-universal-command-b.bin");
     const universal_proof = run_universal_fixture_gen.addOutputFileArg("world-universal-proof.txt");
     const world_agent_runtime_dist_dir = "zig-out/dist/world-v0.1.0/agent-runtime";
+    const world_agent_runtime_check_dir = "zig-out/check/world-agent-runtime";
     const run_world_agent_runtime_artifact_gen = b.addRunArtifact(universal_fixture_gen);
     run_world_agent_runtime_artifact_gen.addArgs(&.{
         "--agent-runtime",
         world_agent_runtime_dist_dir,
     });
+    const run_world_agent_runtime_artifact_check_gen = b.addRunArtifact(universal_fixture_gen);
+    run_world_agent_runtime_artifact_check_gen.addArgs(&.{
+        "--agent-runtime",
+        world_agent_runtime_check_dir,
+    });
     const check_world_agent_runtime_artifacts_cmd = b.addRunArtifact(universal_fixture_gen);
     check_world_agent_runtime_artifacts_cmd.addArgs(&.{
         "--check-agent-runtime",
-        world_agent_runtime_dist_dir,
+        world_agent_runtime_check_dir,
     });
-    check_world_agent_runtime_artifacts_cmd.step.dependOn(&run_world_agent_runtime_artifact_gen.step);
+    check_world_agent_runtime_artifacts_cmd.step.dependOn(&run_world_agent_runtime_artifact_check_gen.step);
     const emit_world_agent_runtime_artifacts_step = b.step("emit-world-agent-runtime-artifacts", "Emit World-owned Agent Runtime executable image and appliance manifest artifacts.");
     emit_world_agent_runtime_artifacts_step.dependOn(&run_world_agent_runtime_artifact_gen.step);
     const check_world_agent_runtime_artifacts_step = b.step("check-world-agent-runtime-artifacts", "Validate World-owned Agent Runtime export artifacts exist and are non-empty.");
@@ -690,6 +696,16 @@ pub fn build(b: *std.Build) void {
         "zig-out/dist/world-v0.1.0",
     });
     run_check_world_v0_1_dist.step.dependOn(&run_dist_world_v0.step);
+    const run_check_world_agent_v0_dist = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_release_artifacts.mjs",
+        "--mode",
+        "check-dist",
+        "--dist",
+        "zig-out/dist/world-v0.1.0",
+    });
+    run_check_world_agent_v0_dist.step.dependOn(&run_world_agent_runtime_artifact_gen.step);
+    dist_world_agent_v0_step.dependOn(&run_check_world_agent_v0_dist.step);
     const run_check_world_v0_1_standalone = b.addSystemCommand(&.{
         "node",
         "zig-out/dist/world-v0.1.0/scripts/world_conformance.mjs",
@@ -1099,7 +1115,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(check_world_agent_replay_step);
     check_step.dependOn(check_world_agent_migration_step);
     check_step.dependOn(check_world_agent_conformance_corpus_step);
-    if (target.query.isNative()) check_step.dependOn(check_world_agent_runtime_artifacts_step);
+    check_step.dependOn(check_world_agent_runtime_artifacts_step);
     check_step.dependOn(check_world_js_corpus_step);
     check_step.dependOn(check_world_js_malformed_corpus_step);
     check_step.dependOn(check_world_adversarial_codecs_step);
