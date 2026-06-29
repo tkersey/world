@@ -430,7 +430,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"world protocol manifest"},
     });
     const check_world_protocol_manifest_step = b.step("check-world-protocol-manifest", "Run World Protocol.Manifest canonical encoding and WASM export checks.");
-    dependOnNativeRunOrCompile(b, target, check_world_protocol_manifest_step, world_protocol_manifest_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_protocol_manifest_step, world_protocol_manifest_tests, test_args.passthrough);
     check_world_protocol_manifest_step.dependOn(check_world_universal_appliance_wasm_step);
     const boundary_world_compatibility_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -444,7 +444,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"boundary world protocol compatibility"},
     });
     const check_boundary_world_compatibility_step = b.step("check-boundary-world-compatibility", "Run World checks that bind the frozen Boundary v0 protocol manifest evidence.");
-    dependOnNativeRunOrCompile(b, target, check_boundary_world_compatibility_step, boundary_world_compatibility_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_boundary_world_compatibility_step, boundary_world_compatibility_tests, test_args.passthrough);
     const world_conformance_corpus_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
@@ -457,7 +457,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"world conformance corpus"},
     });
     const check_world_conformance_corpus_step = b.step("check-world-conformance-corpus", "Validate the World v0 conformance corpus case inventory.");
-    dependOnNativeRunOrCompile(b, target, check_world_conformance_corpus_step, world_conformance_corpus_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_conformance_corpus_step, world_conformance_corpus_tests, test_args.passthrough);
     const run_world_conformance_corpus_node = b.addSystemCommand(&.{
         "node",
         "scripts/world_conformance.mjs",
@@ -505,7 +505,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"world adversarial codecs"},
     });
     const check_world_adversarial_codecs_step = b.step("check-world-adversarial-codecs", "Run World v0 adversarial protocol codec checks.");
-    dependOnNativeRunOrCompile(b, target, check_world_adversarial_codecs_step, world_adversarial_codec_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_adversarial_codecs_step, world_adversarial_codec_tests, test_args.passthrough);
     const world_state_machine_differential_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/appliance_test.zig"),
@@ -635,7 +635,7 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"world v0 budgets"},
     });
     const check_world_v0_budgets_step = b.step("check-world-v0-budgets", "Validate World v0 structural budget baselines.");
-    dependOnNativeRunOrCompile(b, target, check_world_v0_budgets_step, world_v0_budget_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_v0_budgets_step, world_v0_budget_tests, test_args.passthrough);
     const run_world_reproducible_wasm_check = b.addSystemCommand(&.{
         "node",
         "scripts/world_release_artifacts.mjs",
@@ -720,7 +720,7 @@ pub fn build(b: *std.Build) void {
     });
     const test_step = b.step("test", "Run world tests.");
     test_step.dependOn(&addRunArtifactWithArgs(b, wasm_guest_tests, test_args.passthrough).step);
-    if (target.query.isNative()) {
+    if (validation_target.query.isNative()) {
         test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
         test_step.dependOn(&addRunArtifactWithArgs(b, archive_tests, test_args.passthrough).step);
         test_step.dependOn(&addRunArtifactWithArgs(b, appliance_tests, test_args.passthrough).step);
@@ -750,7 +750,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{ "TurnClosure", "Wire TurnInput", "Continuity object kinds" },
     });
-    dependOnNativeRunOrCompile(b, target, check_world_turn_closure_step, turn_closure_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_turn_closure_step, turn_closure_tests, test_args.passthrough);
 
     const check_world_executable_image_step = b.step("check-world-executable-image", "Run World Executable image tests.");
     const executable_image_tests = b.addTest(.{
@@ -766,7 +766,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Executable Builder"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_executable_image_step, executable_image_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_executable_image_step, executable_image_tests, test_args.passthrough);
 
     const check_world_loaded_runspace_step = b.step("check-world-loaded-runspace", "Run World loaded Runspace tests.");
     const loaded_runspace_tests = b.addTest(.{
@@ -782,7 +782,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Runspace"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_runspace_step, loaded_runspace_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_runspace_step, loaded_runspace_tests, test_args.passthrough);
 
     const check_world_loaded_linker_step = b.step("check-world-loaded-linker", "Run World loaded Linker tests.");
     const loaded_linker_tests = b.addTest(.{
@@ -798,7 +798,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Linker"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_linker_step, loaded_linker_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_linker_step, loaded_linker_tests, test_args.passthrough);
 
     const check_world_loaded_admission_step = b.step("check-world-loaded-admission", "Run World loaded Admission tests.");
     const loaded_admission_tests = b.addTest(.{
@@ -814,7 +814,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Admission"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_admission_step, loaded_admission_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_admission_step, loaded_admission_tests, test_args.passthrough);
 
     const check_world_loaded_fabric_step = b.step("check-world-loaded-fabric", "Run World loaded Fabric tests.");
     const loaded_fabric_tests = b.addTest(.{
@@ -830,7 +830,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Fabric"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_fabric_step, loaded_fabric_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_fabric_step, loaded_fabric_tests, test_args.passthrough);
 
     const check_world_loaded_capsule_step = b.step("check-world-loaded-capsule", "Run World loaded Capsule tests.");
     const loaded_capsule_tests = b.addTest(.{
@@ -846,7 +846,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Loaded Capsule"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_loaded_capsule_step, loaded_capsule_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_loaded_capsule_step, loaded_capsule_tests, test_args.passthrough);
 
     const check_world_seed_migration_step = b.step("check-world-seed-migration", "Run World Seed migration tests.");
     const world_seed_migration_tests = b.addTest(.{
@@ -862,7 +862,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"World Seed Migration"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_seed_migration_step, world_seed_migration_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_seed_migration_step, world_seed_migration_tests, test_args.passthrough);
 
     const check_world_universal_runtime_step = b.step("check-world-universal-runtime", "Run World universal executable Appliance runtime tests.");
     const world_universal_runtime_tests = b.addTest(.{
@@ -877,7 +877,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"Universal Runtime"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_universal_runtime_step, world_universal_runtime_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_universal_runtime_step, world_universal_runtime_tests, test_args.passthrough);
 
     const check_world_seed_replay_step = b.step("check-world-seed-replay", "Run World Seed replay and batched host closure tests.");
     const world_seed_replay_tests = b.addTest(.{
@@ -892,7 +892,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = &.{"World Seed Replay"},
     });
-    dependOnNativeRunOrCompile(b, target, check_world_seed_replay_step, world_seed_replay_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_seed_replay_step, world_seed_replay_tests, test_args.passthrough);
     const check_world_replay_positive_step = b.step("check-world-replay-positive", "Run World Appliance positive replay proof.");
     const world_replay_positive_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -908,7 +908,7 @@ pub fn build(b: *std.Build) void {
             "appliance Core accepts replay evidence with verified transcript support",
         },
     });
-    dependOnNativeRunOrCompile(b, target, check_world_replay_positive_step, world_replay_positive_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_replay_positive_step, world_replay_positive_tests, test_args.passthrough);
     const check_world_appliance_batching_step = b.step("check-world-appliance-batching", "Run World Appliance batched host turn proof.");
     const world_appliance_batching_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -926,7 +926,7 @@ pub fn build(b: *std.Build) void {
             "appliance Wire TurnInput canonicalizes resolution input order",
         },
     });
-    dependOnNativeRunOrCompile(b, target, check_world_appliance_batching_step, world_appliance_batching_tests, test_args.passthrough);
+    dependOnNativeRunOrCompile(b, validation_target, check_world_appliance_batching_step, world_appliance_batching_tests, test_args.passthrough);
     const check_world_deterministic_retry_step = b.step("check-world-deterministic-retry", "Run World Appliance deterministic retry proof.");
     const check_world_universal_step = b.step("check-world-universal", "Run World universal Appliance runtime and WASM conformance checks.");
     check_world_universal_step.dependOn(check_world_universal_runtime_step);
@@ -2438,7 +2438,7 @@ pub fn build(b: *std.Build) void {
         exe_mod.addImport("world_fixtures", fixtures);
         const exe = b.addExecutable(.{ .name = example.name, .root_module = exe_mod });
         const run_step = b.step(example.step, example.desc);
-        if (target.query.isNative()) {
+        if (validation_target.query.isNative()) {
             const run = addRunArtifactWithArgs(b, exe, if (b.args) |args| args else &.{});
             run.expectStdOutEqual(example.expected_stdout);
             if (example.serial_after_tests) run.step.dependOn(test_step);
