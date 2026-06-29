@@ -4,6 +4,8 @@ const fixtures = @import("world_fixtures");
 const boundary_agent_runtime = @import("boundary_agent_runtime");
 const universal = @import("world_universal_appliance_wasm.zig");
 
+const agent_runtime_metadata = "agent-runtime-v0.1.world-agent";
+
 pub fn main(init: std.process.Init) !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
@@ -121,7 +123,7 @@ fn buildAgentRuntimeImage(allocator: std.mem.Allocator) !world.Executable.Image 
 
     var builder = world.Executable.Builder.init(allocator, .{
         .runtime_profile = universal.executable_runtime_profile,
-        .metadata = "agent-runtime-v0.1.world-agent",
+        .metadata = agent_runtime_metadata,
     });
     defer builder.deinit();
     try builder.addRootModule(root_bytes);
@@ -260,7 +262,7 @@ fn manifestFingerprintForImage(allocator: std.mem.Allocator, image: world.Execut
         .profile = .wasm_small,
         .capacity = universal.abi_capacity,
         .supported_runtime_profile = universal.executable_runtime_profile,
-        .metadata = "world-universal-appliance",
+        .metadata = agent_runtime_metadata,
     });
     defer core.deinit();
     return core.readManifest().manifest_fingerprint;
@@ -275,14 +277,14 @@ fn exportAgentRuntimeArtifacts(io: std.Io, allocator: std.mem.Allocator, out_dir
         .profile = .wasm_small,
         .capacity = universal.abi_capacity,
         .supported_runtime_profile = universal.executable_runtime_profile,
-        .metadata = "world-universal-appliance",
+        .metadata = agent_runtime_metadata,
     });
     defer core.deinit();
 
     const image_bytes = try image.encode(allocator);
     const manifest = core.readManifest();
     const manifest_bytes = try manifest.encode(allocator);
-    const metadata = try agentRuntimeMetadataJson(allocator, image, manifest);
+    const metadata = try agentRuntimeMetadataJson(allocator, image, manifest, image_bytes, manifest_bytes);
 
     try writeJoined(io, allocator, out_dir, "agent.executable-image", image_bytes);
     try writeJoined(io, allocator, out_dir, "appliance-manifest.bin", manifest_bytes);
@@ -303,6 +305,8 @@ const AgentRuntimeMetadata = struct {
     world_appliance_abi_version: u32,
     world_turn_closure_format_version: u32,
     world_archive_format_version: u32,
+    agent_executable_image_sha256: []const u8,
+    appliance_manifest_sha256: []const u8,
     root_module_fingerprint: []const u8,
     dispatch_fingerprint: []const u8,
     required_actuator_refs: []const []const u8,
@@ -326,13 +330,13 @@ fn checkAgentRuntimeArtifacts(io: std.Io, allocator: std.mem.Allocator, out_dir:
         .profile = .wasm_small,
         .capacity = universal.abi_capacity,
         .supported_runtime_profile = universal.executable_runtime_profile,
-        .metadata = "world-universal-appliance",
+        .metadata = agent_runtime_metadata,
     });
     defer expected_core.deinit();
     const expected_manifest = expected_core.readManifest();
     const expected_manifest_bytes = try expected_manifest.encode(allocator);
     if (!std.mem.eql(u8, manifest_bytes, expected_manifest_bytes)) return error.InvalidFrameEncoding;
-    const expected_metadata_bytes = try agentRuntimeMetadataJson(allocator, image, expected_manifest);
+    const expected_metadata_bytes = try agentRuntimeMetadataJson(allocator, image, expected_manifest, expected_image_bytes, expected_manifest_bytes);
     if (!std.mem.eql(u8, metadata_bytes, expected_metadata_bytes)) return error.InvalidFrameEncoding;
 
     var manifest = try world.Appliance.Manifest.decode(allocator, manifest_bytes);
@@ -342,12 +346,14 @@ fn checkAgentRuntimeArtifacts(io: std.Io, allocator: std.mem.Allocator, out_dir:
     const metadata = parsed.value;
 
     try expectStringEquals("v0.1.0", metadata.world_package_version);
-    try expectStringEquals("world-owned agent runtime export", metadata.metadata);
+    try expectStringEquals(agent_runtime_metadata, metadata.metadata);
     try expectEqualU32(world.world_executable_image_format_version, metadata.world_executable_image_format_version);
     try expectEqualU32(world.world_executable_image_fingerprint_version, metadata.world_executable_image_fingerprint_version);
     try expectEqualU32(world.world_appliance_abi_version, metadata.world_appliance_abi_version);
     try expectEqualU32(world.world_appliance_turn_closure_format_version, metadata.world_turn_closure_format_version);
     try expectEqualU32(world.Archive.world_archive_format_version, metadata.world_archive_format_version);
+    try expectStringEquals(try sha256Hex(allocator, image_bytes), metadata.agent_executable_image_sha256);
+    try expectStringEquals(try sha256Hex(allocator, manifest_bytes), metadata.appliance_manifest_sha256);
     try expectEqualU64(image.image_fingerprint, try parseHexU64(metadata.world_executable_image_fingerprint));
     try expectEqualU64(manifest.manifest_fingerprint, try parseHexU64(metadata.world_appliance_manifest_fingerprint));
     try expectEqualU64((image.module_set.root() orelse return error.InvalidFrameEncoding).module_ref.boundary_module_fingerprint, try parseHexU64(metadata.root_module_fingerprint));
@@ -367,6 +373,8 @@ fn agentRuntimeMetadataJson(
     allocator: std.mem.Allocator,
     image: world.Executable.Image,
     manifest: world.Appliance.Manifest,
+    image_bytes: []const u8,
+    manifest_bytes: []const u8,
 ) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -380,6 +388,8 @@ fn agentRuntimeMetadataJson(
         \\  "world_appliance_abi_version": {d},
         \\  "world_turn_closure_format_version": {d},
         \\  "world_archive_format_version": {d},
+        \\  "agent_executable_image_sha256": "{s}",
+        \\  "appliance_manifest_sha256": "{s}",
         \\  "root_module_fingerprint": "0x{x:0>16}",
         \\  "dispatch_fingerprint": "0x{x:0>16}",
         \\  "required_actuator_refs":
@@ -391,6 +401,8 @@ fn agentRuntimeMetadataJson(
         world.world_appliance_abi_version,
         world.world_appliance_turn_closure_format_version,
         world.Archive.world_archive_format_version,
+        try sha256Hex(allocator, image_bytes),
+        try sha256Hex(allocator, manifest_bytes),
         (image.module_set.root() orelse return error.InvalidFrameEncoding).module_ref.boundary_module_fingerprint,
         image.dispatch_image.dispatch_fingerprint,
     });
@@ -401,7 +413,7 @@ fn agentRuntimeMetadataJson(
     try writeU64Array(allocator, &out, manifest.actuation_actuator_ref_fingerprints);
     try out.appendSlice(allocator, ",\n  \"required_world_port_ids\": ");
     try writeU64Array(allocator, &out, manifest.actuation_world_port_ids);
-    try out.appendSlice(allocator, ",\n  \"metadata\": \"world-owned agent runtime export\"\n}\n");
+    try out.print(allocator, ",\n  \"metadata\": \"{s}\"\n}}\n", .{agent_runtime_metadata});
     return try out.toOwnedSlice(allocator);
 }
 
@@ -497,6 +509,13 @@ fn appendChecksumLine(allocator: std.mem.Allocator, out: *std.ArrayList(u8), ent
         try out.print(allocator, "{x:0>2}", .{byte});
     }
     try out.print(allocator, "  agent-runtime/{s}\n", .{entry.basename});
+}
+
+fn sha256Hex(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    const encoded = std.fmt.bytesToHex(digest, .lower);
+    return try allocator.dupe(u8, &encoded);
 }
 
 fn readJoined(io: std.Io, allocator: std.mem.Allocator, dir: []const u8, basename: []const u8, limit: usize) ![]u8 {

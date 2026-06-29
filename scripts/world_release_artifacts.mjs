@@ -37,6 +37,9 @@ const agentRuntimeDistFiles = [
   'agent-runtime/agent-runtime-world-artifacts.json',
 ];
 
+const agentRuntimeMetadataLabel = 'agent-runtime-v0.1.world-agent';
+const executableImageMagic = Buffer.from('world.Executable.Image.v2\0', 'utf8');
+
 const universalApplianceRequiredExports = [
   'world_appliance_abi_version',
   'world_appliance_runtime_manifest_len',
@@ -216,6 +219,7 @@ async function checkDist(options) {
   const inspection = await inspectWasm(wasmBytes);
   verifyReleaseMetadata(dist, wasmBytes, inspection);
   verifyReleaseReceipt(dist, wasmBytes, inspection);
+  verifyAgentRuntimeDist(dist);
   if (!inspection.actual_webassembly_execution) throw new Error('distributed wasm execution was not verified');
   console.log(JSON.stringify({ dist, complete: true, actual_webassembly_execution: true }));
 }
@@ -605,6 +609,143 @@ function verifyReleaseReceipt(dist, wasmBytes, inspection) {
   );
 }
 
+function verifyAgentRuntimeDist(dist) {
+  const root = join(dist, 'agent-runtime');
+  if (!existsSync(root)) return;
+
+  const imageBytes = readFileSync(join(root, 'agent.executable-image'));
+  const manifestBytes = readFileSync(join(root, 'appliance-manifest.bin'));
+  const metadata = JSON.parse(readFileSync(join(root, 'agent-runtime-world-artifacts.json'), 'utf8'));
+  const image = parseAgentRuntimeExecutableImage(imageBytes);
+  const manifest = parseAgentRuntimeManifest(manifestBytes);
+
+  assertEqual(metadata.world_package_version, 'v0.1.0', 'agent_runtime.world_package_version');
+  assertEqual(metadata.metadata, agentRuntimeMetadataLabel, 'agent_runtime.metadata');
+  assertEqual(metadata.agent_executable_image_sha256, sha256Hex(imageBytes), 'agent_runtime.agent_executable_image_sha256');
+  assertEqual(metadata.appliance_manifest_sha256, sha256Hex(manifestBytes), 'agent_runtime.appliance_manifest_sha256');
+  assertEqual(image.format_version, metadata.world_executable_image_format_version, 'agent_runtime.image.format_version');
+  assertEqual(image.fingerprint_version, metadata.world_executable_image_fingerprint_version, 'agent_runtime.image.fingerprint_version');
+  assertEqual(image.image_fingerprint, metadata.world_executable_image_fingerprint, 'agent_runtime.image.image_fingerprint');
+
+  assertEqual(manifest.manifest_format_version, 3, 'agent_runtime.manifest.manifest_format_version');
+  assertEqual(manifest.manifest_fingerprint_version, 3, 'agent_runtime.manifest.manifest_fingerprint_version');
+  assertEqual(manifest.appliance_abi_version, metadata.world_appliance_abi_version, 'agent_runtime.manifest.appliance_abi_version');
+  assertEqual(manifest.manifest_fingerprint, metadata.world_appliance_manifest_fingerprint, 'agent_runtime.manifest.manifest_fingerprint');
+  assertEqual(fingerprintAgentRuntimeManifest(manifest), manifest.manifest_fingerprint, 'agent_runtime.manifest.computed_fingerprint');
+  assertEqual(manifest.metadata, agentRuntimeMetadataLabel, 'agent_runtime.manifest.metadata');
+  if (manifest.root_target_ref_fingerprint === '0x0000000000000000' ||
+    manifest.root_world_surface_fingerprint === '0x0000000000000000' ||
+    manifest.root_target_certificate_fingerprint === '0x0000000000000000') {
+    throw new Error('agent_runtime.manifest root identity missing');
+  }
+  assertStringListEqual(manifest.actuation_descriptor_fingerprints, metadata.required_descriptor_fingerprints, 'agent_runtime.required_descriptor_fingerprints');
+  assertStringListEqual(manifest.actuation_actuator_ref_fingerprints, metadata.required_actuator_ref_fingerprints, 'agent_runtime.required_actuator_ref_fingerprints');
+  assertStringListEqual(manifest.actuation_world_port_ids, metadata.required_world_port_ids, 'agent_runtime.required_world_port_ids');
+  if (!Array.isArray(metadata.required_actuator_refs) ||
+    metadata.required_actuator_refs.length !== manifest.actuation_world_port_ids.length ||
+    metadata.required_actuator_refs.length === 0) {
+    throw new Error('agent_runtime.required_actuator_refs mismatch');
+  }
+}
+
+function parseAgentRuntimeExecutableImage(bytes) {
+  let cursor = 0;
+  const magic = bytes.subarray(cursor, cursor + executableImageMagic.length);
+  if (Buffer.compare(magic, executableImageMagic) !== 0) throw new Error('agent_runtime.image invalid magic');
+  cursor += executableImageMagic.length;
+  const formatVersion = readU32LeAt(bytes, cursor);
+  cursor += 4;
+  const fingerprintVersion = readU32LeAt(bytes, cursor);
+  cursor += 4;
+  const codecVersion = readU32LeAt(bytes, cursor);
+  cursor += 4;
+  const totalLen = readU64Le(bytes, cursor);
+  cursor += 8;
+  const imageFingerprint = readU64Le(bytes, cursor);
+  if (totalLen !== BigInt(bytes.length)) throw new Error('agent_runtime.image total length mismatch');
+  if (codecVersion !== 1) throw new Error('agent_runtime.image codec version mismatch');
+  return {
+    format_version: formatVersion,
+    fingerprint_version: fingerprintVersion,
+    image_fingerprint: hex64(imageFingerprint),
+  };
+}
+
+function parseAgentRuntimeManifest(bytes) {
+  const reader = makeByteReader(bytes, 'agent_runtime.manifest');
+  const manifest = {
+    manifest_format_version: reader.u32(),
+    manifest_fingerprint_version: reader.u32(),
+    manifest_fingerprint: hex64(reader.u64()),
+    appliance_abi_version: reader.u32(),
+    root_target_ref_fingerprint: hex64(reader.u64()),
+    root_world_surface_fingerprint: hex64(reader.u64()),
+    root_target_certificate_fingerprint: hex64(reader.u64()),
+    link_plan_fingerprint: hex64(reader.u64()),
+    link_certificate_fingerprint: hex64(reader.u64()),
+    assembly_fingerprint: hex64(reader.u64()),
+    provider_target_ref_fingerprints: reader.u64Array(),
+    fabric_plan_fingerprints: reader.u64Array(),
+    residual_import_set_fingerprint: hex64(reader.u64()),
+    actuation_descriptor_fingerprints: reader.u64Array(),
+    actuation_binding_fingerprints: reader.u64Array(),
+    actuation_actuator_ref_fingerprints: reader.u64Array(),
+    actuation_world_port_ids: reader.u64Array(),
+    actuation_payload_value_ref_fingerprints: reader.u64Array(),
+    actuation_response_value_ref_fingerprints: reader.u64Array(),
+    actuation_classes: reader.byteArray(),
+    actuation_allowed_response_statuses: reader.byteArray(),
+    supervision_policy_fingerprint: hex64(reader.u64()),
+    default_permit_requirement_fingerprints: reader.u64Array(),
+    capsule_profile_fingerprint: hex64(reader.u64()),
+    archive_profile_fingerprint: hex64(reader.u64()),
+    supported_execution_modes: reader.u8(),
+    enabled_features: reader.u16(),
+    capacity_fingerprint: hex64(reader.u64()),
+    memory_plan_fingerprint: hex64(reader.u64()),
+    required_host_capabilities: reader.u8(),
+  };
+  manifest.metadata_bytes = reader.bytes();
+  manifest.metadata = textDecoder.decode(manifest.metadata_bytes);
+  reader.done();
+  return manifest;
+}
+
+function fingerprintAgentRuntimeManifest(manifest) {
+  const hasher = makeWorldHasher();
+  hasher.u64(manifest.manifest_format_version);
+  hasher.u64(manifest.manifest_fingerprint_version);
+  hasher.u64(manifest.appliance_abi_version);
+  hasher.u64(parseHexU64(manifest.root_target_ref_fingerprint, 'agent_runtime.manifest.root_target_ref_fingerprint'));
+  hasher.u64(parseHexU64(manifest.root_world_surface_fingerprint, 'agent_runtime.manifest.root_world_surface_fingerprint'));
+  hasher.u64(parseHexU64(manifest.root_target_certificate_fingerprint, 'agent_runtime.manifest.root_target_certificate_fingerprint'));
+  hasher.u64(parseHexU64(manifest.link_plan_fingerprint, 'agent_runtime.manifest.link_plan_fingerprint'));
+  hasher.u64(parseHexU64(manifest.link_certificate_fingerprint, 'agent_runtime.manifest.link_certificate_fingerprint'));
+  hasher.u64(parseHexU64(manifest.assembly_fingerprint, 'agent_runtime.manifest.assembly_fingerprint'));
+  hasher.u64Slice(manifest.provider_target_ref_fingerprints, 'agent_runtime.manifest.provider_target_ref_fingerprints');
+  hasher.u64Slice(manifest.fabric_plan_fingerprints, 'agent_runtime.manifest.fabric_plan_fingerprints');
+  hasher.u64(parseHexU64(manifest.residual_import_set_fingerprint, 'agent_runtime.manifest.residual_import_set_fingerprint'));
+  hasher.u64Slice(manifest.actuation_descriptor_fingerprints, 'agent_runtime.manifest.actuation_descriptor_fingerprints');
+  hasher.u64Slice(manifest.actuation_binding_fingerprints, 'agent_runtime.manifest.actuation_binding_fingerprints');
+  hasher.u64Slice(manifest.actuation_actuator_ref_fingerprints, 'agent_runtime.manifest.actuation_actuator_ref_fingerprints');
+  hasher.u64Slice(manifest.actuation_world_port_ids, 'agent_runtime.manifest.actuation_world_port_ids');
+  hasher.u64Slice(manifest.actuation_payload_value_ref_fingerprints, 'agent_runtime.manifest.actuation_payload_value_ref_fingerprints');
+  hasher.u64Slice(manifest.actuation_response_value_ref_fingerprints, 'agent_runtime.manifest.actuation_response_value_ref_fingerprints');
+  hasher.byteEnumSlice(manifest.actuation_classes);
+  hasher.byteEnumSlice(manifest.actuation_allowed_response_statuses);
+  hasher.u64(parseHexU64(manifest.supervision_policy_fingerprint, 'agent_runtime.manifest.supervision_policy_fingerprint'));
+  hasher.u64Slice(manifest.default_permit_requirement_fingerprints, 'agent_runtime.manifest.default_permit_requirement_fingerprints');
+  hasher.u64(parseHexU64(manifest.capsule_profile_fingerprint, 'agent_runtime.manifest.capsule_profile_fingerprint'));
+  hasher.u64(parseHexU64(manifest.archive_profile_fingerprint, 'agent_runtime.manifest.archive_profile_fingerprint'));
+  hasher.u64(manifest.supported_execution_modes);
+  hasher.u64(manifest.enabled_features);
+  hasher.u64(parseHexU64(manifest.capacity_fingerprint, 'agent_runtime.manifest.capacity_fingerprint'));
+  hasher.u64(parseHexU64(manifest.memory_plan_fingerprint, 'agent_runtime.manifest.memory_plan_fingerprint'));
+  hasher.u64(manifest.required_host_capabilities);
+  hasher.bytesWithLen(manifest.metadata_bytes);
+  return hex64(nonzero64(wyhash64(hasher.finish())));
+}
+
 function verifyProofReceipt(proof, index, releaseReceipt, inspection, wasmBytes) {
   const proofKind = requiredProofKinds[index];
   const proofGate = proofGateNames[proofKind];
@@ -708,6 +849,95 @@ function makeProtocolHasher() {
     },
   };
   return hasher;
+}
+
+function makeWorldHasher() {
+  const chunks = [];
+  const hasher = {
+    u64(value) {
+      const out = Buffer.alloc(8);
+      out.writeBigUInt64LE(BigInt(value));
+      chunks.push(out);
+    },
+    u64Slice(values, label) {
+      if (!Array.isArray(values)) throw new Error(`${label} must be an array`);
+      hasher.u64(values.length);
+      for (const value of values) hasher.u64(parseHexU64(value, label));
+    },
+    byteEnumSlice(values) {
+      if (!Array.isArray(values)) throw new Error('byte enum slice must be an array');
+      hasher.u64(values.length);
+      for (const value of values) hasher.u64(value);
+    },
+    bytesWithLen(value) {
+      hasher.u64(value.length);
+      chunks.push(Buffer.from(value));
+    },
+    finish() {
+      return Buffer.concat(chunks);
+    },
+  };
+  return hasher;
+}
+
+function makeByteReader(bytes, label) {
+  let cursor = 0;
+  const ensure = (amount) => {
+    if (cursor + amount > bytes.length) throw new Error(`${label} truncated`);
+  };
+  const count = () => {
+    const value = reader.u64();
+    if (value > BigInt(Number.MAX_SAFE_INTEGER) || value > 4096n) throw new Error(`${label} count out of range`);
+    return Number(value);
+  };
+  const reader = {
+    u8() {
+      ensure(1);
+      return bytes[cursor++];
+    },
+    u16() {
+      ensure(2);
+      const value = readU16LeAt(bytes, cursor);
+      cursor += 2;
+      return value;
+    },
+    u32() {
+      ensure(4);
+      const value = readU32LeAt(bytes, cursor);
+      cursor += 4;
+      return value;
+    },
+    u64() {
+      ensure(8);
+      const value = readU64Le(bytes, cursor);
+      cursor += 8;
+      return value;
+    },
+    u64Array() {
+      const len = count();
+      const values = [];
+      for (let i = 0; i < len; i += 1) values.push(hex64(reader.u64()));
+      return values;
+    },
+    byteArray() {
+      const len = count();
+      ensure(len);
+      const values = Array.from(bytes.subarray(cursor, cursor + len));
+      cursor += len;
+      return values;
+    },
+    bytes() {
+      const len = reader.u32();
+      ensure(len);
+      const value = bytes.subarray(cursor, cursor + len);
+      cursor += len;
+      return value;
+    },
+    done() {
+      if (cursor !== bytes.length) throw new Error(`${label} trailing bytes`);
+    },
+  };
+  return reader;
 }
 
 function parseHexU64(value, label) {
@@ -885,6 +1115,16 @@ function assertMemoryCannotGrow(memory) {
 function readU64Le(bytes, offset) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   return view.getBigUint64(offset, true);
+}
+
+function readU32LeAt(bytes, offset) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getUint32(offset, true);
+}
+
+function readU16LeAt(bytes, offset) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return view.getUint16(offset, true);
 }
 
 function and(...values) {
