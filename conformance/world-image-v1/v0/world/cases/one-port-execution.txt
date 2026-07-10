@@ -1,0 +1,10 @@
+case_id: one-port-execution
+owner_surface: Appliance/TurnClosure
+result_transport_owner: Wire.TurnInput
+waiting_status: needs_host
+completed_status: completed
+request_count: 1
+parent_closure_fingerprint: 0x0237466ba596778f
+completed_closure_fingerprint: 0x6a8ce7bf8c715db4
+result_bytes_present: true
+archive_append_present: true

@@ -1,0 +1,10 @@
+case_id: branching
+owner_surface: Machine/Transcript/Timeline/RunImage
+turn_closure_authority: false
+checkpoint_fingerprint: 0x2b11bbc8bca81ece
+common_parent_request_fingerprint: 0x36a6735525226c31
+baseline_transcript_fingerprint: 0xaa3dd05381fca5cb
+alternate_transcript_fingerprint: 0x07cc91fbb223c4ca
+baseline_result: final=actuate skeleton complete
+alternate_result: final=branch alternate
+parent_unchanged: true

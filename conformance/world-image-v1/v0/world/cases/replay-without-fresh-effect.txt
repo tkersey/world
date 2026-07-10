@@ -1,0 +1,10 @@
+case_id: replay-without-fresh-effect
+owner_surface: Machine/Transcript
+turn_closure_authority: false
+fresh_handler_calls: 1
+replay_handler_calls: 0
+replayed_response_count: 1
+fresh_result: 7
+replay_result: 7
+transcript_image_fingerprint: 0x064fea44e8213ec3
+run_image_fingerprint: 0xd8ee6082faeb801c

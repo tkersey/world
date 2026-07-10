@@ -1,0 +1,10 @@
+case_id: active-provider-restore
+owner_surface: Capsule/Runspace/Fabric
+fixture_provenance: synthetic-owner-state
+restore_accepted: true
+restored_route_count: 1
+restored_invocation_count: 1
+provider_completed: true
+root_completed: true
+completed_capsule_fingerprint: 0xb03b17b8ff75e7c3
+completed_state_artifact: artifacts/states/active-provider.completed.capsule

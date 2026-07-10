@@ -1,0 +1,6 @@
+core_state=uninitialized
+turn_sequence_number=0
+previous_turn_receipt=null
+outstanding_host_request=null
+output_bytes=0
+pending_command_preserved=true

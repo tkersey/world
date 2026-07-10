@@ -1,0 +1,10 @@
+case_id: partial-response-batch
+owner_surface: Appliance/TurnClosure
+result_transport_owner: Wire.TurnInput
+initial_request_count: 2
+supplied_first_batch_count: 1
+remaining_request_count: 1
+remaining_request_identity_preserved: true
+final_status: completed
+parent_closure_fingerprint: 0x2ec1fafe7550a5cd
+partial_closure_fingerprint: 0xd7c67f39a2663453

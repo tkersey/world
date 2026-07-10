@@ -1,0 +1,248 @@
+#!/usr/bin/env node
+
+import { createHash } from 'node:crypto';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
+
+const expectedCases = [
+  'one-port-execution',
+  'internal-provider-execution',
+  'provider-parked-externally',
+  'active-provider-restore',
+  'replay-without-fresh-effect',
+  'lost-output-retry',
+  'migration',
+  'branching',
+  'partial-response-batch',
+  'deterministic-failure',
+  'capacity-exhaustion',
+  'malformed-records',
+];
+
+const requiredTranscriptFacts = {
+  'provider-parked-externally': [
+    'owner_surface: Runspace/Fabric/Capsule',
+    'fixture_provenance: synthetic-owner-state',
+  ],
+  'active-provider-restore': [
+    'owner_surface: Capsule/Runspace/Fabric',
+    'fixture_provenance: synthetic-owner-state',
+    'provider_completed: true',
+    'root_completed: true',
+    'completed_state_artifact: artifacts/states/active-provider.completed.capsule',
+  ],
+  'migration': [
+    'owner_surface: Capsule/Runspace/Fabric',
+    'fixture_provenance: synthetic-owner-state',
+    'completed_after_migration: true',
+    'completed_state_artifact: artifacts/states/active-provider.completed.capsule',
+  ],
+  'replay-without-fresh-effect': [
+    'owner_surface: Machine/Transcript',
+    'turn_closure_authority: false',
+    'replay_handler_calls: 0',
+  ],
+  branching: [
+    'owner_surface: Machine/Transcript/Timeline/RunImage',
+    'turn_closure_authority: false',
+  ],
+  'malformed-records': [
+    'wrong_target_result_status: unknown_request',
+    'duplicate_result_status: invalid_command',
+    'stale_result_status: stale_turn',
+    'state_unchanged_after_wrong_result: true',
+    'state_unchanged_after_duplicate_result: true',
+    'state_unchanged_after_stale_result: true',
+  ],
+};
+
+const requiredArtifacts = [
+  'artifacts/states/active-provider.completed.capsule',
+  'artifacts/malformed/result.duplicate-target.turn-input',
+  'artifacts/malformed/result.stale-replay.turn-input',
+  'artifacts/malformed/result.wrong-target.turn-input',
+];
+
+const args = parseArgs(process.argv.slice(2));
+
+if (args.mode === 'compare') {
+  requireArg(args.expected, '--expected');
+  requireArg(args.first, '--first');
+  requireArg(args.second, '--second');
+  validateCorpus(args.expected);
+  validateCorpus(args.first);
+  validateCorpus(args.second);
+  compareTrees(args.expected, args.first, 'tracked/first');
+  compareTrees(args.expected, args.second, 'tracked/second');
+  compareTrees(args.first, args.second, 'first/second');
+} else if (args.mode === 'verify') {
+  requireArg(args.expected, '--expected');
+  requireArg(args.actual, '--actual');
+  validateCorpus(args.expected);
+  validateCorpus(args.actual);
+  compareTrees(args.expected, args.actual, 'expected/actual');
+} else if (args.mode === 'check') {
+  requireArg(args.expected, '--expected');
+  validateCorpus(args.expected);
+} else {
+  throw new Error(`unsupported --mode ${String(args.mode)}`);
+}
+
+function parseArgs(raw) {
+  const parsed = {};
+  for (let index = 0; index < raw.length; index += 1) {
+    const arg = raw[index];
+    if (arg === '--mode') parsed.mode = raw[++index];
+    else if (arg === '--expected') parsed.expected = raw[++index];
+    else if (arg === '--first') parsed.first = raw[++index];
+    else if (arg === '--second') parsed.second = raw[++index];
+    else if (arg === '--actual') parsed.actual = raw[++index];
+    else throw new Error(`unknown argument ${arg}`);
+  }
+  return parsed;
+}
+
+function requireArg(value, name) {
+  if (typeof value !== 'string' || value.length === 0) throw new Error(`missing ${name}`);
+}
+
+function validateCorpus(root) {
+  const files = listFiles(root);
+  if (files.length === 0) throw new Error(`empty oracle corpus: ${root}`);
+  if (!files.includes('manifest.json')) throw new Error(`missing manifest.json: ${root}`);
+  if (!files.includes('checksums.sha256')) throw new Error(`missing checksums.sha256: ${root}`);
+  for (const artifact of requiredArtifacts) {
+    if (!files.includes(artifact)) throw new Error(`missing required oracle artifact: ${artifact}`);
+  }
+
+  const manifestBytes = readFileSync(join(root, 'manifest.json'));
+  const manifest = JSON.parse(manifestBytes.toString('utf8'));
+  assertEqual(manifest.format, 'world-image-v1-rewrite-world-oracle-v0', 'manifest.format');
+  assertEqual(manifest.format_version, 1, 'manifest.format_version');
+  assertEqual(manifest.semantic_source?.package, 'world', 'manifest.semantic_source.package');
+  assertEqual(manifest.semantic_source?.package_version, '0.1.0', 'manifest.semantic_source.package_version');
+  assertEqual(
+    manifest.semantic_source?.baseline_commit,
+    '969f23f6bad87ca9d535d92d62b6418612891699',
+    'manifest.semantic_source.baseline_commit',
+  );
+  assertEqual(
+    manifest.semantic_source?.baseline_tree,
+    'b2bd776125bc17215916e2a48bc7102a861788db',
+    'manifest.semantic_source.baseline_tree',
+  );
+  assertEqual(manifest.semantic_source?.boundary_package, '0.6.2', 'manifest.semantic_source.boundary_package');
+  assertEqual(manifest.semantic_source?.world_executable_image_format, 2, 'manifest executable image format');
+  assertEqual(manifest.semantic_source?.world_turn_closure_format, 1, 'manifest TurnClosure format');
+  assertEqual(manifest.semantic_source?.world_archive_format, 1, 'manifest Archive format');
+  assertEqual(manifest.semantic_source?.world_appliance_abi, 4, 'manifest Appliance ABI');
+  assertEqual(
+    manifest.offline_regeneration,
+    'requires-preseeded-boundary-package-cache',
+    'manifest.offline_regeneration',
+  );
+  assertEqual(manifest.case_count, expectedCases.length, 'manifest.case_count');
+  assertArrayEqual(manifest.cases.map((entry) => entry.id), expectedCases, 'manifest.cases');
+
+  const transcriptPaths = manifest.cases.map((entry) => entry.transcript);
+  assertArrayEqual(
+    transcriptPaths,
+    expectedCases.map((id) => `cases/${id}.txt`),
+    'manifest case transcripts',
+  );
+  for (const transcript of transcriptPaths) {
+    if (!files.includes(transcript)) throw new Error(`missing transcript ${transcript}`);
+  }
+  for (const [caseId, facts] of Object.entries(requiredTranscriptFacts)) {
+    const transcript = readFileSync(join(root, `cases/${caseId}.txt`), 'utf8');
+    for (const fact of facts) {
+      if (!transcript.includes(`${fact}\n`)) throw new Error(`missing provenance fact for ${caseId}: ${fact}`);
+    }
+  }
+
+  const contentFiles = files.filter((path) => path !== 'manifest.json' && path !== 'checksums.sha256');
+  const manifestArtifacts = manifest.artifacts.map((entry) => entry.path);
+  assertArrayEqual(manifestArtifacts, contentFiles, 'manifest artifact inventory');
+
+  const artifactHasher = createHash('sha256');
+  for (const entry of manifest.artifacts) {
+    const bytes = readFileSync(join(root, entry.path));
+    assertEqual(entry.length, bytes.length, `manifest length ${entry.path}`);
+    assertEqual(entry.sha256, sha256(bytes), `manifest sha256 ${entry.path}`);
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64LE(BigInt(bytes.length));
+    artifactHasher.update(entry.path);
+    artifactHasher.update(Buffer.from([0]));
+    artifactHasher.update(length);
+    artifactHasher.update(Buffer.from(entry.sha256, 'hex'));
+  }
+  assertEqual(manifest.artifact_count, contentFiles.length, 'manifest.artifact_count');
+  assertEqual(manifest.artifact_set_sha256, artifactHasher.digest('hex'), 'manifest.artifact_set_sha256');
+
+  const checksumLines = readFileSync(join(root, 'checksums.sha256'), 'utf8')
+    .trimEnd()
+    .split('\n')
+    .filter(Boolean);
+  const checksumPaths = [];
+  for (const line of checksumLines) {
+    const match = /^([0-9a-f]{64})  conformance\/world-image-v1\/v0\/world\/(.+)$/.exec(line);
+    if (!match) throw new Error(`invalid checksum line: ${line}`);
+    const [, digest, path] = match;
+    checksumPaths.push(path);
+    assertEqual(digest, sha256(readFileSync(join(root, path))), `checksums.sha256 ${path}`);
+  }
+  assertArrayEqual(checksumPaths, files.filter((path) => path !== 'checksums.sha256'), 'checksum inventory');
+}
+
+function compareTrees(expectedRoot, actualRoot, label) {
+  const expected = listFiles(expectedRoot);
+  const actual = listFiles(actualRoot);
+  assertArrayEqual(actual, expected, `${label} file inventory`);
+  for (const path of expected) {
+    const expectedBytes = readFileSync(join(expectedRoot, path));
+    const actualBytes = readFileSync(join(actualRoot, path));
+    if (!expectedBytes.equals(actualBytes)) {
+      throw new Error(`${label} byte mismatch: ${path}`);
+    }
+  }
+}
+
+function listFiles(root) {
+  if (!statSync(root).isDirectory()) throw new Error(`not a directory: ${root}`);
+  const files = [];
+  walk(root, root, files);
+  files.sort(compareAscii);
+  return files;
+}
+
+function walk(root, current, files) {
+  const entries = readdirSync(current, { withFileTypes: true });
+  entries.sort((left, right) => compareAscii(left.name, right.name));
+  for (const entry of entries) {
+    const path = join(current, entry.name);
+    if (entry.isDirectory()) walk(root, path, files);
+    else if (entry.isFile()) files.push(relative(root, path).split(sep).join('/'));
+    else throw new Error(`unsupported filesystem entry: ${path}`);
+  }
+}
+
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function compareAscii(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function assertArrayEqual(actual, expected, label) {
+  assertEqual(actual.length, expected.length, `${label}.length`);
+  for (let index = 0; index < expected.length; index += 1) {
+    assertEqual(actual[index], expected[index], `${label}[${index}]`);
+  }
+}
+
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) throw new Error(`${label}: expected ${String(expected)}, got ${String(actual)}`);
+}

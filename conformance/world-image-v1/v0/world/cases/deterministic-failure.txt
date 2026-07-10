@@ -1,0 +1,9 @@
+case_id: deterministic-failure
+owner_surface: Appliance/TurnClosure
+result_transport_owner: Wire.TurnInput
+accepted_result_status: failed
+transition_status: failed
+next_state_status: failed
+root_result_present: false
+parent_closure_fingerprint: 0x68c489024b3800e8
+failed_closure_fingerprint: 0x06271351df8ce6fc

@@ -1,0 +1,9 @@
+case_id: internal-provider-execution
+owner_surface: Executable/Runspace/Fabric/TurnClosure
+status: completed
+module_count: 2
+provider_module_count: 1
+route_count: 1
+external_request_count: 0
+image_fingerprint: 0xf9ec585b17b47290
+closure_fingerprint: 0xef457ae430e8c334

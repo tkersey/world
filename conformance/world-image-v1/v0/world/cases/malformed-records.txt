@@ -1,0 +1,12 @@
+case_id: malformed-records
+owner_surface: Executable.Image + Appliance/TurnClosure + Appliance/Wire
+malformed_image_error: InvalidFrameEncoding
+malformed_state_error: InvalidFrameEncoding
+wrong_target_result_status: unknown_request
+duplicate_result_status: invalid_command
+duplicate_preflight_error: DuplicateHostReply
+stale_result_status: stale_turn
+state_unchanged_after_wrong_result: true
+state_unchanged_after_duplicate_result: true
+state_unchanged_after_stale_result: true
+partial_transition_published: false

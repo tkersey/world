@@ -1,0 +1,8 @@
+case_id: capacity-exhaustion
+owner_surface: Appliance/Core
+turn_closure_produced: false
+error: CapacityExceeded
+state_unchanged: true
+turn_sequence_number: 0
+output_bytes: 0
+pending_command_preserved: true

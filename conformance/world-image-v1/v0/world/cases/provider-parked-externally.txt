@@ -1,0 +1,8 @@
+case_id: provider-parked-externally
+owner_surface: Runspace/Fabric/Capsule
+fixture_provenance: synthetic-owner-state
+parent_status: parked_on_port
+provider_status: parked_on_port
+fabric_invocation_status: provider_parked
+pending_port_fingerprint: 0xc73d081a07e5a7b1
+capsule_fingerprint: 0xb6c19c0f5a2567cf
