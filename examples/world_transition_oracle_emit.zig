@@ -8,6 +8,45 @@ const world = @import("world");
 
 const corpus_path = "conformance/world-image-v1/v0/world";
 const checksum_prefix = corpus_path ++ "/";
+const canonical_output_suffix = "conformance/world-image-v1/v0/world";
+
+fn canonicalizePathSeparators(path_bytes: []u8, native_separator: u8) void {
+    if (native_separator == '/') return;
+    for (path_bytes) |*byte| {
+        if (byte.* == native_separator) byte.* = '/';
+    }
+}
+
+fn isAllowedPortableOutputPath(path_bytes: []const u8) bool {
+    return std.mem.eql(u8, path_bytes, "./bundle") or
+        std.mem.endsWith(u8, path_bytes, canonical_output_suffix);
+}
+
+comptime {
+    var windows_canonical = "C:\\repo\\conformance\\world-image-v1\\v0\\world".*;
+    canonicalizePathSeparators(windows_canonical[0..], '\\');
+    if (!isAllowedPortableOutputPath(windows_canonical[0..])) {
+        @compileError("native canonical oracle path must be admitted");
+    }
+
+    var windows_isolated = ".\\bundle".*;
+    canonicalizePathSeparators(windows_isolated[0..], '\\');
+    if (!isAllowedPortableOutputPath(windows_isolated[0..])) {
+        @compileError("native isolated oracle path must be admitted");
+    }
+
+    var windows_nested = "artifacts\\states\\checkpoint.bin".*;
+    canonicalizePathSeparators(windows_nested[0..], '\\');
+    if (!std.mem.eql(u8, windows_nested[0..], "artifacts/states/checkpoint.bin")) {
+        @compileError("native walked paths must have portable identities");
+    }
+
+    var windows_unrelated = "C:\\repo\\bundle".*;
+    canonicalizePathSeparators(windows_unrelated[0..], '\\');
+    if (isAllowedPortableOutputPath(windows_unrelated[0..])) {
+        @compileError("unrelated native output path must remain rejected");
+    }
+}
 
 const Case = struct {
     id: []const u8,
@@ -139,13 +178,9 @@ pub fn main(init: std.process.Init) !void {
     const output_dir = args.next() orelse return error.InvalidArguments;
     if (args.next() != null) return error.InvalidArguments;
 
-    const canonical_suffix = "conformance/world-image-v1/v0/world";
-    const isolated_bundle = std.mem.eql(u8, output_dir, "./bundle") or
-        (std.mem.endsWith(u8, output_dir, "/bundle") and
-            std.mem.indexOf(u8, output_dir, ".zig-cache/tmp/") != null);
-    if (!std.mem.endsWith(u8, output_dir, canonical_suffix) and !isolated_bundle) {
-        return error.InvalidOutputDirectory;
-    }
+    const portable_output_dir = try allocator.dupe(u8, output_dir);
+    canonicalizePathSeparators(portable_output_dir, std.fs.path.sep);
+    if (!isAllowedPortableOutputPath(portable_output_dir)) return error.InvalidOutputDirectory;
 
     const staging_dir = "./world-transition-oracle-staging";
     try std.Io.Dir.cwd().deleteTree(init.io, staging_dir);
@@ -1405,7 +1440,12 @@ fn listFiles(io: std.Io, allocator: std.mem.Allocator, root: []const u8) !OwnedP
     }
     while (try walker.next(io)) |entry| {
         switch (entry.kind) {
-            .file => try items.append(allocator, try allocator.dupe(u8, entry.path)),
+            .file => {
+                const portable_path = try allocator.dupe(u8, entry.path);
+                errdefer allocator.free(portable_path);
+                canonicalizePathSeparators(portable_path, std.fs.path.sep);
+                try items.append(allocator, portable_path);
+            },
             .directory => {},
             .block_device,
             .character_device,
