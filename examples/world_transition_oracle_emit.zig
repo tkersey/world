@@ -1,5 +1,6 @@
 // zlinter-disable declaration_naming field_ordering no_inferred_error_unions no_swallow_error require_doc_comment require_errdefer_dealloc
 const boundary = @import("boundary");
+const builtin = @import("builtin");
 const common = @import("world_appliance_common.zig");
 const fixtures = @import("world_fixtures");
 const std = @import("std");
@@ -1471,6 +1472,16 @@ fn isExpectedPath(writer: *const Writer, relative_path: []const u8) bool {
     return false;
 }
 
+fn validatePublicationDestination(io: std.Io, allocator: std.mem.Allocator, output_dir: []const u8) !void {
+    var existing_paths = try listFiles(io, allocator, output_dir);
+    defer existing_paths.deinit();
+    for (existing_paths.items) |relative_path| {
+        if (std.mem.endsWith(u8, relative_path, ".oracle-tmp")) {
+            return error.UnsafePublicationTemporaryPath;
+        }
+    }
+}
+
 fn promoteFile(
     allocator: std.mem.Allocator,
     writer: *Writer,
@@ -1479,22 +1490,21 @@ fn promoteFile(
 ) !void {
     const source_path = try std.fs.path.join(allocator, &.{ writer.root, relative_path });
     const destination_path = try std.fs.path.join(allocator, &.{ output_dir, relative_path });
-    const temporary_path = try std.fmt.allocPrint(allocator, "{s}.oracle-tmp", .{destination_path});
-    if (std.fs.path.dirname(destination_path)) |parent| {
-        try std.Io.Dir.cwd().createDirPath(writer.io, parent);
-    }
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(writer.io, source_path, allocator, .limited(16 * 1024 * 1024));
-    try std.Io.Dir.cwd().writeFile(writer.io, .{ .sub_path = temporary_path, .data = bytes });
-    errdefer std.Io.Dir.cwd().deleteFile(writer.io, temporary_path) catch {};
-    try std.Io.Dir.cwd().rename(temporary_path, std.Io.Dir.cwd(), destination_path, writer.io);
+    try std.Io.Dir.cwd().copyFile(
+        source_path,
+        std.Io.Dir.cwd(),
+        destination_path,
+        writer.io,
+        .{ .make_path = true, .replace = true },
+    );
 }
 
 fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, output_dir: []const u8) !void {
     try std.Io.Dir.cwd().createDirPath(writer.io, output_dir);
+    try validatePublicationDestination(writer.io, allocator, output_dir);
 
-    // Each file is staged beside its final destination before replacement. This
-    // keeps the prior checked corpus intact if generation fails, avoids a
-    // cross-filesystem directory rename, and never exposes an absent corpus.
+    // The standard atomic-copy primitive owns collision-safe temporary files
+    // beside each destination and replaces only after the full file is ready.
     for (writer.paths.items) |relative_path| {
         try promoteFile(allocator, writer, output_dir, relative_path);
     }
@@ -1509,6 +1519,43 @@ fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, output_dir: []co
         const stale_path = try std.fs.path.join(allocator, &.{ output_dir, relative_path });
         try std.Io.Dir.cwd().deleteFile(writer.io, stale_path);
     }
+}
+
+test "publication rejects unsafe temporary symlink before writing" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const staging_dir = try std.fs.path.join(allocator, &.{ root, "staging" });
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    const victim_path = try std.fs.path.join(allocator, &.{ root, "victim.txt" });
+    const relative_path = "artifacts/manifests/one-port.appliance-manifest";
+    const destination_path = try std.fs.path.join(allocator, &.{ output_dir, relative_path });
+    const temporary_path = try std.fmt.allocPrint(allocator, "{s}.oracle-tmp", .{destination_path});
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, std.fs.path.dirname(temporary_path).?);
+    try cwd.writeFile(io, .{ .sub_path = victim_path, .data = "must survive\n" });
+    try cwd.symLink(io, victim_path, temporary_path, .{});
+
+    var writer = Writer{ .io = io, .allocator = allocator, .root = staging_dir };
+    try writer.write(relative_path, "replacement");
+    try std.testing.expectError(
+        error.UnsupportedOracleTreeEntry,
+        promoteCorpus(allocator, &writer, output_dir),
+    );
+
+    const victim_bytes = try cwd.readFileAlloc(io, victim_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("must survive\n", victim_bytes);
+    try std.testing.expectError(error.FileNotFound, cwd.access(io, destination_path, .{}));
 }
 
 fn sha256(bytes: []const u8) [32]u8 {

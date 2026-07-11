@@ -343,6 +343,16 @@ pub fn build(b: *std.Build) void {
         .name = "world-transition-oracle-emit",
         .root_module = world_transition_oracle_mod,
     });
+    const world_transition_oracle_test_mod = b.createModule(.{
+        .root_source_file = b.path("examples/world_transition_oracle_emit.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    world_transition_oracle_test_mod.addImport("boundary", host_boundary);
+    world_transition_oracle_test_mod.addImport("world", host_world);
+    world_transition_oracle_test_mod.addImport("world_fixtures", host_fixtures);
+    const world_transition_oracle_tests = b.addTest(.{ .root_module = world_transition_oracle_test_mod });
+    const run_world_transition_oracle_tests = b.addRunArtifact(world_transition_oracle_tests);
 
     const update_world_transition_oracle_run = b.addRunArtifact(world_transition_oracle_exe);
     update_world_transition_oracle_run.setCwd(b.tmpPath());
@@ -392,8 +402,11 @@ pub fn build(b: *std.Build) void {
         "Check deterministic exact World Image v1 transition oracle bytes.",
     );
     check_world_transition_oracle_step.dependOn(&compare_world_transition_oracles.step);
+    check_world_transition_oracle_step.dependOn(&run_world_transition_oracle_tests.step);
 
-    const world_transition_oracle_emit_dir = b.getInstallPath(.prefix, "conformance/world-image-v1/v0/world");
+    const world_transition_oracle_emit_dir = b.pathFromRoot(
+        b.getInstallPath(.prefix, "conformance/world-image-v1/v0/world"),
+    );
     const emit_world_transition_oracle_run = b.addRunArtifact(world_transition_oracle_exe);
     emit_world_transition_oracle_run.setCwd(b.tmpPath());
     emit_world_transition_oracle_run.addArgs(&.{
