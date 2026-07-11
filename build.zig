@@ -370,13 +370,11 @@ pub fn build(b: *std.Build) void {
     const generate_world_transition_oracle_a = b.addRunArtifact(world_transition_oracle_exe);
     generate_world_transition_oracle_a.setName("generate World Image v1 transition oracle A");
     generate_world_transition_oracle_a.setCwd(world_transition_oracle_a_root);
-    generate_world_transition_oracle_a.addArgs(&.{ "generate", "--out-dir" });
-    generate_world_transition_oracle_a.addDirectoryArg(world_transition_oracle_a_dir);
+    generate_world_transition_oracle_a.addArgs(&.{ "generate", "--out-dir", "./bundle" });
     const generate_world_transition_oracle_b = b.addRunArtifact(world_transition_oracle_exe);
     generate_world_transition_oracle_b.setName("generate World Image v1 transition oracle B");
     generate_world_transition_oracle_b.setCwd(world_transition_oracle_b_root);
-    generate_world_transition_oracle_b.addArgs(&.{ "generate", "--out-dir" });
-    generate_world_transition_oracle_b.addDirectoryArg(world_transition_oracle_b_dir);
+    generate_world_transition_oracle_b.addArgs(&.{ "generate", "--out-dir", "./bundle" });
 
     const compare_world_transition_oracles = b.addSystemCommand(&.{"node"});
     compare_world_transition_oracles.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
