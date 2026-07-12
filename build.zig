@@ -89,14 +89,32 @@ fn worldSourcePackageRoots(b: *std.Build) []const []const u8 {
 }
 
 fn validateWorldSourcePackageRoot(path: []const u8) void {
-    if (path.len == 0 or std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, '\\') != null) {
-        std.debug.panic("invalid build.zig.zon package path '{s}'", .{path});
+    if (!isPortableWorldSourcePackageRoot(path)) std.debug.panic("invalid build.zig.zon package path '{s}'", .{path});
+}
+
+fn isPortableWorldSourcePackageRoot(path: []const u8) bool {
+    if (path.len == 0 or
+        std.fs.path.isAbsolute(path) or
+        (path.len >= 2 and std.ascii.isAlphabetic(path[0]) and path[1] == ':') or
+        std.mem.indexOfScalar(u8, path, '\\') != null)
+    {
+        return false;
     }
     var components = std.mem.splitScalar(u8, path, '/');
     while (components.next()) |component| {
         if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) {
-            std.debug.panic("invalid build.zig.zon package path '{s}'", .{path});
+            return false;
         }
+    }
+    return true;
+}
+
+comptime {
+    if (!isPortableWorldSourcePackageRoot("src") or !isPortableWorldSourcePackageRoot("src/nested")) {
+        @compileError("portable package roots must remain accepted");
+    }
+    for (.{ "", "/src", "C:/src", "C:src", "src\\nested", "src//nested", "src/./nested", "src/../nested" }) |path| {
+        if (isPortableWorldSourcePackageRoot(path)) @compileError("non-portable package root accepted: " ++ path);
     }
 }
 
@@ -479,47 +497,6 @@ pub fn build(b: *std.Build) void {
     const world_transition_oracle_tests = b.addTest(.{ .root_module = world_transition_oracle_test_mod });
     const run_world_transition_oracle_tests = b.addRunArtifact(world_transition_oracle_tests);
 
-    const update_world_transition_oracle_root = b.tmpPath();
-    const update_world_transition_oracle_candidate = update_world_transition_oracle_root.path(b, "bundle");
-    const generate_world_transition_oracle_candidate = b.addRunArtifact(world_transition_oracle_exe);
-    generate_world_transition_oracle_candidate.setName("generate World Image v1 transition oracle update candidate");
-    generate_world_transition_oracle_candidate.setCwd(update_world_transition_oracle_root);
-    generate_world_transition_oracle_candidate.addArgs(&.{
-        "generate",
-        "--out-dir",
-        "./bundle",
-        "--source-root",
-        b.pathFromRoot("."),
-    });
-    const validate_world_transition_oracle_candidate = b.addSystemCommand(&.{"node"});
-    validate_world_transition_oracle_candidate.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
-    validate_world_transition_oracle_candidate.setCwd(b.tmpPath());
-    validate_world_transition_oracle_candidate.addArgs(&.{ "--mode", "check", "--expected" });
-    validate_world_transition_oracle_candidate.addDirectoryArg(update_world_transition_oracle_candidate);
-    validate_world_transition_oracle_candidate.addArgs(&.{ "--zig-version", builtin.zig_version_string });
-    validate_world_transition_oracle_candidate.addArg("--admission-digest");
-    const world_transition_oracle_admission_digest = validate_world_transition_oracle_candidate.addOutputFileArg(
-        "world-transition-oracle-admission.sha256",
-    );
-    validate_world_transition_oracle_candidate.step.dependOn(&generate_world_transition_oracle_candidate.step);
-    const publish_world_transition_oracle_candidate = b.addRunArtifact(world_transition_oracle_exe);
-    publish_world_transition_oracle_candidate.setName("publish admitted World Image v1 transition oracle candidate");
-    publish_world_transition_oracle_candidate.setCwd(b.tmpPath());
-    publish_world_transition_oracle_candidate.addArgs(&.{ "publish", "--source-dir" });
-    publish_world_transition_oracle_candidate.addDirectoryArg(update_world_transition_oracle_candidate);
-    publish_world_transition_oracle_candidate.addArg("--admission-digest");
-    publish_world_transition_oracle_candidate.addFileArg(world_transition_oracle_admission_digest);
-    publish_world_transition_oracle_candidate.addArgs(&.{
-        "--trusted-prefix",
-        b.pathFromRoot("."),
-    });
-    publish_world_transition_oracle_candidate.step.dependOn(&validate_world_transition_oracle_candidate.step);
-    const update_world_transition_oracle_step = b.step(
-        "update-world-image-v1-transition-oracle",
-        "Update the checked-in World Image v1 transition oracle corpus.",
-    );
-    update_world_transition_oracle_step.dependOn(&publish_world_transition_oracle_candidate.step);
-
     const world_transition_oracle_a_root = b.tmpPath();
     const world_transition_oracle_b_root = b.tmpPath();
     const world_transition_oracle_a_dir = world_transition_oracle_a_root.path(b, "bundle");
@@ -532,6 +509,46 @@ pub fn build(b: *std.Build) void {
     generate_world_transition_oracle_b.setName("generate World Image v1 transition oracle B");
     generate_world_transition_oracle_b.setCwd(world_transition_oracle_b_root);
     generate_world_transition_oracle_b.addArgs(&.{ "generate", "--out-dir", "./bundle", "--source-root", b.pathFromRoot(".") });
+
+    const validate_world_transition_oracle_candidate = b.addSystemCommand(&.{"node"});
+    validate_world_transition_oracle_candidate.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
+    validate_world_transition_oracle_candidate.setCwd(b.tmpPath());
+    validate_world_transition_oracle_candidate.addArgs(&.{ "--mode", "check", "--expected" });
+    validate_world_transition_oracle_candidate.addDirectoryArg(world_transition_oracle_a_dir);
+    validate_world_transition_oracle_candidate.addArgs(&.{ "--zig-version", builtin.zig_version_string });
+    validate_world_transition_oracle_candidate.addArg("--admission-digest");
+    const world_transition_oracle_admission_digest = validate_world_transition_oracle_candidate.addOutputFileArg(
+        "world-transition-oracle-admission.sha256",
+    );
+    validate_world_transition_oracle_candidate.step.dependOn(&generate_world_transition_oracle_a.step);
+    const verify_world_transition_oracle_update_candidates = b.addSystemCommand(&.{"node"});
+    verify_world_transition_oracle_update_candidates.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
+    verify_world_transition_oracle_update_candidates.setCwd(b.tmpPath());
+    verify_world_transition_oracle_update_candidates.addArgs(&.{ "--mode", "verify", "--expected" });
+    verify_world_transition_oracle_update_candidates.addDirectoryArg(world_transition_oracle_a_dir);
+    verify_world_transition_oracle_update_candidates.addArg("--actual");
+    verify_world_transition_oracle_update_candidates.addDirectoryArg(world_transition_oracle_b_dir);
+    verify_world_transition_oracle_update_candidates.addArgs(&.{ "--zig-version", builtin.zig_version_string });
+    verify_world_transition_oracle_update_candidates.step.dependOn(&generate_world_transition_oracle_a.step);
+    verify_world_transition_oracle_update_candidates.step.dependOn(&generate_world_transition_oracle_b.step);
+    const publish_world_transition_oracle_candidate = b.addRunArtifact(world_transition_oracle_exe);
+    publish_world_transition_oracle_candidate.setName("publish admitted World Image v1 transition oracle candidate");
+    publish_world_transition_oracle_candidate.setCwd(b.tmpPath());
+    publish_world_transition_oracle_candidate.addArgs(&.{ "publish", "--source-dir" });
+    publish_world_transition_oracle_candidate.addDirectoryArg(world_transition_oracle_a_dir);
+    publish_world_transition_oracle_candidate.addArg("--admission-digest");
+    publish_world_transition_oracle_candidate.addFileArg(world_transition_oracle_admission_digest);
+    publish_world_transition_oracle_candidate.addArgs(&.{
+        "--trusted-prefix",
+        b.pathFromRoot("."),
+    });
+    publish_world_transition_oracle_candidate.step.dependOn(&validate_world_transition_oracle_candidate.step);
+    publish_world_transition_oracle_candidate.step.dependOn(&verify_world_transition_oracle_update_candidates.step);
+    const update_world_transition_oracle_step = b.step(
+        "update-world-image-v1-transition-oracle",
+        "Update the checked-in World Image v1 transition oracle corpus.",
+    );
+    update_world_transition_oracle_step.dependOn(&publish_world_transition_oracle_candidate.step);
 
     const compare_world_transition_oracles = b.addSystemCommand(&.{"node"});
     compare_world_transition_oracles.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
