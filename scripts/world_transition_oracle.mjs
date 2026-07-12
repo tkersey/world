@@ -67,6 +67,9 @@ const requiredTranscriptFacts = {
     'result_persisted_before_step: true',
     'first_retry_output_byte_equal: true',
     'first_retry_closure_byte_equal: true',
+    'cold_restore_output_validated: true',
+    'cold_restore_closure_validated: true',
+    'cold_restore_normalized_semantics_equal: true',
     'cold_restore_completed: true',
   ],
   'migration': [
@@ -91,6 +94,7 @@ const requiredTranscriptFacts = {
     'supplied_first_batch_count: 1',
     'remaining_request_count: 1',
     'remaining_request_identity_preserved: true',
+    'closure_chain_validated: true',
     'final_status: completed',
   ],
   'deterministic-failure': [
@@ -100,6 +104,10 @@ const requiredTranscriptFacts = {
     'transition_status: failed',
     'next_state_status: failed',
     'root_result_present: false',
+    'parent_state_published: true',
+    'parent_output_artifact: artifacts/outputs/failure.parent.turn-output',
+    'parent_closure_artifact: artifacts/transitions/failure.parent.turn-closure',
+    'parent_checkpoint_artifact: artifacts/states/failure.parent.checkpoint',
   ],
   'capacity-exhaustion': [
     'case_id: capacity-exhaustion',
@@ -147,12 +155,14 @@ const expectedArtifacts = [
   'artifacts/manifests/internal-provider.appliance-manifest',
   'artifacts/manifests/one-port.appliance-manifest',
   'artifacts/outputs/failure.failed.turn-output',
+  'artifacts/outputs/failure.parent.turn-output',
   'artifacts/outputs/internal-provider.completed.turn-output',
   'artifacts/outputs/one-port.completed.turn-output',
   'artifacts/outputs/one-port.waiting.turn-output',
   'artifacts/outputs/partial-batch.completed.turn-output',
   'artifacts/outputs/partial-batch.parent.turn-output',
   'artifacts/outputs/partial-batch.remaining.turn-output',
+  'artifacts/outputs/retry.cold-restore.turn-output',
   'artifacts/outputs/retry.first.turn-output',
   'artifacts/outputs/retry.repeated.turn-output',
   'artifacts/results/internal-provider.root-result',
@@ -166,6 +176,7 @@ const expectedArtifacts = [
   'artifacts/states/branch.baseline.transcript-image',
   'artifacts/states/capacity-exhaustion.after.txt',
   'artifacts/states/failure.failed.checkpoint',
+  'artifacts/states/failure.parent.checkpoint',
   'artifacts/states/internal-provider.completed.capsule',
   'artifacts/states/one-port.completed.capsule',
   'artifacts/states/one-port.completed.checkpoint',
@@ -176,6 +187,7 @@ const expectedArtifacts = [
   'artifacts/states/replay.transcript-image',
   'artifacts/states/retry.parent.checkpoint',
   'artifacts/transitions/failure.failed.turn-closure',
+  'artifacts/transitions/failure.parent.turn-closure',
   'artifacts/transitions/internal-provider.completed.turn-closure',
   'artifacts/transitions/one-port.completed.turn-closure',
   'artifacts/transitions/one-port.waiting.turn-closure',
@@ -209,6 +221,7 @@ const generatorSourceFiles = [
   'examples/world_appliance_common.zig',
   'examples/world_transition_oracle_emit.zig',
   'examples/world_universal_appliance_wasm.zig',
+  'scripts/world_transition_oracle.mjs',
   'src/appliance.zig',
   'src/archive.zig',
   'src/executable.zig',
@@ -230,7 +243,7 @@ const expectedBinaryFamilyPolicy = {
   scope: 'exhaustive-top-level-binary-artifacts',
   nested_authority: 'top-level-owner+world-generator-source-identity+boundary-package-hash',
   unclassified: 'reject',
-  binary_artifact_count: 63,
+  binary_artifact_count: 67,
 };
 
 const expectedBinaryFamilies = [
@@ -289,7 +302,7 @@ const expectedBinaryFamilies = [
     id: 'world_appliance_turn_output',
     owner: 'world.Appliance.TurnOutput',
     versioning: 'header',
-    expected_count: 9,
+    expected_count: 11,
     header_fields: [
       { name: 'format_version', constant: 'world_appliance_turn_output_format_version', offset: 0, value: 3 },
       { name: 'fingerprint_version', constant: 'world_appliance_turn_output_fingerprint_version', offset: 4, value: 2 },
@@ -299,7 +312,7 @@ const expectedBinaryFamilies = [
     id: 'world_appliance_turn_closure',
     owner: 'world.Appliance.TurnClosure',
     versioning: 'header',
-    expected_count: 12,
+    expected_count: 13,
     header_fields: [
       { name: 'format_version', constant: 'world_appliance_turn_closure_format_version', offset: 0, value: 1 },
       { name: 'fingerprint_version', constant: 'world_appliance_turn_closure_fingerprint_version', offset: 4, value: 1 },
@@ -309,7 +322,7 @@ const expectedBinaryFamilies = [
     id: 'world_appliance_checkpoint',
     owner: 'world.Appliance.Checkpoint',
     versioning: 'header',
-    expected_count: 5,
+    expected_count: 6,
     header_fields: [
       { name: 'format_version', constant: 'world_appliance_checkpoint_format_version', offset: 0, value: 1 },
       { name: 'fingerprint_version', constant: 'world_appliance_checkpoint_fingerprint_version', offset: 4, value: 1 },

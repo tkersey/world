@@ -71,6 +71,7 @@ const generator_source_files = [_][]const u8{
     "examples/world_appliance_common.zig",
     "examples/world_transition_oracle_emit.zig",
     "examples/world_universal_appliance_wasm.zig",
+    "scripts/world_transition_oracle.mjs",
     "src/appliance.zig",
     "src/archive.zig",
     "src/executable.zig",
@@ -604,6 +605,9 @@ fn emitActiveProvider(allocator: std.mem.Allocator, writer: *Writer) !void {
     var migrated_capsule = try world.Capsule.freezeRunspace(&receiver, .{ .allow_active_fabric_parked = true });
     defer migrated_capsule.deinit(allocator);
     const migrated_capsule_bytes = try migrated_capsule.encode(allocator);
+    var decoded_migrated_capsule = try world.Capsule.Image.decode(allocator, migrated_capsule_bytes);
+    defer decoded_migrated_capsule.deinit(allocator);
+    try decoded_migrated_capsule.validate(.{});
     try writer.write("artifacts/states/active-provider.migrated.capsule", migrated_capsule_bytes);
 
     var restored_provider_mailbox_id: ?u64 = null;
@@ -689,6 +693,37 @@ const RetryParent = struct {
     closure: world.Appliance.TurnClosure,
 };
 
+fn validateOracleTurnClosure(
+    allocator: std.mem.Allocator,
+    closure: world.Appliance.TurnClosure,
+    capacity: world.Appliance.Capacity,
+    executable_image_fingerprint: u64,
+    manifest_fingerprint: u64,
+    parent: ?*const world.Appliance.TurnClosure,
+) !void {
+    var options: world.Appliance.TurnClosureValidation = .{
+        .expected_executable_image_fingerprint = executable_image_fingerprint,
+        .expected_manifest_fingerprint = manifest_fingerprint,
+        .limits = world.Appliance.TurnClosureLimits.fromCapacity(capacity),
+        .bundle_options = .{ .allow_external_dependencies = true },
+    };
+    if (parent) |parent_closure| {
+        if (closure.archive_parent_moment_fingerprint != parent_closure.archive_resulting_moment_fingerprint or
+            closure.archive_parent_seal_fingerprint != parent_closure.archive_resulting_seal_fingerprint)
+        {
+            return error.InvalidClosureParent;
+        }
+        options.expected_parent_closure_fingerprint = parent_closure.closure_fingerprint;
+        options.expected_parent_state_fingerprint = parent_closure.resulting_state_fingerprint;
+        options.expected_parent_chronicle_cursor_fingerprint = parent_closure.chronicle_resulting_cursor_fingerprint;
+        options.expected_archive_parent_moment_fingerprint = parent_closure.archive_resulting_moment_fingerprint;
+        options.expected_archive_parent_seal_fingerprint = parent_closure.archive_resulting_seal_fingerprint;
+    } else if (closure.archive_parent_moment_fingerprint != null or closure.archive_parent_seal_fingerprint != null) {
+        return error.InvalidClosureParent;
+    }
+    try closure.validate(allocator, options);
+}
+
 fn makeRetryParent(
     allocator: std.mem.Allocator,
     manifest: world.Appliance.Manifest,
@@ -707,9 +742,12 @@ fn makeRetryParent(
     const boot_bytes = try boot.encode(allocator);
     if (native.submitTurn(boot_bytes) != .needs_host) return error.ExpectedNeedsHost;
     const closure_bytes = try common.readClosureOwned(allocator, &native);
+    var closure = try world.Appliance.TurnClosure.decode(allocator, closure_bytes);
+    errdefer closure.deinit(allocator);
+    try validateOracleTurnClosure(allocator, closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, null);
     return .{
         .closure_bytes = closure_bytes,
-        .closure = try world.Appliance.TurnClosure.decode(allocator, closure_bytes),
+        .closure = closure,
     };
 }
 
@@ -733,6 +771,45 @@ fn nativeFromClosure(
     native.last_closure_bytes = try allocator.dupe(u8, closure_bytes);
     native.last_closure_owned = true;
     return native;
+}
+
+fn validateColdRestoreParity(
+    first_output: world.Appliance.TurnOutput,
+    restore_output: world.Appliance.TurnOutput,
+    first_closure: world.Appliance.TurnClosure,
+    restore_closure: world.Appliance.TurnClosure,
+) !void {
+    if (restore_output.manifest_fingerprint != first_output.manifest_fingerprint or
+        restore_output.turn_sequence_number != first_output.turn_sequence_number or
+        restore_output.source_state_fingerprint != first_output.source_state_fingerprint or
+        restore_output.quiescence.report_fingerprint != first_output.quiescence.report_fingerprint or
+        restore_output.status != first_output.status or
+        restore_output.status != .completed or
+        restore_output.host_requests.len != 0 or
+        restore_output.root_result_fingerprint == null or
+        restore_output.checkpoint.core_state != first_output.checkpoint.core_state or
+        restore_output.checkpoint.execution_mode != first_output.checkpoint.execution_mode or
+        restore_output.blocker_count != first_output.blocker_count or
+        restore_output.warning_count != first_output.warning_count or
+        !std.mem.eql(u64, restore_output.turn_receipt.applied_host_reply_fingerprints, first_output.turn_receipt.applied_host_reply_fingerprints) or
+        !std.mem.eql(u64, restore_output.turn_receipt.emitted_host_request_fingerprints, first_output.turn_receipt.emitted_host_request_fingerprints) or
+        !std.mem.eql(u64, restore_output.finalized_actuation_receipt_fingerprints, first_output.finalized_actuation_receipt_fingerprints))
+    {
+        return error.RestoreSemanticMismatch;
+    }
+    if (restore_closure.parent_closure_fingerprint != first_closure.parent_closure_fingerprint or
+        restore_closure.parent_state_fingerprint != first_closure.parent_state_fingerprint or
+        restore_closure.turn_sequence_number != first_closure.turn_sequence_number or
+        restore_closure.chronicle_parent_cursor_fingerprint != first_closure.chronicle_parent_cursor_fingerprint or
+        restore_closure.archive_parent_moment_fingerprint != first_closure.archive_parent_moment_fingerprint or
+        restore_closure.archive_parent_seal_fingerprint != first_closure.archive_parent_seal_fingerprint or
+        restore_closure.status != first_closure.status or
+        restore_closure.status != .completed or
+        restore_closure.root_result_fingerprint == null or
+        !std.mem.eql(u64, restore_closure.finalized_actuation_receipt_fingerprints, first_closure.finalized_actuation_receipt_fingerprints))
+    {
+        return error.RestoreSemanticMismatch;
+    }
 }
 
 fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
@@ -774,6 +851,11 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
     if (first_native.submitTurn(continue_bytes) != .completed) return error.ExpectedCompleted;
     const first_output_bytes = try common.readOutputOwned(allocator, &first_native);
     const first_closure_bytes = try common.readClosureOwned(allocator, &first_native);
+    var first_output = try world.Appliance.TurnOutput.decode(allocator, first_output_bytes, manifest.manifest_fingerprint, capacity);
+    defer first_output.deinit(allocator);
+    var first_closure = try world.Appliance.TurnClosure.decode(allocator, first_closure_bytes);
+    defer first_closure.deinit(allocator);
+    try validateOracleTurnClosure(allocator, first_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, &parent.closure);
     try writer.write("artifacts/outputs/retry.first.turn-output", first_output_bytes);
     try writer.write("artifacts/transitions/retry.first.turn-closure", first_closure_bytes);
 
@@ -782,6 +864,11 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
     if (retry_native.submitTurn(continue_bytes) != .completed) return error.ExpectedCompleted;
     const retry_output_bytes = try common.readOutputOwned(allocator, &retry_native);
     const retry_closure_bytes = try common.readClosureOwned(allocator, &retry_native);
+    var retry_output = try world.Appliance.TurnOutput.decode(allocator, retry_output_bytes, manifest.manifest_fingerprint, capacity);
+    defer retry_output.deinit(allocator);
+    var retry_closure = try world.Appliance.TurnClosure.decode(allocator, retry_closure_bytes);
+    defer retry_closure.deinit(allocator);
+    try validateOracleTurnClosure(allocator, retry_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, &parent.closure);
     try writer.write("artifacts/outputs/retry.repeated.turn-output", retry_output_bytes);
     try writer.write("artifacts/transitions/retry.repeated.turn-closure", retry_closure_bytes);
     if (!std.mem.eql(u8, first_output_bytes, retry_output_bytes)) return error.RetryOutputMismatch;
@@ -804,11 +891,17 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
     var restore_native = world.Appliance.Native.init(restore_core);
     defer restore_native.deinit();
     if (restore_native.submitTurn(restore_bytes) != .completed) return error.ExpectedCompleted;
+    const restore_output_bytes = try common.readOutputOwned(allocator, &restore_native);
     const restore_closure_bytes = try common.readClosureOwned(allocator, &restore_native);
+    var restore_output = try world.Appliance.TurnOutput.decode(allocator, restore_output_bytes, manifest.manifest_fingerprint, capacity);
+    defer restore_output.deinit(allocator);
+    var restore_closure = try world.Appliance.TurnClosure.decode(allocator, restore_closure_bytes);
+    defer restore_closure.deinit(allocator);
+    try validateOracleTurnClosure(allocator, restore_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, &parent.closure);
+    try validateColdRestoreParity(first_output, restore_output, first_closure, restore_closure);
+    try writer.write("artifacts/outputs/retry.cold-restore.turn-output", restore_output_bytes);
     try writer.write("artifacts/transitions/retry.cold-restore.turn-closure", restore_closure_bytes);
 
-    var first_closure = try world.Appliance.TurnClosure.decode(allocator, first_closure_bytes);
-    defer first_closure.deinit(allocator);
     const transcript = try std.fmt.allocPrint(
         allocator,
         "case_id: lost-output-retry\n" ++
@@ -818,6 +911,9 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
             "result_persisted_before_step: true\n" ++
             "first_retry_output_byte_equal: true\n" ++
             "first_retry_closure_byte_equal: true\n" ++
+            "cold_restore_output_validated: true\n" ++
+            "cold_restore_closure_validated: true\n" ++
+            "cold_restore_normalized_semantics_equal: true\n" ++
             "cold_restore_completed: true\n" ++
             "parent_closure_fingerprint: 0x{x:0>16}\n" ++
             "result_closure_fingerprint: 0x{x:0>16}\n",
@@ -844,7 +940,11 @@ fn emitReplay(allocator: std.mem.Allocator, writer: *Writer) !void {
     const image_bytes = try image.encode(allocator);
     try writer.write("artifacts/states/replay.transcript-image", image_bytes);
     const run_image = world.RunImage.fromTranscriptImage(fixtures.Ports.Target, image, .completed_run);
+    try run_image.validate(.{ .require_portable_values = true });
     const run_image_bytes = try run_image.encode(allocator);
+    var decoded_run_image = try world.RunImage.decode(allocator, run_image_bytes);
+    defer decoded_run_image.deinit(allocator);
+    try decoded_run_image.validate(.{ .require_portable_values = true });
     try writer.write("artifacts/states/replay.completed.run-image", run_image_bytes);
 
     var decoded = try world.TranscriptImage.decode(allocator, image_bytes);
@@ -1065,6 +1165,7 @@ fn emitPartialBatch(allocator: std.mem.Allocator, writer: *Writer) !void {
     defer parent_output.deinit(allocator);
     var parent_closure = try world.Appliance.TurnClosure.decode(allocator, parent_closure_bytes);
     defer parent_closure.deinit(allocator);
+    try validateOracleTurnClosure(allocator, parent_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, null);
     if (parent_output.host_requests.len != 2) return error.ExpectedBatchedRequests;
     try writer.write("artifacts/outputs/partial-batch.parent.turn-output", parent_output_bytes);
     try writer.write("artifacts/transitions/partial-batch.parent.turn-closure", parent_closure_bytes);
@@ -1088,6 +1189,7 @@ fn emitPartialBatch(allocator: std.mem.Allocator, writer: *Writer) !void {
     defer partial_output.deinit(allocator);
     var partial_closure = try world.Appliance.TurnClosure.decode(allocator, partial_closure_bytes);
     defer partial_closure.deinit(allocator);
+    try validateOracleTurnClosure(allocator, partial_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, &parent_closure);
     if (partial_output.host_requests.len != 1) return error.ExpectedOneHostRequest;
     if (partial_output.host_requests[0].request_fingerprint != parent_output.host_requests[1].request_fingerprint) return error.PartialBatchMismatch;
     try writer.write("artifacts/outputs/partial-batch.remaining.turn-output", partial_output_bytes);
@@ -1111,6 +1213,10 @@ fn emitPartialBatch(allocator: std.mem.Allocator, writer: *Writer) !void {
     const final_closure_bytes = try common.readClosureOwned(allocator, &native);
     var final_output = try world.Appliance.TurnOutput.decode(allocator, final_output_bytes, manifest.manifest_fingerprint, capacity);
     defer final_output.deinit(allocator);
+    var final_closure = try world.Appliance.TurnClosure.decode(allocator, final_closure_bytes);
+    defer final_closure.deinit(allocator);
+    try validateOracleTurnClosure(allocator, final_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, &partial_closure);
+    if (final_output.status != .completed or final_closure.status != .completed or final_output.host_requests.len != 0) return error.ExpectedCompleted;
     try writer.write("artifacts/outputs/partial-batch.completed.turn-output", final_output_bytes);
     try writer.write("artifacts/transitions/partial-batch.completed.turn-closure", final_closure_bytes);
 
@@ -1123,6 +1229,7 @@ fn emitPartialBatch(allocator: std.mem.Allocator, writer: *Writer) !void {
             "supplied_first_batch_count: 1\n" ++
             "remaining_request_count: {d}\n" ++
             "remaining_request_identity_preserved: true\n" ++
+            "closure_chain_validated: true\n" ++
             "final_status: {s}\n" ++
             "parent_closure_fingerprint: 0x{x:0>16}\n" ++
             "partial_closure_fingerprint: 0x{x:0>16}\n",
@@ -1159,6 +1266,11 @@ fn emitDeterministicFailure(allocator: std.mem.Allocator, writer: *Writer) !void
     defer parent_output.deinit(allocator);
     var parent_closure = try world.Appliance.TurnClosure.decode(allocator, parent_closure_bytes);
     defer parent_closure.deinit(allocator);
+    try validateOracleTurnClosure(allocator, parent_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, null);
+    if (parent_output.status != .needs_host or parent_output.host_requests.len != 1 or parent_closure.status != .needs_host) return error.ExpectedNeedsHost;
+    try writer.write("artifacts/outputs/failure.parent.turn-output", parent_output_bytes);
+    try writer.write("artifacts/transitions/failure.parent.turn-closure", parent_closure_bytes);
+    try writer.write("artifacts/states/failure.parent.checkpoint", parent_closure.checkpoint_bytes);
     const failed_resolution = try common.wireResolutionFor(allocator, parent_output.host_requests[0], .failed, 0);
     var failed_resolution_bytes: std.ArrayList(u8) = .empty;
     try failed_resolution.encode(&failed_resolution_bytes, allocator);
@@ -1181,6 +1293,7 @@ fn emitDeterministicFailure(allocator: std.mem.Allocator, writer: *Writer) !void
     defer failed_output.deinit(allocator);
     var failed_closure = try world.Appliance.TurnClosure.decode(allocator, failed_closure_bytes);
     defer failed_closure.deinit(allocator);
+    try validateOracleTurnClosure(allocator, failed_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, &parent_closure);
     if (failed_output.status != .failed or failed_closure.status != .failed) return error.ExpectedFailed;
     try writer.write("artifacts/outputs/failure.failed.turn-output", failed_output_bytes);
     try writer.write("artifacts/transitions/failure.failed.turn-closure", failed_closure_bytes);
@@ -1195,6 +1308,10 @@ fn emitDeterministicFailure(allocator: std.mem.Allocator, writer: *Writer) !void
             "transition_status: {s}\n" ++
             "next_state_status: failed\n" ++
             "root_result_present: {}\n" ++
+            "parent_state_published: true\n" ++
+            "parent_output_artifact: artifacts/outputs/failure.parent.turn-output\n" ++
+            "parent_closure_artifact: artifacts/transitions/failure.parent.turn-closure\n" ++
+            "parent_checkpoint_artifact: artifacts/states/failure.parent.checkpoint\n" ++
             "parent_closure_fingerprint: 0x{x:0>16}\n" ++
             "failed_closure_fingerprint: 0x{x:0>16}\n",
         .{
@@ -2037,7 +2154,7 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
             "    \"scope\": \"exhaustive-top-level-binary-artifacts\",\n" ++
             "    \"nested_authority\": \"top-level-owner+world-generator-source-identity+boundary-package-hash\",\n" ++
             "    \"unclassified\": \"reject\",\n" ++
-            "    \"binary_artifact_count\": 63\n" ++
+            "    \"binary_artifact_count\": 67\n" ++
             "  },\n" ++
             "  \"binary_families\": [\n" ++
             "    {\"id\":\"world_executable_image\",\"owner\":\"world.Executable.Image\",\"versioning\":\"header\",\"expected_count\":2,\"magic\":\"world.Executable.Image.v2\\u0000\",\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_executable_image_format_version\",\"offset\":26,\"value\":2},{\"name\":\"fingerprint_version\",\"constant\":\"world_executable_image_fingerprint_version\",\"offset\":30,\"value\":2},{\"name\":\"codec_version\",\"constant\":\"world_executable_image_codec_version\",\"offset\":34,\"value\":1}]},\n" ++
@@ -2045,9 +2162,9 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
             "    {\"id\":\"world_appliance_command\",\"owner\":\"world.Appliance.Command\",\"versioning\":\"header\",\"expected_count\":1,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_command_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_command_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
             "    {\"id\":\"world_appliance_wire_turn_input\",\"owner\":\"world.Appliance.Wire.TurnInput\",\"versioning\":\"format-only\",\"expected_count\":12,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_wire_turn_input_format_version\",\"offset\":0,\"value\":2}]},\n" ++
             "    {\"id\":\"world_appliance_wire_resolution_input\",\"owner\":\"world.Appliance.Wire.ResolutionInput\",\"versioning\":\"format-only\",\"expected_count\":3,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_wire_resolution_input_format_version\",\"offset\":0,\"value\":1}]},\n" ++
-            "    {\"id\":\"world_appliance_turn_output\",\"owner\":\"world.Appliance.TurnOutput\",\"versioning\":\"header\",\"expected_count\":9,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_output_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_output_fingerprint_version\",\"offset\":4,\"value\":2}]},\n" ++
-            "    {\"id\":\"world_appliance_turn_closure\",\"owner\":\"world.Appliance.TurnClosure\",\"versioning\":\"header\",\"expected_count\":12,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_closure_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_closure_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
-            "    {\"id\":\"world_appliance_checkpoint\",\"owner\":\"world.Appliance.Checkpoint\",\"versioning\":\"header\",\"expected_count\":5,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_checkpoint_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_checkpoint_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_appliance_turn_output\",\"owner\":\"world.Appliance.TurnOutput\",\"versioning\":\"header\",\"expected_count\":11,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_output_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_output_fingerprint_version\",\"offset\":4,\"value\":2}]},\n" ++
+            "    {\"id\":\"world_appliance_turn_closure\",\"owner\":\"world.Appliance.TurnClosure\",\"versioning\":\"header\",\"expected_count\":13,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_closure_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_closure_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_appliance_checkpoint\",\"owner\":\"world.Appliance.Checkpoint\",\"versioning\":\"header\",\"expected_count\":6,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_checkpoint_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_checkpoint_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
             "    {\"id\":\"world_capsule_image\",\"owner\":\"world.Capsule.Image\",\"versioning\":\"header\",\"expected_count\":6,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_capsule_image_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_capsule_image_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
             "    {\"id\":\"world_appliance_host_request_batch\",\"owner\":\"world.Appliance.encodeHostRequestsImageOwned\",\"versioning\":\"member-versioned-container\",\"expected_count\":1,\"container_count_offset\":0,\"expected_member_count\":1,\"member_header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_host_request_format_version\",\"offset\":8,\"value\":4},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_host_request_fingerprint_version\",\"offset\":12,\"value\":4}]},\n" ++
             "    {\"id\":\"world_frame_request\",\"owner\":\"world.Frame.Request\",\"versioning\":\"header\",\"expected_count\":1,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_frame_request_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_frame_request_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++

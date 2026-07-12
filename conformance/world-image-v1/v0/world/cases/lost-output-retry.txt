@@ -5,6 +5,9 @@ effect_call_count: 1
 result_persisted_before_step: true
 first_retry_output_byte_equal: true
 first_retry_closure_byte_equal: true
+cold_restore_output_validated: true
+cold_restore_closure_validated: true
+cold_restore_normalized_semantics_equal: true
 cold_restore_completed: true
 parent_closure_fingerprint: 0x142593842854e053
 result_closure_fingerprint: 0x275c2c4d4402c204
