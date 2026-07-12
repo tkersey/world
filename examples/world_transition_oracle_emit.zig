@@ -263,6 +263,27 @@ pub fn main(init: std.process.Init) !void {
     try promoteCorpus(allocator, &writer, publication_target);
 }
 
+fn validateStandaloneResolutionInput(
+    allocator: std.mem.Allocator,
+    resolution_bytes: []const u8,
+    turn_input_bytes: []const u8,
+    limits: world.Appliance.TurnClosureLimits,
+) !void {
+    if (std.mem.indexOf(u8, turn_input_bytes, resolution_bytes) == null) {
+        return error.ResolutionMemberMismatch;
+    }
+    var decoded_turn = try world.Appliance.Wire.TurnInput.decodeWithLimits(allocator, turn_input_bytes, limits);
+    defer decoded_turn.deinit(allocator);
+    if (decoded_turn.resolutions.len != 1) return error.ResolutionMemberMismatch;
+    try decoded_turn.resolutions[0].validate(limits);
+    var roundtrip_bytes: std.ArrayList(u8) = .empty;
+    defer roundtrip_bytes.deinit(allocator);
+    try decoded_turn.resolutions[0].encode(&roundtrip_bytes, allocator);
+    if (!std.mem.eql(u8, resolution_bytes, roundtrip_bytes.items)) {
+        return error.ResolutionMemberMismatch;
+    }
+}
+
 fn emitOnePort(allocator: std.mem.Allocator, writer: *Writer) !void {
     const executable_image_fingerprint: u64 = 0xA100_0000_0000_0001;
     const manifest = common.PortsAppliance.manifest();
@@ -304,7 +325,6 @@ fn emitOnePort(allocator: std.mem.Allocator, writer: *Writer) !void {
     const resolution = try common.wireResolutionFor(allocator, waiting_output.host_requests[0], .responded, 0xA100_0002);
     var resolution_bytes: std.ArrayList(u8) = .empty;
     try resolution.encode(&resolution_bytes, allocator);
-    try writer.write("artifacts/effects/one-port.responded.resolution-input", resolution_bytes.items);
     const continue_turn = world.Appliance.Wire.TurnInput.init(.{
         .operation = .@"continue",
         .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
@@ -314,6 +334,8 @@ fn emitOnePort(allocator: std.mem.Allocator, writer: *Writer) !void {
         .resolutions = &.{resolution},
     });
     const continue_bytes = try continue_turn.encode(allocator);
+    try validateStandaloneResolutionInput(allocator, resolution_bytes.items, continue_bytes, world.Appliance.TurnClosureLimits.fromCapacity(capacity));
+    try writer.write("artifacts/effects/one-port.responded.resolution-input", resolution_bytes.items);
     try writer.write("artifacts/inputs/one-port.continue.turn-input", continue_bytes);
     if (native.submitTurn(continue_bytes) != .completed) return error.ExpectedCompleted;
     const completed_output_bytes = try common.readOutputOwned(allocator, &native);
@@ -588,6 +610,15 @@ fn emitActiveProvider(allocator: std.mem.Allocator, writer: *Writer) !void {
     defer decoded_source_capsule.deinit(allocator);
     try decoded_source_capsule.validate(.{});
     const provider_request_bytes = try provider_request.encode(allocator);
+    var decoded_provider_request = try world.Frame.Request.decode(allocator, provider_request_bytes);
+    defer decoded_provider_request.deinit(allocator);
+    const roundtrip_provider_request_bytes = try decoded_provider_request.encode(allocator);
+    defer allocator.free(roundtrip_provider_request_bytes);
+    if (!std.mem.eql(u8, provider_request_bytes, roundtrip_provider_request_bytes) or
+        decoded_provider_request.frame_fingerprint != provider_request.frame_fingerprint)
+    {
+        return error.RequestFrameMismatch;
+    }
     try writer.write("artifacts/states/active-provider.source.capsule", source_capsule_bytes);
     try writer.write("artifacts/effects/active-provider.external.request-frame", provider_request_bytes);
     source.deinit();
@@ -836,7 +867,6 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
     });
     var resolution_bytes: std.ArrayList(u8) = .empty;
     try resolution.encode(&resolution_bytes, allocator);
-    try writer.write("artifacts/effects/retry.persisted.resolution-input", resolution_bytes.items);
     const continue_input = world.Appliance.Wire.TurnInput.init(.{
         .operation = .@"continue",
         .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
@@ -847,6 +877,8 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
         .resolutions = &.{resolution},
     });
     const continue_bytes = try continue_input.encode(allocator);
+    try validateStandaloneResolutionInput(allocator, resolution_bytes.items, continue_bytes, world.Appliance.TurnClosureLimits.fromCapacity(capacity));
+    try writer.write("artifacts/effects/retry.persisted.resolution-input", resolution_bytes.items);
     try writer.write("artifacts/inputs/retry.continue.turn-input", continue_bytes);
     if (first_native.submitTurn(continue_bytes) != .completed) return error.ExpectedCompleted;
     const first_output_bytes = try common.readOutputOwned(allocator, &first_native);
@@ -1060,7 +1092,11 @@ fn emitBranching(allocator: std.mem.Allocator, writer: *Writer) !void {
     try writer.write("artifacts/states/branch.alternate.transcript-image", branch_image_bytes);
 
     const baseline_run_image = world.RunImage.fromTranscriptImage(fixtures.Agent.Target, baseline.image, .completed_run);
+    try baseline_run_image.validate(.{ .require_portable_values = true });
     const baseline_run_bytes = try baseline_run_image.encode(allocator);
+    var decoded_baseline_run = try world.RunImage.decode(allocator, baseline_run_bytes);
+    defer decoded_baseline_run.deinit(allocator);
+    try decoded_baseline_run.validate(.{ .require_portable_values = true });
     try writer.write("artifacts/states/branch.baseline.run-image", baseline_run_bytes);
     const projected_run_image = world.RunImage.fromTranscriptImage(fixtures.Agent.Target, forked_image, .branched_run);
     const projected_state = projected_run_image.current_state;
@@ -1274,7 +1310,6 @@ fn emitDeterministicFailure(allocator: std.mem.Allocator, writer: *Writer) !void
     const failed_resolution = try common.wireResolutionFor(allocator, parent_output.host_requests[0], .failed, 0);
     var failed_resolution_bytes: std.ArrayList(u8) = .empty;
     try failed_resolution.encode(&failed_resolution_bytes, allocator);
-    try writer.write("artifacts/effects/failure.failed.resolution-input", failed_resolution_bytes.items);
     const failed_input = world.Appliance.Wire.TurnInput.init(.{
         .operation = .@"continue",
         .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
@@ -1285,6 +1320,8 @@ fn emitDeterministicFailure(allocator: std.mem.Allocator, writer: *Writer) !void
         .resolutions = &.{failed_resolution},
     });
     const failed_input_bytes = try failed_input.encode(allocator);
+    try validateStandaloneResolutionInput(allocator, failed_resolution_bytes.items, failed_input_bytes, world.Appliance.TurnClosureLimits.fromCapacity(capacity));
+    try writer.write("artifacts/effects/failure.failed.resolution-input", failed_resolution_bytes.items);
     try writer.write("artifacts/inputs/failure.failed-result.turn-input", failed_input_bytes);
     if (native.submitTurn(failed_input_bytes) != .failed) return error.ExpectedFailed;
     const failed_output_bytes = try common.readOutputOwned(allocator, &native);

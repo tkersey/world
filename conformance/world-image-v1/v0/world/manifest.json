@@ -12,7 +12,7 @@
     "generator_source_identity": {
       "algorithm": "sha256-domain-u32le-path-u64le-canonical-lf-bytes-v1",
       "normalization": "crlf-to-lf;bare-cr-reject",
-      "sha256": "0be649741567f050cec87ee0c3e77ca8b12a7d6b1670de6c561dd4a82a130b40",
+      "sha256": "e48f805e53325c639c31891af46e2d4de450648283bb33073385de5cd941098f",
       "files": ["build.zig","build.zig.zon","examples/world_appliance_common.zig","examples/world_transition_oracle_emit.zig","examples/world_universal_appliance_wasm.zig","scripts/world_transition_oracle.mjs","src/appliance.zig","src/archive.zig","src/executable.zig","src/linker.zig","src/protocol.zig","src/world.zig","test/fixtures.zig"]
     },
     "version_fields_scope": "selected-compatibility-cut-lines",
