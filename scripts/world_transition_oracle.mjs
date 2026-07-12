@@ -49,6 +49,11 @@ const requiredTranscriptFacts = {
     'owner_surface: Capsule/Runspace/Fabric',
     'fixture_provenance: synthetic-owner-state',
     'restore_accepted: true',
+    'restore_evidence_scope: metadata_relocation_only',
+    'restore_warning: metadata_only',
+    'require_local_permit: false',
+    'require_link_match: false',
+    'receiver_authority_claimed: false',
     'provider_completed: true',
     'root_completed: true',
     'completed_state_artifact: artifacts/states/active-provider.completed.capsule',
@@ -65,12 +70,13 @@ const requiredTranscriptFacts = {
     'owner_surface: Appliance/TurnClosure',
     'effect_call_count: 1',
     'result_persisted_before_step: true',
+    'fresh_runtime_count: 2',
+    'fresh_runtimes_restored_from_authoritative_parent: true',
+    'identical_turn_input_resubmitted: true',
+    'persisted_resolution_input_reused: true',
     'first_retry_output_byte_equal: true',
     'first_retry_closure_byte_equal: true',
-    'cold_restore_output_validated: true',
-    'cold_restore_closure_validated: true',
-    'cold_restore_normalized_semantics_equal: true',
-    'cold_restore_completed: true',
+    'wire_restore_equivalence_claimed: false',
   ],
   'migration': [
     'case_id: migration',
@@ -78,6 +84,11 @@ const requiredTranscriptFacts = {
     'fixture_provenance: synthetic-owner-state',
     'source_destroyed: true',
     'receiver_fresh_instance: true',
+    'migration_evidence_scope: metadata_relocation_only',
+    'restore_warning: metadata_only',
+    'require_local_permit: false',
+    'require_link_match: false',
+    'receiver_authority_claimed: false',
     'completed_after_migration: true',
     'completed_state_artifact: artifacts/states/active-provider.completed.capsule',
   ],
@@ -145,7 +156,6 @@ const expectedArtifacts = [
   'artifacts/inputs/partial-batch.boot.turn-input',
   'artifacts/inputs/partial-batch.final-result.turn-input',
   'artifacts/inputs/partial-batch.one-result.turn-input',
-  'artifacts/inputs/retry.cold-restore.turn-input',
   'artifacts/inputs/retry.continue.turn-input',
   'artifacts/malformed/executable-image.trailing-byte',
   'artifacts/malformed/result.duplicate-target.turn-input',
@@ -162,7 +172,6 @@ const expectedArtifacts = [
   'artifacts/outputs/partial-batch.completed.turn-output',
   'artifacts/outputs/partial-batch.parent.turn-output',
   'artifacts/outputs/partial-batch.remaining.turn-output',
-  'artifacts/outputs/retry.cold-restore.turn-output',
   'artifacts/outputs/retry.first.turn-output',
   'artifacts/outputs/retry.repeated.turn-output',
   'artifacts/results/internal-provider.root-result',
@@ -194,7 +203,6 @@ const expectedArtifacts = [
   'artifacts/transitions/partial-batch.completed.turn-closure',
   'artifacts/transitions/partial-batch.parent.turn-closure',
   'artifacts/transitions/partial-batch.remaining.turn-closure',
-  'artifacts/transitions/retry.cold-restore.turn-closure',
   'artifacts/transitions/retry.first.turn-closure',
   'artifacts/transitions/retry.parent.turn-closure',
   'artifacts/transitions/retry.repeated.turn-closure',
@@ -243,7 +251,7 @@ const expectedBinaryFamilyPolicy = {
   scope: 'exhaustive-top-level-binary-artifacts',
   nested_authority: 'top-level-owner+world-generator-source-identity+boundary-package-hash',
   unclassified: 'reject',
-  binary_artifact_count: 67,
+  binary_artifact_count: 64,
 };
 
 const expectedBinaryFamilies = [
@@ -284,7 +292,7 @@ const expectedBinaryFamilies = [
     id: 'world_appliance_wire_turn_input',
     owner: 'world.Appliance.Wire.TurnInput',
     versioning: 'format-only',
-    expected_count: 12,
+    expected_count: 11,
     header_fields: [
       { name: 'format_version', constant: 'world_appliance_wire_turn_input_format_version', offset: 0, value: 2 },
     ],
@@ -302,7 +310,7 @@ const expectedBinaryFamilies = [
     id: 'world_appliance_turn_output',
     owner: 'world.Appliance.TurnOutput',
     versioning: 'header',
-    expected_count: 11,
+    expected_count: 10,
     header_fields: [
       { name: 'format_version', constant: 'world_appliance_turn_output_format_version', offset: 0, value: 3 },
       { name: 'fingerprint_version', constant: 'world_appliance_turn_output_fingerprint_version', offset: 4, value: 2 },
@@ -312,7 +320,7 @@ const expectedBinaryFamilies = [
     id: 'world_appliance_turn_closure',
     owner: 'world.Appliance.TurnClosure',
     versioning: 'header',
-    expected_count: 13,
+    expected_count: 12,
     header_fields: [
       { name: 'format_version', constant: 'world_appliance_turn_closure_format_version', offset: 0, value: 1 },
       { name: 'fingerprint_version', constant: 'world_appliance_turn_closure_fingerprint_version', offset: 4, value: 1 },
@@ -464,6 +472,8 @@ if (args.mode === 'compare') {
   testRootSymlinkRejection();
 } else if (args.mode === 'self-test-generator-source') {
   testGeneratorSourceIdentity();
+} else if (args.mode === 'self-test-checksum-inventory') {
+  testChecksumInventoryAdmission();
 } else {
   throw new Error(`unsupported --mode ${String(args.mode)}`);
 }
@@ -625,19 +635,32 @@ function validateCorpus(root, expectedZigVersion) {
   assertEqual(manifest.artifact_count, contentFiles.length, 'manifest.artifact_count');
   assertEqual(manifest.artifact_set_sha256, artifactHasher.digest('hex'), 'manifest.artifact_set_sha256');
 
-  const checksumLines = readFileSync(join(root, 'checksums.sha256'), 'utf8')
+  validateChecksums(
+    root,
+    readFileSync(join(root, 'checksums.sha256'), 'utf8'),
+    files.filter((path) => path !== 'checksums.sha256'),
+  );
+}
+
+function validateChecksums(root, checksumText, expectedPaths, read = readFileSync) {
+  const checksumLines = checksumText
     .trimEnd()
     .split('\n')
     .filter(Boolean);
-  const checksumPaths = [];
-  for (const line of checksumLines) {
+  const checksumEntries = checksumLines.map((line) => {
     const match = /^([0-9a-f]{64})  conformance\/world-image-v1\/v0\/world\/(.+)$/.exec(line);
     if (!match) throw new Error(`invalid checksum line: ${line}`);
     const [, digest, path] = match;
-    checksumPaths.push(path);
-    assertEqual(digest, sha256(readFileSync(join(root, path))), `checksums.sha256 ${path}`);
+    return { digest, path };
+  });
+  assertArrayEqual(
+    checksumEntries.map((entry) => entry.path),
+    expectedPaths,
+    'checksum inventory',
+  );
+  for (const { digest, path } of checksumEntries) {
+    assertEqual(digest, sha256(read(join(root, path))), `checksums.sha256 ${path}`);
   }
-  assertArrayEqual(checksumPaths, files.filter((path) => path !== 'checksums.sha256'), 'checksum inventory');
 }
 
 function boundaryPackageHashFromZon() {
@@ -719,6 +742,26 @@ function testGeneratorSourceIdentity() {
     throw error;
   }
   throw new Error('bare carriage return accepted in generator source');
+}
+
+function testChecksumInventoryAdmission() {
+  const outsideBytes = Buffer.from('outside-root-sentinel');
+  const outsideDigest = sha256(outsideBytes);
+  const traversalPath = '../../../../outside/sentinel';
+  const checksumText = `${outsideDigest}  conformance/world-image-v1/v0/world/${traversalPath}\n`;
+  let readCount = 0;
+  try {
+    validateChecksums('/corpus', checksumText, ['manifest.json'], () => {
+      readCount += 1;
+      return outsideBytes;
+    });
+  } catch (error) {
+    assertEqual(readCount, 0, 'checksum target reads before inventory validation');
+    if (!(error instanceof Error) || !error.message.startsWith('checksum inventory')) throw error;
+    if (error.message.includes(outsideDigest)) throw new Error('outside-root digest leaked before checksum admission');
+    return;
+  }
+  throw new Error('checksum traversal path accepted');
 }
 
 function validateBinaryFamilies(root, contentFiles, manifest) {

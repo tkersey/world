@@ -6,6 +6,7 @@ const fixtures = @import("world_fixtures");
 const std = @import("std");
 const universal = @import("world_universal_appliance_wasm.zig");
 const world = @import("world");
+const world_transition_oracle_sources = @import("world_transition_oracle_sources");
 
 const corpus_path = "conformance/world-image-v1/v0/world";
 const checksum_prefix = corpus_path ++ "/";
@@ -88,6 +89,18 @@ const generator_source_src_files = [_][]const u8{
     "protocol.zig",
     "world.zig",
 };
+const compiled_generator_sources = world_transition_oracle_sources.sources;
+
+comptime {
+    if (compiled_generator_sources.len != generator_source_files.len) {
+        @compileError("compiled generator source inventory must remain complete");
+    }
+    for (compiled_generator_sources, generator_source_files) |compiled, expected_path| {
+        if (!std.mem.eql(u8, compiled.path, expected_path)) {
+            @compileError("compiled generator source inventory must preserve canonical order");
+        }
+    }
+}
 
 const Writer = struct {
     io: std.Io,
@@ -240,7 +253,7 @@ pub fn main(init: std.process.Init) !void {
         if (!std.fs.path.isAbsolute(target_path)) return error.InvalidTrustedPrefix;
         break :blk .{ .trusted_prefix = target_path };
     } else return error.InvalidArguments;
-    const generator_source_identity = try generatorSourceIdentity(init.io, allocator, source_root);
+    const generator_source_identity = try validatedGeneratorSourceIdentity(init.io, allocator, source_root);
 
     const staging_dir = "./world-transition-oracle-staging";
     try std.Io.Dir.cwd().deleteTree(init.io, staging_dir);
@@ -284,12 +297,57 @@ fn validateStandaloneResolutionInput(
     }
 }
 
+fn writeValidatedApplianceManifest(
+    allocator: std.mem.Allocator,
+    writer: *Writer,
+    relative_path: []const u8,
+    expected_manifest_fingerprint: u64,
+    manifest_bytes: []const u8,
+) !void {
+    var decoded = try world.Appliance.Manifest.decode(allocator, manifest_bytes);
+    defer decoded.deinit(allocator);
+    try decoded.validate();
+    if (decoded.manifest_fingerprint != expected_manifest_fingerprint) return error.ManifestIdentityMismatch;
+    const canonical_bytes = try decoded.encode(allocator);
+    defer allocator.free(canonical_bytes);
+    if (!std.mem.eql(u8, manifest_bytes, canonical_bytes)) return error.ManifestEncodingMismatch;
+    try writer.write(relative_path, canonical_bytes);
+}
+
+test "manifest bytes require owner validation before publication" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const manifest = common.PortsAppliance.manifest();
+    const canonical_bytes = try manifest.encode(allocator);
+    const malformed_bytes = try allocator.dupe(u8, canonical_bytes);
+    malformed_bytes[0] ^= 0xff;
+    var writer = Writer{ .io = io, .allocator = allocator, .root = root };
+    const relative_path = "artifacts/manifests/rejected.appliance-manifest";
+
+    try std.testing.expectError(
+        error.InvalidFrameEncoding,
+        writeValidatedApplianceManifest(allocator, &writer, relative_path, manifest.manifest_fingerprint, malformed_bytes),
+    );
+    try std.testing.expectEqual(@as(usize, 0), writer.paths.items.len);
+    const destination_path = try std.fs.path.join(allocator, &.{ root, relative_path });
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(io, destination_path, .{}));
+}
+
 fn emitOnePort(allocator: std.mem.Allocator, writer: *Writer) !void {
     const executable_image_fingerprint: u64 = 0xA100_0000_0000_0001;
     const manifest = common.PortsAppliance.manifest();
     const capacity = world.Appliance.Capacity.tiny_one_port;
     const manifest_bytes = try manifest.encode(allocator);
-    try writer.write("artifacts/manifests/one-port.appliance-manifest", manifest_bytes);
+    defer allocator.free(manifest_bytes);
+    try writeValidatedApplianceManifest(allocator, writer, "artifacts/manifests/one-port.appliance-manifest", manifest.manifest_fingerprint, manifest_bytes);
 
     var core = world.Appliance.Core.initWithCapacity(allocator, manifest, common.PortsAppliance.memoryPlan(), capacity);
     core.executable_image_fingerprint = executable_image_fingerprint;
@@ -310,11 +368,7 @@ fn emitOnePort(allocator: std.mem.Allocator, writer: *Writer) !void {
     defer waiting_output.deinit(allocator);
     var waiting_closure = try world.Appliance.TurnClosure.decode(allocator, waiting_closure_bytes);
     defer waiting_closure.deinit(allocator);
-    try waiting_closure.validate(allocator, .{
-        .expected_executable_image_fingerprint = executable_image_fingerprint,
-        .expected_manifest_fingerprint = manifest.manifest_fingerprint,
-        .bundle_options = .{ .allow_external_dependencies = true },
-    });
+    try validateOracleTurnClosure(allocator, waiting_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, null);
     if (waiting_output.host_requests.len != 1) return error.ExpectedOneHostRequest;
     try writer.write("artifacts/outputs/one-port.waiting.turn-output", waiting_output_bytes);
     try writer.write("artifacts/transitions/one-port.waiting.turn-closure", waiting_closure_bytes);
@@ -344,12 +398,7 @@ fn emitOnePort(allocator: std.mem.Allocator, writer: *Writer) !void {
     defer completed_output.deinit(allocator);
     var completed_closure = try world.Appliance.TurnClosure.decode(allocator, completed_closure_bytes);
     defer completed_closure.deinit(allocator);
-    try completed_closure.validate(allocator, .{
-        .expected_executable_image_fingerprint = executable_image_fingerprint,
-        .expected_manifest_fingerprint = manifest.manifest_fingerprint,
-        .expected_parent_closure_fingerprint = waiting_closure.closure_fingerprint,
-        .bundle_options = .{ .allow_external_dependencies = true },
-    });
+    try validateOracleTurnClosure(allocator, completed_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, &waiting_closure);
     try writer.write("artifacts/outputs/one-port.completed.turn-output", completed_output_bytes);
     try writer.write("artifacts/transitions/one-port.completed.turn-closure", completed_closure_bytes);
     try writer.write("artifacts/states/one-port.completed.checkpoint", completed_closure.checkpoint_bytes);
@@ -417,7 +466,8 @@ fn emitInternalProvider(allocator: std.mem.Allocator, writer: *Writer) !void {
     defer native.deinit();
     const manifest = native.core.readManifest();
     const manifest_bytes = try manifest.encode(allocator);
-    try writer.write("artifacts/manifests/internal-provider.appliance-manifest", manifest_bytes);
+    defer allocator.free(manifest_bytes);
+    try writeValidatedApplianceManifest(allocator, writer, "artifacts/manifests/internal-provider.appliance-manifest", manifest.manifest_fingerprint, manifest_bytes);
 
     const boot = world.Appliance.Wire.TurnInput.init(.{
         .operation = .boot,
@@ -626,13 +676,21 @@ fn emitActiveProvider(allocator: std.mem.Allocator, writer: *Writer) !void {
 
     var receiver = world.Runspace.init(allocator, .{});
     defer receiver.deinit();
-    var restore = try world.Capsule.thawIntoRunspace(decoded_source_capsule, &receiver, parent_ref.target_ref_fingerprint, 0, 0xA103_0004, .{
+    const restore_options: world.Capsule.ThawOptions = .{
         .mode = .restore_parked,
         .require_local_permit = false,
         .require_link_match = false,
-    });
+    };
+    var thaw_plan = try world.Capsule.planThaw(decoded_source_capsule, parent_ref.target_ref_fingerprint, 0, 0xA103_0004, restore_options);
+    defer thaw_plan.deinit(allocator);
+    try thaw_plan.validate();
+    var restore = try world.Capsule.thawIntoRunspace(decoded_source_capsule, &receiver, parent_ref.target_ref_fingerprint, 0, 0xA103_0004, restore_options);
     defer restore.deinit(allocator);
+    try restore.validate();
     if (!restore.accepted) return error.ExpectedRestoreAccepted;
+    if (thaw_plan.require_local_permit or thaw_plan.require_link_match) return error.UnexpectedRestoreAuthorityRequirement;
+    if (restore.thaw_plan_fingerprint != thaw_plan.thaw_plan_fingerprint) return error.RestorePlanMismatch;
+    if (restore.warnings.len != 1 or restore.warnings[0] != .metadata_only) return error.ExpectedMetadataOnlyRestoreWarning;
     var migrated_capsule = try world.Capsule.freezeRunspace(&receiver, .{ .allow_active_fabric_parked = true });
     defer migrated_capsule.deinit(allocator);
     const migrated_capsule_bytes = try migrated_capsule.encode(allocator);
@@ -679,6 +737,11 @@ fn emitActiveProvider(allocator: std.mem.Allocator, writer: *Writer) !void {
             "owner_surface: Capsule/Runspace/Fabric\n" ++
             "fixture_provenance: synthetic-owner-state\n" ++
             "restore_accepted: true\n" ++
+            "restore_evidence_scope: metadata_relocation_only\n" ++
+            "restore_warning: {s}\n" ++
+            "require_local_permit: {}\n" ++
+            "require_link_match: {}\n" ++
+            "receiver_authority_claimed: false\n" ++
             "restored_route_count: {d}\n" ++
             "restored_invocation_count: {d}\n" ++
             "provider_completed: {}\n" ++
@@ -686,6 +749,9 @@ fn emitActiveProvider(allocator: std.mem.Allocator, writer: *Writer) !void {
             "completed_capsule_fingerprint: 0x{x:0>16}\n" ++
             "completed_state_artifact: artifacts/states/active-provider.completed.capsule\n",
         .{
+            @tagName(restore.warnings[0]),
+            thaw_plan.require_local_permit,
+            thaw_plan.require_link_match,
             receiver.fabric_routes.items.len,
             receiver.fabric_invocations.items.len,
             provider_event.kind == .run_completed,
@@ -703,6 +769,11 @@ fn emitActiveProvider(allocator: std.mem.Allocator, writer: *Writer) !void {
             "source_destroyed: {}\n" ++
             "receiver_fresh_instance: true\n" ++
             "restore_accepted: true\n" ++
+            "migration_evidence_scope: metadata_relocation_only\n" ++
+            "restore_warning: {s}\n" ++
+            "require_local_permit: {}\n" ++
+            "require_link_match: {}\n" ++
+            "receiver_authority_claimed: false\n" ++
             "source_capsule_fingerprint: 0x{x:0>16}\n" ++
             "migrated_capsule_fingerprint: 0x{x:0>16}\n" ++
             "completed_after_migration: {}\n" ++
@@ -710,6 +781,9 @@ fn emitActiveProvider(allocator: std.mem.Allocator, writer: *Writer) !void {
             "completed_state_artifact: artifacts/states/active-provider.completed.capsule\n",
         .{
             source_destroyed,
+            @tagName(restore.warnings[0]),
+            thaw_plan.require_local_permit,
+            thaw_plan.require_link_match,
             source_capsule.image_fingerprint,
             migrated_capsule.image_fingerprint,
             provider_event.kind == .run_completed and root_event.kind == .run_completed,
@@ -739,11 +813,7 @@ fn validateOracleTurnClosure(
         .bundle_options = .{ .allow_external_dependencies = true },
     };
     if (parent) |parent_closure| {
-        if (closure.archive_parent_moment_fingerprint != parent_closure.archive_resulting_moment_fingerprint or
-            closure.archive_parent_seal_fingerprint != parent_closure.archive_resulting_seal_fingerprint)
-        {
-            return error.InvalidClosureParent;
-        }
+        try world.Appliance.validateTurnClosureParentContinuity(closure, parent_closure.*);
         options.expected_parent_closure_fingerprint = parent_closure.closure_fingerprint;
         options.expected_parent_state_fingerprint = parent_closure.resulting_state_fingerprint;
         options.expected_parent_chronicle_cursor_fingerprint = parent_closure.chronicle_resulting_cursor_fingerprint;
@@ -802,45 +872,6 @@ fn nativeFromClosure(
     native.last_closure_bytes = try allocator.dupe(u8, closure_bytes);
     native.last_closure_owned = true;
     return native;
-}
-
-fn validateColdRestoreParity(
-    first_output: world.Appliance.TurnOutput,
-    restore_output: world.Appliance.TurnOutput,
-    first_closure: world.Appliance.TurnClosure,
-    restore_closure: world.Appliance.TurnClosure,
-) !void {
-    if (restore_output.manifest_fingerprint != first_output.manifest_fingerprint or
-        restore_output.turn_sequence_number != first_output.turn_sequence_number or
-        restore_output.source_state_fingerprint != first_output.source_state_fingerprint or
-        restore_output.quiescence.report_fingerprint != first_output.quiescence.report_fingerprint or
-        restore_output.status != first_output.status or
-        restore_output.status != .completed or
-        restore_output.host_requests.len != 0 or
-        restore_output.root_result_fingerprint == null or
-        restore_output.checkpoint.core_state != first_output.checkpoint.core_state or
-        restore_output.checkpoint.execution_mode != first_output.checkpoint.execution_mode or
-        restore_output.blocker_count != first_output.blocker_count or
-        restore_output.warning_count != first_output.warning_count or
-        !std.mem.eql(u64, restore_output.turn_receipt.applied_host_reply_fingerprints, first_output.turn_receipt.applied_host_reply_fingerprints) or
-        !std.mem.eql(u64, restore_output.turn_receipt.emitted_host_request_fingerprints, first_output.turn_receipt.emitted_host_request_fingerprints) or
-        !std.mem.eql(u64, restore_output.finalized_actuation_receipt_fingerprints, first_output.finalized_actuation_receipt_fingerprints))
-    {
-        return error.RestoreSemanticMismatch;
-    }
-    if (restore_closure.parent_closure_fingerprint != first_closure.parent_closure_fingerprint or
-        restore_closure.parent_state_fingerprint != first_closure.parent_state_fingerprint or
-        restore_closure.turn_sequence_number != first_closure.turn_sequence_number or
-        restore_closure.chronicle_parent_cursor_fingerprint != first_closure.chronicle_parent_cursor_fingerprint or
-        restore_closure.archive_parent_moment_fingerprint != first_closure.archive_parent_moment_fingerprint or
-        restore_closure.archive_parent_seal_fingerprint != first_closure.archive_parent_seal_fingerprint or
-        restore_closure.status != first_closure.status or
-        restore_closure.status != .completed or
-        restore_closure.root_result_fingerprint == null or
-        !std.mem.eql(u64, restore_closure.finalized_actuation_receipt_fingerprints, first_closure.finalized_actuation_receipt_fingerprints))
-    {
-        return error.RestoreSemanticMismatch;
-    }
 }
 
 fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
@@ -906,34 +937,6 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
     if (!std.mem.eql(u8, first_output_bytes, retry_output_bytes)) return error.RetryOutputMismatch;
     if (!std.mem.eql(u8, first_closure_bytes, retry_closure_bytes)) return error.RetryClosureMismatch;
 
-    const restore_input = world.Appliance.Wire.TurnInput.init(.{
-        .operation = .restore,
-        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
-        .expected_parent_closure_fingerprint = parent.closure.closure_fingerprint,
-        .expected_parent_state_fingerprint = parent.closure.resulting_state_fingerprint,
-        .previous_turn_receipt_fingerprint = parent.closure.turn_receipt_fingerprint,
-        .turn_sequence_number = parent.closure.turn_sequence_number + 1,
-        .parent_turn_closure_bytes = parent.closure_bytes,
-        .resolutions = &.{resolution},
-    });
-    const restore_bytes = try restore_input.encode(allocator);
-    try writer.write("artifacts/inputs/retry.cold-restore.turn-input", restore_bytes);
-    var restore_core = world.Appliance.Core.initWithCapacity(allocator, manifest, common.PortsAppliance.memoryPlan(), capacity);
-    restore_core.executable_image_fingerprint = executable_image_fingerprint;
-    var restore_native = world.Appliance.Native.init(restore_core);
-    defer restore_native.deinit();
-    if (restore_native.submitTurn(restore_bytes) != .completed) return error.ExpectedCompleted;
-    const restore_output_bytes = try common.readOutputOwned(allocator, &restore_native);
-    const restore_closure_bytes = try common.readClosureOwned(allocator, &restore_native);
-    var restore_output = try world.Appliance.TurnOutput.decode(allocator, restore_output_bytes, manifest.manifest_fingerprint, capacity);
-    defer restore_output.deinit(allocator);
-    var restore_closure = try world.Appliance.TurnClosure.decode(allocator, restore_closure_bytes);
-    defer restore_closure.deinit(allocator);
-    try validateOracleTurnClosure(allocator, restore_closure, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, &parent.closure);
-    try validateColdRestoreParity(first_output, restore_output, first_closure, restore_closure);
-    try writer.write("artifacts/outputs/retry.cold-restore.turn-output", restore_output_bytes);
-    try writer.write("artifacts/transitions/retry.cold-restore.turn-closure", restore_closure_bytes);
-
     const transcript = try std.fmt.allocPrint(
         allocator,
         "case_id: lost-output-retry\n" ++
@@ -941,12 +944,13 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
             "result_transport_owner: Wire.TurnInput\n" ++
             "effect_call_count: 1\n" ++
             "result_persisted_before_step: true\n" ++
+            "fresh_runtime_count: 2\n" ++
+            "fresh_runtimes_restored_from_authoritative_parent: true\n" ++
+            "identical_turn_input_resubmitted: true\n" ++
+            "persisted_resolution_input_reused: true\n" ++
             "first_retry_output_byte_equal: true\n" ++
             "first_retry_closure_byte_equal: true\n" ++
-            "cold_restore_output_validated: true\n" ++
-            "cold_restore_closure_validated: true\n" ++
-            "cold_restore_normalized_semantics_equal: true\n" ++
-            "cold_restore_completed: true\n" ++
+            "wire_restore_equivalence_claimed: false\n" ++
             "parent_closure_fingerprint: 0x{x:0>16}\n" ++
             "result_closure_fingerprint: 0x{x:0>16}\n",
         .{ parent.closure.closure_fingerprint, first_closure.closure_fingerprint },
@@ -1736,12 +1740,22 @@ fn isExpectedPath(writer: *const Writer, relative_path: []const u8) bool {
     return false;
 }
 
-fn validatePublicationDestination(io: std.Io, allocator: std.mem.Allocator, output_dir: std.Io.Dir) !void {
+fn validatePublicationDestination(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    writer: *const Writer,
+    target: PublicationTarget,
+    output_dir: std.Io.Dir,
+) !void {
     var existing_paths = try listFiles(io, allocator, output_dir);
     defer existing_paths.deinit();
     for (existing_paths.items) |relative_path| {
         if (std.mem.endsWith(u8, relative_path, ".oracle-tmp")) {
             return error.UnsafePublicationTemporaryPath;
+        }
+        switch (target) {
+            .isolated => if (!isExpectedPath(writer, relative_path)) return error.UnexpectedIsolatedOutputPath,
+            .trusted_prefix => {},
         }
     }
 }
@@ -1837,7 +1851,7 @@ fn openPublicationDirectory(io: std.Io, target: PublicationTarget) !std.Io.Dir {
 fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, target: PublicationTarget) !void {
     var publication_dir = try openPublicationDirectory(writer.io, target);
     defer publication_dir.close(writer.io);
-    try validatePublicationDestination(writer.io, allocator, publication_dir);
+    try validatePublicationDestination(writer.io, allocator, writer, target, publication_dir);
 
     // The standard atomic-copy primitive owns collision-safe temporary files
     // beside each destination and replaces only after the full file is ready.
@@ -1845,15 +1859,66 @@ fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, target: Publicat
         try promoteFile(allocator, writer, publication_dir, relative_path);
     }
 
-    // Retire obsolete artifacts only after the complete new file set is present.
-    // An interrupted cleanup can leave detectable extras, but cannot remove any
-    // artifact required by the new manifest.
-    var published_paths = try listFiles(writer.io, allocator, publication_dir);
-    defer published_paths.deinit();
-    for (published_paths.items) |relative_path| {
-        if (isExpectedPath(writer, relative_path)) continue;
-        try publication_dir.deleteFile(writer.io, relative_path);
+    switch (target) {
+        .isolated => {},
+        .trusted_prefix => {
+            // Retire obsolete artifacts only after the complete new file set is present.
+            // An interrupted cleanup can leave detectable extras, but cannot remove any
+            // artifact required by the new manifest.
+            var published_paths = try listFiles(writer.io, allocator, publication_dir);
+            defer published_paths.deinit();
+            for (published_paths.items) |relative_path| {
+                if (isExpectedPath(writer, relative_path)) continue;
+                try publication_dir.deleteFile(writer.io, relative_path);
+            }
+        },
     }
+}
+
+test "isolated publication rejects unowned paths before writing" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const staging_dir = try std.fs.path.join(allocator, &.{ root, "staging" });
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    const existing_relative_path = "artifacts/manifests/one-port.appliance-manifest";
+    const new_relative_path = "cases/new.txt";
+    const existing_path = try std.fs.path.join(allocator, &.{ output_dir, existing_relative_path });
+    const new_path = try std.fs.path.join(allocator, &.{ output_dir, new_relative_path });
+    const unowned_path = try std.fs.path.join(allocator, &.{ output_dir, "unowned.txt" });
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, std.fs.path.dirname(existing_path).?);
+    try cwd.writeFile(io, .{ .sub_path = existing_path, .data = "old expected\n" });
+    try cwd.writeFile(io, .{ .sub_path = unowned_path, .data = "must survive\n" });
+
+    var writer = Writer{ .io = io, .allocator = allocator, .root = staging_dir };
+    try writer.write(existing_relative_path, "replacement");
+    try writer.write(new_relative_path, "new");
+    try std.testing.expectError(
+        error.UnexpectedIsolatedOutputPath,
+        promoteCorpus(allocator, &writer, .{ .isolated = output_dir }),
+    );
+
+    const existing_bytes = try cwd.readFileAlloc(io, existing_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("old expected\n", existing_bytes);
+    const unowned_bytes = try cwd.readFileAlloc(io, unowned_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("must survive\n", unowned_bytes);
+    try std.testing.expectError(error.FileNotFound, cwd.access(io, new_path, .{}));
+
+    try cwd.deleteFile(io, unowned_path);
+    try promoteCorpus(allocator, &writer, .{ .isolated = output_dir });
+    const replaced_bytes = try cwd.readFileAlloc(io, existing_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("replacement", replaced_bytes);
+    const new_bytes = try cwd.readFileAlloc(io, new_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("new", new_bytes);
 }
 
 test "publication rejects unsafe temporary symlink before writing" {
@@ -1984,9 +2049,12 @@ test "publication accepts a symlinked trusted prefix" {
     const linked_prefix = try std.fs.path.join(allocator, &.{ root, "linked-prefix" });
     const relative_path = "artifacts/manifests/one-port.appliance-manifest";
     const destination_path = try std.fs.path.join(allocator, &.{ real_prefix, canonical_output_suffix, relative_path });
+    const obsolete_path = try std.fs.path.join(allocator, &.{ real_prefix, canonical_output_suffix, "obsolete.txt" });
 
     const cwd = std.Io.Dir.cwd();
     try cwd.createDirPath(io, real_prefix);
+    try cwd.createDirPath(io, std.fs.path.dirname(obsolete_path).?);
+    try cwd.writeFile(io, .{ .sub_path = obsolete_path, .data = "obsolete" });
     try cwd.symLink(io, real_prefix, linked_prefix, .{});
 
     var writer = Writer{ .io = io, .allocator = allocator, .root = staging_dir };
@@ -1995,6 +2063,7 @@ test "publication accepts a symlinked trusted prefix" {
 
     const destination_bytes = try cwd.readFileAlloc(io, destination_path, allocator, .limited(1024));
     try std.testing.expectEqualStrings("replacement", destination_bytes);
+    try std.testing.expectError(error.FileNotFound, cwd.access(io, obsolete_path, .{}));
 }
 
 test "trusted prefix rejects a symlinked oracle suffix" {
@@ -2081,21 +2150,48 @@ fn generatorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root
         var reader = file.reader(io, &read_buffer);
         const raw_bytes = try reader.interface.allocRemaining(allocator, .limited(16 * 1024 * 1024));
         defer allocator.free(raw_bytes);
-        const canonical_bytes = try canonicalSourceBytes(allocator, raw_bytes);
-        defer allocator.free(canonical_bytes);
-
-        var path_length_bytes = [_]u8{0} ** 4;
-        std.mem.writeInt(u32, &path_length_bytes, @intCast(relative_path.len), .little);
-        var content_length_bytes = [_]u8{0} ** 8;
-        std.mem.writeInt(u64, &content_length_bytes, @intCast(canonical_bytes.len), .little);
-        hasher.update(&path_length_bytes);
-        hasher.update(relative_path);
-        hasher.update(&content_length_bytes);
-        hasher.update(canonical_bytes);
+        try updateGeneratorSourceIdentity(&hasher, allocator, relative_path, raw_bytes);
     }
     var digest = [_]u8{0} ** 32;
     hasher.final(&digest);
     return digest;
+}
+
+fn compiledGeneratorSourceIdentity(allocator: std.mem.Allocator) ![32]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(generator_source_identity_domain);
+    for (compiled_generator_sources) |source| {
+        try updateGeneratorSourceIdentity(&hasher, allocator, source.path, source.bytes);
+    }
+    var digest = [_]u8{0} ** 32;
+    hasher.final(&digest);
+    return digest;
+}
+
+fn updateGeneratorSourceIdentity(
+    hasher: *std.crypto.hash.sha2.Sha256,
+    allocator: std.mem.Allocator,
+    relative_path: []const u8,
+    raw_bytes: []const u8,
+) !void {
+    const canonical_bytes = try canonicalSourceBytes(allocator, raw_bytes);
+    defer allocator.free(canonical_bytes);
+
+    var path_length_bytes = [_]u8{0} ** 4;
+    std.mem.writeInt(u32, &path_length_bytes, @intCast(relative_path.len), .little);
+    var content_length_bytes = [_]u8{0} ** 8;
+    std.mem.writeInt(u64, &content_length_bytes, @intCast(canonical_bytes.len), .little);
+    hasher.update(&path_length_bytes);
+    hasher.update(relative_path);
+    hasher.update(&content_length_bytes);
+    hasher.update(canonical_bytes);
+}
+
+fn validatedGeneratorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root: []const u8) ![32]u8 {
+    const compiled_identity = try compiledGeneratorSourceIdentity(allocator);
+    const live_identity = try generatorSourceIdentity(io, allocator, source_root);
+    if (!std.mem.eql(u8, &compiled_identity, &live_identity)) return error.GeneratorSourceIdentityMismatch;
+    return live_identity;
 }
 
 test "generator source canonicalization is checkout stable" {
@@ -2105,6 +2201,34 @@ test "generator source canonicalization is checkout stable" {
     defer std.testing.allocator.free(crlf);
     try std.testing.expectEqualSlices(u8, lf, crlf);
     try std.testing.expectError(error.InvalidSourceLineEnding, canonicalSourceBytes(std.testing.allocator, "bare\rcarriage"));
+}
+
+test "generator rejects a live source root that diverges from its compiled source closure" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const cwd = std.Io.Dir.cwd();
+    for (compiled_generator_sources) |source| {
+        const full_path = try std.fs.path.join(allocator, &.{ root, source.path });
+        if (std.fs.path.dirname(full_path)) |parent| try cwd.createDirPath(io, parent);
+        const bytes = if (std.mem.eql(u8, source.path, "src/world.zig"))
+            try std.mem.concat(allocator, u8, &.{ source.bytes, "// stale generator falsifier\n" })
+        else
+            source.bytes;
+        try cwd.writeFile(io, .{ .sub_path = full_path, .data = bytes });
+    }
+
+    try std.testing.expectError(
+        error.GeneratorSourceIdentityMismatch,
+        validatedGeneratorSourceIdentity(io, allocator, root),
+    );
 }
 
 fn sha256(bytes: []const u8) [32]u8 {
@@ -2191,16 +2315,16 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
             "    \"scope\": \"exhaustive-top-level-binary-artifacts\",\n" ++
             "    \"nested_authority\": \"top-level-owner+world-generator-source-identity+boundary-package-hash\",\n" ++
             "    \"unclassified\": \"reject\",\n" ++
-            "    \"binary_artifact_count\": 67\n" ++
+            "    \"binary_artifact_count\": 64\n" ++
             "  },\n" ++
             "  \"binary_families\": [\n" ++
             "    {\"id\":\"world_executable_image\",\"owner\":\"world.Executable.Image\",\"versioning\":\"header\",\"expected_count\":2,\"magic\":\"world.Executable.Image.v2\\u0000\",\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_executable_image_format_version\",\"offset\":26,\"value\":2},{\"name\":\"fingerprint_version\",\"constant\":\"world_executable_image_fingerprint_version\",\"offset\":30,\"value\":2},{\"name\":\"codec_version\",\"constant\":\"world_executable_image_codec_version\",\"offset\":34,\"value\":1}]},\n" ++
             "    {\"id\":\"world_appliance_manifest\",\"owner\":\"world.Appliance.Manifest\",\"versioning\":\"header\",\"expected_count\":2,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_manifest_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_manifest_fingerprint_version\",\"offset\":4,\"value\":3},{\"name\":\"appliance_abi_version\",\"constant\":\"world_appliance_abi_version\",\"offset\":16,\"value\":4}]},\n" ++
             "    {\"id\":\"world_appliance_command\",\"owner\":\"world.Appliance.Command\",\"versioning\":\"header\",\"expected_count\":1,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_command_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_command_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
-            "    {\"id\":\"world_appliance_wire_turn_input\",\"owner\":\"world.Appliance.Wire.TurnInput\",\"versioning\":\"format-only\",\"expected_count\":12,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_wire_turn_input_format_version\",\"offset\":0,\"value\":2}]},\n" ++
+            "    {\"id\":\"world_appliance_wire_turn_input\",\"owner\":\"world.Appliance.Wire.TurnInput\",\"versioning\":\"format-only\",\"expected_count\":11,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_wire_turn_input_format_version\",\"offset\":0,\"value\":2}]},\n" ++
             "    {\"id\":\"world_appliance_wire_resolution_input\",\"owner\":\"world.Appliance.Wire.ResolutionInput\",\"versioning\":\"format-only\",\"expected_count\":3,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_wire_resolution_input_format_version\",\"offset\":0,\"value\":1}]},\n" ++
-            "    {\"id\":\"world_appliance_turn_output\",\"owner\":\"world.Appliance.TurnOutput\",\"versioning\":\"header\",\"expected_count\":11,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_output_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_output_fingerprint_version\",\"offset\":4,\"value\":2}]},\n" ++
-            "    {\"id\":\"world_appliance_turn_closure\",\"owner\":\"world.Appliance.TurnClosure\",\"versioning\":\"header\",\"expected_count\":13,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_closure_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_closure_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_appliance_turn_output\",\"owner\":\"world.Appliance.TurnOutput\",\"versioning\":\"header\",\"expected_count\":10,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_output_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_output_fingerprint_version\",\"offset\":4,\"value\":2}]},\n" ++
+            "    {\"id\":\"world_appliance_turn_closure\",\"owner\":\"world.Appliance.TurnClosure\",\"versioning\":\"header\",\"expected_count\":12,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_closure_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_closure_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
             "    {\"id\":\"world_appliance_checkpoint\",\"owner\":\"world.Appliance.Checkpoint\",\"versioning\":\"header\",\"expected_count\":6,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_checkpoint_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_checkpoint_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
             "    {\"id\":\"world_capsule_image\",\"owner\":\"world.Capsule.Image\",\"versioning\":\"header\",\"expected_count\":6,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_capsule_image_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_capsule_image_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
             "    {\"id\":\"world_appliance_host_request_batch\",\"owner\":\"world.Appliance.encodeHostRequestsImageOwned\",\"versioning\":\"member-versioned-container\",\"expected_count\":1,\"container_count_offset\":0,\"expected_member_count\":1,\"member_header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_host_request_format_version\",\"offset\":8,\"value\":4},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_host_request_fingerprint_version\",\"offset\":12,\"value\":4}]},\n" ++

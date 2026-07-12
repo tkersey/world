@@ -2,6 +2,11 @@ case_id: active-provider-restore
 owner_surface: Capsule/Runspace/Fabric
 fixture_provenance: synthetic-owner-state
 restore_accepted: true
+restore_evidence_scope: metadata_relocation_only
+restore_warning: metadata_only
+require_local_permit: false
+require_link_match: false
+receiver_authority_claimed: false
 restored_route_count: 1
 restored_invocation_count: 1
 provider_completed: true

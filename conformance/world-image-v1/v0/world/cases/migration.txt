@@ -4,6 +4,11 @@ fixture_provenance: synthetic-owner-state
 source_destroyed: true
 receiver_fresh_instance: true
 restore_accepted: true
+migration_evidence_scope: metadata_relocation_only
+restore_warning: metadata_only
+require_local_permit: false
+require_link_match: false
+receiver_authority_claimed: false
 source_capsule_fingerprint: 0xb6c19c0f5a2567cf
 migrated_capsule_fingerprint: 0xfe86504e1b883260
 completed_after_migration: true

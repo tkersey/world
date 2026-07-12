@@ -3,11 +3,12 @@ owner_surface: Appliance/TurnClosure
 result_transport_owner: Wire.TurnInput
 effect_call_count: 1
 result_persisted_before_step: true
+fresh_runtime_count: 2
+fresh_runtimes_restored_from_authoritative_parent: true
+identical_turn_input_resubmitted: true
+persisted_resolution_input_reused: true
 first_retry_output_byte_equal: true
 first_retry_closure_byte_equal: true
-cold_restore_output_validated: true
-cold_restore_closure_validated: true
-cold_restore_normalized_semantics_equal: true
-cold_restore_completed: true
+wire_restore_equivalence_claimed: false
 parent_closure_fingerprint: 0x142593842854e053
 result_closure_fingerprint: 0x275c2c4d4402c204

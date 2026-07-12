@@ -101,6 +101,54 @@ fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
 }
 
+const world_transition_oracle_source_paths = [_][]const u8{
+    "build.zig",
+    "build.zig.zon",
+    "examples/world_appliance_common.zig",
+    "examples/world_transition_oracle_emit.zig",
+    "examples/world_universal_appliance_wasm.zig",
+    "scripts/world_transition_oracle.mjs",
+    "src/appliance.zig",
+    "src/archive.zig",
+    "src/executable.zig",
+    "src/linker.zig",
+    "src/protocol.zig",
+    "src/world.zig",
+    "test/fixtures.zig",
+};
+
+fn worldTransitionOracleSourceClosureModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const files = b.addWriteFiles();
+    var root_source: std.ArrayList(u8) = .empty;
+    root_source.appendSlice(
+        b.allocator,
+        "pub const Source = struct {\n" ++
+            "    path: []const u8,\n" ++
+            "    bytes: []const u8,\n" ++
+            "};\n" ++
+            "pub const sources = [_]Source{\n",
+    ) catch @panic("oom");
+    for (world_transition_oracle_source_paths) |path| {
+        _ = files.addCopyFile(b.path(path), path);
+        root_source.print(
+            b.allocator,
+            "    .{{ .path = \"{f}\", .bytes = @embedFile(\"{f}\") }},\n",
+            .{ std.zig.fmtString(path), std.zig.fmtString(path) },
+        ) catch @panic("oom");
+    }
+    root_source.appendSlice(b.allocator, "};\n") catch @panic("oom");
+    const root = files.add("world_transition_oracle_source_closure.zig", root_source.items);
+    return b.createModule(.{
+        .root_source_file = root,
+        .target = target,
+        .optimize = optimize,
+    });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const validation_target = if (target.result.os.tag == .freestanding) b.graph.host else target;
@@ -332,6 +380,7 @@ pub fn build(b: *std.Build) void {
     check_world_agent_runtime_artifacts_step.dependOn(&check_world_agent_runtime_artifacts_cmd.step);
 
     const world_image_v1_transition_oracle_dir = "conformance/world-image-v1/v0/world";
+    const world_transition_oracle_source_closure = worldTransitionOracleSourceClosureModule(b, b.graph.host, optimize);
     const world_transition_oracle_mod = b.createModule(.{
         .root_source_file = b.path("examples/world_transition_oracle_emit.zig"),
         .target = b.graph.host,
@@ -340,6 +389,7 @@ pub fn build(b: *std.Build) void {
     world_transition_oracle_mod.addImport("boundary", host_boundary);
     world_transition_oracle_mod.addImport("world", host_world);
     world_transition_oracle_mod.addImport("world_fixtures", host_fixtures);
+    world_transition_oracle_mod.addImport("world_transition_oracle_sources", world_transition_oracle_source_closure);
     const world_transition_oracle_exe = b.addExecutable(.{
         .name = "world-transition-oracle-emit",
         .root_module = world_transition_oracle_mod,
@@ -352,6 +402,7 @@ pub fn build(b: *std.Build) void {
     world_transition_oracle_test_mod.addImport("boundary", host_boundary);
     world_transition_oracle_test_mod.addImport("world", host_world);
     world_transition_oracle_test_mod.addImport("world_fixtures", host_fixtures);
+    world_transition_oracle_test_mod.addImport("world_transition_oracle_sources", world_transition_oracle_source_closure);
     const world_transition_oracle_tests = b.addTest(.{ .root_module = world_transition_oracle_test_mod });
     const run_world_transition_oracle_tests = b.addRunArtifact(world_transition_oracle_tests);
 
@@ -408,6 +459,9 @@ pub fn build(b: *std.Build) void {
     const check_world_transition_oracle_source_identity = b.addSystemCommand(&.{"node"});
     check_world_transition_oracle_source_identity.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
     check_world_transition_oracle_source_identity.addArgs(&.{ "--mode", "self-test-generator-source" });
+    const check_world_transition_oracle_checksum_inventory = b.addSystemCommand(&.{"node"});
+    check_world_transition_oracle_checksum_inventory.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
+    check_world_transition_oracle_checksum_inventory.addArgs(&.{ "--mode", "self-test-checksum-inventory" });
     const check_world_transition_oracle_step = b.step(
         "check-world-image-v1-transition-oracle",
         "Check deterministic exact World Image v1 transition oracle bytes.",
@@ -415,6 +469,7 @@ pub fn build(b: *std.Build) void {
     check_world_transition_oracle_step.dependOn(&compare_world_transition_oracles.step);
     check_world_transition_oracle_step.dependOn(&check_world_transition_oracle_root_symlink.step);
     check_world_transition_oracle_step.dependOn(&check_world_transition_oracle_source_identity.step);
+    check_world_transition_oracle_step.dependOn(&check_world_transition_oracle_checksum_inventory.step);
     check_world_transition_oracle_step.dependOn(&run_world_transition_oracle_tests.step);
 
     const world_transition_oracle_emit_dir = b.pathFromRoot(
