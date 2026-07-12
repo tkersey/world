@@ -134,9 +134,12 @@ const requiredTranscriptFacts = {
     'wrong_target_result_status: unknown_request',
     'duplicate_result_status: invalid_command',
     'stale_result_status: stale_turn',
-    'state_unchanged_after_wrong_result: true',
-    'state_unchanged_after_duplicate_result: true',
-    'state_unchanged_after_stale_result: true',
+    'semantic_state_unchanged_after_wrong_result: true',
+    'semantic_state_unchanged_after_duplicate_result: true',
+    'semantic_state_unchanged_after_stale_result: true',
+    'diagnostic_error_published_after_wrong_result: true',
+    'diagnostic_error_published_after_duplicate_result: true',
+    'diagnostic_error_published_after_stale_result: true',
   ],
 };
 
@@ -238,14 +241,9 @@ const generatorSourceFiles = [
   'src/world.zig',
   'test/fixtures.zig',
 ];
-const generatorSourceSrcFiles = [
-  'appliance.zig',
-  'archive.zig',
-  'executable.zig',
-  'linker.zig',
-  'protocol.zig',
-  'world.zig',
-];
+const generatorSourceSrcFiles = generatorSourceFiles
+  .filter((path) => path.startsWith('src/'))
+  .map((path) => path.slice('src/'.length));
 
 const expectedBinaryFamilyPolicy = {
   scope: 'exhaustive-top-level-binary-artifacts',
@@ -442,7 +440,7 @@ const binaryFamilyMatchers = {
   world_appliance_root_result_value_image: [/^artifacts\/results\/[^/]+\.root-result$/],
 };
 
-const expectedBoundaryPackageHash = boundaryPackageHashFromZon();
+const expectedBoundaryPackage = rootBoundaryPackage();
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -560,6 +558,29 @@ function testPackageVersionProjection() {
   }`;
   assertEqual(packageVersionFromZon(zon), '1.2.3', 'commented package version projection');
   assertEqual(packageVersionFromZon('.{ .version = "2.0.0", }'), '2.0.0', 'inline package version projection');
+
+  const dependencyZon = `.{
+    .dependencies = .{
+      .boundary = .{
+        // selected package owner
+        .url = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz",
+        .hash = "boundary-1.2.3-fixture",
+      },
+    },
+  }`;
+  const boundaryPackage = boundaryPackageFromZon(dependencyZon);
+  assertEqual(boundaryPackage.version, '1.2.3', 'Boundary dependency version projection');
+  assertEqual(boundaryPackage.hash, 'boundary-1.2.3-fixture', 'Boundary dependency hash projection');
+
+  try {
+    boundaryPackageFromZon(
+      dependencyZon.replace('v1.2.3.tar.gz', 'v1.2.4.tar.gz'),
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Boundary dependency URL/hash version mismatch') return;
+    throw error;
+  }
+  throw new Error('Boundary dependency URL/hash version mismatch accepted');
 }
 
 function rootPackageVersion() {
@@ -588,10 +609,14 @@ function validateCorpus(root, expectedZigVersion) {
     'b2bd776125bc17215916e2a48bc7102a861788db',
     'manifest.semantic_source.baseline_tree',
   );
-  assertEqual(manifest.semantic_source?.boundary_package, '0.6.2', 'manifest.semantic_source.boundary_package');
+  assertEqual(
+    manifest.semantic_source?.boundary_package,
+    expectedBoundaryPackage.version,
+    'manifest.semantic_source.boundary_package',
+  );
   assertEqual(
     manifest.semantic_source?.boundary_package_hash,
-    expectedBoundaryPackageHash,
+    expectedBoundaryPackage.hash,
     'manifest.semantic_source.boundary_package_hash',
   );
   assertEqual(
@@ -732,13 +757,41 @@ function validateChecksums(root, checksumText, expectedPaths, read = readFileSyn
   }
 }
 
-function boundaryPackageHashFromZon() {
-  const zon = readFileSync(new URL('../build.zig.zon', import.meta.url), 'utf8');
-  const boundaryDependency = /\.boundary\s*=\s*\.\{([\s\S]*?)\n\s*\},/.exec(zon);
-  if (!boundaryDependency) throw new Error('missing .boundary dependency in build.zig.zon');
-  const hash = /\.hash\s*=\s*"([^"]+)"/.exec(boundaryDependency[1]);
-  if (!hash) throw new Error('missing .boundary.hash in build.zig.zon');
-  return hash[1];
+function rootBoundaryPackage() {
+  return boundaryPackageFromZon(readFileSync(new URL('../build.zig.zon', import.meta.url), 'utf8'));
+}
+
+function boundaryPackageFromZon(zon) {
+  const source = zonWithoutComments(zon);
+  const dependencyMatches = [
+    ...source.matchAll(/(?:^|[,{])\s*\.boundary\s*=\s*\.\{([^{}]*)\}\s*,/g),
+  ];
+  if (dependencyMatches.length !== 1) {
+    throw new Error(`expected exactly one .boundary dependency, got ${dependencyMatches.length}`);
+  }
+  const body = dependencyMatches[0][1];
+  const url = zonStringField(body, 'url', '.boundary.url');
+  const hash = zonStringField(body, 'hash', '.boundary.hash');
+  const urlPrefix = 'https://github.com/tkersey/boundary/archive/refs/tags/v';
+  const urlSuffix = '.tar.gz';
+  if (!url.startsWith(urlPrefix) || !url.endsWith(urlSuffix)) {
+    throw new Error('unsupported Boundary dependency URL');
+  }
+  const version = url.slice(urlPrefix.length, -urlSuffix.length);
+  if (version.length === 0 || version.includes('/')) throw new Error('invalid Boundary dependency version');
+  const hashPrefix = `boundary-${version}-`;
+  if (!hash.startsWith(hashPrefix) || hash.length === hashPrefix.length) {
+    throw new Error('Boundary dependency URL/hash version mismatch');
+  }
+  return { version, hash };
+}
+
+function zonStringField(body, field, label) {
+  const matches = [
+    ...body.matchAll(new RegExp(`(?:^|,)\\s*\\.${field}\\s*=\\s*"([^"\\\\\\r\\n]+)"\\s*,`, 'g')),
+  ];
+  if (matches.length !== 1) throw new Error(`expected exactly one ${label}, got ${matches.length}`);
+  return matches[0][1];
 }
 
 function canonicalSourceBytes(bytes, path) {

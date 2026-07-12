@@ -12,7 +12,7 @@
     "generator_source_identity": {
       "algorithm": "sha256-domain-u32le-path-u64le-canonical-lf-bytes-v1",
       "normalization": "crlf-to-lf;bare-cr-reject",
-      "sha256": "13bd4f41e44e48c572494b3e4183d55a232b79aec7d97f39dabadbe3fde0dcce",
+      "sha256": "55e5c1f75134516ac9e669227fb5cfbe709d2f41c081f49cb01cbf55e88db014",
       "files": ["build.zig","build.zig.zon","examples/world_appliance_common.zig","examples/world_transition_oracle_emit.zig","examples/world_universal_appliance_wasm.zig","scripts/world_transition_oracle.mjs","src/appliance.zig","src/archive.zig","src/executable.zig","src/linker.zig","src/protocol.zig","src/world.zig","test/fixtures.zig"]
     },
     "version_fields_scope": "selected-compatibility-cut-lines",
@@ -73,7 +73,7 @@
     {"id":"capacity-exhaustion","transcript":"cases/capacity-exhaustion.txt"},
     {"id":"malformed-records","transcript":"cases/malformed-records.txt"}
   ],
-  "artifact_set_sha256": "532c36a5c9fdd984e70aa273773806cd8c6fbf8693508be4094e8687f087c016",
+  "artifact_set_sha256": "7d06faffb2bb0f10b89a16c3ad1dc02925bcc385858d9b32ce812e2e05baabe6",
   "artifact_count": 77,
   "artifacts": [
     {"path":"artifacts/effects/active-provider.external.request-frame","length":113,"sha256":"ca2ee9bc6ddd84c07493fe319255f1a90c8d90433034ce3376b191dcc66c39fb"},
@@ -147,7 +147,7 @@
     {"path":"cases/deterministic-failure.txt","length":555,"sha256":"9135035646fb0d1715c43286eab9e01878cbfc4ab263679f6468f8de2a39dbc6"},
     {"path":"cases/internal-provider-execution.txt","length":269,"sha256":"709a5447343acf5b506fb2279f42f9ca05354315a58b7137baf8eb22961fa852"},
     {"path":"cases/lost-output-retry.txt","length":524,"sha256":"c6187a428dfdab6f175b433dfa3a77dda41955a0c06b103b2daea0dcc4c8668a"},
-    {"path":"cases/malformed-records.txt","length":514,"sha256":"84d034c80f0dc46519a93264ba208679477bd6fc5a823fb06e52dda3f1092e99"},
+    {"path":"cases/malformed-records.txt","length":701,"sha256":"7ef23cc205ff6241a6892ad19a48ba2d30f9532ed5edc9a6e0cd5d8f2f5d9e04"},
     {"path":"cases/migration.txt","length":601,"sha256":"55910a083a1e9ae27580ae29fbe468a58130e9dd4b98dae141fc04b45debfacd"},
     {"path":"cases/one-port-execution.txt","length":329,"sha256":"703afa768560e5714cea3d1b1ed6f9edcf625e2eb9d80daeac008a6aa0441ea1"},
     {"path":"cases/partial-response-batch.txt","length":382,"sha256":"3ce399277f8443dcb34c2226b6c3fb436ccc26a9802a0f1e20ef0b61567f74e4"},

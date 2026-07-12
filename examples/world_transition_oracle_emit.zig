@@ -81,14 +81,6 @@ const generator_source_files = [_][]const u8{
     "src/world.zig",
     "test/fixtures.zig",
 };
-const generator_source_src_files = [_][]const u8{
-    "appliance.zig",
-    "archive.zig",
-    "executable.zig",
-    "linker.zig",
-    "protocol.zig",
-    "world.zig",
-};
 const compiled_generator_sources = world_transition_oracle_sources.sources;
 
 comptime {
@@ -129,6 +121,71 @@ fn compiledPackageVersion(allocator: std.mem.Allocator) ![]const u8 {
     return packageVersionFromZon(allocator, try compiledGeneratorSourceBytes("build.zig.zon"));
 }
 
+const BoundaryDependencyProjection = struct {
+    url: []const u8,
+    hash: []const u8,
+};
+
+const BoundaryPackageManifestProjection = struct {
+    dependencies: struct {
+        boundary: BoundaryDependencyProjection,
+    },
+};
+
+const BoundaryPackage = struct {
+    version: []u8,
+    hash: []u8,
+
+    fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        allocator.free(self.version);
+        allocator.free(self.hash);
+        self.* = undefined;
+    }
+};
+
+fn boundaryPackageFromZon(allocator: std.mem.Allocator, zon_bytes: []const u8) !BoundaryPackage {
+    const source = try allocator.dupeZ(u8, zon_bytes);
+    defer allocator.free(source);
+    const projection = std.zon.parse.fromSliceAlloc(
+        BoundaryPackageManifestProjection,
+        allocator,
+        source,
+        null,
+        .{ .ignore_unknown_fields = true },
+    ) catch return error.InvalidPackageManifest;
+    defer std.zon.parse.free(allocator, projection);
+
+    const url_prefix = "https://github.com/tkersey/boundary/archive/refs/tags/v";
+    const url_suffix = ".tar.gz";
+    if (!std.mem.startsWith(u8, projection.dependencies.boundary.url, url_prefix) or
+        !std.mem.endsWith(u8, projection.dependencies.boundary.url, url_suffix))
+    {
+        return error.InvalidBoundaryPackageIdentity;
+    }
+    const version_end = projection.dependencies.boundary.url.len - url_suffix.len;
+    if (version_end <= url_prefix.len) return error.InvalidBoundaryPackageIdentity;
+    const version = projection.dependencies.boundary.url[url_prefix.len..version_end];
+    if (std.mem.indexOfScalar(u8, version, '/') != null) return error.InvalidBoundaryPackageIdentity;
+    const hash_prefix = try std.fmt.allocPrint(allocator, "boundary-{s}-", .{version});
+    defer allocator.free(hash_prefix);
+    if (!std.mem.startsWith(u8, projection.dependencies.boundary.hash, hash_prefix) or
+        projection.dependencies.boundary.hash.len == hash_prefix.len)
+    {
+        return error.InvalidBoundaryPackageIdentity;
+    }
+
+    const owned_version = try allocator.dupe(u8, version);
+    errdefer allocator.free(owned_version);
+    return .{
+        .version = owned_version,
+        .hash = try allocator.dupe(u8, projection.dependencies.boundary.hash),
+    };
+}
+
+fn compiledBoundaryPackage(allocator: std.mem.Allocator) !BoundaryPackage {
+    return boundaryPackageFromZon(allocator, try compiledGeneratorSourceBytes("build.zig.zon"));
+}
+
 test "package version projection accepts valid ZON whitespace and comments" {
     const zon =
         \\.{
@@ -141,6 +198,40 @@ test "package version projection accepts valid ZON whitespace and comments" {
     const version = try packageVersionFromZon(std.testing.allocator, zon);
     defer std.testing.allocator.free(version);
     try std.testing.expectEqualStrings("1.2.3", version);
+}
+
+test "boundary dependency provenance projects one pinned package owner" {
+    const zon =
+        \\.{
+        \\    .name = .world,
+        \\    .dependencies = .{
+        \\        .boundary = .{
+        \\            // selected package owner
+        \\            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz",
+        \\            .hash = "boundary-1.2.3-fixture",
+        \\        },
+        \\    },
+        \\}
+    ;
+    var package = try boundaryPackageFromZon(std.testing.allocator, zon);
+    defer package.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("1.2.3", package.version);
+    try std.testing.expectEqualStrings("boundary-1.2.3-fixture", package.hash);
+
+    const mismatched =
+        \\.{
+        \\    .dependencies = .{
+        \\        .boundary = .{
+        \\            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.4.tar.gz",
+        \\            .hash = "boundary-1.2.3-fixture",
+        \\        },
+        \\    },
+        \\}
+    ;
+    try std.testing.expectError(
+        error.InvalidBoundaryPackageIdentity,
+        boundaryPackageFromZon(std.testing.allocator, mismatched),
+    );
 }
 
 const Writer = struct {
@@ -1603,6 +1694,10 @@ fn nativeSemanticSnapshotEqual(lhs: NativeSemanticSnapshot, rhs: NativeSemanticS
         std.mem.eql(u8, lhs.closure_bytes, rhs.closure_bytes);
 }
 
+fn requireDiagnosticPublishedAfterReject(before_error_len: usize, native: *world.Appliance.Native) !void {
+    if (before_error_len != 0 or native.lastErrorLen() == 0) return error.MissingRejectedSubmissionDiagnostic;
+}
+
 test "effective outstanding requests include the legacy singular fallback" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1701,8 +1796,10 @@ fn emitMalformed(allocator: std.mem.Allocator, writer: *Writer) !void {
     const wrong_input_bytes = try wrong_input.encode(allocator);
     try writer.write("artifacts/malformed/result.wrong-target.turn-input", wrong_input_bytes);
     const before_wrong = try captureNativeSemanticSnapshot(allocator, &native);
+    const before_wrong_error_len = native.lastErrorLen();
     const wrong_status = native.submitTurn(wrong_input_bytes);
     if (wrong_status == .completed or wrong_status == .needs_host or wrong_status == .failed) return error.MalformedResultAccepted;
+    try requireDiagnosticPublishedAfterReject(before_wrong_error_len, &native);
     const after_wrong = try captureNativeSemanticSnapshot(allocator, &native);
     if (!nativeSemanticSnapshotEqual(before_wrong, after_wrong)) return error.PartialSemanticMutation;
 
@@ -1739,8 +1836,10 @@ fn emitMalformed(allocator: std.mem.Allocator, writer: *Writer) !void {
     var duplicate_native = try nativeFromClosure(allocator, manifest, capacity, executable_image_fingerprint, parent.closure_bytes);
     defer duplicate_native.deinit();
     const before_duplicate = try captureNativeSemanticSnapshot(allocator, &duplicate_native);
+    const before_duplicate_error_len = duplicate_native.lastErrorLen();
     const duplicate_status = duplicate_native.submitTurn(duplicate_input_bytes);
     if (duplicate_status == .completed or duplicate_status == .needs_host or duplicate_status == .failed) return error.DuplicateResultAccepted;
+    try requireDiagnosticPublishedAfterReject(before_duplicate_error_len, &duplicate_native);
     const after_duplicate = try captureNativeSemanticSnapshot(allocator, &duplicate_native);
     if (!nativeSemanticSnapshotEqual(before_duplicate, after_duplicate)) return error.PartialSemanticMutation;
 
@@ -1774,8 +1873,10 @@ fn emitMalformed(allocator: std.mem.Allocator, writer: *Writer) !void {
     try writer.write("artifacts/malformed/result.stale-replay.turn-input", stale_input_bytes);
     if (stale_native.submitTurn(stale_input_bytes) != .completed) return error.ExpectedCompleted;
     const before_stale = try captureNativeSemanticSnapshot(allocator, &stale_native);
+    const before_stale_error_len = stale_native.lastErrorLen();
     const stale_status = stale_native.submitTurn(stale_input_bytes);
     if (stale_status == .completed or stale_status == .needs_host or stale_status == .failed) return error.StaleResultAccepted;
+    try requireDiagnosticPublishedAfterReject(before_stale_error_len, &stale_native);
     const after_stale = try captureNativeSemanticSnapshot(allocator, &stale_native);
     if (!nativeSemanticSnapshotEqual(before_stale, after_stale)) return error.PartialSemanticMutation;
 
@@ -1789,9 +1890,12 @@ fn emitMalformed(allocator: std.mem.Allocator, writer: *Writer) !void {
             "duplicate_result_status: {s}\n" ++
             "duplicate_preflight_error: {s}\n" ++
             "stale_result_status: {s}\n" ++
-            "state_unchanged_after_wrong_result: true\n" ++
-            "state_unchanged_after_duplicate_result: true\n" ++
-            "state_unchanged_after_stale_result: true\n" ++
+            "semantic_state_unchanged_after_wrong_result: true\n" ++
+            "semantic_state_unchanged_after_duplicate_result: true\n" ++
+            "semantic_state_unchanged_after_stale_result: true\n" ++
+            "diagnostic_error_published_after_wrong_result: true\n" ++
+            "diagnostic_error_published_after_duplicate_result: true\n" ++
+            "diagnostic_error_published_after_stale_result: true\n" ++
             "partial_transition_published: false\n",
         .{
             @errorName(image_error.?),
@@ -2286,6 +2390,21 @@ fn canonicalSourceBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return canonical.toOwnedSlice(allocator);
 }
 
+fn validateGeneratorSourceSrcInventory(actual_src_files: []const []u8) !void {
+    const src_prefix = "src/";
+    var actual_index: usize = 0;
+    for (generator_source_files) |relative_path| {
+        if (!std.mem.startsWith(u8, relative_path, src_prefix)) continue;
+        if (actual_index >= actual_src_files.len or
+            !std.mem.eql(u8, relative_path[src_prefix.len..], actual_src_files[actual_index]))
+        {
+            return error.InvalidGeneratorSourceInventory;
+        }
+        actual_index += 1;
+    }
+    if (actual_index != actual_src_files.len) return error.InvalidGeneratorSourceInventory;
+}
+
 fn generatorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root: []const u8) ![32]u8 {
     var source_dir = try std.Io.Dir.cwd().openDir(io, source_root, .{ .follow_symlinks = true, .iterate = true });
     defer source_dir.close(io);
@@ -2293,10 +2412,7 @@ fn generatorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root
     defer src_dir.close(io);
     var actual_src_files = try listFiles(io, allocator, src_dir);
     defer actual_src_files.deinit();
-    if (actual_src_files.items.len != generator_source_src_files.len) return error.InvalidGeneratorSourceInventory;
-    for (generator_source_src_files, actual_src_files.items) |expected, actual| {
-        if (!std.mem.eql(u8, expected, actual)) return error.InvalidGeneratorSourceInventory;
-    }
+    try validateGeneratorSourceSrcInventory(actual_src_files.items);
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update(generator_source_identity_domain);
@@ -2430,6 +2546,8 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
     const generator_source_identity_hex = digestHex(generator_source_identity);
     const package_version = try compiledPackageVersion(allocator);
     defer allocator.free(package_version);
+    var boundary_package = try compiledBoundaryPackage(allocator);
+    defer boundary_package.deinit(allocator);
 
     var manifest: std.ArrayList(u8) = .empty;
     try manifest.print(
@@ -2442,9 +2560,9 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
             "    \"package_version\": \"{s}\",\n" ++
             "    \"baseline_commit\": \"969f23f6bad87ca9d535d92d62b6418612891699\",\n" ++
             "    \"baseline_tree\": \"b2bd776125bc17215916e2a48bc7102a861788db\",\n" ++
-            "    \"boundary_package\": \"0.6.2\",\n" ++
-            "    \"boundary_package_hash\": \"boundary-0.6.2-flclaA4FhQCQL_ODFaXPP7HtNOn21toNs6rc14-cQqYJ\",\n",
-        .{package_version},
+            "    \"boundary_package\": \"{s}\",\n" ++
+            "    \"boundary_package_hash\": \"{s}\",\n",
+        .{ package_version, boundary_package.version, boundary_package.hash },
     );
     try manifest.print(
         allocator,

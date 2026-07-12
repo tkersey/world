@@ -69,10 +69,10 @@ e6f4067fd5fd82e6bb7f1737d6eff242ccb3b3e8e597edda0cb5d5ed5b375c11  conformance/wo
 9135035646fb0d1715c43286eab9e01878cbfc4ab263679f6468f8de2a39dbc6  conformance/world-image-v1/v0/world/cases/deterministic-failure.txt
 709a5447343acf5b506fb2279f42f9ca05354315a58b7137baf8eb22961fa852  conformance/world-image-v1/v0/world/cases/internal-provider-execution.txt
 c6187a428dfdab6f175b433dfa3a77dda41955a0c06b103b2daea0dcc4c8668a  conformance/world-image-v1/v0/world/cases/lost-output-retry.txt
-84d034c80f0dc46519a93264ba208679477bd6fc5a823fb06e52dda3f1092e99  conformance/world-image-v1/v0/world/cases/malformed-records.txt
+7ef23cc205ff6241a6892ad19a48ba2d30f9532ed5edc9a6e0cd5d8f2f5d9e04  conformance/world-image-v1/v0/world/cases/malformed-records.txt
 55910a083a1e9ae27580ae29fbe468a58130e9dd4b98dae141fc04b45debfacd  conformance/world-image-v1/v0/world/cases/migration.txt
 703afa768560e5714cea3d1b1ed6f9edcf625e2eb9d80daeac008a6aa0441ea1  conformance/world-image-v1/v0/world/cases/one-port-execution.txt
 3ce399277f8443dcb34c2226b6c3fb436ccc26a9802a0f1e20ef0b61567f74e4  conformance/world-image-v1/v0/world/cases/partial-response-batch.txt
 9699118dda6b0369c80145629f293afdf7ddf00ad6b69b70b4b932d0110200c4  conformance/world-image-v1/v0/world/cases/provider-parked-externally.txt
 df66f4b958f274b1a1661a39be4a70d2b8d29ba3bfa2ebcd25277a4a42959520  conformance/world-image-v1/v0/world/cases/replay-without-fresh-effect.txt
-5b3f8278029bfe0928a07b9fbaa7a3bff572b08d2e0b59a42930c1bafac6ada8  conformance/world-image-v1/v0/world/manifest.json
+883e4cb04b42e8ce4aabdeb57540d6047128787a2e1191b97a006dc01f5650f2  conformance/world-image-v1/v0/world/manifest.json
