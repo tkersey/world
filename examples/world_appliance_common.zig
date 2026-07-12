@@ -131,6 +131,13 @@ fn responseFingerprintBytes(response_fingerprint: u64) [@sizeOf(u64)]u8 {
     return bytes;
 }
 
+comptime {
+    const bytes = responseFingerprintBytes(0x0102_0304_0506_0708);
+    if (!std.mem.eql(u8, &bytes, &.{ 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01 })) {
+        @compileError("response fingerprints must use canonical little-endian bytes");
+    }
+}
+
 pub fn hostReplyFor(request: world.Appliance.HostRequest, response_fingerprint: u64) world.Appliance.HostReply {
     const HostReplyResponse = struct {
         bytes: []const u8,
@@ -258,9 +265,4 @@ pub fn wireResolutionFor(
         .attempt_number = 1,
         .metadata = "fixture-resolution",
     });
-}
-
-test "response fingerprint bytes are canonical little endian" {
-    const bytes = responseFingerprintBytes(0x0102_0304_0506_0708);
-    try std.testing.expectEqualSlices(u8, &.{ 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01 }, &bytes);
 }
