@@ -397,11 +397,15 @@ pub fn build(b: *std.Build) void {
     compare_world_transition_oracles.addDirectoryArg(world_transition_oracle_b_dir);
     compare_world_transition_oracles.step.dependOn(&generate_world_transition_oracle_a.step);
     compare_world_transition_oracles.step.dependOn(&generate_world_transition_oracle_b.step);
+    const check_world_transition_oracle_root_symlink = b.addSystemCommand(&.{"node"});
+    check_world_transition_oracle_root_symlink.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
+    check_world_transition_oracle_root_symlink.addArgs(&.{ "--mode", "self-test-root-symlink" });
     const check_world_transition_oracle_step = b.step(
         "check-world-image-v1-transition-oracle",
         "Check deterministic exact World Image v1 transition oracle bytes.",
     );
     check_world_transition_oracle_step.dependOn(&compare_world_transition_oracles.step);
+    check_world_transition_oracle_step.dependOn(&check_world_transition_oracle_root_symlink.step);
     check_world_transition_oracle_step.dependOn(&run_world_transition_oracle_tests.step);
 
     const world_transition_oracle_emit_dir = b.pathFromRoot(

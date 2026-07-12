@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative, resolve, sep } from 'node:path';
 
 const expectedCases = [
   'one-port-execution',
@@ -219,6 +220,8 @@ if (args.mode === 'compare') {
 } else if (args.mode === 'check') {
   requireArg(args.expected, '--expected');
   validateCorpus(args.expected);
+} else if (args.mode === 'self-test-root-symlink') {
+  testRootSymlinkRejection();
 } else {
   throw new Error(`unsupported --mode ${String(args.mode)}`);
 }
@@ -399,11 +402,43 @@ function compareTrees(expectedRoot, actualRoot, label) {
 }
 
 function listFiles(root) {
-  if (!statSync(root).isDirectory()) throw new Error(`not a directory: ${root}`);
+  const inspectedRoot = resolve(root);
+  if (!lstatSync(inspectedRoot).isDirectory()) throw new Error(`not a directory: ${root}`);
   const files = [];
-  walk(root, root, files);
+  walk(inspectedRoot, inspectedRoot, files);
   files.sort(compareAscii);
   return files;
+}
+
+function testRootSymlinkRejection() {
+  if (process.platform === 'win32') return;
+
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'world-oracle-root-symlink-'));
+  try {
+    const realParent = join(temporaryRoot, 'real-parent');
+    const realCorpus = join(realParent, 'corpus');
+    const linkedCorpus = join(temporaryRoot, 'corpus-link');
+    const linkedParent = join(temporaryRoot, 'parent-link');
+    mkdirSync(realCorpus, { recursive: true });
+    symlinkSync(realCorpus, linkedCorpus, 'dir');
+    symlinkSync(realParent, linkedParent, 'dir');
+
+    expectRootRejected(linkedCorpus);
+    expectRootRejected(`${linkedCorpus}${sep}`);
+    assertArrayEqual(listFiles(join(linkedParent, 'corpus')), [], 'symlinked ancestor inventory');
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+function expectRootRejected(root) {
+  try {
+    listFiles(root);
+  } catch (error) {
+    if (error instanceof Error && error.message === `not a directory: ${root}`) return;
+    throw error;
+  }
+  throw new Error(`symlinked corpus root accepted: ${root}`);
 }
 
 function walk(root, current, files) {
