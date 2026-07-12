@@ -164,6 +164,9 @@ pub fn main(init: std.process.Init) !void {
         if (world.world_appliance_turn_closure_format_version != 1) @compileError("update World Image v1 oracle TurnClosure format binding");
         if (world.Archive.world_archive_format_version != 1) @compileError("update World Image v1 oracle Archive format binding");
         if (world.world_appliance_abi_version != 4) @compileError("update World Image v1 oracle Appliance ABI binding");
+        if (world.world_appliance_command_format_version != 1) @compileError("update World Image v1 oracle Appliance Command format binding");
+        if (world.world_appliance_wire_turn_input_format_version != 2) @compileError("update World Image v1 oracle Wire.TurnInput format binding");
+        if (world.world_appliance_wire_resolution_input_format_version != 1) @compileError("update World Image v1 oracle Wire.ResolutionInput format binding");
     }
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1162,7 +1165,13 @@ fn emitCapacityExhaustion(allocator: std.mem.Allocator, writer: *Writer) !void {
     if (core.state != .uninitialized or core.current_turn_sequence_number != 0 or core.previous_turn_receipt_fingerprint != null) {
         return error.PartialSemanticMutation;
     }
-    if (core.outstanding_host_request != null or core.readOutput().len != 0 or core.pending_command == null) return error.PartialSemanticMutation;
+    if (core.outstanding_host_requests.len != 0 or
+        core.outstanding_host_request != null or
+        core.readOutput().len != 0 or
+        core.pending_command == null)
+    {
+        return error.PartialSemanticMutation;
+    }
     const state_snapshot = "core_state=uninitialized\nturn_sequence_number=0\nprevious_turn_receipt=null\noutstanding_host_request=null\noutput_bytes=0\npending_command_preserved=true\n";
     try writer.write("artifacts/states/capacity-exhaustion.after.txt", state_snapshot);
     const case_transcript = try std.fmt.allocPrint(
@@ -1200,7 +1209,7 @@ const NativeSemanticSnapshot = struct {
 
 fn captureNativeSemanticSnapshot(allocator: std.mem.Allocator, native: *world.Appliance.Native) !NativeSemanticSnapshot {
     var requests: std.ArrayList(u8) = .empty;
-    for (native.core.outstanding_host_requests) |request| {
+    for (effectiveOutstandingHostRequests(&native.core)) |request| {
         var encoded: std.ArrayList(u8) = .empty;
         try request.encode(&encoded, allocator);
         var length_bytes = [_]u8{0} ** 8;
@@ -1227,6 +1236,12 @@ fn captureNativeSemanticSnapshot(allocator: std.mem.Allocator, native: *world.Ap
     };
 }
 
+fn effectiveOutstandingHostRequests(core: *const world.Appliance.Core) []const world.Appliance.HostRequest {
+    if (core.outstanding_host_requests.len != 0) return core.outstanding_host_requests;
+    if (core.outstanding_host_request) |*request| return request[0..1];
+    return &.{};
+}
+
 fn nativeSemanticSnapshotEqual(lhs: NativeSemanticSnapshot, rhs: NativeSemanticSnapshot) bool {
     return lhs.state == rhs.state and
         lhs.sequence == rhs.sequence and
@@ -1243,6 +1258,28 @@ fn nativeSemanticSnapshotEqual(lhs: NativeSemanticSnapshot, rhs: NativeSemanticS
         std.mem.eql(u8, lhs.outstanding_request_bytes, rhs.outstanding_request_bytes) and
         std.mem.eql(u8, lhs.output_bytes, rhs.output_bytes) and
         std.mem.eql(u8, lhs.closure_bytes, rhs.closure_bytes);
+}
+
+test "effective outstanding requests include the legacy singular fallback" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const manifest = common.PortsAppliance.manifest();
+    const capacity = world.Appliance.Capacity.tiny_one_port;
+    const executable_image_fingerprint: u64 = 0xA10C_0000_0000_1001;
+    var parent = try makeRetryParent(allocator, manifest, capacity, executable_image_fingerprint);
+    defer parent.closure.deinit(allocator);
+    var native = try nativeFromClosure(allocator, manifest, capacity, executable_image_fingerprint, parent.closure_bytes);
+    defer native.deinit();
+
+    const request = native.core.outstanding_host_requests[0];
+    native.core.outstanding_host_requests = &.{};
+    native.core.outstanding_host_requests_owned = false;
+    native.core.outstanding_host_request = request;
+
+    const effective = effectiveOutstandingHostRequests(&native.core);
+    try std.testing.expectEqual(@as(usize, 1), effective.len);
+    try std.testing.expectEqual(request.request_fingerprint, effective[0].request_fingerprint);
 }
 
 fn replaceUniqueU64LittleEndian(bytes: []u8, from: u64, to: u64) !void {
@@ -1821,6 +1858,9 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer) !void {
             "    \"world_turn_closure_format\": 1,\n" ++
             "    \"world_archive_format\": 1,\n" ++
             "    \"world_appliance_abi\": 4,\n" ++
+            "    \"world_appliance_command_format\": 1,\n" ++
+            "    \"world_appliance_wire_turn_input_format\": 2,\n" ++
+            "    \"world_appliance_wire_resolution_input_format\": 1,\n" ++
             "    \"zig_version\": \"0.16.0\"\n" ++
             "  },\n" ++
             "  \"offline_regeneration\": \"requires-preseeded-boundary-package-cache\",\n" ++

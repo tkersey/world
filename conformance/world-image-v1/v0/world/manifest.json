@@ -12,6 +12,9 @@
     "world_turn_closure_format": 1,
     "world_archive_format": 1,
     "world_appliance_abi": 4,
+    "world_appliance_command_format": 1,
+    "world_appliance_wire_turn_input_format": 2,
+    "world_appliance_wire_resolution_input_format": 1,
     "zig_version": "0.16.0"
   },
   "offline_regeneration": "requires-preseeded-boundary-package-cache",
