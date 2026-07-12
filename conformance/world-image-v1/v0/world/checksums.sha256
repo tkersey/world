@@ -75,4 +75,4 @@ c6187a428dfdab6f175b433dfa3a77dda41955a0c06b103b2daea0dcc4c8668a  conformance/wo
 3ce399277f8443dcb34c2226b6c3fb436ccc26a9802a0f1e20ef0b61567f74e4  conformance/world-image-v1/v0/world/cases/partial-response-batch.txt
 9699118dda6b0369c80145629f293afdf7ddf00ad6b69b70b4b932d0110200c4  conformance/world-image-v1/v0/world/cases/provider-parked-externally.txt
 df66f4b958f274b1a1661a39be4a70d2b8d29ba3bfa2ebcd25277a4a42959520  conformance/world-image-v1/v0/world/cases/replay-without-fresh-effect.txt
-0452c55ac529f081d687c7da25f5bcb23d69e2c47542364080b368208dbde65c  conformance/world-image-v1/v0/world/manifest.json
+5b3f8278029bfe0928a07b9fbaa7a3bff572b08d2e0b59a42930c1bafac6ada8  conformance/world-image-v1/v0/world/manifest.json

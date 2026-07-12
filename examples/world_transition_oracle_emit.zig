@@ -102,6 +102,47 @@ comptime {
     }
 }
 
+fn compiledGeneratorSourceBytes(relative_path: []const u8) ![]const u8 {
+    for (compiled_generator_sources) |source| {
+        if (std.mem.eql(u8, source.path, relative_path)) return source.bytes;
+    }
+    return error.MissingCompiledGeneratorSource;
+}
+
+fn packageVersionFromZon(allocator: std.mem.Allocator, zon_bytes: []const u8) ![]const u8 {
+    const source = try allocator.dupeZ(u8, zon_bytes);
+    defer allocator.free(source);
+    const PackageProjection = struct { version: []const u8 };
+    const projection = std.zon.parse.fromSliceAlloc(
+        PackageProjection,
+        allocator,
+        source,
+        null,
+        .{ .ignore_unknown_fields = true },
+    ) catch return error.InvalidPackageManifest;
+    defer std.zon.parse.free(allocator, projection);
+    if (projection.version.len == 0) return error.InvalidPackageVersionField;
+    return allocator.dupe(u8, projection.version);
+}
+
+fn compiledPackageVersion(allocator: std.mem.Allocator) ![]const u8 {
+    return packageVersionFromZon(allocator, try compiledGeneratorSourceBytes("build.zig.zon"));
+}
+
+test "package version projection accepts valid ZON whitespace and comments" {
+    const zon =
+        \\.{
+        \\    .name = .world,
+        \\    // owner field
+        \\    .version   =   "1.2.3", // retained provenance
+        \\    .paths = .{"src"},
+        \\}
+    ;
+    const version = try packageVersionFromZon(std.testing.allocator, zon);
+    defer std.testing.allocator.free(version);
+    try std.testing.expectEqualStrings("1.2.3", version);
+}
+
 const Writer = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -483,11 +524,14 @@ fn emitInternalProvider(allocator: std.mem.Allocator, writer: *Writer) !void {
     defer output.deinit(allocator);
     var closure = try world.Appliance.TurnClosure.decode(allocator, closure_bytes);
     defer closure.deinit(allocator);
-    try closure.validate(allocator, .{
-        .expected_executable_image_fingerprint = loaded_image.image_fingerprint,
-        .expected_manifest_fingerprint = manifest.manifest_fingerprint,
-        .bundle_options = .{ .allow_external_dependencies = true },
-    });
+    try validateOracleTurnClosure(
+        allocator,
+        closure,
+        capacity,
+        loaded_image.image_fingerprint,
+        manifest.manifest_fingerprint,
+        null,
+    );
     if (output.host_requests.len != 0) return error.UnexpectedHostRequest;
     try writer.write("artifacts/outputs/internal-provider.completed.turn-output", output_bytes);
     try writer.write("artifacts/transitions/internal-provider.completed.turn-closure", closure_bytes);
@@ -798,6 +842,21 @@ const RetryParent = struct {
     closure: world.Appliance.TurnClosure,
 };
 
+const RetryEffectFixture = struct {
+    call_count: usize = 0,
+
+    fn resolve(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        request: world.Appliance.HostRequest,
+    ) ![]const u8 {
+        if (self.call_count != 0) return error.DuplicateRetryEffectExecution;
+        const response_bytes = try common.responseValueImageBytes(allocator, request, 0xA106_0002);
+        self.call_count += 1;
+        return response_bytes;
+    }
+};
+
 fn validateOracleTurnClosure(
     allocator: std.mem.Allocator,
     closure: world.Appliance.TurnClosure,
@@ -819,8 +878,13 @@ fn validateOracleTurnClosure(
         options.expected_parent_chronicle_cursor_fingerprint = parent_closure.chronicle_resulting_cursor_fingerprint;
         options.expected_archive_parent_moment_fingerprint = parent_closure.archive_resulting_moment_fingerprint;
         options.expected_archive_parent_seal_fingerprint = parent_closure.archive_resulting_seal_fingerprint;
-    } else if (closure.archive_parent_moment_fingerprint != null or closure.archive_parent_seal_fingerprint != null) {
-        return error.InvalidClosureParent;
+    } else {
+        if (closure.parent_closure_fingerprint != null or
+            closure.archive_parent_moment_fingerprint != null or
+            closure.archive_parent_seal_fingerprint != null)
+        {
+            return error.InvalidClosureParent;
+        }
     }
     try closure.validate(allocator, options);
 }
@@ -874,6 +938,42 @@ fn nativeFromClosure(
     return native;
 }
 
+test "oracle child closure requires its parent witness" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const executable_image_fingerprint: u64 = 0xA106_0000_0000_1001;
+    const manifest = common.PortsAppliance.manifest();
+    const capacity = world.Appliance.Capacity.tiny_one_port;
+    var parent = try makeRetryParent(allocator, manifest, capacity, executable_image_fingerprint);
+    defer parent.closure.deinit(allocator);
+
+    var native = try nativeFromClosure(allocator, manifest, capacity, executable_image_fingerprint, parent.closure_bytes);
+    defer native.deinit();
+    const request = native.core.outstanding_host_requests[0];
+    const resolution = try common.wireResolutionFor(allocator, request, .responded, 0xA106_0002);
+    const continue_input = world.Appliance.Wire.TurnInput.init(.{
+        .operation = .@"continue",
+        .appliance_manifest_fingerprint = manifest.manifest_fingerprint,
+        .expected_parent_closure_fingerprint = parent.closure.closure_fingerprint,
+        .expected_parent_state_fingerprint = parent.closure.resulting_state_fingerprint,
+        .previous_turn_receipt_fingerprint = native.core.previous_turn_receipt_fingerprint,
+        .turn_sequence_number = native.core.current_turn_sequence_number + 1,
+        .resolutions = &.{resolution},
+    });
+    const continue_bytes = try continue_input.encode(allocator);
+    if (native.submitTurn(continue_bytes) != .completed) return error.ExpectedCompleted;
+    const child_bytes = try common.readClosureOwned(allocator, &native);
+    var child = try world.Appliance.TurnClosure.decode(allocator, child_bytes);
+    defer child.deinit(allocator);
+
+    try validateOracleTurnClosure(allocator, child, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, &parent.closure);
+    try std.testing.expectError(
+        error.InvalidClosureParent,
+        validateOracleTurnClosure(allocator, child, capacity, executable_image_fingerprint, manifest.manifest_fingerprint, null),
+    );
+}
+
 fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
     const executable_image_fingerprint: u64 = 0xA106_0000_0000_0001;
     const manifest = common.PortsAppliance.manifest();
@@ -887,7 +987,8 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
     defer first_native.deinit();
     if (first_native.core.outstanding_host_requests.len != 1) return error.ExpectedOneHostRequest;
     const request = first_native.core.outstanding_host_requests[0];
-    const response_bytes = try common.responseValueImageBytes(allocator, request, 0xA106_0002);
+    var effect_fixture: RetryEffectFixture = .{};
+    const response_bytes = try effect_fixture.resolve(allocator, request);
     const resolution = world.Appliance.Wire.ResolutionInput.init(.{
         .target_host_request_fingerprint = request.request_fingerprint,
         .status = .responded,
@@ -936,6 +1037,7 @@ fn emitRetry(allocator: std.mem.Allocator, writer: *Writer) !void {
     try writer.write("artifacts/transitions/retry.repeated.turn-closure", retry_closure_bytes);
     if (!std.mem.eql(u8, first_output_bytes, retry_output_bytes)) return error.RetryOutputMismatch;
     if (!std.mem.eql(u8, first_closure_bytes, retry_closure_bytes)) return error.RetryClosureMismatch;
+    if (effect_fixture.call_count != 1) return error.UnexpectedRetryEffectCallCount;
 
     const transcript = try std.fmt.allocPrint(
         allocator,
@@ -1376,8 +1478,9 @@ fn emitCapacityExhaustion(allocator: std.mem.Allocator, writer: *Writer) !void {
         .capacity = tight,
     });
     const manifest = TightAppliance.manifest();
-    var core = world.Appliance.Core.initWithCapacity(allocator, manifest, TightAppliance.memoryPlan(), tight);
-    defer core.reset();
+    const core = world.Appliance.Core.initWithCapacity(allocator, manifest, TightAppliance.memoryPlan(), tight);
+    var native = world.Appliance.Native.init(core);
+    defer native.deinit();
     const boot = world.Appliance.Command.init(.{
         .kind = .boot,
         .manifest_fingerprint = manifest.manifest_fingerprint,
@@ -1385,19 +1488,24 @@ fn emitCapacityExhaustion(allocator: std.mem.Allocator, writer: *Writer) !void {
     });
     const boot_bytes = try boot.encode(allocator);
     try writer.write("artifacts/inputs/capacity-exhaustion.boot.command", boot_bytes);
-    try core.submit(boot_bytes);
+    try native.core.submit(boot_bytes);
+    const before_failure = try captureNativeSemanticSnapshot(allocator, &native);
+    if (!std.mem.eql(u8, before_failure.pending_command_bytes, boot_bytes)) return error.PendingCommandMismatch;
     var observed_error: ?anyerror = null;
-    core.executeTurn() catch |err| {
+    native.core.executeTurn() catch |err| {
         observed_error = err;
     };
     if (observed_error == null or observed_error.? != error.CapacityExceeded) return error.ExpectedCapacityExceeded;
-    if (core.state != .uninitialized or core.current_turn_sequence_number != 0 or core.previous_turn_receipt_fingerprint != null) {
+    const after_failure = try captureNativeSemanticSnapshot(allocator, &native);
+    if (!nativeSemanticSnapshotEqual(before_failure, after_failure)) return error.PartialSemanticMutation;
+    if (!std.mem.eql(u8, after_failure.pending_command_bytes, boot_bytes)) return error.PendingCommandMismatch;
+    if (native.core.state != .uninitialized or native.core.current_turn_sequence_number != 0 or native.core.previous_turn_receipt_fingerprint != null) {
         return error.PartialSemanticMutation;
     }
-    if (core.outstanding_host_requests.len != 0 or
-        core.outstanding_host_request != null or
-        core.readOutput().len != 0 or
-        core.pending_command == null)
+    if (native.core.outstanding_host_requests.len != 0 or
+        native.core.outstanding_host_request != null or
+        native.core.readOutput().len != 0 or
+        native.core.pending_command == null)
     {
         return error.PartialSemanticMutation;
     }
@@ -1423,6 +1531,7 @@ const NativeSemanticSnapshot = struct {
     sequence: u64,
     previous_receipt: ?u64,
     pending_command_present: bool,
+    pending_command_bytes: []const u8,
     pending_archive_append_batch_fingerprint: ?u64,
     pending_archive_resulting_cursor_fingerprint: ?u64,
     latest_archive_cursor_fingerprint: u64,
@@ -1451,6 +1560,10 @@ fn captureNativeSemanticSnapshot(allocator: std.mem.Allocator, native: *world.Ap
         .sequence = native.core.current_turn_sequence_number,
         .previous_receipt = native.core.previous_turn_receipt_fingerprint,
         .pending_command_present = native.core.pending_command != null,
+        .pending_command_bytes = if (native.core.pending_command) |command|
+            try command.encode(allocator)
+        else
+            try allocator.dupe(u8, ""),
         .pending_archive_append_batch_fingerprint = native.core.pending_archive_append_batch_fingerprint,
         .pending_archive_resulting_cursor_fingerprint = if (native.core.pending_archive_resulting_cursor) |cursor| cursor.cursor_fingerprint else null,
         .latest_archive_cursor_fingerprint = native.core.latest_archive_cursor.cursor_fingerprint,
@@ -1476,6 +1589,7 @@ fn nativeSemanticSnapshotEqual(lhs: NativeSemanticSnapshot, rhs: NativeSemanticS
         lhs.sequence == rhs.sequence and
         lhs.previous_receipt == rhs.previous_receipt and
         lhs.pending_command_present == rhs.pending_command_present and
+        std.mem.eql(u8, lhs.pending_command_bytes, rhs.pending_command_bytes) and
         lhs.pending_archive_append_batch_fingerprint == rhs.pending_archive_append_batch_fingerprint and
         lhs.pending_archive_resulting_cursor_fingerprint == rhs.pending_archive_resulting_cursor_fingerprint and
         lhs.latest_archive_cursor_fingerprint == rhs.latest_archive_cursor_fingerprint and
@@ -1758,6 +1872,14 @@ fn validatePublicationDestination(
             .trusted_prefix => {},
         }
     }
+    for (writer.paths.items) |relative_path| {
+        const destination_stat = output_dir.statFile(io, relative_path, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            error.NotDir, error.SymLinkLoop => return error.UnsafePublicationPath,
+            else => |unexpected| return unexpected,
+        };
+        if (destination_stat.kind != .file) return error.UnsafePublicationPath;
+    }
 }
 
 fn promoteFile(
@@ -1919,6 +2041,49 @@ test "isolated publication rejects unowned paths before writing" {
     try std.testing.expectEqualStrings("replacement", replaced_bytes);
     const new_bytes = try cwd.readFileAlloc(io, new_path, allocator, .limited(1024));
     try std.testing.expectEqualStrings("new", new_bytes);
+}
+
+test "publication rejects an expected file directory collision before writing" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const staging_dir = try std.fs.path.join(allocator, &.{ root, "staging" });
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    const first_relative_path = "cases/first.txt";
+    const collision_relative_path = "cases/second.txt";
+    const first_path = try std.fs.path.join(allocator, &.{ output_dir, first_relative_path });
+    const collision_path = try std.fs.path.join(allocator, &.{ output_dir, collision_relative_path });
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, std.fs.path.dirname(first_path).?);
+    try cwd.writeFile(io, .{ .sub_path = first_path, .data = "must survive\n" });
+    try cwd.createDirPath(io, collision_path);
+
+    var writer = Writer{ .io = io, .allocator = allocator, .root = staging_dir };
+    try writer.write(first_relative_path, "replacement");
+    try writer.write(collision_relative_path, "second");
+    try std.testing.expectError(
+        error.UnsafePublicationPath,
+        promoteCorpus(allocator, &writer, .{ .isolated = output_dir }),
+    );
+
+    const first_bytes = try cwd.readFileAlloc(io, first_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("must survive\n", first_bytes);
+    try std.testing.expectEqual(std.Io.File.Kind.directory, (try cwd.statFile(io, collision_path, .{})).kind);
+
+    try cwd.deleteTree(io, collision_path);
+    try promoteCorpus(allocator, &writer, .{ .isolated = output_dir });
+    const replaced_bytes = try cwd.readFileAlloc(io, first_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("replacement", replaced_bytes);
+    const second_bytes = try cwd.readFileAlloc(io, collision_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("second", second_bytes);
 }
 
 test "publication rejects unsafe temporary symlink before writing" {
@@ -2263,20 +2428,23 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
     artifact_set_hasher.final(&artifact_set_digest);
     const artifact_set_hex = digestHex(artifact_set_digest);
     const generator_source_identity_hex = digestHex(generator_source_identity);
+    const package_version = try compiledPackageVersion(allocator);
+    defer allocator.free(package_version);
 
     var manifest: std.ArrayList(u8) = .empty;
-    try manifest.appendSlice(
+    try manifest.print(
         allocator,
-        "{\n" ++
+        "{{\n" ++
             "  \"format\": \"world-image-v1-rewrite-world-oracle-v0\",\n" ++
             "  \"format_version\": 1,\n" ++
-            "  \"semantic_source\": {\n" ++
+            "  \"semantic_source\": {{\n" ++
             "    \"package\": \"world\",\n" ++
-            "    \"package_version\": \"0.1.0\",\n" ++
+            "    \"package_version\": \"{s}\",\n" ++
             "    \"baseline_commit\": \"969f23f6bad87ca9d535d92d62b6418612891699\",\n" ++
             "    \"baseline_tree\": \"b2bd776125bc17215916e2a48bc7102a861788db\",\n" ++
             "    \"boundary_package\": \"0.6.2\",\n" ++
             "    \"boundary_package_hash\": \"boundary-0.6.2-flclaA4FhQCQL_ODFaXPP7HtNOn21toNs6rc14-cQqYJ\",\n",
+        .{package_version},
     );
     try manifest.print(
         allocator,

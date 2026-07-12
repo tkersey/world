@@ -497,6 +497,75 @@ function requireArg(value, name) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`missing ${name}`);
 }
 
+function packageVersionFromZon(zon) {
+  const source = zonWithoutComments(zon);
+  const matches = [...source.matchAll(/(?:^|[,{])\s*\.version\s*=\s*"([^"\\\r\n]+)"\s*,/g)];
+  if (matches.length !== 1) throw new Error(`expected exactly one root package version, got ${matches.length}`);
+  return matches[0][1];
+}
+
+function zonWithoutComments(zon) {
+  let result = '';
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < zon.length; index += 1) {
+    const character = zon[index];
+    const next = zon[index + 1];
+    if (quote !== null) {
+      result += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      result += character;
+      continue;
+    }
+    if (character === '/' && next === '/') {
+      result += '  ';
+      index += 2;
+      while (index < zon.length && zon[index] !== '\n') {
+        result += ' ';
+        index += 1;
+      }
+      if (index < zon.length) result += '\n';
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      result += '  ';
+      index += 2;
+      while (index < zon.length && !(zon[index] === '*' && zon[index + 1] === '/')) {
+        result += zon[index] === '\n' ? '\n' : ' ';
+        index += 1;
+      }
+      if (index >= zon.length) throw new Error('unterminated block comment in build.zig.zon');
+      result += '  ';
+      index += 1;
+      continue;
+    }
+    result += character;
+  }
+  if (quote !== null) throw new Error('unterminated literal in build.zig.zon');
+  return result;
+}
+
+function testPackageVersionProjection() {
+  const zon = `.{
+    .name = .world,
+    // owner field
+    .version   =   "1.2.3", // retained provenance
+    .url = "https://example.invalid/archive.tar.gz",
+  }`;
+  assertEqual(packageVersionFromZon(zon), '1.2.3', 'commented package version projection');
+  assertEqual(packageVersionFromZon('.{ .version = "2.0.0", }'), '2.0.0', 'inline package version projection');
+}
+
+function rootPackageVersion() {
+  return packageVersionFromZon(readFileSync(new URL('../build.zig.zon', import.meta.url), 'utf8'));
+}
+
 function validateCorpus(root, expectedZigVersion) {
   const files = listFiles(root);
   if (files.length === 0) throw new Error(`empty oracle corpus: ${root}`);
@@ -508,7 +577,7 @@ function validateCorpus(root, expectedZigVersion) {
   assertEqual(manifest.format, 'world-image-v1-rewrite-world-oracle-v0', 'manifest.format');
   assertEqual(manifest.format_version, 1, 'manifest.format_version');
   assertEqual(manifest.semantic_source?.package, 'world', 'manifest.semantic_source.package');
-  assertEqual(manifest.semantic_source?.package_version, '0.1.0', 'manifest.semantic_source.package_version');
+  assertEqual(manifest.semantic_source?.package_version, rootPackageVersion(), 'manifest.semantic_source.package_version');
   assertEqual(
     manifest.semantic_source?.baseline_commit,
     '969f23f6bad87ca9d535d92d62b6418612891699',
@@ -723,6 +792,7 @@ function withCrlf(bytes) {
 }
 
 function testGeneratorSourceIdentity() {
+  testPackageVersionProjection();
   const path = 'build.zig';
   const canonical = canonicalSourceBytes(readFileSync(join(repositoryRoot, path)), path);
   const expected = generatorSourceIdentity(repositoryRoot);
