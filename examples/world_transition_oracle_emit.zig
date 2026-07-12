@@ -18,21 +18,14 @@ fn canonicalizePathSeparators(path_bytes: []u8, native_separator: u8) void {
     }
 }
 
-fn isAllowedPortableOutputPath(path_bytes: []const u8) bool {
-    return std.mem.eql(u8, path_bytes, "./bundle") or
-        std.mem.endsWith(u8, path_bytes, canonical_output_suffix);
+fn isAllowedIsolatedOutputPath(path_bytes: []const u8) bool {
+    return std.mem.eql(u8, path_bytes, "./bundle");
 }
 
 comptime {
-    var windows_canonical = "C:\\repo\\conformance\\world-image-v1\\v0\\world".*;
-    canonicalizePathSeparators(windows_canonical[0..], '\\');
-    if (!isAllowedPortableOutputPath(windows_canonical[0..])) {
-        @compileError("native canonical oracle path must be admitted");
-    }
-
     var windows_isolated = ".\\bundle".*;
     canonicalizePathSeparators(windows_isolated[0..], '\\');
-    if (!isAllowedPortableOutputPath(windows_isolated[0..])) {
+    if (!isAllowedIsolatedOutputPath(windows_isolated[0..])) {
         @compileError("native isolated oracle path must be admitted");
     }
 
@@ -44,7 +37,7 @@ comptime {
 
     var windows_unrelated = "C:\\repo\\bundle".*;
     canonicalizePathSeparators(windows_unrelated[0..], '\\');
-    if (isAllowedPortableOutputPath(windows_unrelated[0..])) {
+    if (isAllowedIsolatedOutputPath(windows_unrelated[0..])) {
         @compileError("unrelated native output path must remain rejected");
     }
 }
@@ -95,6 +88,11 @@ const OwnedPaths = struct {
         self.allocator.free(self.items);
         self.items = &.{};
     }
+};
+
+const PublicationTarget = union(enum) {
+    isolated: []const u8,
+    trusted_prefix: []const u8,
 };
 
 const ReplayCtx = struct { calls: usize = 0 };
@@ -175,13 +173,19 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next();
     const command = args.next() orelse return error.InvalidArguments;
     if (!std.mem.eql(u8, command, "generate")) return error.InvalidArguments;
-    if (!std.mem.eql(u8, args.next() orelse return error.InvalidArguments, "--out-dir")) return error.InvalidArguments;
-    const output_dir = args.next() orelse return error.InvalidArguments;
+    const target_flag = args.next() orelse return error.InvalidArguments;
+    const target_path = args.next() orelse return error.InvalidArguments;
     if (args.next() != null) return error.InvalidArguments;
 
-    const portable_output_dir = try allocator.dupe(u8, output_dir);
-    canonicalizePathSeparators(portable_output_dir, std.fs.path.sep);
-    if (!isAllowedPortableOutputPath(portable_output_dir)) return error.InvalidOutputDirectory;
+    const publication_target: PublicationTarget = if (std.mem.eql(u8, target_flag, "--out-dir")) blk: {
+        const portable_output_dir = try allocator.dupe(u8, target_path);
+        canonicalizePathSeparators(portable_output_dir, std.fs.path.sep);
+        if (!isAllowedIsolatedOutputPath(portable_output_dir)) return error.InvalidOutputDirectory;
+        break :blk .{ .isolated = target_path };
+    } else if (std.mem.eql(u8, target_flag, "--trusted-prefix")) blk: {
+        if (!std.fs.path.isAbsolute(target_path)) return error.InvalidTrustedPrefix;
+        break :blk .{ .trusted_prefix = target_path };
+    } else return error.InvalidArguments;
 
     const staging_dir = "./world-transition-oracle-staging";
     try std.Io.Dir.cwd().deleteTree(init.io, staging_dir);
@@ -201,7 +205,7 @@ pub fn main(init: std.process.Init) !void {
     try emitMalformed(allocator, &writer);
     try writeManifest(allocator, &writer);
     try writeChecksums(allocator, &writer);
-    try promoteCorpus(allocator, &writer, output_dir);
+    try promoteCorpus(allocator, &writer, publication_target);
 }
 
 fn emitOnePort(allocator: std.mem.Allocator, writer: *Writer) !void {
@@ -1525,7 +1529,7 @@ fn openPublicationChild(parent: std.Io.Dir, io: std.Io, name: []const u8) !std.I
     return requirePublicationDirectory(child, io);
 }
 
-fn openPublicationDirectory(io: std.Io, output_dir: []const u8) !std.Io.Dir {
+fn openPublicationPathNoFollow(io: std.Io, output_dir: []const u8) !std.Io.Dir {
     var components = std.fs.path.componentIterator(output_dir);
     const initial = if (components.root()) |root|
         try std.Io.Dir.cwd().openDir(io, root, .{ .follow_symlinks = false, .iterate = true })
@@ -1544,8 +1548,32 @@ fn openPublicationDirectory(io: std.Io, output_dir: []const u8) !std.Io.Dir {
     return current;
 }
 
-fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, output_dir: []const u8) !void {
-    var publication_dir = try openPublicationDirectory(writer.io, output_dir);
+fn openTrustedPublicationDirectory(io: std.Io, trusted_prefix: []const u8) !std.Io.Dir {
+    const cwd = std.Io.Dir.cwd();
+    const prefix_dir = try cwd.createDirPathOpen(io, trusted_prefix, .{
+        .open_options = .{ .follow_symlinks = true, .iterate = true },
+    });
+    var current = try requirePublicationDirectory(prefix_dir, io);
+    errdefer current.close(io);
+
+    var components = std.fs.path.componentIterator(canonical_output_suffix);
+    while (components.next()) |component| {
+        const child = try openPublicationChild(current, io, component.name);
+        current.close(io);
+        current = child;
+    }
+    return current;
+}
+
+fn openPublicationDirectory(io: std.Io, target: PublicationTarget) !std.Io.Dir {
+    return switch (target) {
+        .isolated => |output_dir| openPublicationPathNoFollow(io, output_dir),
+        .trusted_prefix => |prefix| openTrustedPublicationDirectory(io, prefix),
+    };
+}
+
+fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, target: PublicationTarget) !void {
+    var publication_dir = try openPublicationDirectory(writer.io, target);
     defer publication_dir.close(writer.io);
     try validatePublicationDestination(writer.io, allocator, publication_dir);
 
@@ -1595,7 +1623,7 @@ test "publication rejects unsafe temporary symlink before writing" {
     try writer.write(relative_path, "replacement");
     try std.testing.expectError(
         error.UnsupportedOracleTreeEntry,
-        promoteCorpus(allocator, &writer, output_dir),
+        promoteCorpus(allocator, &writer, .{ .isolated = output_dir }),
     );
 
     const victim_bytes = try cwd.readFileAlloc(io, victim_path, allocator, .limited(1024));
@@ -1631,7 +1659,7 @@ test "publication rejects symlinked output root before writing" {
     try writer.write(relative_path, "replacement");
     try std.testing.expectError(
         error.UnsafePublicationPath,
-        promoteCorpus(allocator, &writer, output_dir),
+        promoteCorpus(allocator, &writer, .{ .isolated = output_dir }),
     );
 
     const victim_bytes = try cwd.readFileAlloc(io, victim_path, allocator, .limited(1024));
@@ -1667,13 +1695,81 @@ test "publication rejects symlinked output ancestor before writing" {
     try writer.write(relative_path, "replacement");
     try std.testing.expectError(
         error.UnsafePublicationPath,
-        promoteCorpus(allocator, &writer, output_dir),
+        promoteCorpus(allocator, &writer, .{ .isolated = output_dir }),
     );
 
     const victim_bytes = try cwd.readFileAlloc(io, victim_path, allocator, .limited(1024));
     try std.testing.expectEqualStrings("must survive\n", victim_bytes);
     const redirected_output = try std.fs.path.join(allocator, &.{ victim_dir, "output" });
     try std.testing.expectError(error.FileNotFound, cwd.access(io, redirected_output, .{}));
+}
+
+test "publication accepts a symlinked trusted prefix" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const staging_dir = try std.fs.path.join(allocator, &.{ root, "staging" });
+    const real_prefix = try std.fs.path.join(allocator, &.{ root, "real-prefix" });
+    const linked_prefix = try std.fs.path.join(allocator, &.{ root, "linked-prefix" });
+    const relative_path = "artifacts/manifests/one-port.appliance-manifest";
+    const destination_path = try std.fs.path.join(allocator, &.{ real_prefix, canonical_output_suffix, relative_path });
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, real_prefix);
+    try cwd.symLink(io, real_prefix, linked_prefix, .{});
+
+    var writer = Writer{ .io = io, .allocator = allocator, .root = staging_dir };
+    try writer.write(relative_path, "replacement");
+    try promoteCorpus(allocator, &writer, .{ .trusted_prefix = linked_prefix });
+
+    const destination_bytes = try cwd.readFileAlloc(io, destination_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("replacement", destination_bytes);
+}
+
+test "trusted prefix rejects a symlinked oracle suffix" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const staging_dir = try std.fs.path.join(allocator, &.{ root, "staging" });
+    const trusted_prefix = try std.fs.path.join(allocator, &.{ root, "prefix" });
+    const victim_dir = try std.fs.path.join(allocator, &.{ root, "victim" });
+    const victim_path = try std.fs.path.join(allocator, &.{ victim_dir, "sentinel.txt" });
+    const linked_suffix = try std.fs.path.join(allocator, &.{ trusted_prefix, "conformance" });
+    const relative_path = "artifacts/manifests/one-port.appliance-manifest";
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, trusted_prefix);
+    try cwd.createDirPath(io, victim_dir);
+    try cwd.writeFile(io, .{ .sub_path = victim_path, .data = "must survive\n" });
+    try cwd.symLink(io, victim_dir, linked_suffix, .{});
+
+    var writer = Writer{ .io = io, .allocator = allocator, .root = staging_dir };
+    try writer.write(relative_path, "replacement");
+    try std.testing.expectError(
+        error.UnsafePublicationPath,
+        promoteCorpus(allocator, &writer, .{ .trusted_prefix = trusted_prefix }),
+    );
+
+    const victim_bytes = try cwd.readFileAlloc(io, victim_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("must survive\n", victim_bytes);
 }
 
 fn sha256(bytes: []const u8) [32]u8 {

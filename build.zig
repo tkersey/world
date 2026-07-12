@@ -358,8 +358,8 @@ pub fn build(b: *std.Build) void {
     update_world_transition_oracle_run.setCwd(b.tmpPath());
     update_world_transition_oracle_run.addArgs(&.{
         "generate",
-        "--out-dir",
-        b.pathFromRoot(world_image_v1_transition_oracle_dir),
+        "--trusted-prefix",
+        b.pathFromRoot("."),
     });
     const validate_updated_world_transition_oracle = b.addSystemCommand(&.{"node"});
     validate_updated_world_transition_oracle.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
@@ -407,12 +407,15 @@ pub fn build(b: *std.Build) void {
     const world_transition_oracle_emit_dir = b.pathFromRoot(
         b.getInstallPath(.prefix, "conformance/world-image-v1/v0/world"),
     );
+    const world_transition_oracle_emit_prefix = b.pathFromRoot(
+        b.getInstallPath(.prefix, ""),
+    );
     const emit_world_transition_oracle_run = b.addRunArtifact(world_transition_oracle_exe);
     emit_world_transition_oracle_run.setCwd(b.tmpPath());
     emit_world_transition_oracle_run.addArgs(&.{
         "generate",
-        "--out-dir",
-        world_transition_oracle_emit_dir,
+        "--trusted-prefix",
+        world_transition_oracle_emit_prefix,
     });
     emit_world_transition_oracle_run.step.dependOn(check_world_transition_oracle_step);
     const verify_emitted_world_transition_oracle = b.addSystemCommand(&.{"node"});
