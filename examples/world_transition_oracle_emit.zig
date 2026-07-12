@@ -161,12 +161,33 @@ const BatchAppliance = world.Appliance.Define(fixtures.Agent.Target, .{
 pub fn main(init: std.process.Init) !void {
     comptime {
         if (world.world_executable_image_format_version != 2) @compileError("update World Image v1 oracle executable image format binding");
-        if (world.world_appliance_turn_closure_format_version != 1) @compileError("update World Image v1 oracle TurnClosure format binding");
-        if (world.Archive.world_archive_format_version != 1) @compileError("update World Image v1 oracle Archive format binding");
-        if (world.world_appliance_abi_version != 4) @compileError("update World Image v1 oracle Appliance ABI binding");
+        if (world.world_executable_image_fingerprint_version != 2) @compileError("update World Image v1 oracle executable image fingerprint binding");
+        if (world.world_executable_image_codec_version != 1) @compileError("update World Image v1 oracle executable image codec binding");
+        if (world.world_appliance_manifest_format_version != 3) @compileError("update World Image v1 oracle Appliance Manifest format binding");
+        if (world.world_appliance_manifest_fingerprint_version != 3) @compileError("update World Image v1 oracle Appliance Manifest fingerprint binding");
         if (world.world_appliance_command_format_version != 1) @compileError("update World Image v1 oracle Appliance Command format binding");
+        if (world.world_appliance_command_fingerprint_version != 1) @compileError("update World Image v1 oracle Appliance Command fingerprint binding");
         if (world.world_appliance_wire_turn_input_format_version != 2) @compileError("update World Image v1 oracle Wire.TurnInput format binding");
         if (world.world_appliance_wire_resolution_input_format_version != 1) @compileError("update World Image v1 oracle Wire.ResolutionInput format binding");
+        if (world.world_appliance_turn_output_format_version != 3) @compileError("update World Image v1 oracle TurnOutput format binding");
+        if (world.world_appliance_turn_output_fingerprint_version != 2) @compileError("update World Image v1 oracle TurnOutput fingerprint binding");
+        if (world.world_appliance_turn_closure_format_version != 1) @compileError("update World Image v1 oracle TurnClosure format binding");
+        if (world.world_appliance_turn_closure_fingerprint_version != 1) @compileError("update World Image v1 oracle TurnClosure fingerprint binding");
+        if (world.world_appliance_checkpoint_format_version != 1) @compileError("update World Image v1 oracle Checkpoint format binding");
+        if (world.world_appliance_checkpoint_fingerprint_version != 1) @compileError("update World Image v1 oracle Checkpoint fingerprint binding");
+        if (world.world_capsule_image_format_version != 3) @compileError("update World Image v1 oracle Capsule Image format binding");
+        if (world.world_capsule_image_fingerprint_version != 1) @compileError("update World Image v1 oracle Capsule Image fingerprint binding");
+        if (world.world_appliance_host_request_format_version != 4) @compileError("update World Image v1 oracle HostRequest format binding");
+        if (world.world_appliance_host_request_fingerprint_version != 4) @compileError("update World Image v1 oracle HostRequest fingerprint binding");
+        if (world.world_frame_request_format_version != 1) @compileError("update World Image v1 oracle Frame.Request format binding");
+        if (world.world_frame_request_fingerprint_version != 1) @compileError("update World Image v1 oracle Frame.Request fingerprint binding");
+        if (world.Archive.world_archive_append_batch_format_version != 1) @compileError("update World Image v1 oracle Archive.AppendBatch format binding");
+        if (world.Archive.world_archive_append_batch_fingerprint_version != 1) @compileError("update World Image v1 oracle Archive.AppendBatch fingerprint binding");
+        if (world.world_run_image_format_version != 3) @compileError("update World Image v1 oracle RunImage format binding");
+        if (world.world_run_image_fingerprint_version != 1) @compileError("update World Image v1 oracle RunImage fingerprint binding");
+        if (world.world_transcript_image_format_version != 3) @compileError("update World Image v1 oracle TranscriptImage format binding");
+        if (world.world_transcript_image_fingerprint_version != 1) @compileError("update World Image v1 oracle TranscriptImage fingerprint binding");
+        if (world.world_appliance_abi_version != 4) @compileError("update World Image v1 oracle Appliance ABI binding");
     }
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1854,15 +1875,46 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer) !void {
             "    \"baseline_tree\": \"b2bd776125bc17215916e2a48bc7102a861788db\",\n" ++
             "    \"boundary_package\": \"0.6.2\",\n" ++
             "    \"boundary_package_hash\": \"boundary-0.6.2-flclaA4FhQCQL_ODFaXPP7HtNOn21toNs6rc14-cQqYJ\",\n" ++
+            "    \"version_fields_scope\": \"selected-compatibility-cut-lines\",\n" ++
             "    \"world_executable_image_format\": 2,\n" ++
+            "    \"world_executable_image_fingerprint\": 2,\n" ++
+            "    \"world_executable_image_codec\": 1,\n" ++
             "    \"world_turn_closure_format\": 1,\n" ++
-            "    \"world_archive_format\": 1,\n" ++
+            "    \"world_turn_closure_fingerprint\": 1,\n" ++
+            "    \"world_archive_append_batch_format\": 1,\n" ++
+            "    \"world_archive_append_batch_fingerprint\": 1,\n" ++
             "    \"world_appliance_abi\": 4,\n" ++
+            "    \"world_appliance_manifest_format\": 3,\n" ++
+            "    \"world_appliance_manifest_fingerprint\": 3,\n" ++
             "    \"world_appliance_command_format\": 1,\n" ++
+            "    \"world_appliance_command_fingerprint\": 1,\n" ++
             "    \"world_appliance_wire_turn_input_format\": 2,\n" ++
             "    \"world_appliance_wire_resolution_input_format\": 1,\n" ++
-            "    \"zig_version\": \"0.16.0\"\n" ++
+            "    \"zig_version\": \"" ++ builtin.zig_version_string ++ "\"\n" ++
             "  },\n" ++
+            "  \"binary_family_policy\": {\n" ++
+            "    \"scope\": \"exhaustive-top-level-binary-artifacts\",\n" ++
+            "    \"nested_authority\": \"top-level-owner+world-baseline-tree+boundary-package-hash\",\n" ++
+            "    \"unclassified\": \"reject\",\n" ++
+            "    \"binary_artifact_count\": 63\n" ++
+            "  },\n" ++
+            "  \"binary_families\": [\n" ++
+            "    {\"id\":\"world_executable_image\",\"owner\":\"world.Executable.Image\",\"versioning\":\"header\",\"expected_count\":2,\"magic\":\"world.Executable.Image.v2\\u0000\",\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_executable_image_format_version\",\"offset\":26,\"value\":2},{\"name\":\"fingerprint_version\",\"constant\":\"world_executable_image_fingerprint_version\",\"offset\":30,\"value\":2},{\"name\":\"codec_version\",\"constant\":\"world_executable_image_codec_version\",\"offset\":34,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_appliance_manifest\",\"owner\":\"world.Appliance.Manifest\",\"versioning\":\"header\",\"expected_count\":2,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_manifest_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_manifest_fingerprint_version\",\"offset\":4,\"value\":3},{\"name\":\"appliance_abi_version\",\"constant\":\"world_appliance_abi_version\",\"offset\":16,\"value\":4}]},\n" ++
+            "    {\"id\":\"world_appliance_command\",\"owner\":\"world.Appliance.Command\",\"versioning\":\"header\",\"expected_count\":1,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_command_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_command_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_appliance_wire_turn_input\",\"owner\":\"world.Appliance.Wire.TurnInput\",\"versioning\":\"format-only\",\"expected_count\":12,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_wire_turn_input_format_version\",\"offset\":0,\"value\":2}]},\n" ++
+            "    {\"id\":\"world_appliance_wire_resolution_input\",\"owner\":\"world.Appliance.Wire.ResolutionInput\",\"versioning\":\"format-only\",\"expected_count\":3,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_wire_resolution_input_format_version\",\"offset\":0,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_appliance_turn_output\",\"owner\":\"world.Appliance.TurnOutput\",\"versioning\":\"header\",\"expected_count\":9,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_output_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_output_fingerprint_version\",\"offset\":4,\"value\":2}]},\n" ++
+            "    {\"id\":\"world_appliance_turn_closure\",\"owner\":\"world.Appliance.TurnClosure\",\"versioning\":\"header\",\"expected_count\":12,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_turn_closure_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_turn_closure_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_appliance_checkpoint\",\"owner\":\"world.Appliance.Checkpoint\",\"versioning\":\"header\",\"expected_count\":5,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_checkpoint_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_checkpoint_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_capsule_image\",\"owner\":\"world.Capsule.Image\",\"versioning\":\"header\",\"expected_count\":6,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_capsule_image_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_capsule_image_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_appliance_host_request_batch\",\"owner\":\"world.Appliance.encodeHostRequestsImageOwned\",\"versioning\":\"member-versioned-container\",\"expected_count\":1,\"container_count_offset\":0,\"expected_member_count\":1,\"member_header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_appliance_host_request_format_version\",\"offset\":8,\"value\":4},{\"name\":\"fingerprint_version\",\"constant\":\"world_appliance_host_request_fingerprint_version\",\"offset\":12,\"value\":4}]},\n" ++
+            "    {\"id\":\"world_frame_request\",\"owner\":\"world.Frame.Request\",\"versioning\":\"header\",\"expected_count\":1,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_frame_request_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_frame_request_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_archive_append_batch\",\"owner\":\"world.Archive.AppendBatch\",\"versioning\":\"header\",\"expected_count\":1,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_archive_append_batch_format_version\",\"offset\":0,\"value\":1},{\"name\":\"fingerprint_version\",\"constant\":\"world_archive_append_batch_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_run_image\",\"owner\":\"world.RunImage\",\"versioning\":\"header\",\"expected_count\":3,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_run_image_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_run_image_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_transcript_image\",\"owner\":\"world.TranscriptImage\",\"versioning\":\"header\",\"expected_count\":3,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_transcript_image_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_transcript_image_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
+            "    {\"id\":\"world_appliance_root_result_value_image\",\"owner\":\"world.Appliance.validateRootResultValueImageBytes\",\"versioning\":\"unversioned-container-owned\",\"expected_count\":2,\"label\":\"world.appliance.root_result.value_image\",\"label_length_offset\":0,\"label_offset\":4,\"value_fingerprint_offset\":43}\n" ++
+            "  ],\n" ++
             "  \"offline_regeneration\": \"requires-preseeded-boundary-package-cache\",\n" ++
             "  \"generator\": \"zig build update-world-image-v1-transition-oracle\",\n" ++
             "  \"normal_check\": \"zig build check-world-image-v1-transition-oracle --summary all\",\n" ++

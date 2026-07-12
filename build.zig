@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 const TestArgs = struct {
@@ -366,6 +367,7 @@ pub fn build(b: *std.Build) void {
     validate_updated_world_transition_oracle.setCwd(b.tmpPath());
     validate_updated_world_transition_oracle.addArgs(&.{ "--mode", "check", "--expected" });
     validate_updated_world_transition_oracle.addDirectoryArg(b.path(world_image_v1_transition_oracle_dir));
+    validate_updated_world_transition_oracle.addArgs(&.{ "--zig-version", builtin.zig_version_string });
     validate_updated_world_transition_oracle.step.dependOn(&update_world_transition_oracle_run.step);
     const update_world_transition_oracle_step = b.step(
         "update-world-image-v1-transition-oracle",
@@ -395,6 +397,7 @@ pub fn build(b: *std.Build) void {
     compare_world_transition_oracles.addDirectoryArg(world_transition_oracle_a_dir);
     compare_world_transition_oracles.addArg("--second");
     compare_world_transition_oracles.addDirectoryArg(world_transition_oracle_b_dir);
+    compare_world_transition_oracles.addArgs(&.{ "--zig-version", builtin.zig_version_string });
     compare_world_transition_oracles.step.dependOn(&generate_world_transition_oracle_a.step);
     compare_world_transition_oracles.step.dependOn(&generate_world_transition_oracle_b.step);
     const check_world_transition_oracle_root_symlink = b.addSystemCommand(&.{"node"});
@@ -429,6 +432,7 @@ pub fn build(b: *std.Build) void {
     verify_emitted_world_transition_oracle.addDirectoryArg(b.path(world_image_v1_transition_oracle_dir));
     verify_emitted_world_transition_oracle.addArg("--actual");
     verify_emitted_world_transition_oracle.addDirectoryArg(.{ .cwd_relative = world_transition_oracle_emit_dir });
+    verify_emitted_world_transition_oracle.addArgs(&.{ "--zig-version", builtin.zig_version_string });
     verify_emitted_world_transition_oracle.step.dependOn(&emit_world_transition_oracle_run.step);
     const emit_world_transition_oracle_step = b.step(
         "emit-world-image-v1-transition-oracle",

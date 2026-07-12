@@ -197,6 +197,201 @@ const expectedArtifacts = [
   'cases/replay-without-fresh-effect.txt',
 ];
 
+const expectedBinaryFamilyPolicy = {
+  scope: 'exhaustive-top-level-binary-artifacts',
+  nested_authority: 'top-level-owner+world-baseline-tree+boundary-package-hash',
+  unclassified: 'reject',
+  binary_artifact_count: 63,
+};
+
+const expectedBinaryFamilies = [
+  {
+    id: 'world_executable_image',
+    owner: 'world.Executable.Image',
+    versioning: 'header',
+    expected_count: 2,
+    magic: 'world.Executable.Image.v2\0',
+    header_fields: [
+      { name: 'format_version', constant: 'world_executable_image_format_version', offset: 26, value: 2 },
+      { name: 'fingerprint_version', constant: 'world_executable_image_fingerprint_version', offset: 30, value: 2 },
+      { name: 'codec_version', constant: 'world_executable_image_codec_version', offset: 34, value: 1 },
+    ],
+  },
+  {
+    id: 'world_appliance_manifest',
+    owner: 'world.Appliance.Manifest',
+    versioning: 'header',
+    expected_count: 2,
+    header_fields: [
+      { name: 'format_version', constant: 'world_appliance_manifest_format_version', offset: 0, value: 3 },
+      { name: 'fingerprint_version', constant: 'world_appliance_manifest_fingerprint_version', offset: 4, value: 3 },
+      { name: 'appliance_abi_version', constant: 'world_appliance_abi_version', offset: 16, value: 4 },
+    ],
+  },
+  {
+    id: 'world_appliance_command',
+    owner: 'world.Appliance.Command',
+    versioning: 'header',
+    expected_count: 1,
+    header_fields: [
+      { name: 'format_version', constant: 'world_appliance_command_format_version', offset: 0, value: 1 },
+      { name: 'fingerprint_version', constant: 'world_appliance_command_fingerprint_version', offset: 4, value: 1 },
+    ],
+  },
+  {
+    id: 'world_appliance_wire_turn_input',
+    owner: 'world.Appliance.Wire.TurnInput',
+    versioning: 'format-only',
+    expected_count: 12,
+    header_fields: [
+      { name: 'format_version', constant: 'world_appliance_wire_turn_input_format_version', offset: 0, value: 2 },
+    ],
+  },
+  {
+    id: 'world_appliance_wire_resolution_input',
+    owner: 'world.Appliance.Wire.ResolutionInput',
+    versioning: 'format-only',
+    expected_count: 3,
+    header_fields: [
+      { name: 'format_version', constant: 'world_appliance_wire_resolution_input_format_version', offset: 0, value: 1 },
+    ],
+  },
+  {
+    id: 'world_appliance_turn_output',
+    owner: 'world.Appliance.TurnOutput',
+    versioning: 'header',
+    expected_count: 9,
+    header_fields: [
+      { name: 'format_version', constant: 'world_appliance_turn_output_format_version', offset: 0, value: 3 },
+      { name: 'fingerprint_version', constant: 'world_appliance_turn_output_fingerprint_version', offset: 4, value: 2 },
+    ],
+  },
+  {
+    id: 'world_appliance_turn_closure',
+    owner: 'world.Appliance.TurnClosure',
+    versioning: 'header',
+    expected_count: 12,
+    header_fields: [
+      { name: 'format_version', constant: 'world_appliance_turn_closure_format_version', offset: 0, value: 1 },
+      { name: 'fingerprint_version', constant: 'world_appliance_turn_closure_fingerprint_version', offset: 4, value: 1 },
+    ],
+  },
+  {
+    id: 'world_appliance_checkpoint',
+    owner: 'world.Appliance.Checkpoint',
+    versioning: 'header',
+    expected_count: 5,
+    header_fields: [
+      { name: 'format_version', constant: 'world_appliance_checkpoint_format_version', offset: 0, value: 1 },
+      { name: 'fingerprint_version', constant: 'world_appliance_checkpoint_fingerprint_version', offset: 4, value: 1 },
+    ],
+  },
+  {
+    id: 'world_capsule_image',
+    owner: 'world.Capsule.Image',
+    versioning: 'header',
+    expected_count: 6,
+    header_fields: [
+      { name: 'format_version', constant: 'world_capsule_image_format_version', offset: 0, value: 3 },
+      { name: 'fingerprint_version', constant: 'world_capsule_image_fingerprint_version', offset: 4, value: 1 },
+    ],
+  },
+  {
+    id: 'world_appliance_host_request_batch',
+    owner: 'world.Appliance.encodeHostRequestsImageOwned',
+    versioning: 'member-versioned-container',
+    expected_count: 1,
+    container_count_offset: 0,
+    expected_member_count: 1,
+    member_header_fields: [
+      { name: 'format_version', constant: 'world_appliance_host_request_format_version', offset: 8, value: 4 },
+      { name: 'fingerprint_version', constant: 'world_appliance_host_request_fingerprint_version', offset: 12, value: 4 },
+    ],
+  },
+  {
+    id: 'world_frame_request',
+    owner: 'world.Frame.Request',
+    versioning: 'header',
+    expected_count: 1,
+    header_fields: [
+      { name: 'format_version', constant: 'world_frame_request_format_version', offset: 0, value: 1 },
+      { name: 'fingerprint_version', constant: 'world_frame_request_fingerprint_version', offset: 4, value: 1 },
+    ],
+  },
+  {
+    id: 'world_archive_append_batch',
+    owner: 'world.Archive.AppendBatch',
+    versioning: 'header',
+    expected_count: 1,
+    header_fields: [
+      { name: 'format_version', constant: 'world_archive_append_batch_format_version', offset: 0, value: 1 },
+      {
+        name: 'fingerprint_version',
+        constant: 'world_archive_append_batch_fingerprint_version',
+        offset: 4,
+        value: 1,
+      },
+    ],
+  },
+  {
+    id: 'world_run_image',
+    owner: 'world.RunImage',
+    versioning: 'header',
+    expected_count: 3,
+    header_fields: [
+      { name: 'format_version', constant: 'world_run_image_format_version', offset: 0, value: 3 },
+      { name: 'fingerprint_version', constant: 'world_run_image_fingerprint_version', offset: 4, value: 1 },
+    ],
+  },
+  {
+    id: 'world_transcript_image',
+    owner: 'world.TranscriptImage',
+    versioning: 'header',
+    expected_count: 3,
+    header_fields: [
+      { name: 'format_version', constant: 'world_transcript_image_format_version', offset: 0, value: 3 },
+      { name: 'fingerprint_version', constant: 'world_transcript_image_fingerprint_version', offset: 4, value: 1 },
+    ],
+  },
+  {
+    id: 'world_appliance_root_result_value_image',
+    owner: 'world.Appliance.validateRootResultValueImageBytes',
+    versioning: 'unversioned-container-owned',
+    expected_count: 2,
+    label: 'world.appliance.root_result.value_image',
+    label_length_offset: 0,
+    label_offset: 4,
+    value_fingerprint_offset: 43,
+  },
+];
+
+const binaryFamilyMatchers = {
+  world_executable_image: [
+    /^artifacts\/images\/[^/]+\.executable-image$/,
+    /^artifacts\/malformed\/executable-image\.trailing-byte$/,
+  ],
+  world_appliance_manifest: [/^artifacts\/manifests\/[^/]+\.appliance-manifest$/],
+  world_appliance_command: [/^artifacts\/inputs\/[^/]+\.command$/],
+  world_appliance_wire_turn_input: [
+    /^artifacts\/inputs\/[^/]+\.turn-input$/,
+    /^artifacts\/malformed\/result\.[^/]+\.turn-input$/,
+  ],
+  world_appliance_wire_resolution_input: [/^artifacts\/effects\/[^/]+\.resolution-input$/],
+  world_appliance_turn_output: [/^artifacts\/outputs\/[^/]+\.turn-output$/],
+  world_appliance_turn_closure: [
+    /^artifacts\/transitions\/[^/]+\.turn-closure$/,
+    /^artifacts\/malformed\/state\.turn-closure\.trailing-byte$/,
+  ],
+  world_appliance_checkpoint: [/^artifacts\/states\/[^/]+\.checkpoint$/],
+  world_capsule_image: [/^artifacts\/states\/[^/]+\.capsule$/],
+  world_appliance_host_request_batch: [/^artifacts\/effects\/[^/]+\.host-requests$/],
+  world_frame_request: [/^artifacts\/effects\/[^/]+\.request-frame$/],
+  world_archive_append_batch: [/^artifacts\/history\/[^/]+\.archive-append-batch$/],
+  world_run_image: [/^artifacts\/states\/[^/]+\.run-image$/],
+  world_transcript_image: [/^artifacts\/states\/[^/]+\.transcript-image$/],
+  world_appliance_root_result_value_image: [/^artifacts\/results\/[^/]+\.root-result$/],
+};
+
 const expectedBoundaryPackageHash = boundaryPackageHashFromZon();
 
 const args = parseArgs(process.argv.slice(2));
@@ -205,21 +400,24 @@ if (args.mode === 'compare') {
   requireArg(args.expected, '--expected');
   requireArg(args.first, '--first');
   requireArg(args.second, '--second');
-  validateCorpus(args.expected);
-  validateCorpus(args.first);
-  validateCorpus(args.second);
+  requireArg(args.zigVersion, '--zig-version');
+  validateCorpus(args.expected, args.zigVersion);
+  validateCorpus(args.first, args.zigVersion);
+  validateCorpus(args.second, args.zigVersion);
   compareTrees(args.expected, args.first, 'tracked/first');
   compareTrees(args.expected, args.second, 'tracked/second');
   compareTrees(args.first, args.second, 'first/second');
 } else if (args.mode === 'verify') {
   requireArg(args.expected, '--expected');
   requireArg(args.actual, '--actual');
-  validateCorpus(args.expected);
-  validateCorpus(args.actual);
+  requireArg(args.zigVersion, '--zig-version');
+  validateCorpus(args.expected, args.zigVersion);
+  validateCorpus(args.actual, args.zigVersion);
   compareTrees(args.expected, args.actual, 'expected/actual');
 } else if (args.mode === 'check') {
   requireArg(args.expected, '--expected');
-  validateCorpus(args.expected);
+  requireArg(args.zigVersion, '--zig-version');
+  validateCorpus(args.expected, args.zigVersion);
 } else if (args.mode === 'self-test-root-symlink') {
   testRootSymlinkRejection();
 } else {
@@ -235,6 +433,7 @@ function parseArgs(raw) {
     else if (arg === '--first') parsed.first = raw[++index];
     else if (arg === '--second') parsed.second = raw[++index];
     else if (arg === '--actual') parsed.actual = raw[++index];
+    else if (arg === '--zig-version') parsed.zigVersion = raw[++index];
     else throw new Error(`unknown argument ${arg}`);
   }
   return parsed;
@@ -244,7 +443,7 @@ function requireArg(value, name) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`missing ${name}`);
 }
 
-function validateCorpus(root) {
+function validateCorpus(root, expectedZigVersion) {
   const files = listFiles(root);
   if (files.length === 0) throw new Error(`empty oracle corpus: ${root}`);
   if (!files.includes('manifest.json')) throw new Error(`missing manifest.json: ${root}`);
@@ -272,11 +471,43 @@ function validateCorpus(root) {
     expectedBoundaryPackageHash,
     'manifest.semantic_source.boundary_package_hash',
   );
+  assertEqual(
+    manifest.semantic_source?.version_fields_scope,
+    'selected-compatibility-cut-lines',
+    'manifest.semantic_source.version_fields_scope',
+  );
   assertEqual(manifest.semantic_source?.world_executable_image_format, 2, 'manifest executable image format');
+  assertEqual(
+    manifest.semantic_source?.world_executable_image_fingerprint,
+    2,
+    'manifest executable image fingerprint',
+  );
+  assertEqual(manifest.semantic_source?.world_executable_image_codec, 1, 'manifest executable image codec');
   assertEqual(manifest.semantic_source?.world_turn_closure_format, 1, 'manifest TurnClosure format');
-  assertEqual(manifest.semantic_source?.world_archive_format, 1, 'manifest Archive format');
+  assertEqual(manifest.semantic_source?.world_turn_closure_fingerprint, 1, 'manifest TurnClosure fingerprint');
+  assertEqual(
+    manifest.semantic_source?.world_archive_append_batch_format,
+    1,
+    'manifest Archive.AppendBatch format',
+  );
+  assertEqual(
+    manifest.semantic_source?.world_archive_append_batch_fingerprint,
+    1,
+    'manifest Archive.AppendBatch fingerprint',
+  );
   assertEqual(manifest.semantic_source?.world_appliance_abi, 4, 'manifest Appliance ABI');
+  assertEqual(manifest.semantic_source?.world_appliance_manifest_format, 3, 'manifest Appliance Manifest format');
+  assertEqual(
+    manifest.semantic_source?.world_appliance_manifest_fingerprint,
+    3,
+    'manifest Appliance Manifest fingerprint',
+  );
   assertEqual(manifest.semantic_source?.world_appliance_command_format, 1, 'manifest Appliance Command format');
+  assertEqual(
+    manifest.semantic_source?.world_appliance_command_fingerprint,
+    1,
+    'manifest Appliance Command fingerprint',
+  );
   assertEqual(
     manifest.semantic_source?.world_appliance_wire_turn_input_format,
     2,
@@ -287,6 +518,7 @@ function validateCorpus(root) {
     1,
     'manifest Wire.ResolutionInput format',
   );
+  assertEqual(manifest.semantic_source?.zig_version, expectedZigVersion, 'manifest.semantic_source.zig_version');
   assertEqual(
     manifest.offline_regeneration,
     'requires-preseeded-boundary-package-cache',
@@ -315,27 +547,7 @@ function validateCorpus(root) {
 
   const contentFiles = files.filter((path) => path !== 'manifest.json' && path !== 'checksums.sha256');
   assertArrayEqual(contentFiles, expectedArtifacts, 'expected artifact inventory');
-  assertArtifactFormatPrefixes(
-    root,
-    contentFiles,
-    '.boot.command',
-    manifest.semantic_source.world_appliance_command_format,
-    'Appliance Command',
-  );
-  assertArtifactFormatPrefixes(
-    root,
-    contentFiles,
-    '.turn-input',
-    manifest.semantic_source.world_appliance_wire_turn_input_format,
-    'Wire.TurnInput',
-  );
-  assertArtifactFormatPrefixes(
-    root,
-    contentFiles,
-    '.resolution-input',
-    manifest.semantic_source.world_appliance_wire_resolution_input_format,
-    'Wire.ResolutionInput',
-  );
+  validateBinaryFamilies(root, contentFiles, manifest);
   const manifestArtifacts = manifest.artifacts.map((entry) => entry.path);
   assertArrayEqual(manifestArtifacts, contentFiles, 'manifest artifact inventory');
 
@@ -378,13 +590,81 @@ function boundaryPackageHashFromZon() {
   return hash[1];
 }
 
-function assertArtifactFormatPrefixes(root, files, suffix, expectedFormat, label) {
-  const matching = files.filter((path) => path.endsWith(suffix));
-  if (matching.length === 0) throw new Error(`missing ${label} artifacts`);
-  for (const path of matching) {
-    const bytes = readFileSync(join(root, path));
-    if (bytes.length < 4) throw new Error(`${label} artifact too short: ${path}`);
-    assertEqual(bytes.readUInt32LE(0), expectedFormat, `${label} format prefix ${path}`);
+function validateBinaryFamilies(root, contentFiles, manifest) {
+  assertJsonEqual(manifest.binary_family_policy, expectedBinaryFamilyPolicy, 'manifest.binary_family_policy');
+  assertJsonEqual(manifest.binary_families, expectedBinaryFamilies, 'manifest.binary_families');
+
+  const textArtifacts = contentFiles.filter((path) => path.startsWith('artifacts/') && path.endsWith('.txt'));
+  assertArrayEqual(textArtifacts, ['artifacts/states/capacity-exhaustion.after.txt'], 'text artifact inventory');
+  const binaryArtifacts = contentFiles.filter((path) => path.startsWith('artifacts/') && !path.endsWith('.txt'));
+  assertEqual(
+    binaryArtifacts.length,
+    expectedBinaryFamilyPolicy.binary_artifact_count,
+    'binary artifact inventory length',
+  );
+
+  const familyCounts = new Map(expectedBinaryFamilies.map((family) => [family.id, 0]));
+  for (const path of binaryArtifacts) {
+    const matchingFamilies = expectedBinaryFamilies.filter((family) =>
+      binaryFamilyMatchers[family.id].some((pattern) => pattern.test(path)),
+    );
+    assertEqual(matchingFamilies.length, 1, `binary family classification ${path}`);
+    const family = matchingFamilies[0];
+    familyCounts.set(family.id, familyCounts.get(family.id) + 1);
+    validateBinaryFamilyHeader(root, path, family);
+  }
+  for (const family of expectedBinaryFamilies) {
+    assertEqual(familyCounts.get(family.id), family.expected_count, `binary family count ${family.id}`);
+  }
+}
+
+function validateBinaryFamilyHeader(root, path, family) {
+  const bytes = readFileSync(join(root, path));
+  if (family.magic !== undefined) {
+    const magic = Buffer.from(family.magic, 'utf8');
+    if (bytes.length < magic.length || !bytes.subarray(0, magic.length).equals(magic)) {
+      throw new Error(`binary family magic ${family.id}: ${path}`);
+    }
+  }
+  for (const field of family.header_fields ?? []) {
+    assertU32Field(bytes, field, family.id, path);
+  }
+  if (family.versioning === 'member-versioned-container') {
+    if (bytes.length < family.container_count_offset + 8) throw new Error(`binary family too short ${family.id}: ${path}`);
+    assertEqual(
+      bytes.readBigUInt64LE(family.container_count_offset),
+      BigInt(family.expected_member_count),
+      `binary family member count ${family.id}: ${path}`,
+    );
+    for (const field of family.member_header_fields) {
+      assertU32Field(bytes, field, family.id, path);
+    }
+  }
+  if (family.versioning === 'unversioned-container-owned') {
+    const label = Buffer.from(family.label, 'utf8');
+    if (bytes.length < family.value_fingerprint_offset + 8) throw new Error(`binary family too short ${family.id}: ${path}`);
+    assertEqual(
+      bytes.readUInt32LE(family.label_length_offset),
+      label.length,
+      `binary family label length ${family.id}: ${path}`,
+    );
+    if (!bytes.subarray(family.label_offset, family.label_offset + label.length).equals(label)) {
+      throw new Error(`binary family label ${family.id}: ${path}`);
+    }
+    assertEqual(bytes.length, family.value_fingerprint_offset + 8, `binary family length ${family.id}: ${path}`);
+  }
+}
+
+function assertU32Field(bytes, field, familyId, path) {
+  if (bytes.length < field.offset + 4) throw new Error(`binary family too short ${familyId}: ${path}`);
+  assertEqual(bytes.readUInt32LE(field.offset), field.value, `binary family ${field.name} ${familyId}: ${path}`);
+}
+
+function assertJsonEqual(actual, expected, label) {
+  const actualJson = JSON.stringify(actual);
+  const expectedJson = JSON.stringify(expected);
+  if (actualJson !== expectedJson) {
+    throw new Error(`${label}: expected ${expectedJson}, got ${actualJson}`);
   }
 }
 
