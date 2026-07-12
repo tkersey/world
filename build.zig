@@ -60,7 +60,7 @@ const WorldPackageProjection = struct {
 };
 
 fn worldSourcePackageRoots(b: *std.Build) []const []const u8 {
-    const raw_source = std.Io.Dir.cwd().readFileAlloc(
+    const raw_source = b.build_root.handle.readFileAlloc(
         b.graph.io,
         "build.zig.zon",
         b.allocator,
@@ -94,6 +94,7 @@ fn validateWorldSourcePackageRoot(path: []const u8) void {
 
 fn isPortableWorldSourcePackageRoot(path: []const u8) bool {
     if (path.len == 0 or
+        !std.unicode.utf8ValidateSlice(path) or
         std.fs.path.isAbsolute(path) or
         (path.len >= 2 and std.ascii.isAlphabetic(path[0]) and path[1] == ':') or
         std.mem.indexOfScalar(u8, path, '\\') != null)
@@ -116,6 +117,7 @@ comptime {
     for (.{ "", "/src", "C:/src", "C:src", "src\\nested", "src//nested", "src/./nested", "src/../nested" }) |path| {
         if (isPortableWorldSourcePackageRoot(path)) @compileError("non-portable package root accepted: " ++ path);
     }
+    if (isPortableWorldSourcePackageRoot("src/\xff")) @compileError("invalid UTF-8 package root accepted");
 }
 
 fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
@@ -134,7 +136,7 @@ fn worldSourcePackagePathsForRoots(
     var paths: std.ArrayList([]const u8) = .empty;
 
     for (package_roots) |root| {
-        const root_stat = std.Io.Dir.cwd().statFile(b.graph.io, root, .{ .follow_symlinks = false }) catch |err| {
+        const root_stat = b.build_root.handle.statFile(b.graph.io, root, .{ .follow_symlinks = false }) catch |err| {
             std.debug.panic("failed to inspect source package path '{s}': {s}", .{ root, @errorName(err) });
         };
         switch (root_stat.kind) {
@@ -145,7 +147,7 @@ fn worldSourcePackagePathsForRoots(
                 paths.append(b.allocator, b.dupe(root)) catch @panic("oom");
             },
             .directory => {
-                var dir = std.Io.Dir.cwd().openDir(b.graph.io, root, .{
+                var dir = b.build_root.handle.openDir(b.graph.io, root, .{
                     .follow_symlinks = false,
                     .iterate = true,
                 }) catch |err| {
@@ -499,6 +501,7 @@ pub fn build(b: *std.Build) void {
 
     const world_transition_oracle_a_root = b.tmpPath();
     const world_transition_oracle_b_root = b.tmpPath();
+    const world_transition_oracle_coordination_root = b.tmpPath();
     const world_transition_oracle_a_dir = world_transition_oracle_a_root.path(b, "bundle");
     const world_transition_oracle_b_dir = world_transition_oracle_b_root.path(b, "bundle");
     const generate_world_transition_oracle_a = b.addRunArtifact(world_transition_oracle_exe);
@@ -531,10 +534,14 @@ pub fn build(b: *std.Build) void {
     verify_world_transition_oracle_update_candidates.addArgs(&.{ "--zig-version", builtin.zig_version_string });
     verify_world_transition_oracle_update_candidates.step.dependOn(&generate_world_transition_oracle_a.step);
     verify_world_transition_oracle_update_candidates.step.dependOn(&generate_world_transition_oracle_b.step);
-    const publish_world_transition_oracle_candidate = b.addRunArtifact(world_transition_oracle_exe);
+    const publish_world_transition_oracle_candidate = b.addSystemCommand(&.{"node"});
     publish_world_transition_oracle_candidate.setName("publish admitted World Image v1 transition oracle candidate");
+    publish_world_transition_oracle_candidate.stdio = .inherit;
     publish_world_transition_oracle_candidate.setCwd(b.tmpPath());
-    publish_world_transition_oracle_candidate.addArgs(&.{ "publish", "--source-dir" });
+    publish_world_transition_oracle_candidate.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
+    publish_world_transition_oracle_candidate.addArgs(&.{ "--mode", "publish", "--publisher" });
+    publish_world_transition_oracle_candidate.addFileArg(world_transition_oracle_exe.getEmittedBin());
+    publish_world_transition_oracle_candidate.addArg("--source-dir");
     publish_world_transition_oracle_candidate.addDirectoryArg(world_transition_oracle_a_dir);
     publish_world_transition_oracle_candidate.addArg("--admission-digest");
     publish_world_transition_oracle_candidate.addFileArg(world_transition_oracle_admission_digest);
@@ -542,6 +549,8 @@ pub fn build(b: *std.Build) void {
         "--trusted-prefix",
         b.pathFromRoot("."),
     });
+    publish_world_transition_oracle_candidate.addArg("--coordination-dir");
+    publish_world_transition_oracle_candidate.addDirectoryArg(world_transition_oracle_coordination_root);
     publish_world_transition_oracle_candidate.step.dependOn(&validate_world_transition_oracle_candidate.step);
     publish_world_transition_oracle_candidate.step.dependOn(&verify_world_transition_oracle_update_candidates.step);
     const update_world_transition_oracle_step = b.step(
@@ -560,6 +569,8 @@ pub fn build(b: *std.Build) void {
     compare_world_transition_oracles.addArg("--second");
     compare_world_transition_oracles.addDirectoryArg(world_transition_oracle_b_dir);
     compare_world_transition_oracles.addArgs(&.{ "--zig-version", builtin.zig_version_string });
+    compare_world_transition_oracles.addArg("--coordination-dir");
+    compare_world_transition_oracles.addDirectoryArg(world_transition_oracle_coordination_root);
     compare_world_transition_oracles.step.dependOn(&generate_world_transition_oracle_a.step);
     compare_world_transition_oracles.step.dependOn(&generate_world_transition_oracle_b.step);
     const check_world_transition_oracle_root_symlink = b.addSystemCommand(&.{"node"});
@@ -571,6 +582,14 @@ pub fn build(b: *std.Build) void {
     const check_world_transition_oracle_checksum_inventory = b.addSystemCommand(&.{"node"});
     check_world_transition_oracle_checksum_inventory.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
     check_world_transition_oracle_checksum_inventory.addArgs(&.{ "--mode", "self-test-checksum-inventory" });
+    const check_world_transition_oracle_foreign_cwd = b.addSystemCommand(&.{b.graph.zig_exe});
+    check_world_transition_oracle_foreign_cwd.setName("configure World Image v1 transition oracle from a foreign cwd");
+    check_world_transition_oracle_foreign_cwd.setCwd(b.tmpPath());
+    check_world_transition_oracle_foreign_cwd.addArgs(&.{ "build", "--build-file" });
+    check_world_transition_oracle_foreign_cwd.addFileArg(b.path("build.zig"));
+    check_world_transition_oracle_foreign_cwd.addArg("-h");
+    check_world_transition_oracle_foreign_cwd.expectExitCode(0);
+    _ = check_world_transition_oracle_foreign_cwd.captureStdOut(.{});
     const check_world_transition_oracle_step = b.step(
         "check-world-image-v1-transition-oracle",
         "Check deterministic exact World Image v1 transition oracle bytes.",
@@ -579,6 +598,7 @@ pub fn build(b: *std.Build) void {
     check_world_transition_oracle_step.dependOn(&check_world_transition_oracle_root_symlink.step);
     check_world_transition_oracle_step.dependOn(&check_world_transition_oracle_source_identity.step);
     check_world_transition_oracle_step.dependOn(&check_world_transition_oracle_checksum_inventory.step);
+    check_world_transition_oracle_step.dependOn(&check_world_transition_oracle_foreign_cwd.step);
     check_world_transition_oracle_step.dependOn(&run_world_transition_oracle_tests.step);
 
     const world_transition_oracle_emit_dir = b.pathFromRoot(

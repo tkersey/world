@@ -2219,14 +2219,27 @@ fn promoteFile(
     relative_path: []const u8,
 ) !void {
     const source_path = try std.fs.path.join(allocator, &.{ writer.root, relative_path });
+    var destination = try openPublicationLeaf(output_dir, writer.io, relative_path, true);
+    defer destination.deinit(writer.io);
     try std.Io.Dir.cwd().copyFile(
         source_path,
-        output_dir,
-        relative_path,
+        destination.parent,
+        destination.leaf,
         writer.io,
-        .{ .make_path = true, .replace = true },
+        .{ .make_path = false, .replace = true },
     );
 }
+
+const PublicationLeaf = struct {
+    parent: std.Io.Dir,
+    leaf: []const u8,
+    parent_owned: bool,
+
+    fn deinit(self: *@This(), io: std.Io) void {
+        if (self.parent_owned) self.parent.close(io);
+        self.* = undefined;
+    }
+};
 
 fn requirePublicationDirectory(dir: std.Io.Dir, io: std.Io) !std.Io.Dir {
     errdefer dir.close(io);
@@ -2255,6 +2268,64 @@ fn openPublicationChild(parent: std.Io.Dir, io: std.Io, name: []const u8) !std.I
         else => |err| return err,
     };
     return requirePublicationDirectory(child, io);
+}
+
+fn openExistingPublicationChild(parent: std.Io.Dir, io: std.Io, name: []const u8) !std.Io.Dir {
+    const child = parent.openDir(io, name, .{
+        .follow_symlinks = false,
+        .iterate = true,
+    }) catch |err| switch (err) {
+        error.NotDir, error.SymLinkLoop => return error.UnsafePublicationPath,
+        else => |unexpected| return unexpected,
+    };
+    return requirePublicationDirectory(child, io);
+}
+
+fn openPublicationLeaf(
+    root: std.Io.Dir,
+    io: std.Io,
+    relative_path: []const u8,
+    create_parents: bool,
+) !PublicationLeaf {
+    if (relative_path.len == 0 or std.fs.path.isAbsolute(relative_path)) return error.UnsafePublicationPath;
+    const leaf = std.fs.path.basename(relative_path);
+    if (leaf.len == 0 or std.mem.eql(u8, leaf, ".") or std.mem.eql(u8, leaf, "..")) {
+        return error.UnsafePublicationPath;
+    }
+    const parent_path = std.fs.path.dirname(relative_path) orelse return .{
+        .parent = root,
+        .leaf = leaf,
+        .parent_owned = false,
+    };
+
+    var current = root;
+    var current_owned = false;
+    errdefer if (current_owned) current.close(io);
+    var components = std.fs.path.componentIterator(parent_path);
+    if (components.root() != null) return error.UnsafePublicationPath;
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component.name, ".") or std.mem.eql(u8, component.name, "..")) {
+            return error.UnsafePublicationPath;
+        }
+        const child = if (create_parents)
+            try openPublicationChild(current, io, component.name)
+        else
+            try openExistingPublicationChild(current, io, component.name);
+        if (current_owned) current.close(io);
+        current = child;
+        current_owned = true;
+    }
+    return .{
+        .parent = current,
+        .leaf = leaf,
+        .parent_owned = current_owned,
+    };
+}
+
+fn deletePublicationFile(io: std.Io, publication_dir: std.Io.Dir, relative_path: []const u8) !void {
+    var destination = try openPublicationLeaf(publication_dir, io, relative_path, false);
+    defer destination.deinit(io);
+    try destination.parent.deleteFile(io, destination.leaf);
 }
 
 fn openPublicationPathNoFollow(io: std.Io, output_dir: []const u8) !std.Io.Dir {
@@ -2321,7 +2392,7 @@ fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, target: Publicat
             defer published_paths.deinit();
             for (published_paths.items) |relative_path| {
                 if (isExpectedPath(writer, relative_path)) continue;
-                try publication_dir.deleteFile(writer.io, relative_path);
+                try deletePublicationFile(writer.io, publication_dir, relative_path);
             }
         },
     }
@@ -2396,6 +2467,60 @@ test "candidate publisher rejects a post-admission mutation before target mutati
     );
     const sentinel_bytes = try cwd.readFileAlloc(io, sentinel, allocator, .limited(1024));
     try std.testing.expectEqualStrings("must survive\n", sentinel_bytes);
+}
+
+test "publication retains no-follow nested parent authority after preflight" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const candidate_root = try std.fs.path.join(allocator, &.{ root, "candidate" });
+    const trusted_prefix = try std.fs.path.join(allocator, &.{ root, "prefix" });
+    const published_root = try std.fs.path.join(allocator, &.{ trusted_prefix, canonical_output_suffix });
+    const published_cases = try std.fs.path.join(allocator, &.{ published_root, "cases" });
+    const published_case = try std.fs.path.join(allocator, &.{ published_cases, "example.txt" });
+    const published_obsolete = try std.fs.path.join(allocator, &.{ published_cases, "obsolete.txt" });
+    const external_cases = try std.fs.path.join(allocator, &.{ root, "external-cases" });
+    const external_case = try std.fs.path.join(allocator, &.{ external_cases, "example.txt" });
+    const external_obsolete = try std.fs.path.join(allocator, &.{ external_cases, "obsolete.txt" });
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, candidate_root);
+    try cwd.createDirPath(io, published_cases);
+    try cwd.createDirPath(io, external_cases);
+    var writer = Writer{ .io = io, .allocator = allocator, .root = candidate_root };
+    try writer.write("cases/example.txt", "candidate bytes\n");
+    try cwd.writeFile(io, .{ .sub_path = published_case, .data = "published bytes\n" });
+    try cwd.writeFile(io, .{ .sub_path = published_obsolete, .data = "published obsolete\n" });
+    try cwd.writeFile(io, .{ .sub_path = external_case, .data = "external case sentinel\n" });
+    try cwd.writeFile(io, .{ .sub_path = external_obsolete, .data = "external obsolete sentinel\n" });
+
+    var publication_dir = try cwd.openDir(io, published_root, .{ .follow_symlinks = false, .iterate = true });
+    defer publication_dir.close(io);
+    try validatePublicationDestination(io, allocator, &writer, .{ .trusted_prefix = trusted_prefix }, publication_dir);
+    try cwd.deleteTree(io, published_cases);
+    try cwd.symLink(io, external_cases, published_cases, .{});
+
+    try std.testing.expectError(
+        error.UnsafePublicationPath,
+        promoteFile(allocator, &writer, publication_dir, "cases/example.txt"),
+    );
+    try std.testing.expectError(
+        error.UnsafePublicationPath,
+        deletePublicationFile(io, publication_dir, "cases/obsolete.txt"),
+    );
+    const external_case_bytes = try cwd.readFileAlloc(io, external_case, allocator, .limited(1024));
+    const external_obsolete_bytes = try cwd.readFileAlloc(io, external_obsolete, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("external case sentinel\n", external_case_bytes);
+    try std.testing.expectEqualStrings("external obsolete sentinel\n", external_obsolete_bytes);
 }
 
 test "isolated publication rejects unowned paths before writing" {

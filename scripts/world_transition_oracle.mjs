@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -142,6 +143,28 @@ const requiredTranscriptFacts = {
     'diagnostic_error_published_after_duplicate_result: true',
     'diagnostic_error_published_after_stale_result: true',
   ],
+};
+
+const transcriptTurnClosureClaims = {
+  'one-port-execution': {
+    parent_closure_fingerprint: 'artifacts/transitions/one-port.waiting.turn-closure',
+    completed_closure_fingerprint: 'artifacts/transitions/one-port.completed.turn-closure',
+  },
+  'internal-provider-execution': {
+    closure_fingerprint: 'artifacts/transitions/internal-provider.completed.turn-closure',
+  },
+  'lost-output-retry': {
+    parent_closure_fingerprint: 'artifacts/transitions/retry.parent.turn-closure',
+    result_closure_fingerprint: 'artifacts/transitions/retry.first.turn-closure',
+  },
+  'partial-response-batch': {
+    parent_closure_fingerprint: 'artifacts/transitions/partial-batch.parent.turn-closure',
+    partial_closure_fingerprint: 'artifacts/transitions/partial-batch.remaining.turn-closure',
+  },
+  'deterministic-failure': {
+    parent_closure_fingerprint: 'artifacts/transitions/failure.parent.turn-closure',
+    failed_closure_fingerprint: 'artifacts/transitions/failure.failed.turn-closure',
+  },
 };
 
 const expectedArtifacts = [
@@ -431,17 +454,47 @@ const expectedBoundaryPackage = rootBoundaryPackage();
 
 const args = parseArgs(process.argv.slice(2));
 
-if (args.mode === 'compare') {
+if (args.mode === 'publish') {
+  requireArg(args.publisher, '--publisher');
+  requireArg(args.sourceDir, '--source-dir');
+  requireArg(args.admissionDigest, '--admission-digest');
+  requireArg(args.trustedPrefix, '--trusted-prefix');
+  requireArg(args.coordinationDir, '--coordination-dir');
+  withCorpusCoordination(args.coordinationDir, 'publish', () => {
+    requireNoPriorValidationFailure(args.coordinationDir);
+    const result = spawnSync(
+      args.publisher,
+      [
+        'publish',
+        '--source-dir',
+        args.sourceDir,
+        '--admission-digest',
+        args.admissionDigest,
+        '--trusted-prefix',
+        args.trustedPrefix,
+      ],
+      { stdio: 'inherit' },
+    );
+    if (result.error !== undefined) throw result.error;
+    if (result.status !== 0) {
+      throw new Error(`oracle publisher exited with ${result.status === null ? String(result.signal) : String(result.status)}`);
+    }
+  });
+} else if (args.mode === 'compare') {
   requireArg(args.expected, '--expected');
   requireArg(args.first, '--first');
   requireArg(args.second, '--second');
   requireArg(args.zigVersion, '--zig-version');
-  validateCorpus(args.expected, args.zigVersion);
-  validateCorpus(args.first, args.zigVersion);
-  validateCorpus(args.second, args.zigVersion);
-  compareTrees(args.expected, args.first, 'tracked/first');
-  compareTrees(args.expected, args.second, 'tracked/second');
-  compareTrees(args.first, args.second, 'first/second');
+  const compare = () => {
+    validateCorpus(args.expected, args.zigVersion);
+    validateCorpus(args.first, args.zigVersion);
+    validateCorpus(args.second, args.zigVersion);
+    compareTrees(args.expected, args.first, 'tracked/first');
+    compareTrees(args.expected, args.second, 'tracked/second');
+    compareTrees(args.first, args.second, 'first/second');
+  };
+  if (args.coordinationDir === undefined) compare();
+  else withCorpusCoordination(args.coordinationDir, 'check', compare);
 } else if (args.mode === 'verify') {
   requireArg(args.expected, '--expected');
   requireArg(args.actual, '--actual');
@@ -478,9 +531,41 @@ function parseArgs(raw) {
     else if (arg === '--actual') parsed.actual = raw[++index];
     else if (arg === '--zig-version') parsed.zigVersion = raw[++index];
     else if (arg === '--admission-digest') parsed.admissionDigest = raw[++index];
+    else if (arg === '--publisher') parsed.publisher = raw[++index];
+    else if (arg === '--source-dir') parsed.sourceDir = raw[++index];
+    else if (arg === '--trusted-prefix') parsed.trustedPrefix = raw[++index];
+    else if (arg === '--coordination-dir') parsed.coordinationDir = raw[++index];
     else throw new Error(`unknown argument ${arg}`);
   }
   return parsed;
+}
+
+function withCorpusCoordination(root, role, action) {
+  mkdirSync(root, { recursive: true });
+  const lock = join(root, 'trusted-corpus-lock');
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch (error) {
+      if (!(error instanceof Error) || error.code !== 'EEXIST') throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+  try {
+    return action();
+  } catch (error) {
+    if (role === 'check') mkdirSync(join(root, 'tracked-validation-failed'), { recursive: true });
+    throw error;
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
+}
+
+function requireNoPriorValidationFailure(root) {
+  if (existsSync(join(root, 'tracked-validation-failed'))) {
+    throw new Error('tracked oracle validation failed before publication');
+  }
 }
 
 function requireArg(value, name) {
@@ -635,7 +720,7 @@ function validateCorpus(root, expectedZigVersion) {
   if (!files.includes('checksums.sha256')) throw new Error(`missing checksums.sha256: ${root}`);
 
   const manifestBytes = read('manifest.json');
-  const manifest = JSON.parse(manifestBytes.toString('utf8'));
+  const manifest = parseJsonDocument(manifestBytes, 'manifest.json');
   assertEqual(manifest.format, 'world-image-v1-rewrite-world-oracle-v0', 'manifest.format');
   assertEqual(manifest.format_version, 1, 'manifest.format_version');
   assertEqual(manifest.semantic_source?.package, 'world', 'manifest.semantic_source.package');
@@ -742,11 +827,15 @@ function validateCorpus(root, expectedZigVersion) {
     if (!files.includes(transcript)) throw new Error(`missing transcript ${transcript}`);
   }
   for (const [caseId, facts] of Object.entries(requiredTranscriptFacts)) {
-    const transcript = read(`cases/${caseId}.txt`, 'utf8');
-    const transcriptLines = new Set(transcript.split('\n'));
+    const transcript = decodeSemanticUtf8(read(`cases/${caseId}.txt`), `cases/${caseId}.txt`);
+    const transcriptFields = parseTranscript(transcript, caseId);
     for (const fact of facts) {
-      if (!transcriptLines.has(fact)) throw new Error(`missing provenance fact for ${caseId}: ${fact}`);
+      const separator = fact.indexOf(': ');
+      const key = fact.slice(0, separator);
+      const expected = fact.slice(separator + 2);
+      assertEqual(transcriptFields.get(key), expected, `provenance fact ${caseId}.${key}`);
     }
+    validateTranscriptTurnClosureClaims(caseId, transcriptFields, read);
   }
 
   const contentFiles = files.filter((path) => path !== 'manifest.json' && path !== 'checksums.sha256');
@@ -772,11 +861,46 @@ function validateCorpus(root, expectedZigVersion) {
 
   validateChecksums(
     root,
-    read('checksums.sha256', 'utf8'),
+    decodeSemanticUtf8(read('checksums.sha256'), 'checksums.sha256'),
     files.filter((path) => path !== 'checksums.sha256'),
     read,
   );
   return snapshot;
+}
+
+function decodeSemanticUtf8(bytes, label) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch (error) {
+    throw new Error(`invalid UTF-8 in ${label}`, { cause: error });
+  }
+}
+
+function parseJsonDocument(bytes, label) {
+  return JSON.parse(decodeSemanticUtf8(bytes, label));
+}
+
+function parseTranscript(text, caseId) {
+  const fields = new Map();
+  for (const line of text.split('\n')) {
+    if (line.length === 0) continue;
+    const separator = line.indexOf(': ');
+    if (separator <= 0) throw new Error(`invalid transcript line for ${caseId}: ${line}`);
+    const key = line.slice(0, separator);
+    if (!/^[a-z][a-z0-9_]*$/.test(key)) throw new Error(`invalid transcript key for ${caseId}: ${key}`);
+    if (fields.has(key)) throw new Error(`duplicate transcript key for ${caseId}: ${key}`);
+    fields.set(key, line.slice(separator + 2));
+  }
+  return fields;
+}
+
+function validateTranscriptTurnClosureClaims(caseId, fields, read) {
+  for (const [key, artifactPath] of Object.entries(transcriptTurnClosureClaims[caseId] ?? {})) {
+    const bytes = read(artifactPath);
+    if (bytes.length < 16) throw new Error(`TurnClosure too short for transcript claim: ${artifactPath}`);
+    const expected = `0x${bytes.readBigUInt64LE(8).toString(16).padStart(16, '0')}`;
+    assertEqual(fields.get(key), expected, `artifact-bound transcript fact ${caseId}.${key}`);
+  }
 }
 
 function validateChecksums(root, checksumText, expectedPaths, read = (path) => readFileSync(join(root, path))) {
@@ -1212,9 +1336,90 @@ function testChecksumInventoryAdmission() {
     if (!(error instanceof Error) || !error.message.startsWith('checksum inventory')) throw error;
     if (error.message.includes(outsideDigest)) throw new Error('outside-root digest leaked before checksum admission');
     testCandidateSnapshotIdentity();
+    testSemanticTextAdmission();
+    testTranscriptClaimAdmission();
+    testCorpusCoordination();
     return;
   }
   throw new Error('checksum traversal path accepted');
+}
+
+function testSemanticTextAdmission() {
+  const invalidUtf8 = Buffer.concat([Buffer.from('{"ignored":"'), Buffer.from([0xff]), Buffer.from('"}')]);
+  let invalidRejected = false;
+  try {
+    parseJsonDocument(invalidUtf8, 'manifest.json');
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'invalid UTF-8 in manifest.json') throw error;
+    invalidRejected = true;
+  }
+  if (!invalidRejected) throw new Error('malformed UTF-8 manifest accepted');
+
+  let bomRejected = false;
+  try {
+    parseJsonDocument(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{}')]), 'manifest.json');
+  } catch {
+    bomRejected = true;
+  }
+  if (!bomRejected) throw new Error('BOM-prefixed manifest accepted');
+}
+
+function testTranscriptClaimAdmission() {
+  let duplicateRejected = false;
+  try {
+    parseTranscript('state_unchanged: true\nstate_unchanged: false\n', 'fixture');
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'duplicate transcript key for fixture: state_unchanged') throw error;
+    duplicateRejected = true;
+  }
+  if (!duplicateRejected) throw new Error('duplicate transcript key accepted');
+
+  const closureBytes = Buffer.alloc(16);
+  closureBytes.writeUInt32LE(1, 0);
+  closureBytes.writeUInt32LE(1, 4);
+  closureBytes.writeBigUInt64LE(0x0123456789abcdefn, 8);
+  const fields = new Map([['closure_fingerprint', '0x0123456789abcdef']]);
+  validateTranscriptTurnClosureClaims('internal-provider-execution', fields, () => closureBytes);
+  fields.set('closure_fingerprint', '0xfedcba9876543210');
+  let forgedRejected = false;
+  try {
+    validateTranscriptTurnClosureClaims('internal-provider-execution', fields, () => closureBytes);
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith('artifact-bound transcript fact')) throw error;
+    forgedRejected = true;
+  }
+  if (!forgedRejected) throw new Error('forged transcript closure fingerprint accepted');
+}
+
+function testCorpusCoordination() {
+  const root = mkdtempSync(join(tmpdir(), 'world-oracle-coordination-'));
+  try {
+    let checkFailed = false;
+    try {
+      withCorpusCoordination(root, 'check', () => {
+        throw new Error('expected tracked validation failure');
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'expected tracked validation failure') throw error;
+      checkFailed = true;
+    }
+    if (!checkFailed) throw new Error('coordination check failure not observed');
+
+    let publisherRan = false;
+    let publicationRejected = false;
+    try {
+      withCorpusCoordination(root, 'publish', () => {
+        requireNoPriorValidationFailure(root);
+        publisherRan = true;
+      });
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'tracked oracle validation failed before publication') throw error;
+      publicationRejected = true;
+    }
+    if (!publicationRejected || publisherRan) throw new Error('publication ran after tracked validation failure');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function testCandidateSnapshotIdentity() {
