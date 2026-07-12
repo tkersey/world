@@ -125,18 +125,25 @@ pub fn submitAndDecodeWithCapacity(
     return decodeOutputWithCapacity(allocator, manifest, core.readOutput(), capacity);
 }
 
+fn responseFingerprintBytes(response_fingerprint: u64) [@sizeOf(u64)]u8 {
+    var bytes: [@sizeOf(u64)]u8 = undefined;
+    std.mem.writeInt(u64, &bytes, response_fingerprint, .little);
+    return bytes;
+}
+
 pub fn hostReplyFor(request: world.Appliance.HostRequest, response_fingerprint: u64) world.Appliance.HostReply {
     const HostReplyResponse = struct {
         bytes: []const u8,
         fingerprint: u64,
     };
     const response: HostReplyResponse = if (request.expected_response_value_ref_fingerprint != null or request.expected_response_schema_ref_fingerprint != null) blk: {
+        const response_bytes = responseFingerprintBytes(response_fingerprint);
         var image = world.Frame.ValueImage.fromCanonicalBytes(
             std.heap.page_allocator,
             null,
             request.expected_response_value_ref_fingerprint,
             request.expected_response_schema_ref_fingerprint,
-            std.mem.asBytes(&response_fingerprint),
+            &response_bytes,
             false,
         ) catch unreachable;
         defer image.deinit(std.heap.page_allocator);
@@ -220,12 +227,13 @@ pub fn responseValueImageBytes(
     request: world.Appliance.HostRequest,
     response_fingerprint: u64,
 ) ![]const u8 {
+    const response_bytes = responseFingerprintBytes(response_fingerprint);
     var image = try world.Frame.ValueImage.fromCanonicalBytes(
         allocator,
         null,
         request.expected_response_value_ref_fingerprint,
         request.expected_response_schema_ref_fingerprint,
-        std.mem.asBytes(&response_fingerprint),
+        &response_bytes,
         false,
     );
     defer image.deinit(allocator);
@@ -250,4 +258,9 @@ pub fn wireResolutionFor(
         .attempt_number = 1,
         .metadata = "fixture-resolution",
     });
+}
+
+test "response fingerprint bytes are canonical little endian" {
+    const bytes = responseFingerprintBytes(0x0102_0304_0506_0708);
+    try std.testing.expectEqualSlices(u8, &.{ 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01 }, &bytes);
 }

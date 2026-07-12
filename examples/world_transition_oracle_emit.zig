@@ -1429,10 +1429,8 @@ fn mutablePathLessThan(_: void, lhs: []u8, rhs: []u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
 }
 
-fn listFiles(io: std.Io, allocator: std.mem.Allocator, root: []const u8) !OwnedPaths {
-    var dir = try std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true });
-    defer dir.close(io);
-    var walker = try dir.walk(allocator);
+fn listFiles(io: std.Io, allocator: std.mem.Allocator, root: std.Io.Dir) !OwnedPaths {
+    var walker = try root.walk(allocator);
     defer walker.deinit();
     var items: std.ArrayList([]u8) = .empty;
     errdefer {
@@ -1472,7 +1470,7 @@ fn isExpectedPath(writer: *const Writer, relative_path: []const u8) bool {
     return false;
 }
 
-fn validatePublicationDestination(io: std.Io, allocator: std.mem.Allocator, output_dir: []const u8) !void {
+fn validatePublicationDestination(io: std.Io, allocator: std.mem.Allocator, output_dir: std.Io.Dir) !void {
     var existing_paths = try listFiles(io, allocator, output_dir);
     defer existing_paths.deinit();
     for (existing_paths.items) |relative_path| {
@@ -1485,39 +1483,86 @@ fn validatePublicationDestination(io: std.Io, allocator: std.mem.Allocator, outp
 fn promoteFile(
     allocator: std.mem.Allocator,
     writer: *Writer,
-    output_dir: []const u8,
+    output_dir: std.Io.Dir,
     relative_path: []const u8,
 ) !void {
     const source_path = try std.fs.path.join(allocator, &.{ writer.root, relative_path });
-    const destination_path = try std.fs.path.join(allocator, &.{ output_dir, relative_path });
     try std.Io.Dir.cwd().copyFile(
         source_path,
-        std.Io.Dir.cwd(),
-        destination_path,
+        output_dir,
+        relative_path,
         writer.io,
         .{ .make_path = true, .replace = true },
     );
 }
 
+fn requirePublicationDirectory(dir: std.Io.Dir, io: std.Io) !std.Io.Dir {
+    errdefer dir.close(io);
+    if ((try dir.stat(io)).kind != .directory) return error.UnsafePublicationPath;
+    return dir;
+}
+
+fn openPublicationChild(parent: std.Io.Dir, io: std.Io, name: []const u8) !std.Io.Dir {
+    const options: std.Io.Dir.OpenOptions = .{
+        .follow_symlinks = false,
+        .iterate = true,
+    };
+    const child = parent.openDir(io, name, options) catch |open_error| switch (open_error) {
+        error.FileNotFound => blk: {
+            parent.createDir(io, name, .default_dir) catch |create_error| switch (create_error) {
+                error.PathAlreadyExists => {},
+                error.NotDir, error.SymLinkLoop => return error.UnsafePublicationPath,
+                else => |err| return err,
+            };
+            break :blk parent.openDir(io, name, options) catch |retry_error| switch (retry_error) {
+                error.NotDir, error.SymLinkLoop => return error.UnsafePublicationPath,
+                else => |err| return err,
+            };
+        },
+        error.NotDir, error.SymLinkLoop => return error.UnsafePublicationPath,
+        else => |err| return err,
+    };
+    return requirePublicationDirectory(child, io);
+}
+
+fn openPublicationDirectory(io: std.Io, output_dir: []const u8) !std.Io.Dir {
+    var components = std.fs.path.componentIterator(output_dir);
+    const initial = if (components.root()) |root|
+        try std.Io.Dir.cwd().openDir(io, root, .{ .follow_symlinks = false, .iterate = true })
+    else
+        try std.Io.Dir.cwd().openDir(io, ".", .{ .follow_symlinks = false, .iterate = true });
+    var current = try requirePublicationDirectory(initial, io);
+    errdefer current.close(io);
+
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component.name, ".")) continue;
+        if (std.mem.eql(u8, component.name, "..")) return error.UnsafePublicationPath;
+        const child = try openPublicationChild(current, io, component.name);
+        current.close(io);
+        current = child;
+    }
+    return current;
+}
+
 fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, output_dir: []const u8) !void {
-    try std.Io.Dir.cwd().createDirPath(writer.io, output_dir);
-    try validatePublicationDestination(writer.io, allocator, output_dir);
+    var publication_dir = try openPublicationDirectory(writer.io, output_dir);
+    defer publication_dir.close(writer.io);
+    try validatePublicationDestination(writer.io, allocator, publication_dir);
 
     // The standard atomic-copy primitive owns collision-safe temporary files
     // beside each destination and replaces only after the full file is ready.
     for (writer.paths.items) |relative_path| {
-        try promoteFile(allocator, writer, output_dir, relative_path);
+        try promoteFile(allocator, writer, publication_dir, relative_path);
     }
 
     // Retire obsolete artifacts only after the complete new file set is present.
     // An interrupted cleanup can leave detectable extras, but cannot remove any
     // artifact required by the new manifest.
-    var published_paths = try listFiles(writer.io, allocator, output_dir);
+    var published_paths = try listFiles(writer.io, allocator, publication_dir);
     defer published_paths.deinit();
     for (published_paths.items) |relative_path| {
         if (isExpectedPath(writer, relative_path)) continue;
-        const stale_path = try std.fs.path.join(allocator, &.{ output_dir, relative_path });
-        try std.Io.Dir.cwd().deleteFile(writer.io, stale_path);
+        try publication_dir.deleteFile(writer.io, relative_path);
     }
 }
 
@@ -1556,6 +1601,79 @@ test "publication rejects unsafe temporary symlink before writing" {
     const victim_bytes = try cwd.readFileAlloc(io, victim_path, allocator, .limited(1024));
     try std.testing.expectEqualStrings("must survive\n", victim_bytes);
     try std.testing.expectError(error.FileNotFound, cwd.access(io, destination_path, .{}));
+}
+
+test "publication rejects symlinked output root before writing" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const staging_dir = try std.fs.path.join(allocator, &.{ root, "staging" });
+    const victim_dir = try std.fs.path.join(allocator, &.{ root, "victim" });
+    const victim_path = try std.fs.path.join(allocator, &.{ victim_dir, "sentinel.txt" });
+    const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
+    const relative_path = "artifacts/manifests/one-port.appliance-manifest";
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, victim_dir);
+    try cwd.writeFile(io, .{ .sub_path = victim_path, .data = "must survive\n" });
+    try cwd.symLink(io, victim_dir, output_dir, .{});
+
+    var writer = Writer{ .io = io, .allocator = allocator, .root = staging_dir };
+    try writer.write(relative_path, "replacement");
+    try std.testing.expectError(
+        error.UnsafePublicationPath,
+        promoteCorpus(allocator, &writer, output_dir),
+    );
+
+    const victim_bytes = try cwd.readFileAlloc(io, victim_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("must survive\n", victim_bytes);
+}
+
+test "publication rejects symlinked output ancestor before writing" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const staging_dir = try std.fs.path.join(allocator, &.{ root, "staging" });
+    const victim_dir = try std.fs.path.join(allocator, &.{ root, "victim" });
+    const victim_path = try std.fs.path.join(allocator, &.{ victim_dir, "sentinel.txt" });
+    const linked_ancestor = try std.fs.path.join(allocator, &.{ root, "linked" });
+    const output_dir = try std.fs.path.join(allocator, &.{ linked_ancestor, "output" });
+    const relative_path = "artifacts/manifests/one-port.appliance-manifest";
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, victim_dir);
+    try cwd.writeFile(io, .{ .sub_path = victim_path, .data = "must survive\n" });
+    try cwd.symLink(io, victim_dir, linked_ancestor, .{});
+
+    var writer = Writer{ .io = io, .allocator = allocator, .root = staging_dir };
+    try writer.write(relative_path, "replacement");
+    try std.testing.expectError(
+        error.UnsafePublicationPath,
+        promoteCorpus(allocator, &writer, output_dir),
+    );
+
+    const victim_bytes = try cwd.readFileAlloc(io, victim_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("must survive\n", victim_bytes);
+    const redirected_output = try std.fs.path.join(allocator, &.{ victim_dir, "output" });
+    try std.testing.expectError(error.FileNotFound, cwd.access(io, redirected_output, .{}));
 }
 
 fn sha256(bytes: []const u8) [32]u8 {
