@@ -23,6 +23,31 @@ fn isAllowedIsolatedOutputPath(path_bytes: []const u8) bool {
     return std.mem.eql(u8, path_bytes, "./bundle");
 }
 
+fn appendJsonString(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: []const u8) !void {
+    if (!std.unicode.utf8ValidateSlice(value)) return error.InvalidJsonString;
+    var encoded: std.Io.Writer.Allocating = .init(allocator);
+    defer encoded.deinit();
+    try std.json.Stringify.value(value, .{}, &encoded.writer);
+    try output.appendSlice(allocator, encoded.written());
+}
+
+test "manifest JSON strings round trip source path bytes" {
+    const source_path = "src/quote\"\\line\ncontrol\x01.zig";
+    var encoded: std.ArrayList(u8) = .empty;
+    defer encoded.deinit(std.testing.allocator);
+    try appendJsonString(std.testing.allocator, &encoded, source_path);
+    try std.testing.expectEqualStrings("\"src/quote\\\"\\\\line\\ncontrol\\u0001.zig\"", encoded.items);
+
+    const parsed = try std.json.parseFromSlice([]const u8, std.testing.allocator, encoded.items, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(source_path, parsed.value);
+
+    try std.testing.expectError(
+        error.InvalidJsonString,
+        appendJsonString(std.testing.allocator, &encoded, &.{0xff}),
+    );
+}
+
 comptime {
     var windows_isolated = ".\\bundle".*;
     canonicalizePathSeparators(windows_isolated[0..], '\\');
@@ -2888,7 +2913,8 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
         .{ generator_source_identity_algorithm, generator_source_normalization, &generator_source_identity_hex },
     );
     for (compiled_generator_sources, 0..) |source, index| {
-        try manifest.print(allocator, "\"{s}\"{s}", .{ source.path, if (index + 1 == compiled_generator_sources.len) "" else "," });
+        if (index != 0) try manifest.append(allocator, ',');
+        try appendJsonString(allocator, &manifest, source.path);
     }
     try manifest.appendSlice(allocator, "]\n    },\n");
     try manifest.appendSlice(
