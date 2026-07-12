@@ -8,6 +8,13 @@
     "baseline_tree": "b2bd776125bc17215916e2a48bc7102a861788db",
     "boundary_package": "0.6.2",
     "boundary_package_hash": "boundary-0.6.2-flclaA4FhQCQL_ODFaXPP7HtNOn21toNs6rc14-cQqYJ",
+    "baseline_scope": "historical-reference-parent",
+    "generator_source_identity": {
+      "algorithm": "sha256-domain-u32le-path-u64le-canonical-lf-bytes-v1",
+      "normalization": "crlf-to-lf;bare-cr-reject",
+      "sha256": "390ad03cde94cbd27e49cf3fb002bd6bd6e07e0249d279cf7693c5b694ee1a25",
+      "files": ["build.zig","build.zig.zon","examples/world_appliance_common.zig","examples/world_transition_oracle_emit.zig","examples/world_universal_appliance_wasm.zig","src/appliance.zig","src/archive.zig","src/executable.zig","src/linker.zig","src/protocol.zig","src/world.zig","test/fixtures.zig"]
+    },
     "version_fields_scope": "selected-compatibility-cut-lines",
     "world_executable_image_format": 2,
     "world_executable_image_fingerprint": 2,
@@ -27,7 +34,7 @@
   },
   "binary_family_policy": {
     "scope": "exhaustive-top-level-binary-artifacts",
-    "nested_authority": "top-level-owner+world-baseline-tree+boundary-package-hash",
+    "nested_authority": "top-level-owner+world-generator-source-identity+boundary-package-hash",
     "unclassified": "reject",
     "binary_artifact_count": 63
   },
@@ -66,7 +73,7 @@
     {"id":"capacity-exhaustion","transcript":"cases/capacity-exhaustion.txt"},
     {"id":"malformed-records","transcript":"cases/malformed-records.txt"}
   ],
-  "artifact_set_sha256": "1049e59932faf5d6230d9db5b0de80e6bacc25a87decc1eba59597b985728c60",
+  "artifact_set_sha256": "c11660d9309b32cf523632c9f42dfe368d83a85e53e51c2a6989f761fc9a3f9a",
   "artifact_count": 76,
   "artifacts": [
     {"path":"artifacts/effects/active-provider.external.request-frame","length":113,"sha256":"ca2ee9bc6ddd84c07493fe319255f1a90c8d90433034ce3376b191dcc66c39fb"},
@@ -107,7 +114,7 @@
     {"path":"artifacts/states/active-provider.completed.capsule","length":2071,"sha256":"99808e72ddfffe6247151150d93cb5dcf15d0f93d5a18f5a9391a7daa8c660fc"},
     {"path":"artifacts/states/active-provider.migrated.capsule","length":2692,"sha256":"4f083a8dc189095d5903a2972336baf2a7fb51e52e08347c1e1edcfcdee12261"},
     {"path":"artifacts/states/active-provider.source.capsule","length":2570,"sha256":"7b169e1a94ac1e6865e279ffcceddedf62d3c77982f067069f26bfbe1164b3b4"},
-    {"path":"artifacts/states/branch.alternate.run-image","length":1183,"sha256":"dadb7c1bddb47ded92b009c35c1bfd48dc1713959f2ef6ab453e652defe525a3"},
+    {"path":"artifacts/states/branch.alternate.run-image","length":1199,"sha256":"9d79f4d6200c2c9718001563053dd8dfb126ef81655e9456af8d3158167806d2"},
     {"path":"artifacts/states/branch.alternate.transcript-image","length":747,"sha256":"c4bec3586c61b0f896fcf5c3a82b9b01c479f55ed9513111946ddf29de613520"},
     {"path":"artifacts/states/branch.baseline.run-image","length":2212,"sha256":"5aa0c0a44964b4c102bb207aafb8c00fcf55fe4497c2b21327b23d4c18669032"},
     {"path":"artifacts/states/branch.baseline.transcript-image","length":1950,"sha256":"d5f999a07044234ac4cf30c4335caa1613efc908a8b2cfef567ed9c13c36ac02"},

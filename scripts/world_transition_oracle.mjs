@@ -4,6 +4,9 @@ import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
 
 const expectedCases = [
   'one-port-execution',
@@ -197,9 +200,35 @@ const expectedArtifacts = [
   'cases/replay-without-fresh-effect.txt',
 ];
 
+const generatorSourceIdentityAlgorithm = 'sha256-domain-u32le-path-u64le-canonical-lf-bytes-v1';
+const generatorSourceNormalization = 'crlf-to-lf;bare-cr-reject';
+const generatorSourceIdentityDomain = Buffer.from('world.oracle.generator-source-identity.v1\0', 'utf8');
+const generatorSourceFiles = [
+  'build.zig',
+  'build.zig.zon',
+  'examples/world_appliance_common.zig',
+  'examples/world_transition_oracle_emit.zig',
+  'examples/world_universal_appliance_wasm.zig',
+  'src/appliance.zig',
+  'src/archive.zig',
+  'src/executable.zig',
+  'src/linker.zig',
+  'src/protocol.zig',
+  'src/world.zig',
+  'test/fixtures.zig',
+];
+const generatorSourceSrcFiles = [
+  'appliance.zig',
+  'archive.zig',
+  'executable.zig',
+  'linker.zig',
+  'protocol.zig',
+  'world.zig',
+];
+
 const expectedBinaryFamilyPolicy = {
   scope: 'exhaustive-top-level-binary-artifacts',
-  nested_authority: 'top-level-owner+world-baseline-tree+boundary-package-hash',
+  nested_authority: 'top-level-owner+world-generator-source-identity+boundary-package-hash',
   unclassified: 'reject',
   binary_artifact_count: 63,
 };
@@ -420,6 +449,8 @@ if (args.mode === 'compare') {
   validateCorpus(args.expected, args.zigVersion);
 } else if (args.mode === 'self-test-root-symlink') {
   testRootSymlinkRejection();
+} else if (args.mode === 'self-test-generator-source') {
+  testGeneratorSourceIdentity();
 } else {
   throw new Error(`unsupported --mode ${String(args.mode)}`);
 }
@@ -470,6 +501,21 @@ function validateCorpus(root, expectedZigVersion) {
     manifest.semantic_source?.boundary_package_hash,
     expectedBoundaryPackageHash,
     'manifest.semantic_source.boundary_package_hash',
+  );
+  assertEqual(
+    manifest.semantic_source?.baseline_scope,
+    'historical-reference-parent',
+    'manifest.semantic_source.baseline_scope',
+  );
+  assertJsonEqual(
+    manifest.semantic_source?.generator_source_identity,
+    {
+      algorithm: generatorSourceIdentityAlgorithm,
+      normalization: generatorSourceNormalization,
+      sha256: generatorSourceIdentity(repositoryRoot),
+      files: generatorSourceFiles,
+    },
+    'manifest.semantic_source.generator_source_identity',
   );
   assertEqual(
     manifest.semantic_source?.version_fields_scope,
@@ -588,6 +634,78 @@ function boundaryPackageHashFromZon() {
   const hash = /\.hash\s*=\s*"([^"]+)"/.exec(boundaryDependency[1]);
   if (!hash) throw new Error('missing .boundary.hash in build.zig.zon');
   return hash[1];
+}
+
+function canonicalSourceBytes(bytes, path) {
+  const canonical = Buffer.allocUnsafe(bytes.length);
+  let inputIndex = 0;
+  let outputIndex = 0;
+  while (inputIndex < bytes.length) {
+    if (bytes[inputIndex] === 0x0d) {
+      if (inputIndex + 1 >= bytes.length || bytes[inputIndex + 1] !== 0x0a) {
+        throw new Error(`bare carriage return in generator source: ${path}`);
+      }
+      canonical[outputIndex++] = 0x0a;
+      inputIndex += 2;
+      continue;
+    }
+    canonical[outputIndex++] = bytes[inputIndex++];
+  }
+  return canonical.subarray(0, outputIndex);
+}
+
+function generatorSourceIdentity(root, overrides = new Map()) {
+  assertArrayEqual(listFiles(join(root, 'src')), generatorSourceSrcFiles, 'generator source src inventory');
+  const hasher = createHash('sha256');
+  hasher.update(generatorSourceIdentityDomain);
+  for (const path of generatorSourceFiles) {
+    const fullPath = join(root, path);
+    if (!lstatSync(fullPath).isFile()) throw new Error(`invalid generator source entry: ${path}`);
+    const bytes = canonicalSourceBytes(overrides.get(path) ?? readFileSync(fullPath), path);
+    const pathLength = Buffer.alloc(4);
+    pathLength.writeUInt32LE(Buffer.byteLength(path, 'utf8'));
+    const contentLength = Buffer.alloc(8);
+    contentLength.writeBigUInt64LE(BigInt(bytes.length));
+    hasher.update(pathLength);
+    hasher.update(path, 'utf8');
+    hasher.update(contentLength);
+    hasher.update(bytes);
+  }
+  return hasher.digest('hex');
+}
+
+function withCrlf(bytes) {
+  let lineFeedCount = 0;
+  for (const byte of bytes) if (byte === 0x0a) lineFeedCount += 1;
+  const result = Buffer.alloc(bytes.length + lineFeedCount);
+  let outputIndex = 0;
+  for (const byte of bytes) {
+    if (byte === 0x0a) result[outputIndex++] = 0x0d;
+    result[outputIndex++] = byte;
+  }
+  return result;
+}
+
+function testGeneratorSourceIdentity() {
+  const path = 'build.zig';
+  const canonical = canonicalSourceBytes(readFileSync(join(repositoryRoot, path)), path);
+  const expected = generatorSourceIdentity(repositoryRoot);
+  const crlfIdentity = generatorSourceIdentity(repositoryRoot, new Map([[path, withCrlf(canonical)]]));
+  assertEqual(crlfIdentity, expected, 'generator source CRLF equivalence');
+
+  const mutatedIdentity = generatorSourceIdentity(
+    repositoryRoot,
+    new Map([[path, Buffer.concat([canonical, Buffer.from('// generator source mutation\n')])]]),
+  );
+  if (mutatedIdentity === expected) throw new Error('generator source mutation did not change identity');
+
+  try {
+    generatorSourceIdentity(repositoryRoot, new Map([[path, Buffer.concat([canonical, Buffer.from('\r')])]]));
+  } catch (error) {
+    if (error instanceof Error && error.message === `bare carriage return in generator source: ${path}`) return;
+    throw error;
+  }
+  throw new Error('bare carriage return accepted in generator source');
 }
 
 function validateBinaryFamilies(root, contentFiles, manifest) {

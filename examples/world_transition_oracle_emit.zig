@@ -62,6 +62,32 @@ const cases = [_]Case{
     .{ .id = "malformed-records", .transcript = "cases/malformed-records.txt" },
 };
 
+const generator_source_identity_algorithm = "sha256-domain-u32le-path-u64le-canonical-lf-bytes-v1";
+const generator_source_normalization = "crlf-to-lf;bare-cr-reject";
+const generator_source_identity_domain = "world.oracle.generator-source-identity.v1\x00";
+const generator_source_files = [_][]const u8{
+    "build.zig",
+    "build.zig.zon",
+    "examples/world_appliance_common.zig",
+    "examples/world_transition_oracle_emit.zig",
+    "examples/world_universal_appliance_wasm.zig",
+    "src/appliance.zig",
+    "src/archive.zig",
+    "src/executable.zig",
+    "src/linker.zig",
+    "src/protocol.zig",
+    "src/world.zig",
+    "test/fixtures.zig",
+};
+const generator_source_src_files = [_][]const u8{
+    "appliance.zig",
+    "archive.zig",
+    "executable.zig",
+    "linker.zig",
+    "protocol.zig",
+    "world.zig",
+};
+
 const Writer = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -199,7 +225,10 @@ pub fn main(init: std.process.Init) !void {
     if (!std.mem.eql(u8, command, "generate")) return error.InvalidArguments;
     const target_flag = args.next() orelse return error.InvalidArguments;
     const target_path = args.next() orelse return error.InvalidArguments;
+    const source_flag = args.next() orelse return error.InvalidArguments;
+    const source_root = args.next() orelse return error.InvalidArguments;
     if (args.next() != null) return error.InvalidArguments;
+    if (!std.mem.eql(u8, source_flag, "--source-root") or !std.fs.path.isAbsolute(source_root)) return error.InvalidSourceRoot;
 
     const publication_target: PublicationTarget = if (std.mem.eql(u8, target_flag, "--out-dir")) blk: {
         const portable_output_dir = try allocator.dupe(u8, target_path);
@@ -210,6 +239,7 @@ pub fn main(init: std.process.Init) !void {
         if (!std.fs.path.isAbsolute(target_path)) return error.InvalidTrustedPrefix;
         break :blk .{ .trusted_prefix = target_path };
     } else return error.InvalidArguments;
+    const generator_source_identity = try generatorSourceIdentity(init.io, allocator, source_root);
 
     const staging_dir = "./world-transition-oracle-staging";
     try std.Io.Dir.cwd().deleteTree(init.io, staging_dir);
@@ -227,7 +257,7 @@ pub fn main(init: std.process.Init) !void {
     try emitDeterministicFailure(allocator, &writer);
     try emitCapacityExhaustion(allocator, &writer);
     try emitMalformed(allocator, &writer);
-    try writeManifest(allocator, &writer);
+    try writeManifest(allocator, &writer, generator_source_identity);
     try writeChecksums(allocator, &writer);
     try promoteCorpus(allocator, &writer, publication_target);
 }
@@ -932,7 +962,16 @@ fn emitBranching(allocator: std.mem.Allocator, writer: *Writer) !void {
     const baseline_run_image = world.RunImage.fromTranscriptImage(fixtures.Agent.Target, baseline.image, .completed_run);
     const baseline_run_bytes = try baseline_run_image.encode(allocator);
     try writer.write("artifacts/states/branch.baseline.run-image", baseline_run_bytes);
-    const target_ref = world.TargetRef.fromTarget(fixtures.Agent.Target);
+    const projected_run_image = world.RunImage.fromTranscriptImage(fixtures.Agent.Target, forked_image, .branched_run);
+    const projected_state = projected_run_image.current_state;
+    if (projected_state.status != .completed or
+        projected_state.final_response_fingerprint == null or
+        projected_state.final_value_image_fingerprint == null or
+        projected_state.turn_index <= checkpoint.turn_index)
+    {
+        return error.InvalidBranchStateProjection;
+    }
+    const target_ref = projected_run_image.target_ref;
     const branch = world.Timeline.Branch{
         .branch_id = 1,
         .parent_branch_id = null,
@@ -946,15 +985,18 @@ fn emitBranching(allocator: std.mem.Allocator, writer: *Writer) !void {
     };
     const state = world.RunState.init(.{
         .target_ref_fingerprint = target_ref.target_ref_fingerprint,
-        .transcript_image_fingerprint = forked_image.transcript_image_fingerprint,
+        .transcript_image_fingerprint = projected_state.transcript_image_fingerprint,
         .branch_id = 1,
         .checkpoint_fingerprint = checkpoint.checkpoint_fingerprint,
-        .status = .completed,
+        .final_response_fingerprint = projected_state.final_response_fingerprint,
+        .final_value_image_fingerprint = projected_state.final_value_image_fingerprint,
+        .turn_index = projected_state.turn_index,
+        .status = projected_state.status,
     });
     const branch_run_image = world.RunImage.init(.{
         .kind = .branched_run,
         .target_ref = target_ref,
-        .import_set_fingerprint = world.ImportSet.fromTarget(fixtures.Agent.Target).import_set_fingerprint,
+        .import_set_fingerprint = projected_run_image.import_set_fingerprint,
         .transcript_image = forked_image,
         .current_state = state,
         .checkpoints = &.{checkpoint},
@@ -966,6 +1008,14 @@ fn emitBranching(allocator: std.mem.Allocator, writer: *Writer) !void {
     var decoded_branch_run = try world.RunImage.decode(allocator, branch_run_bytes);
     defer decoded_branch_run.deinit(allocator);
     try decoded_branch_run.validate(.{ .require_portable_values = true });
+    if (decoded_branch_run.current_state.transcript_image_fingerprint != projected_state.transcript_image_fingerprint or
+        decoded_branch_run.current_state.final_response_fingerprint != projected_state.final_response_fingerprint or
+        decoded_branch_run.current_state.final_value_image_fingerprint != projected_state.final_value_image_fingerprint or
+        decoded_branch_run.current_state.turn_index != projected_state.turn_index or
+        decoded_branch_run.current_state.status != projected_state.status)
+    {
+        return error.InvalidBranchStateProjection;
+    }
 
     const case_transcript = try std.fmt.allocPrint(
         allocator,
@@ -1830,6 +1880,79 @@ test "trusted prefix rejects a symlinked oracle suffix" {
     try std.testing.expectEqualStrings("must survive\n", victim_bytes);
 }
 
+fn canonicalSourceBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    var canonical: std.ArrayList(u8) = .empty;
+    errdefer canonical.deinit(allocator);
+    try canonical.ensureTotalCapacity(allocator, bytes.len);
+    var index: usize = 0;
+    while (index < bytes.len) {
+        if (bytes[index] == '\r') {
+            if (index + 1 >= bytes.len or bytes[index + 1] != '\n') return error.InvalidSourceLineEnding;
+            canonical.appendAssumeCapacity('\n');
+            index += 2;
+            continue;
+        }
+        canonical.appendAssumeCapacity(bytes[index]);
+        index += 1;
+    }
+    return canonical.toOwnedSlice(allocator);
+}
+
+fn generatorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root: []const u8) ![32]u8 {
+    var source_dir = try std.Io.Dir.cwd().openDir(io, source_root, .{ .follow_symlinks = true, .iterate = true });
+    defer source_dir.close(io);
+    var src_dir = try source_dir.openDir(io, "src", .{ .follow_symlinks = false, .iterate = true });
+    defer src_dir.close(io);
+    var actual_src_files = try listFiles(io, allocator, src_dir);
+    defer actual_src_files.deinit();
+    if (actual_src_files.items.len != generator_source_src_files.len) return error.InvalidGeneratorSourceInventory;
+    for (generator_source_src_files, actual_src_files.items) |expected, actual| {
+        if (!std.mem.eql(u8, expected, actual)) return error.InvalidGeneratorSourceInventory;
+    }
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(generator_source_identity_domain);
+    for (generator_source_files) |relative_path| {
+        var file = source_dir.openFile(io, relative_path, .{
+            .mode = .read_only,
+            .follow_symlinks = false,
+            .resolve_beneath = true,
+        }) catch |err| switch (err) {
+            error.SymLinkLoop => return error.InvalidGeneratorSourceEntry,
+            else => |other| return other,
+        };
+        defer file.close(io);
+        if ((try file.stat(io)).kind != .file) return error.InvalidGeneratorSourceEntry;
+        var read_buffer: [4096]u8 = undefined;
+        var reader = file.reader(io, &read_buffer);
+        const raw_bytes = try reader.interface.allocRemaining(allocator, .limited(16 * 1024 * 1024));
+        defer allocator.free(raw_bytes);
+        const canonical_bytes = try canonicalSourceBytes(allocator, raw_bytes);
+        defer allocator.free(canonical_bytes);
+
+        var path_length_bytes = [_]u8{0} ** 4;
+        std.mem.writeInt(u32, &path_length_bytes, @intCast(relative_path.len), .little);
+        var content_length_bytes = [_]u8{0} ** 8;
+        std.mem.writeInt(u64, &content_length_bytes, @intCast(canonical_bytes.len), .little);
+        hasher.update(&path_length_bytes);
+        hasher.update(relative_path);
+        hasher.update(&content_length_bytes);
+        hasher.update(canonical_bytes);
+    }
+    var digest = [_]u8{0} ** 32;
+    hasher.final(&digest);
+    return digest;
+}
+
+test "generator source canonicalization is checkout stable" {
+    const lf = try canonicalSourceBytes(std.testing.allocator, "first\nsecond\n");
+    defer std.testing.allocator.free(lf);
+    const crlf = try canonicalSourceBytes(std.testing.allocator, "first\r\nsecond\r\n");
+    defer std.testing.allocator.free(crlf);
+    try std.testing.expectEqualSlices(u8, lf, crlf);
+    try std.testing.expectError(error.InvalidSourceLineEnding, canonicalSourceBytes(std.testing.allocator, "bare\rcarriage"));
+}
+
 fn sha256(bytes: []const u8) [32]u8 {
     var digest = [_]u8{0} ** 32;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
@@ -1845,7 +1968,7 @@ fn readArtifact(allocator: std.mem.Allocator, writer: *Writer, relative_path: []
     return std.Io.Dir.cwd().readFileAlloc(writer.io, full_path, allocator, .limited(16 * 1024 * 1024));
 }
 
-fn writeManifest(allocator: std.mem.Allocator, writer: *Writer) !void {
+fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source_identity: [32]u8) !void {
     std.mem.sort([]const u8, writer.paths.items, {}, pathLessThan);
     var artifact_set_hasher = std.crypto.hash.sha2.Sha256.init(.{});
     for (writer.paths.items) |relative_path| {
@@ -1861,6 +1984,7 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer) !void {
     var artifact_set_digest = [_]u8{0} ** 32;
     artifact_set_hasher.final(&artifact_set_digest);
     const artifact_set_hex = digestHex(artifact_set_digest);
+    const generator_source_identity_hex = digestHex(generator_source_identity);
 
     var manifest: std.ArrayList(u8) = .empty;
     try manifest.appendSlice(
@@ -1874,8 +1998,25 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer) !void {
             "    \"baseline_commit\": \"969f23f6bad87ca9d535d92d62b6418612891699\",\n" ++
             "    \"baseline_tree\": \"b2bd776125bc17215916e2a48bc7102a861788db\",\n" ++
             "    \"boundary_package\": \"0.6.2\",\n" ++
-            "    \"boundary_package_hash\": \"boundary-0.6.2-flclaA4FhQCQL_ODFaXPP7HtNOn21toNs6rc14-cQqYJ\",\n" ++
-            "    \"version_fields_scope\": \"selected-compatibility-cut-lines\",\n" ++
+            "    \"boundary_package_hash\": \"boundary-0.6.2-flclaA4FhQCQL_ODFaXPP7HtNOn21toNs6rc14-cQqYJ\",\n",
+    );
+    try manifest.print(
+        allocator,
+        "    \"baseline_scope\": \"historical-reference-parent\",\n" ++
+            "    \"generator_source_identity\": {{\n" ++
+            "      \"algorithm\": \"{s}\",\n" ++
+            "      \"normalization\": \"{s}\",\n" ++
+            "      \"sha256\": \"{s}\",\n" ++
+            "      \"files\": [",
+        .{ generator_source_identity_algorithm, generator_source_normalization, &generator_source_identity_hex },
+    );
+    for (generator_source_files, 0..) |relative_path, index| {
+        try manifest.print(allocator, "\"{s}\"{s}", .{ relative_path, if (index + 1 == generator_source_files.len) "" else "," });
+    }
+    try manifest.appendSlice(allocator, "]\n    },\n");
+    try manifest.appendSlice(
+        allocator,
+        "    \"version_fields_scope\": \"selected-compatibility-cut-lines\",\n" ++
             "    \"world_executable_image_format\": 2,\n" ++
             "    \"world_executable_image_fingerprint\": 2,\n" ++
             "    \"world_executable_image_codec\": 1,\n" ++
@@ -1894,7 +2035,7 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer) !void {
             "  },\n" ++
             "  \"binary_family_policy\": {\n" ++
             "    \"scope\": \"exhaustive-top-level-binary-artifacts\",\n" ++
-            "    \"nested_authority\": \"top-level-owner+world-baseline-tree+boundary-package-hash\",\n" ++
+            "    \"nested_authority\": \"top-level-owner+world-generator-source-identity+boundary-package-hash\",\n" ++
             "    \"unclassified\": \"reject\",\n" ++
             "    \"binary_artifact_count\": 63\n" ++
             "  },\n" ++

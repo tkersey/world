@@ -36,7 +36,7 @@ ed23c00b90b52c39aae8e0703b7dbe068da6c1a72e040d3ea28e948df6014186  conformance/wo
 99808e72ddfffe6247151150d93cb5dcf15d0f93d5a18f5a9391a7daa8c660fc  conformance/world-image-v1/v0/world/artifacts/states/active-provider.completed.capsule
 4f083a8dc189095d5903a2972336baf2a7fb51e52e08347c1e1edcfcdee12261  conformance/world-image-v1/v0/world/artifacts/states/active-provider.migrated.capsule
 7b169e1a94ac1e6865e279ffcceddedf62d3c77982f067069f26bfbe1164b3b4  conformance/world-image-v1/v0/world/artifacts/states/active-provider.source.capsule
-dadb7c1bddb47ded92b009c35c1bfd48dc1713959f2ef6ab453e652defe525a3  conformance/world-image-v1/v0/world/artifacts/states/branch.alternate.run-image
+9d79f4d6200c2c9718001563053dd8dfb126ef81655e9456af8d3158167806d2  conformance/world-image-v1/v0/world/artifacts/states/branch.alternate.run-image
 c4bec3586c61b0f896fcf5c3a82b9b01c479f55ed9513111946ddf29de613520  conformance/world-image-v1/v0/world/artifacts/states/branch.alternate.transcript-image
 5aa0c0a44964b4c102bb207aafb8c00fcf55fe4497c2b21327b23d4c18669032  conformance/world-image-v1/v0/world/artifacts/states/branch.baseline.run-image
 d5f999a07044234ac4cf30c4335caa1613efc908a8b2cfef567ed9c13c36ac02  conformance/world-image-v1/v0/world/artifacts/states/branch.baseline.transcript-image
@@ -74,4 +74,4 @@ dd4169e21f644eaba28d8c65911a4d5d1443db561d5c4eb8895850ee585463d8  conformance/wo
 512ff22ff6d4c925e393ede187357715ea0ab0d04cbb5d1e510d1f0cfd0c43a6  conformance/world-image-v1/v0/world/cases/partial-response-batch.txt
 9699118dda6b0369c80145629f293afdf7ddf00ad6b69b70b4b932d0110200c4  conformance/world-image-v1/v0/world/cases/provider-parked-externally.txt
 df66f4b958f274b1a1661a39be4a70d2b8d29ba3bfa2ebcd25277a4a42959520  conformance/world-image-v1/v0/world/cases/replay-without-fresh-effect.txt
-c4f2cd5e7d20982534d668a7cb8fb951e589acecf5d3edfca9f1fcbd4596fd16  conformance/world-image-v1/v0/world/manifest.json
+fa41d650f95556f4caef1cd674c09a767d377f66856c3277329d01ecb97dc5c3  conformance/world-image-v1/v0/world/manifest.json
