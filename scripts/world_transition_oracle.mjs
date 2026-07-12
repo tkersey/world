@@ -226,24 +226,14 @@ const expectedArtifacts = [
 const generatorSourceIdentityAlgorithm = 'sha256-domain-u32le-path-u64le-canonical-lf-bytes-v1';
 const generatorSourceNormalization = 'crlf-to-lf;bare-cr-reject';
 const generatorSourceIdentityDomain = Buffer.from('world.oracle.generator-source-identity.v1\0', 'utf8');
-const generatorSourceFiles = [
+const sourcePackageRootFiles = [
+  'README.md',
   'build.zig',
   'build.zig.zon',
-  'examples/world_appliance_common.zig',
-  'examples/world_transition_oracle_emit.zig',
-  'examples/world_universal_appliance_wasm.zig',
-  'scripts/world_transition_oracle.mjs',
-  'src/appliance.zig',
-  'src/archive.zig',
-  'src/executable.zig',
-  'src/linker.zig',
-  'src/protocol.zig',
-  'src/world.zig',
-  'test/fixtures.zig',
 ];
-const generatorSourceSrcFiles = generatorSourceFiles
-  .filter((path) => path.startsWith('src/'))
-  .map((path) => path.slice('src/'.length));
+const sourcePackageDirs = ['src', 'examples', 'scripts', 'test', 'docs', 'conformance'];
+const generatorSourceExcludedPrefix = 'conformance/world-image-v1/v0/world/';
+const generatorSourceFiles = generatorSourceInventory(repositoryRoot);
 
 const expectedBinaryFamilyPolicy = {
   scope: 'exhaustive-top-level-binary-artifacts',
@@ -497,9 +487,7 @@ function requireArg(value, name) {
 
 function packageVersionFromZon(zon) {
   const source = zonWithoutComments(zon);
-  const matches = [...source.matchAll(/(?:^|[,{])\s*\.version\s*=\s*"([^"\\\r\n]+)"\s*,/g)];
-  if (matches.length !== 1) throw new Error(`expected exactly one root package version, got ${matches.length}`);
-  return matches[0][1];
+  return zonStringField(zonRootStructBody(source), 'version', 'root package version');
 }
 
 function zonWithoutComments(zon) {
@@ -571,6 +559,20 @@ function testPackageVersionProjection() {
   const boundaryPackage = boundaryPackageFromZon(dependencyZon);
   assertEqual(boundaryPackage.version, '1.2.3', 'Boundary dependency version projection');
   assertEqual(boundaryPackage.hash, 'boundary-1.2.3-fixture', 'Boundary dependency hash projection');
+
+  const escapedDependencyZon = `.{
+    .@"dependencies" = .{
+      .@"boundary" = .{
+        .@"url" = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz",
+        .@"hash" = "boundary-1.2.3-fixture"
+      }
+    },
+  }`;
+  assertJsonEqual(
+    boundaryPackageFromZon(escapedDependencyZon),
+    boundaryPackage,
+    'escaped Boundary dependency without trailing commas',
+  );
 
   try {
     boundaryPackageFromZon(
@@ -763,13 +765,9 @@ function rootBoundaryPackage() {
 
 function boundaryPackageFromZon(zon) {
   const source = zonWithoutComments(zon);
-  const dependencyMatches = [
-    ...source.matchAll(/(?:^|[,{])\s*\.boundary\s*=\s*\.\{([^{}]*)\}\s*,/g),
-  ];
-  if (dependencyMatches.length !== 1) {
-    throw new Error(`expected exactly one .boundary dependency, got ${dependencyMatches.length}`);
-  }
-  const body = dependencyMatches[0][1];
+  const root = zonRootStructBody(source);
+  const dependencies = zonStructFieldBody(root, 'dependencies', '.dependencies');
+  const body = zonStructFieldBody(dependencies, 'boundary', '.dependencies.boundary');
   const url = zonStringField(body, 'url', '.boundary.url');
   const hash = zonStringField(body, 'hash', '.boundary.hash');
   const urlPrefix = 'https://github.com/tkersey/boundary/archive/refs/tags/v';
@@ -786,12 +784,114 @@ function boundaryPackageFromZon(zon) {
   return { version, hash };
 }
 
-function zonStringField(body, field, label) {
-  const matches = [
-    ...body.matchAll(new RegExp(`(?:^|,)\\s*\\.${field}\\s*=\\s*"([^"\\\\\\r\\n]+)"\\s*,`, 'g')),
-  ];
+function zonRootStructBody(source) {
+  const match = /^\s*\.\s*\{/.exec(source);
+  if (!match) throw new Error('expected root ZON struct literal');
+  const openingBrace = match[0].lastIndexOf('{');
+  const closingBrace = findClosingZonBrace(source, openingBrace);
+  if (source.slice(closingBrace + 1).trim().length !== 0) throw new Error('trailing root ZON tokens');
+  return source.slice(openingBrace + 1, closingBrace);
+}
+
+function zonStructFieldBody(source, field, label) {
+  const fieldPattern = zonFieldPattern(field);
+  const matches = [...source.matchAll(new RegExp(`(?:^|[,{])\\s*${fieldPattern}\\s*=\\s*\\.\\s*\\{`, 'g'))]
+    .filter((match) => zonBraceDepthAt(source, match.index) === 0);
   if (matches.length !== 1) throw new Error(`expected exactly one ${label}, got ${matches.length}`);
-  return matches[0][1];
+  const openingBrace = matches[0].index + matches[0][0].lastIndexOf('{');
+  const closingBrace = findClosingZonBrace(source, openingBrace);
+  return source.slice(openingBrace + 1, closingBrace);
+}
+
+function zonStringField(body, field, label) {
+  const fieldPattern = zonFieldPattern(field);
+  const matches = [...body.matchAll(new RegExp(`(?:^|[,{])\\s*${fieldPattern}\\s*=\\s*"((?:[^"\\\\\\r\\n]|\\\\.)*)"\\s*(?:,|$)`, 'g'))]
+    .filter((match) => zonBraceDepthAt(body, match.index) === 0);
+  if (matches.length !== 1) throw new Error(`expected exactly one ${label}, got ${matches.length}`);
+  return decodeZonString(matches[0][1], label);
+}
+
+function zonFieldPattern(field) {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return `\\.(?:${escaped}|@"${escaped}")`;
+}
+
+function findClosingZonBrace(source, openingBrace) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = openingBrace; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '{') depth += 1;
+    else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return index;
+      if (depth < 0) break;
+    }
+  }
+  throw new Error('unterminated ZON struct literal');
+}
+
+function zonBraceDepthAt(source, end) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < end; index += 1) {
+    const character = source[index];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") quote = character;
+    else if (character === '{') depth += 1;
+    else if (character === '}') depth -= 1;
+  }
+  return depth;
+}
+
+function decodeZonString(raw, label) {
+  let decoded = '';
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character !== '\\') {
+      decoded += character;
+      continue;
+    }
+    const escape = raw[++index];
+    if (escape === undefined) throw new Error(`unterminated escape in ${label}`);
+    if (escape === 'n') decoded += '\n';
+    else if (escape === 'r') decoded += '\r';
+    else if (escape === 't') decoded += '\t';
+    else if (escape === '\\' || escape === '"' || escape === "'") decoded += escape;
+    else if (escape === 'x') {
+      const hex = raw.slice(index + 1, index + 3);
+      if (!/^[0-9a-fA-F]{2}$/.test(hex)) throw new Error(`invalid hexadecimal escape in ${label}`);
+      decoded += String.fromCodePoint(Number.parseInt(hex, 16));
+      index += 2;
+    } else if (escape === 'u' && raw[index + 1] === '{') {
+      const close = raw.indexOf('}', index + 2);
+      if (close === -1) throw new Error(`unterminated Unicode escape in ${label}`);
+      const hex = raw.slice(index + 2, close);
+      if (!/^[0-9a-fA-F]{1,6}$/.test(hex)) throw new Error(`invalid Unicode escape in ${label}`);
+      decoded += String.fromCodePoint(Number.parseInt(hex, 16));
+      index = close;
+    } else {
+      throw new Error(`unsupported escape in ${label}`);
+    }
+  }
+  return decoded;
 }
 
 function canonicalSourceBytes(bytes, path) {
@@ -813,7 +913,6 @@ function canonicalSourceBytes(bytes, path) {
 }
 
 function generatorSourceIdentity(root, overrides = new Map()) {
-  assertArrayEqual(listFiles(join(root, 'src')), generatorSourceSrcFiles, 'generator source src inventory');
   const hasher = createHash('sha256');
   hasher.update(generatorSourceIdentityDomain);
   for (const path of generatorSourceFiles) {
@@ -983,6 +1082,18 @@ function listFiles(root) {
   if (!lstatSync(inspectedRoot).isDirectory()) throw new Error(`not a directory: ${root}`);
   const files = [];
   walk(inspectedRoot, inspectedRoot, files);
+  files.sort(compareAscii);
+  return files;
+}
+
+function generatorSourceInventory(root) {
+  const files = [...sourcePackageRootFiles];
+  for (const sourceRoot of sourcePackageDirs) {
+    for (const relativePath of listFiles(join(root, sourceRoot))) {
+      const path = `${sourceRoot}/${relativePath}`;
+      if (!path.startsWith(generatorSourceExcludedPrefix)) files.push(path);
+    }
+  }
   files.sort(compareAscii);
   return files;
 }

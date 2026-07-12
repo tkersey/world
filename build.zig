@@ -71,9 +71,16 @@ const world_source_package_dirs = [_][]const u8{
 };
 
 fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
+    for (worldSourcePackagePaths(b, null)) |path| run.addFileInput(b.path(path));
+}
+
+fn worldSourcePackagePaths(b: *std.Build, excluded_prefix: ?[]const u8) []const []const u8 {
     var paths: std.ArrayList([]const u8) = .empty;
 
     for (world_source_package_root_files) |path| {
+        if (excluded_prefix) |prefix| {
+            if (std.mem.startsWith(u8, path, prefix)) continue;
+        }
         paths.append(b.allocator, b.dupe(path)) catch @panic("oom");
     }
 
@@ -89,39 +96,35 @@ fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
             std.debug.panic("failed to walk source package directory '{s}': {s}", .{ root, @errorName(err) });
         }) |entry| {
             if (entry.kind != .file) continue;
-            paths.append(b.allocator, b.fmt("{s}/{s}", .{ root, entry.path })) catch @panic("oom");
+            const path = b.fmt("{s}/{s}", .{ root, entry.path });
+            if (std.fs.path.sep != '/') {
+                for (path) |*byte| if (byte.* == std.fs.path.sep) {
+                    byte.* = '/';
+                };
+            }
+            if (excluded_prefix) |prefix| {
+                if (std.mem.startsWith(u8, path, prefix)) continue;
+            }
+            paths.append(b.allocator, path) catch @panic("oom");
         }
     }
 
     std.mem.sort([]const u8, paths.items, {}, sourcePathLessThan);
-    for (paths.items) |path| run.addFileInput(b.path(path));
+    return paths.toOwnedSlice(b.allocator) catch @panic("oom");
 }
 
 fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
 }
 
-const world_transition_oracle_source_paths = [_][]const u8{
-    "build.zig",
-    "build.zig.zon",
-    "examples/world_appliance_common.zig",
-    "examples/world_transition_oracle_emit.zig",
-    "examples/world_universal_appliance_wasm.zig",
-    "scripts/world_transition_oracle.mjs",
-    "src/appliance.zig",
-    "src/archive.zig",
-    "src/executable.zig",
-    "src/linker.zig",
-    "src/protocol.zig",
-    "src/world.zig",
-    "test/fixtures.zig",
-};
+const world_transition_oracle_source_excluded_prefix = "conformance/world-image-v1/v0/world/";
 
 fn worldTransitionOracleSourceClosureModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
+    const source_paths = worldSourcePackagePaths(b, world_transition_oracle_source_excluded_prefix);
     const files = b.addWriteFiles();
     var root_source: std.ArrayList(u8) = .empty;
     root_source.appendSlice(
@@ -130,9 +133,21 @@ fn worldTransitionOracleSourceClosureModule(
             "    path: []const u8,\n" ++
             "    bytes: []const u8,\n" ++
             "};\n" ++
-            "pub const sources = [_]Source{\n",
+            "pub const root_files = [_][]const u8{\n",
     ) catch @panic("oom");
-    for (world_transition_oracle_source_paths) |path| {
+    for (world_source_package_root_files) |path| {
+        root_source.print(b.allocator, "    \"{f}\",\n", .{std.zig.fmtString(path)}) catch @panic("oom");
+    }
+    root_source.appendSlice(b.allocator, "};\npub const source_dirs = [_][]const u8{\n") catch @panic("oom");
+    for (world_source_package_dirs) |path| {
+        root_source.print(b.allocator, "    \"{f}\",\n", .{std.zig.fmtString(path)}) catch @panic("oom");
+    }
+    root_source.print(
+        b.allocator,
+        "}};\npub const excluded_prefix = \"{f}\";\npub const sources = [_]Source{{\n",
+        .{std.zig.fmtString(world_transition_oracle_source_excluded_prefix)},
+    ) catch @panic("oom");
+    for (source_paths) |path| {
         _ = files.addCopyFile(b.path(path), path);
         root_source.print(
             b.allocator,

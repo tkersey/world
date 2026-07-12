@@ -66,30 +66,17 @@ const cases = [_]Case{
 const generator_source_identity_algorithm = "sha256-domain-u32le-path-u64le-canonical-lf-bytes-v1";
 const generator_source_normalization = "crlf-to-lf;bare-cr-reject";
 const generator_source_identity_domain = "world.oracle.generator-source-identity.v1\x00";
-const generator_source_files = [_][]const u8{
-    "build.zig",
-    "build.zig.zon",
-    "examples/world_appliance_common.zig",
-    "examples/world_transition_oracle_emit.zig",
-    "examples/world_universal_appliance_wasm.zig",
-    "scripts/world_transition_oracle.mjs",
-    "src/appliance.zig",
-    "src/archive.zig",
-    "src/executable.zig",
-    "src/linker.zig",
-    "src/protocol.zig",
-    "src/world.zig",
-    "test/fixtures.zig",
-};
 const compiled_generator_sources = world_transition_oracle_sources.sources;
+const generator_source_root_files = world_transition_oracle_sources.root_files;
+const generator_source_dirs = world_transition_oracle_sources.source_dirs;
+const generator_source_excluded_prefix = world_transition_oracle_sources.excluded_prefix;
 
 comptime {
-    if (compiled_generator_sources.len != generator_source_files.len) {
-        @compileError("compiled generator source inventory must remain complete");
-    }
-    for (compiled_generator_sources, generator_source_files) |compiled, expected_path| {
-        if (!std.mem.eql(u8, compiled.path, expected_path)) {
-            @compileError("compiled generator source inventory must preserve canonical order");
+    @setEvalBranchQuota(100_000);
+    if (compiled_generator_sources.len == 0) @compileError("compiled generator source inventory must not be empty");
+    for (compiled_generator_sources[1..], compiled_generator_sources[0 .. compiled_generator_sources.len - 1]) |current, previous| {
+        if (!std.mem.lessThan(u8, previous.path, current.path)) {
+            @compileError("compiled generator source inventory must be unique and preserve canonical order");
         }
     }
 }
@@ -198,6 +185,9 @@ test "package version projection accepts valid ZON whitespace and comments" {
     const version = try packageVersionFromZon(std.testing.allocator, zon);
     defer std.testing.allocator.free(version);
     try std.testing.expectEqualStrings("1.2.3", version);
+    const escaped_version = try packageVersionFromZon(std.testing.allocator, ".{ .@\"version\" = \"2.0.0\" }");
+    defer std.testing.allocator.free(escaped_version);
+    try std.testing.expectEqualStrings("2.0.0", escaped_version);
 }
 
 test "boundary dependency provenance projects one pinned package owner" {
@@ -217,6 +207,21 @@ test "boundary dependency provenance projects one pinned package owner" {
     defer package.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("1.2.3", package.version);
     try std.testing.expectEqualStrings("boundary-1.2.3-fixture", package.hash);
+
+    const escaped =
+        \\.{
+        \\    .@"dependencies" = .{
+        \\        .@"boundary" = .{
+        \\            .@"url" = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz",
+        \\            .@"hash" = "boundary-1.2.3-fixture"
+        \\        }
+        \\    },
+        \\}
+    ;
+    var escaped_package = try boundaryPackageFromZon(std.testing.allocator, escaped);
+    defer escaped_package.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(package.version, escaped_package.version);
+    try std.testing.expectEqualStrings(package.hash, escaped_package.hash);
 
     const mismatched =
         \\.{
@@ -1632,20 +1637,28 @@ const NativeSemanticSnapshot = struct {
     last_output_status: ?world.Appliance.TurnStatus,
     last_turn_status: ?world.Appliance.TurnStatus,
     outstanding_request_bytes: []const u8,
+    legacy_outstanding_request_present: bool,
+    legacy_outstanding_request_bytes: []const u8,
     output_bytes: []const u8,
     closure_bytes: []const u8,
 };
 
-fn captureNativeSemanticSnapshot(allocator: std.mem.Allocator, native: *world.Appliance.Native) !NativeSemanticSnapshot {
-    var requests: std.ArrayList(u8) = .empty;
-    for (effectiveOutstandingHostRequests(&native.core)) |request| {
+fn encodeHostRequestsForSnapshot(allocator: std.mem.Allocator, host_requests: []const world.Appliance.HostRequest) ![]u8 {
+    var encoded_requests: std.ArrayList(u8) = .empty;
+    errdefer encoded_requests.deinit(allocator);
+    for (host_requests) |request| {
         var encoded: std.ArrayList(u8) = .empty;
+        defer encoded.deinit(allocator);
         try request.encode(&encoded, allocator);
         var length_bytes = [_]u8{0} ** 8;
         std.mem.writeInt(u64, &length_bytes, @intCast(encoded.items.len), .little);
-        try requests.appendSlice(allocator, &length_bytes);
-        try requests.appendSlice(allocator, encoded.items);
+        try encoded_requests.appendSlice(allocator, &length_bytes);
+        try encoded_requests.appendSlice(allocator, encoded.items);
     }
+    return encoded_requests.toOwnedSlice(allocator);
+}
+
+fn captureNativeSemanticSnapshot(allocator: std.mem.Allocator, native: *world.Appliance.Native) !NativeSemanticSnapshot {
     return .{
         .state = native.core.state,
         .sequence = native.core.current_turn_sequence_number,
@@ -1663,16 +1676,15 @@ fn captureNativeSemanticSnapshot(allocator: std.mem.Allocator, native: *world.Ap
         .latest_chronicle_cursor_fingerprint = native.core.latest_chronicle_cursor_fingerprint,
         .last_output_status = native.core.last_output_status,
         .last_turn_status = native.core.last_turn_status,
-        .outstanding_request_bytes = try requests.toOwnedSlice(allocator),
+        .outstanding_request_bytes = try encodeHostRequestsForSnapshot(allocator, native.core.outstanding_host_requests),
+        .legacy_outstanding_request_present = native.core.outstanding_host_request != null,
+        .legacy_outstanding_request_bytes = if (native.core.outstanding_host_request) |request|
+            try encodeHostRequestsForSnapshot(allocator, &.{request})
+        else
+            try allocator.dupe(u8, ""),
         .output_bytes = try allocator.dupe(u8, native.core.readOutput()),
         .closure_bytes = try allocator.dupe(u8, native.last_closure_bytes),
     };
-}
-
-fn effectiveOutstandingHostRequests(core: *const world.Appliance.Core) []const world.Appliance.HostRequest {
-    if (core.outstanding_host_requests.len != 0) return core.outstanding_host_requests;
-    if (core.outstanding_host_request) |*request| return request[0..1];
-    return &.{};
 }
 
 fn nativeSemanticSnapshotEqual(lhs: NativeSemanticSnapshot, rhs: NativeSemanticSnapshot) bool {
@@ -1690,6 +1702,8 @@ fn nativeSemanticSnapshotEqual(lhs: NativeSemanticSnapshot, rhs: NativeSemanticS
         lhs.last_output_status == rhs.last_output_status and
         lhs.last_turn_status == rhs.last_turn_status and
         std.mem.eql(u8, lhs.outstanding_request_bytes, rhs.outstanding_request_bytes) and
+        lhs.legacy_outstanding_request_present == rhs.legacy_outstanding_request_present and
+        std.mem.eql(u8, lhs.legacy_outstanding_request_bytes, rhs.legacy_outstanding_request_bytes) and
         std.mem.eql(u8, lhs.output_bytes, rhs.output_bytes) and
         std.mem.eql(u8, lhs.closure_bytes, rhs.closure_bytes);
 }
@@ -1698,7 +1712,7 @@ fn requireDiagnosticPublishedAfterReject(before_error_len: usize, native: *world
     if (before_error_len != 0 or native.lastErrorLen() == 0) return error.MissingRejectedSubmissionDiagnostic;
 }
 
-test "effective outstanding requests include the legacy singular fallback" {
+test "semantic snapshot distinguishes plural and legacy singular request carriers" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -1710,14 +1724,12 @@ test "effective outstanding requests include the legacy singular fallback" {
     var native = try nativeFromClosure(allocator, manifest, capacity, executable_image_fingerprint, parent.closure_bytes);
     defer native.deinit();
 
-    const request = native.core.outstanding_host_requests[0];
-    native.core.outstanding_host_requests = &.{};
-    native.core.outstanding_host_requests_owned = false;
-    native.core.outstanding_host_request = request;
-
-    const effective = effectiveOutstandingHostRequests(&native.core);
-    try std.testing.expectEqual(@as(usize, 1), effective.len);
-    try std.testing.expectEqual(request.request_fingerprint, effective[0].request_fingerprint);
+    try std.testing.expect(native.core.outstanding_host_requests.len != 0);
+    try std.testing.expect(native.core.outstanding_host_request != null);
+    const before = try captureNativeSemanticSnapshot(allocator, &native);
+    native.core.outstanding_host_request = null;
+    const after = try captureNativeSemanticSnapshot(allocator, &native);
+    try std.testing.expect(!nativeSemanticSnapshotEqual(before, after));
 }
 
 fn replaceUniqueU64LittleEndian(bytes: []u8, from: u64, to: u64) !void {
@@ -2390,33 +2402,56 @@ fn canonicalSourceBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return canonical.toOwnedSlice(allocator);
 }
 
-fn validateGeneratorSourceSrcInventory(actual_src_files: []const []u8) !void {
-    const src_prefix = "src/";
-    var actual_index: usize = 0;
-    for (generator_source_files) |relative_path| {
-        if (!std.mem.startsWith(u8, relative_path, src_prefix)) continue;
-        if (actual_index >= actual_src_files.len or
-            !std.mem.eql(u8, relative_path[src_prefix.len..], actual_src_files[actual_index]))
-        {
-            return error.InvalidGeneratorSourceInventory;
-        }
-        actual_index += 1;
+fn generatorSourceInventory(io: std.Io, allocator: std.mem.Allocator, source_dir: std.Io.Dir) !OwnedPaths {
+    var items: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (items.items) |item| allocator.free(item);
+        items.deinit(allocator);
     }
-    if (actual_index != actual_src_files.len) return error.InvalidGeneratorSourceInventory;
+
+    for (generator_source_root_files) |relative_path| {
+        if (std.mem.startsWith(u8, relative_path, generator_source_excluded_prefix)) continue;
+        try items.append(allocator, try allocator.dupe(u8, relative_path));
+    }
+    for (generator_source_dirs) |source_root| {
+        var root = try source_dir.openDir(io, source_root, .{ .follow_symlinks = false, .iterate = true });
+        defer root.close(io);
+        var root_files = try listFiles(io, allocator, root);
+        defer root_files.deinit();
+        for (root_files.items) |relative_path| {
+            const joined = try std.fs.path.join(allocator, &.{ source_root, relative_path });
+            errdefer allocator.free(joined);
+            canonicalizePathSeparators(joined, std.fs.path.sep);
+            if (std.mem.startsWith(u8, joined, generator_source_excluded_prefix)) {
+                allocator.free(joined);
+                continue;
+            }
+            try items.append(allocator, joined);
+        }
+    }
+
+    const owned = try items.toOwnedSlice(allocator);
+    std.mem.sort([]u8, owned, {}, mutablePathLessThan);
+    return .{ .allocator = allocator, .items = owned };
+}
+
+fn validateGeneratorSourceInventory(actual_files: anytype) !void {
+    if (actual_files.len != compiled_generator_sources.len) return error.InvalidGeneratorSourceInventory;
+    for (actual_files, compiled_generator_sources) |actual_path, compiled_source| {
+        if (!std.mem.eql(u8, actual_path, compiled_source.path)) return error.InvalidGeneratorSourceInventory;
+    }
 }
 
 fn generatorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root: []const u8) ![32]u8 {
     var source_dir = try std.Io.Dir.cwd().openDir(io, source_root, .{ .follow_symlinks = true, .iterate = true });
     defer source_dir.close(io);
-    var src_dir = try source_dir.openDir(io, "src", .{ .follow_symlinks = false, .iterate = true });
-    defer src_dir.close(io);
-    var actual_src_files = try listFiles(io, allocator, src_dir);
-    defer actual_src_files.deinit();
-    try validateGeneratorSourceSrcInventory(actual_src_files.items);
+    var actual_files = try generatorSourceInventory(io, allocator, source_dir);
+    defer actual_files.deinit();
+    try validateGeneratorSourceInventory(actual_files.items);
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update(generator_source_identity_domain);
-    for (generator_source_files) |relative_path| {
+    for (actual_files.items) |relative_path| {
         var file = source_dir.openFile(io, relative_path, .{
             .mode = .read_only,
             .follow_symlinks = false,
@@ -2436,6 +2471,15 @@ fn generatorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root
     var digest = [_]u8{0} ** 32;
     hasher.final(&digest);
     return digest;
+}
+
+test "generator source inventory rejects an omitted package helper" {
+    var actual: std.ArrayList([]const u8) = .empty;
+    defer actual.deinit(std.testing.allocator);
+    for (compiled_generator_sources) |source| try actual.append(std.testing.allocator, source.path);
+    try actual.append(std.testing.allocator, "examples/world_transition_oracle_untracked_helper.zig");
+    std.mem.sort([]const u8, actual.items, {}, pathLessThan);
+    try std.testing.expectError(error.InvalidGeneratorSourceInventory, validateGeneratorSourceInventory(actual.items));
 }
 
 fn compiledGeneratorSourceIdentity(allocator: std.mem.Allocator) ![32]u8 {
@@ -2574,8 +2618,8 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
             "      \"files\": [",
         .{ generator_source_identity_algorithm, generator_source_normalization, &generator_source_identity_hex },
     );
-    for (generator_source_files, 0..) |relative_path, index| {
-        try manifest.print(allocator, "\"{s}\"{s}", .{ relative_path, if (index + 1 == generator_source_files.len) "" else "," });
+    for (compiled_generator_sources, 0..) |source, index| {
+        try manifest.print(allocator, "\"{s}\"{s}", .{ source.path, if (index + 1 == compiled_generator_sources.len) "" else "," });
     }
     try manifest.appendSlice(allocator, "]\n    },\n");
     try manifest.appendSlice(
