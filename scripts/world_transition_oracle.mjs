@@ -5,6 +5,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, s
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TextDecoder } from 'node:util';
 
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
 
@@ -451,10 +452,10 @@ if (args.mode === 'compare') {
 } else if (args.mode === 'check') {
   requireArg(args.expected, '--expected');
   requireArg(args.zigVersion, '--zig-version');
-  validateCorpus(args.expected, args.zigVersion);
+  const snapshot = validateCorpus(args.expected, args.zigVersion);
   if (args.admissionDigest !== undefined) {
     requireArg(args.admissionDigest, '--admission-digest');
-    writeFileSync(args.admissionDigest, `${candidateTreeIdentity(args.expected)}\n`, 'utf8');
+    writeFileSync(args.admissionDigest, `${candidateTreeIdentity(snapshot)}\n`, 'utf8');
   }
 } else if (args.mode === 'self-test-root-symlink') {
   testRootSymlinkRejection();
@@ -587,6 +588,24 @@ function testPackageVersionProjection() {
     boundaryPackage,
     'multiline Boundary dependency projection',
   );
+  assertJsonEqual(
+    packagePathsFromZon(String.raw`.{ .paths = .{ "src/\xC3\xA9" } }`),
+    ['src/é'],
+    'hexadecimal byte escape package path',
+  );
+  assertJsonEqual(
+    packagePathsFromZon(String.raw`.{ .paths = .{ "\xEF\xBB\xBFsrc" } }`),
+    ['\uFEFFsrc'],
+    'leading UTF-8 byte-order mark path',
+  );
+  let invalidUtf8Rejected = false;
+  try {
+    packagePathsFromZon(String.raw`.{ .paths = .{ "src/\xFF" } }`);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'invalid UTF-8 in root package paths item') throw error;
+    invalidUtf8Rejected = true;
+  }
+  if (!invalidUtf8Rejected) throw new Error('invalid UTF-8 package path accepted');
 
   try {
     boundaryPackageFromZon(
@@ -608,12 +627,14 @@ function rootPackagePaths() {
 }
 
 function validateCorpus(root, expectedZigVersion) {
-  const files = listFiles(root);
+  const snapshot = captureCorpus(root);
+  const files = snapshot.files;
+  const read = snapshot.read;
   if (files.length === 0) throw new Error(`empty oracle corpus: ${root}`);
   if (!files.includes('manifest.json')) throw new Error(`missing manifest.json: ${root}`);
   if (!files.includes('checksums.sha256')) throw new Error(`missing checksums.sha256: ${root}`);
 
-  const manifestBytes = readFileSync(join(root, 'manifest.json'));
+  const manifestBytes = read('manifest.json');
   const manifest = JSON.parse(manifestBytes.toString('utf8'));
   assertEqual(manifest.format, 'world-image-v1-rewrite-world-oracle-v0', 'manifest.format');
   assertEqual(manifest.format_version, 1, 'manifest.format_version');
@@ -721,7 +742,7 @@ function validateCorpus(root, expectedZigVersion) {
     if (!files.includes(transcript)) throw new Error(`missing transcript ${transcript}`);
   }
   for (const [caseId, facts] of Object.entries(requiredTranscriptFacts)) {
-    const transcript = readFileSync(join(root, `cases/${caseId}.txt`), 'utf8');
+    const transcript = read(`cases/${caseId}.txt`, 'utf8');
     const transcriptLines = new Set(transcript.split('\n'));
     for (const fact of facts) {
       if (!transcriptLines.has(fact)) throw new Error(`missing provenance fact for ${caseId}: ${fact}`);
@@ -730,13 +751,13 @@ function validateCorpus(root, expectedZigVersion) {
 
   const contentFiles = files.filter((path) => path !== 'manifest.json' && path !== 'checksums.sha256');
   assertArrayEqual(contentFiles, expectedArtifacts, 'expected artifact inventory');
-  validateBinaryFamilies(root, contentFiles, manifest);
+  validateBinaryFamilies(contentFiles, manifest, read);
   const manifestArtifacts = manifest.artifacts.map((entry) => entry.path);
   assertArrayEqual(manifestArtifacts, contentFiles, 'manifest artifact inventory');
 
   const artifactHasher = createHash('sha256');
   for (const entry of manifest.artifacts) {
-    const bytes = readFileSync(join(root, entry.path));
+    const bytes = read(entry.path);
     assertEqual(entry.length, bytes.length, `manifest length ${entry.path}`);
     assertEqual(entry.sha256, sha256(bytes), `manifest sha256 ${entry.path}`);
     const length = Buffer.alloc(8);
@@ -751,12 +772,14 @@ function validateCorpus(root, expectedZigVersion) {
 
   validateChecksums(
     root,
-    readFileSync(join(root, 'checksums.sha256'), 'utf8'),
+    read('checksums.sha256', 'utf8'),
     files.filter((path) => path !== 'checksums.sha256'),
+    read,
   );
+  return snapshot;
 }
 
-function validateChecksums(root, checksumText, expectedPaths, read = readFileSync) {
+function validateChecksums(root, checksumText, expectedPaths, read = (path) => readFileSync(join(root, path))) {
   const checksumLines = checksumText
     .trimEnd()
     .split('\n')
@@ -773,7 +796,7 @@ function validateChecksums(root, checksumText, expectedPaths, read = readFileSyn
     'checksum inventory',
   );
   for (const { digest, path } of checksumEntries) {
-    assertEqual(digest, sha256(read(join(root, path))), `checksums.sha256 ${path}`);
+    assertEqual(digest, sha256(read(path)), `checksums.sha256 ${path}`);
   }
 }
 
@@ -1038,36 +1061,44 @@ function zonMultilineStringAt(source, start) {
 }
 
 function decodeZonString(raw, label) {
-  let decoded = '';
+  const chunks = [];
+  let segmentStart = 0;
   for (let index = 0; index < raw.length; index += 1) {
-    const character = raw[index];
-    if (character !== '\\') {
-      decoded += character;
-      continue;
-    }
+    if (raw[index] !== '\\') continue;
+    if (segmentStart < index) chunks.push(Buffer.from(raw.slice(segmentStart, index), 'utf8'));
     const escape = raw[++index];
     if (escape === undefined) throw new Error(`unterminated escape in ${label}`);
-    if (escape === 'n') decoded += '\n';
-    else if (escape === 'r') decoded += '\r';
-    else if (escape === 't') decoded += '\t';
-    else if (escape === '\\' || escape === '"' || escape === "'") decoded += escape;
+    if (escape === 'n') chunks.push(Buffer.from([0x0a]));
+    else if (escape === 'r') chunks.push(Buffer.from([0x0d]));
+    else if (escape === 't') chunks.push(Buffer.from([0x09]));
+    else if (escape === '\\' || escape === '"' || escape === "'") chunks.push(Buffer.from(escape, 'utf8'));
     else if (escape === 'x') {
       const hex = raw.slice(index + 1, index + 3);
       if (!/^[0-9a-fA-F]{2}$/.test(hex)) throw new Error(`invalid hexadecimal escape in ${label}`);
-      decoded += String.fromCodePoint(Number.parseInt(hex, 16));
+      chunks.push(Buffer.from([Number.parseInt(hex, 16)]));
       index += 2;
     } else if (escape === 'u' && raw[index + 1] === '{') {
       const close = raw.indexOf('}', index + 2);
       if (close === -1) throw new Error(`unterminated Unicode escape in ${label}`);
       const hex = raw.slice(index + 2, close);
       if (!/^[0-9a-fA-F]{1,6}$/.test(hex)) throw new Error(`invalid Unicode escape in ${label}`);
-      decoded += String.fromCodePoint(Number.parseInt(hex, 16));
+      const codePoint = Number.parseInt(hex, 16);
+      if (codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+        throw new Error(`invalid Unicode escape in ${label}`);
+      }
+      chunks.push(Buffer.from(String.fromCodePoint(codePoint), 'utf8'));
       index = close;
     } else {
       throw new Error(`unsupported escape in ${label}`);
     }
+    segmentStart = index + 1;
   }
-  return decoded;
+  if (segmentStart < raw.length) chunks.push(Buffer.from(raw.slice(segmentStart), 'utf8'));
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks));
+  } catch {
+    throw new Error(`invalid UTF-8 in ${label}`);
+  }
 }
 
 function canonicalSourceBytes(bytes, path) {
@@ -1107,12 +1138,12 @@ function generatorSourceIdentity(root, overrides = new Map()) {
   return hasher.digest('hex');
 }
 
-function candidateTreeIdentity(root) {
+function candidateTreeIdentity(snapshot) {
   const hasher = createHash('sha256');
   hasher.update(candidateAdmissionIdentityDomain);
-  for (const path of listFiles(root)) {
+  for (const path of snapshot.files) {
     const pathBytes = Buffer.from(path, 'utf8');
-    const bytes = readFileSync(join(root, path));
+    const bytes = snapshot.read(path);
     const pathLength = Buffer.alloc(4);
     pathLength.writeUInt32LE(pathBytes.length);
     const contentLength = Buffer.alloc(8);
@@ -1139,6 +1170,11 @@ function withCrlf(bytes) {
 
 function testGeneratorSourceIdentity() {
   testPackageVersionProjection();
+  assertJsonEqual(
+    ['\u{10000}', '\uE000'].sort(compareUtf8Bytes),
+    ['\uE000', '\u{10000}'],
+    'UTF-8 byte path order',
+  );
   const path = 'build.zig';
   const canonical = canonicalSourceBytes(readFileSync(join(repositoryRoot, path)), path);
   const expected = generatorSourceIdentity(repositoryRoot);
@@ -1175,12 +1211,30 @@ function testChecksumInventoryAdmission() {
     assertEqual(readCount, 0, 'checksum target reads before inventory validation');
     if (!(error instanceof Error) || !error.message.startsWith('checksum inventory')) throw error;
     if (error.message.includes(outsideDigest)) throw new Error('outside-root digest leaked before checksum admission');
+    testCandidateSnapshotIdentity();
     return;
   }
   throw new Error('checksum traversal path accepted');
 }
 
-function validateBinaryFamilies(root, contentFiles, manifest) {
+function testCandidateSnapshotIdentity() {
+  const root = mkdtempSync(join(tmpdir(), 'world-oracle-candidate-snapshot-'));
+  try {
+    writeFileSync(join(root, 'manifest.json'), 'admitted manifest\n');
+    writeFileSync(join(root, 'checksums.sha256'), 'admitted checksums\n');
+    const snapshot = captureCorpus(root);
+    const admitted = candidateTreeIdentity(snapshot);
+    writeFileSync(join(root, 'manifest.json'), 'mutated after capture\n');
+    assertEqual(candidateTreeIdentity(snapshot), admitted, 'captured candidate identity');
+    if (candidateTreeIdentity(captureCorpus(root)) === admitted) {
+      throw new Error('live candidate mutation did not change identity');
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function validateBinaryFamilies(contentFiles, manifest, read) {
   assertJsonEqual(manifest.binary_family_policy, expectedBinaryFamilyPolicy, 'manifest.binary_family_policy');
   assertJsonEqual(manifest.binary_families, expectedBinaryFamilies, 'manifest.binary_families');
 
@@ -1201,15 +1255,15 @@ function validateBinaryFamilies(root, contentFiles, manifest) {
     assertEqual(matchingFamilies.length, 1, `binary family classification ${path}`);
     const family = matchingFamilies[0];
     familyCounts.set(family.id, familyCounts.get(family.id) + 1);
-    validateBinaryFamilyHeader(root, path, family);
+    validateBinaryFamilyHeader(path, family, read);
   }
   for (const family of expectedBinaryFamilies) {
     assertEqual(familyCounts.get(family.id), family.expected_count, `binary family count ${family.id}`);
   }
 }
 
-function validateBinaryFamilyHeader(root, path, family) {
-  const bytes = readFileSync(join(root, path));
+function validateBinaryFamilyHeader(path, family, read) {
+  const bytes = read(path);
   if (family.magic !== undefined) {
     const magic = Buffer.from(family.magic, 'utf8');
     if (bytes.length < magic.length || !bytes.subarray(0, magic.length).equals(magic)) {
@@ -1276,8 +1330,22 @@ function listFiles(root) {
   if (!lstatSync(inspectedRoot).isDirectory()) throw new Error(`not a directory: ${root}`);
   const files = [];
   walk(inspectedRoot, inspectedRoot, files);
-  files.sort(compareAscii);
+  files.sort(compareUtf8Bytes);
   return files;
+}
+
+function captureCorpus(root) {
+  const files = listFiles(root);
+  const bytesByPath = new Map();
+  for (const path of files) bytesByPath.set(path, readFileSync(join(root, path)));
+  return {
+    files,
+    read(path, encoding) {
+      const bytes = bytesByPath.get(path);
+      if (bytes === undefined) throw new Error(`missing captured corpus path: ${path}`);
+      return encoding === undefined ? bytes : bytes.toString(encoding);
+    },
+  };
 }
 
 function generatorSourceInventory(root) {
@@ -1296,7 +1364,7 @@ function generatorSourceInventory(root) {
       throw new Error(`unsupported root package path: ${packagePath}`);
     }
   }
-  files.sort(compareAscii);
+  files.sort(compareUtf8Bytes);
   for (let index = 1; index < files.length; index += 1) {
     if (files[index] === files[index - 1]) {
       throw new Error(`overlapping root package paths include ${files[index]} more than once`);
@@ -1338,7 +1406,7 @@ function expectRootRejected(root) {
 
 function walk(root, current, files) {
   const entries = readdirSync(current, { withFileTypes: true });
-  entries.sort((left, right) => compareAscii(left.name, right.name));
+  entries.sort((left, right) => compareUtf8Bytes(left.name, right.name));
   for (const entry of entries) {
     const path = join(current, entry.name);
     if (entry.isDirectory()) walk(root, path, files);
@@ -1351,10 +1419,8 @@ function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function compareAscii(left, right) {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
+function compareUtf8Bytes(left, right) {
+  return Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8'));
 }
 
 function assertArrayEqual(actual, expected, label) {
