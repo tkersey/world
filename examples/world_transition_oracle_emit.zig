@@ -66,9 +66,9 @@ const cases = [_]Case{
 const generator_source_identity_algorithm = "sha256-domain-u32le-path-u64le-canonical-lf-bytes-v1";
 const generator_source_normalization = "crlf-to-lf;bare-cr-reject";
 const generator_source_identity_domain = "world.oracle.generator-source-identity.v1\x00";
+const candidate_admission_identity_domain = "world.oracle.candidate-admission.v1\x00";
 const compiled_generator_sources = world_transition_oracle_sources.sources;
-const generator_source_root_files = world_transition_oracle_sources.root_files;
-const generator_source_dirs = world_transition_oracle_sources.source_dirs;
+const generator_source_package_paths = world_transition_oracle_sources.package_paths;
 const generator_source_excluded_prefix = world_transition_oracle_sources.excluded_prefix;
 
 comptime {
@@ -188,6 +188,21 @@ test "package version projection accepts valid ZON whitespace and comments" {
     const escaped_version = try packageVersionFromZon(std.testing.allocator, ".{ .@\"version\" = \"2.0.0\" }");
     defer std.testing.allocator.free(escaped_version);
     try std.testing.expectEqualStrings("2.0.0", escaped_version);
+
+    const multiline_zon =
+        \\.{
+        \\    .note =
+        \\        \\literal { } // not a comment
+        \\        \\.version = "not a field"
+        \\    ,
+        \\    .version =
+        \\        \\3.0.0
+        \\    ,
+        \\}
+    ;
+    const multiline_version = try packageVersionFromZon(std.testing.allocator, multiline_zon);
+    defer std.testing.allocator.free(multiline_version);
+    try std.testing.expectEqualStrings("3.0.0", multiline_version);
 }
 
 test "boundary dependency provenance projects one pinned package owner" {
@@ -222,6 +237,25 @@ test "boundary dependency provenance projects one pinned package owner" {
     defer escaped_package.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(package.version, escaped_package.version);
     try std.testing.expectEqualStrings(package.hash, escaped_package.hash);
+
+    const multiline =
+        \\.{
+        \\    .dependencies = .{
+        \\        .boundary = .{
+        \\            .url =
+        \\                \\https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz
+        \\            ,
+        \\            .hash =
+        \\                \\boundary-1.2.3-fixture
+        \\            ,
+        \\        },
+        \\    },
+        \\}
+    ;
+    var multiline_package = try boundaryPackageFromZon(std.testing.allocator, multiline);
+    defer multiline_package.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(package.version, multiline_package.version);
+    try std.testing.expectEqualStrings(package.hash, multiline_package.hash);
 
     const mismatched =
         \\.{
@@ -373,6 +407,33 @@ pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next();
     const command = args.next() orelse return error.InvalidArguments;
+    if (std.mem.eql(u8, command, "publish")) {
+        const source_flag = args.next() orelse return error.InvalidArguments;
+        const source_dir = args.next() orelse return error.InvalidArguments;
+        const admission_flag = args.next() orelse return error.InvalidArguments;
+        const admission_digest_path = args.next() orelse return error.InvalidArguments;
+        const target_flag = args.next() orelse return error.InvalidArguments;
+        const trusted_prefix = args.next() orelse return error.InvalidArguments;
+        if (args.next() != null or
+            !std.mem.eql(u8, source_flag, "--source-dir") or
+            source_dir.len == 0 or
+            !std.mem.eql(u8, admission_flag, "--admission-digest") or
+            admission_digest_path.len == 0 or
+            !std.mem.eql(u8, target_flag, "--trusted-prefix") or
+            !std.fs.path.isAbsolute(trusted_prefix))
+        {
+            return error.InvalidArguments;
+        }
+        try publishCandidate(
+            init.io,
+            allocator,
+            source_dir,
+            admission_digest_path,
+            trusted_prefix,
+            "./world-transition-oracle-publish-staging",
+        );
+        return;
+    }
     if (!std.mem.eql(u8, command, "generate")) return error.InvalidArguments;
     const target_flag = args.next() orelse return error.InvalidArguments;
     const target_path = args.next() orelse return error.InvalidArguments;
@@ -411,6 +472,134 @@ pub fn main(init: std.process.Init) !void {
     try writeManifest(allocator, &writer, generator_source_identity);
     try writeChecksums(allocator, &writer);
     try promoteCorpus(allocator, &writer, publication_target);
+}
+
+fn publishCandidate(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    source_root: []const u8,
+    admission_digest_path: []const u8,
+    trusted_prefix: []const u8,
+    staging_root: []const u8,
+) !void {
+    try std.Io.Dir.cwd().deleteTree(io, staging_root);
+    try std.Io.Dir.cwd().createDirPath(io, staging_root);
+    defer std.Io.Dir.cwd().deleteTree(io, staging_root) catch {};
+
+    var source_dir = try std.Io.Dir.cwd().openDir(io, source_root, .{
+        .follow_symlinks = false,
+        .iterate = true,
+    });
+    defer source_dir.close(io);
+    if ((try source_dir.stat(io)).kind != .directory) return error.InvalidCandidateDirectory;
+
+    var candidate_paths = try listFiles(io, allocator, source_dir);
+    defer candidate_paths.deinit();
+    if (candidate_paths.items.len == 0) return error.EmptyCandidateCorpus;
+
+    var writer = Writer{ .io = io, .allocator = allocator, .root = staging_root };
+    defer writer.paths.deinit(allocator);
+    const candidate_identity = try candidateTreeIdentity(
+        io,
+        allocator,
+        source_dir,
+        candidate_paths.items,
+        &writer,
+    );
+    try validateCandidateAdmissionDigest(io, allocator, admission_digest_path, candidate_identity);
+    try promoteCorpus(allocator, &writer, .{ .trusted_prefix = trusted_prefix });
+}
+
+fn candidateTreeIdentity(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    source_dir: std.Io.Dir,
+    candidate_paths: []const []u8,
+    snapshot_writer: ?*Writer,
+) ![32]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(candidate_admission_identity_domain);
+    for (candidate_paths) |relative_path| {
+        var file = source_dir.openFile(io, relative_path, .{
+            .mode = .read_only,
+            .follow_symlinks = false,
+            .resolve_beneath = true,
+        }) catch |err| switch (err) {
+            error.SymLinkLoop => return error.InvalidCandidateEntry,
+            else => |other| return other,
+        };
+        defer file.close(io);
+        if ((try file.stat(io)).kind != .file) return error.InvalidCandidateEntry;
+        var read_buffer: [4096]u8 = undefined;
+        var reader = file.reader(io, &read_buffer);
+        const bytes = try reader.interface.allocRemaining(allocator, .limited(64 * 1024 * 1024));
+        defer allocator.free(bytes);
+        if (snapshot_writer) |writer| try writer.write(relative_path, bytes);
+
+        var path_length = [_]u8{0} ** 4;
+        std.mem.writeInt(u32, &path_length, @intCast(relative_path.len), .little);
+        var content_length = [_]u8{0} ** 8;
+        std.mem.writeInt(u64, &content_length, @intCast(bytes.len), .little);
+        hasher.update(&path_length);
+        hasher.update(relative_path);
+        hasher.update(&content_length);
+        hasher.update(bytes);
+    }
+    var digest = [_]u8{0} ** 32;
+    hasher.final(&digest);
+    return digest;
+}
+
+fn candidateAdmissionDigestText(digest: [32]u8) [65]u8 {
+    const hex = "0123456789abcdef";
+    var text: [65]u8 = undefined;
+    for (digest, 0..) |byte, index| {
+        text[index * 2] = hex[byte >> 4];
+        text[index * 2 + 1] = hex[byte & 0x0f];
+    }
+    text[64] = '\n';
+    return text;
+}
+
+fn validateCandidateAdmissionDigest(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    admission_digest_path: []const u8,
+    candidate_identity: [32]u8,
+) !void {
+    var file = std.Io.Dir.cwd().openFile(io, admission_digest_path, .{
+        .mode = .read_only,
+        .follow_symlinks = false,
+    }) catch |err| switch (err) {
+        error.SymLinkLoop => return error.InvalidCandidateAdmissionDigest,
+        else => |other| return other,
+    };
+    defer file.close(io);
+    if ((try file.stat(io)).kind != .file) return error.InvalidCandidateAdmissionDigest;
+    var read_buffer: [66]u8 = undefined;
+    var reader = file.reader(io, &read_buffer);
+    const admission_bytes = try reader.interface.allocRemaining(allocator, .limited(66));
+    defer allocator.free(admission_bytes);
+    const expected = candidateAdmissionDigestText(candidate_identity);
+    if (!std.mem.eql(u8, admission_bytes, &expected)) return error.CandidateAdmissionMismatch;
+}
+
+fn writeCandidateAdmissionDigestForTest(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    source_root: []const u8,
+    admission_digest_path: []const u8,
+) !void {
+    var source_dir = try std.Io.Dir.cwd().openDir(io, source_root, .{
+        .follow_symlinks = false,
+        .iterate = true,
+    });
+    defer source_dir.close(io);
+    var candidate_paths = try listFiles(io, allocator, source_dir);
+    defer candidate_paths.deinit();
+    const identity = try candidateTreeIdentity(io, allocator, source_dir, candidate_paths.items, null);
+    const text = candidateAdmissionDigestText(identity);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = admission_digest_path, .data = &text });
 }
 
 fn validateStandaloneResolutionInput(
@@ -2113,6 +2302,77 @@ fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, target: Publicat
     }
 }
 
+test "candidate publisher copies the exact candidate tree" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const candidate_root = try std.fs.path.join(allocator, &.{ root, "candidate" });
+    const trusted_prefix = try std.fs.path.join(allocator, &.{ root, "prefix" });
+    const admission_digest = try std.fs.path.join(allocator, &.{ root, "admission.sha256" });
+    const staging_root = try std.fs.path.join(allocator, &.{ root, "staging" });
+    const published_root = try std.fs.path.join(allocator, &.{ trusted_prefix, canonical_output_suffix });
+    const candidate_case = try std.fs.path.join(allocator, &.{ candidate_root, "cases/example.txt" });
+    const candidate_manifest = try std.fs.path.join(allocator, &.{ candidate_root, "manifest.json" });
+    const published_case = try std.fs.path.join(allocator, &.{ published_root, "cases/example.txt" });
+    const obsolete = try std.fs.path.join(allocator, &.{ published_root, "obsolete.txt" });
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, std.fs.path.dirname(candidate_case).?);
+    try cwd.createDirPath(io, published_root);
+    try cwd.writeFile(io, .{ .sub_path = candidate_case, .data = "admitted case\n" });
+    try cwd.writeFile(io, .{ .sub_path = candidate_manifest, .data = "admitted manifest\n" });
+    try cwd.writeFile(io, .{ .sub_path = obsolete, .data = "obsolete\n" });
+
+    try writeCandidateAdmissionDigestForTest(io, allocator, candidate_root, admission_digest);
+    try publishCandidate(io, allocator, candidate_root, admission_digest, trusted_prefix, staging_root);
+
+    const case_bytes = try cwd.readFileAlloc(io, published_case, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("admitted case\n", case_bytes);
+    try std.testing.expectError(error.FileNotFound, cwd.access(io, obsolete, .{}));
+}
+
+test "candidate publisher rejects a post-admission mutation before target mutation" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const candidate_root = try std.fs.path.join(allocator, &.{ root, "candidate" });
+    const trusted_prefix = try std.fs.path.join(allocator, &.{ root, "prefix" });
+    const admission_digest = try std.fs.path.join(allocator, &.{ root, "admission.sha256" });
+    const staging_root = try std.fs.path.join(allocator, &.{ root, "staging" });
+    const candidate_case = try std.fs.path.join(allocator, &.{ candidate_root, "cases/example.txt" });
+    const published_root = try std.fs.path.join(allocator, &.{ trusted_prefix, canonical_output_suffix });
+    const sentinel = try std.fs.path.join(allocator, &.{ published_root, "sentinel.txt" });
+
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, std.fs.path.dirname(candidate_case).?);
+    try cwd.createDirPath(io, published_root);
+    try cwd.writeFile(io, .{ .sub_path = candidate_case, .data = "admitted bytes\n" });
+    try cwd.writeFile(io, .{ .sub_path = sentinel, .data = "must survive\n" });
+    try writeCandidateAdmissionDigestForTest(io, allocator, candidate_root, admission_digest);
+    try cwd.writeFile(io, .{ .sub_path = candidate_case, .data = "mutated after admission\n" });
+
+    try std.testing.expectError(
+        error.CandidateAdmissionMismatch,
+        publishCandidate(io, allocator, candidate_root, admission_digest, trusted_prefix, staging_root),
+    );
+    const sentinel_bytes = try cwd.readFileAlloc(io, sentinel, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("must survive\n", sentinel_bytes);
+}
+
 test "isolated publication rejects unowned paths before writing" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -2409,29 +2669,38 @@ fn generatorSourceInventory(io: std.Io, allocator: std.mem.Allocator, source_dir
         items.deinit(allocator);
     }
 
-    for (generator_source_root_files) |relative_path| {
-        if (std.mem.startsWith(u8, relative_path, generator_source_excluded_prefix)) continue;
-        try items.append(allocator, try allocator.dupe(u8, relative_path));
-    }
-    for (generator_source_dirs) |source_root| {
-        var root = try source_dir.openDir(io, source_root, .{ .follow_symlinks = false, .iterate = true });
-        defer root.close(io);
-        var root_files = try listFiles(io, allocator, root);
-        defer root_files.deinit();
-        for (root_files.items) |relative_path| {
-            const joined = try std.fs.path.join(allocator, &.{ source_root, relative_path });
-            errdefer allocator.free(joined);
-            canonicalizePathSeparators(joined, std.fs.path.sep);
-            if (std.mem.startsWith(u8, joined, generator_source_excluded_prefix)) {
-                allocator.free(joined);
-                continue;
-            }
-            try items.append(allocator, joined);
+    for (generator_source_package_paths) |package_path| {
+        const path_stat = try source_dir.statFile(io, package_path, .{ .follow_symlinks = false });
+        switch (path_stat.kind) {
+            .file => {
+                if (std.mem.startsWith(u8, package_path, generator_source_excluded_prefix)) continue;
+                try items.append(allocator, try allocator.dupe(u8, package_path));
+            },
+            .directory => {
+                var root = try source_dir.openDir(io, package_path, .{ .follow_symlinks = false, .iterate = true });
+                defer root.close(io);
+                var root_files = try listFiles(io, allocator, root);
+                defer root_files.deinit();
+                for (root_files.items) |relative_path| {
+                    const joined = try std.fs.path.join(allocator, &.{ package_path, relative_path });
+                    errdefer allocator.free(joined);
+                    canonicalizePathSeparators(joined, std.fs.path.sep);
+                    if (std.mem.startsWith(u8, joined, generator_source_excluded_prefix)) {
+                        allocator.free(joined);
+                        continue;
+                    }
+                    try items.append(allocator, joined);
+                }
+            },
+            else => return error.InvalidGeneratorSourceEntry,
         }
     }
 
     const owned = try items.toOwnedSlice(allocator);
     std.mem.sort([]u8, owned, {}, mutablePathLessThan);
+    for (owned[1..], owned[0 .. owned.len - 1]) |current, previous| {
+        if (std.mem.eql(u8, current, previous)) return error.InvalidGeneratorSourceInventory;
+    }
     return .{ .allocator = allocator, .items = owned };
 }
 

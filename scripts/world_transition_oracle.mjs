@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -226,12 +226,8 @@ const expectedArtifacts = [
 const generatorSourceIdentityAlgorithm = 'sha256-domain-u32le-path-u64le-canonical-lf-bytes-v1';
 const generatorSourceNormalization = 'crlf-to-lf;bare-cr-reject';
 const generatorSourceIdentityDomain = Buffer.from('world.oracle.generator-source-identity.v1\0', 'utf8');
-const sourcePackageRootFiles = [
-  'README.md',
-  'build.zig',
-  'build.zig.zon',
-];
-const sourcePackageDirs = ['src', 'examples', 'scripts', 'test', 'docs', 'conformance'];
+const candidateAdmissionIdentityDomain = Buffer.from('world.oracle.candidate-admission.v1\0', 'utf8');
+const sourcePackagePaths = rootPackagePaths();
 const generatorSourceExcludedPrefix = 'conformance/world-image-v1/v0/world/';
 const generatorSourceFiles = generatorSourceInventory(repositoryRoot);
 
@@ -456,6 +452,10 @@ if (args.mode === 'compare') {
   requireArg(args.expected, '--expected');
   requireArg(args.zigVersion, '--zig-version');
   validateCorpus(args.expected, args.zigVersion);
+  if (args.admissionDigest !== undefined) {
+    requireArg(args.admissionDigest, '--admission-digest');
+    writeFileSync(args.admissionDigest, `${candidateTreeIdentity(args.expected)}\n`, 'utf8');
+  }
 } else if (args.mode === 'self-test-root-symlink') {
   testRootSymlinkRejection();
 } else if (args.mode === 'self-test-generator-source') {
@@ -476,6 +476,7 @@ function parseArgs(raw) {
     else if (arg === '--second') parsed.second = raw[++index];
     else if (arg === '--actual') parsed.actual = raw[++index];
     else if (arg === '--zig-version') parsed.zigVersion = raw[++index];
+    else if (arg === '--admission-digest') parsed.admissionDigest = raw[++index];
     else throw new Error(`unknown argument ${arg}`);
   }
   return parsed;
@@ -486,55 +487,31 @@ function requireArg(value, name) {
 }
 
 function packageVersionFromZon(zon) {
-  const source = zonWithoutComments(zon);
-  return zonStringField(zonRootStructBody(source), 'version', 'root package version');
+  return zonStringField(zonRootStructBody(zon), 'version', 'root package version');
 }
 
-function zonWithoutComments(zon) {
-  let result = '';
-  let quote = null;
-  let escaped = false;
-  for (let index = 0; index < zon.length; index += 1) {
-    const character = zon[index];
-    const next = zon[index + 1];
-    if (quote !== null) {
-      result += character;
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === quote) quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      result += character;
-      continue;
-    }
-    if (character === '/' && next === '/') {
-      result += '  ';
-      index += 2;
-      while (index < zon.length && zon[index] !== '\n') {
-        result += ' ';
-        index += 1;
-      }
-      if (index < zon.length) result += '\n';
-      continue;
-    }
-    if (character === '/' && next === '*') {
-      result += '  ';
-      index += 2;
-      while (index < zon.length && !(zon[index] === '*' && zon[index + 1] === '/')) {
-        result += zon[index] === '\n' ? '\n' : ' ';
-        index += 1;
-      }
-      if (index >= zon.length) throw new Error('unterminated block comment in build.zig.zon');
-      result += '  ';
-      index += 1;
-      continue;
-    }
-    result += character;
+function packagePathsFromZon(zon) {
+  const paths = zonStringListField(zonRootStructBody(zon), 'paths', 'root package paths');
+  if (paths.length === 0) throw new Error('root package paths must not be empty');
+  const seen = new Set();
+  for (const path of paths) {
+    validateSourcePackagePath(path);
+    if (seen.has(path)) throw new Error(`duplicate root package path: ${path}`);
+    seen.add(path);
   }
-  if (quote !== null) throw new Error('unterminated literal in build.zig.zon');
-  return result;
+  return paths;
+}
+
+function validateSourcePackagePath(path) {
+  if (
+    path.length === 0 ||
+    path.startsWith('/') ||
+    /^[A-Za-z]:/.test(path) ||
+    path.includes('\\') ||
+    path.split('/').some((component) => component.length === 0 || component === '.' || component === '..')
+  ) {
+    throw new Error(`invalid root package path: ${path}`);
+  }
 }
 
 function testPackageVersionProjection() {
@@ -574,6 +551,43 @@ function testPackageVersionProjection() {
     'escaped Boundary dependency without trailing commas',
   );
 
+  const multilineZon = String.raw`.{
+    .note =
+        \\literal { } // not a comment
+
+        \\.version = "not a field"
+    ,
+    .version =
+        \\1.2.3
+    ,
+    .paths = .{
+        \\README.md
+    ,
+        "src",
+    },
+    .dependencies = .{
+        .boundary = .{
+            .url =
+                \\https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz
+            ,
+            .hash =
+                \\boundary-1.2.3-fixture
+            ,
+        },
+    },
+  }`;
+  assertEqual(packageVersionFromZon(multilineZon), '1.2.3', 'multiline package version projection');
+  assertJsonEqual(
+    packagePathsFromZon(multilineZon),
+    ['README.md', 'src'],
+    'multiline package paths projection',
+  );
+  assertJsonEqual(
+    boundaryPackageFromZon(multilineZon),
+    boundaryPackage,
+    'multiline Boundary dependency projection',
+  );
+
   try {
     boundaryPackageFromZon(
       dependencyZon.replace('v1.2.3.tar.gz', 'v1.2.4.tar.gz'),
@@ -587,6 +601,10 @@ function testPackageVersionProjection() {
 
 function rootPackageVersion() {
   return packageVersionFromZon(readFileSync(new URL('../build.zig.zon', import.meta.url), 'utf8'));
+}
+
+function rootPackagePaths() {
+  return packagePathsFromZon(readFileSync(new URL('../build.zig.zon', import.meta.url), 'utf8'));
 }
 
 function validateCorpus(root, expectedZigVersion) {
@@ -764,8 +782,7 @@ function rootBoundaryPackage() {
 }
 
 function boundaryPackageFromZon(zon) {
-  const source = zonWithoutComments(zon);
-  const root = zonRootStructBody(source);
+  const root = zonRootStructBody(zon);
   const dependencies = zonStructFieldBody(root, 'dependencies', '.dependencies');
   const body = zonStructFieldBody(dependencies, 'boundary', '.dependencies.boundary');
   const url = zonStringField(body, 'url', '.boundary.url');
@@ -785,80 +802,239 @@ function boundaryPackageFromZon(zon) {
 }
 
 function zonRootStructBody(source) {
-  const match = /^\s*\.\s*\{/.exec(source);
-  if (!match) throw new Error('expected root ZON struct literal');
-  const openingBrace = match[0].lastIndexOf('{');
+  let index = zonSkipTrivia(source, 0);
+  if (source[index] !== '.') throw new Error('expected root ZON struct literal');
+  index = zonSkipTrivia(source, index + 1);
+  if (source[index] !== '{') throw new Error('expected root ZON struct literal');
+  const openingBrace = index;
   const closingBrace = findClosingZonBrace(source, openingBrace);
-  if (source.slice(closingBrace + 1).trim().length !== 0) throw new Error('trailing root ZON tokens');
+  if (zonSkipTrivia(source, closingBrace + 1) !== source.length) throw new Error('trailing root ZON tokens');
   return source.slice(openingBrace + 1, closingBrace);
 }
 
 function zonStructFieldBody(source, field, label) {
-  const fieldPattern = zonFieldPattern(field);
-  const matches = [...source.matchAll(new RegExp(`(?:^|[,{])\\s*${fieldPattern}\\s*=\\s*\\.\\s*\\{`, 'g'))]
-    .filter((match) => zonBraceDepthAt(source, match.index) === 0);
-  if (matches.length !== 1) throw new Error(`expected exactly one ${label}, got ${matches.length}`);
-  const openingBrace = matches[0].index + matches[0][0].lastIndexOf('{');
+  const value = zonFieldValue(source, field, label);
+  let index = zonSkipTrivia(source, value.start);
+  if (source[index] !== '.') throw new Error(`expected ${label} struct literal`);
+  index = zonSkipTrivia(source, index + 1);
+  if (source[index] !== '{') throw new Error(`expected ${label} struct literal`);
+  const openingBrace = index;
   const closingBrace = findClosingZonBrace(source, openingBrace);
+  if (zonSkipTrivia(source, closingBrace + 1) !== value.end) {
+    throw new Error(`trailing ${label} value tokens`);
+  }
   return source.slice(openingBrace + 1, closingBrace);
 }
 
 function zonStringField(body, field, label) {
-  const fieldPattern = zonFieldPattern(field);
-  const matches = [...body.matchAll(new RegExp(`(?:^|[,{])\\s*${fieldPattern}\\s*=\\s*"((?:[^"\\\\\\r\\n]|\\\\.)*)"\\s*(?:,|$)`, 'g'))]
-    .filter((match) => zonBraceDepthAt(body, match.index) === 0);
-  if (matches.length !== 1) throw new Error(`expected exactly one ${label}, got ${matches.length}`);
-  return decodeZonString(matches[0][1], label);
+  const value = zonFieldValue(body, field, label);
+  const parsed = zonStringAt(body, zonSkipTrivia(body, value.start), label);
+  if (zonSkipTrivia(body, parsed.end) !== value.end) throw new Error(`trailing ${label} value tokens`);
+  return parsed.value;
 }
 
-function zonFieldPattern(field) {
-  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return `\\.(?:${escaped}|@"${escaped}")`;
+function zonStringListField(body, field, label) {
+  const value = zonFieldValue(body, field, label);
+  let index = zonSkipTrivia(body, value.start);
+  if (body[index] !== '.') throw new Error(`expected ${label} tuple literal`);
+  index = zonSkipTrivia(body, index + 1);
+  if (body[index] !== '{') throw new Error(`expected ${label} tuple literal`);
+  const openingBrace = index;
+  const closingBrace = findClosingZonBrace(body, openingBrace);
+  if (zonSkipTrivia(body, closingBrace + 1) !== value.end) throw new Error(`trailing ${label} value tokens`);
+
+  const source = body.slice(openingBrace + 1, closingBrace);
+  const items = [];
+  index = 0;
+  while (true) {
+    index = zonSkipTrivia(source, index);
+    if (index === source.length) break;
+    const item = zonStringAt(source, index, `${label} item`);
+    const itemEnd = zonValueEnd(source, index);
+    if (zonSkipTrivia(source, item.end) !== itemEnd) throw new Error(`non-string ${label} item`);
+    items.push(item.value);
+    index = zonSkipTrivia(source, itemEnd);
+    if (index === source.length) break;
+    if (source[index] !== ',') throw new Error(`expected comma in ${label}`);
+    index += 1;
+  }
+  return items;
+}
+
+function zonFieldValue(source, field, label) {
+  const matches = [];
+  let index = 0;
+  while (true) {
+    index = zonSkipTrivia(source, index);
+    if (index === source.length) break;
+    const name = zonFieldNameAt(source, index);
+    index = zonSkipTrivia(source, name.end);
+    if (source[index] !== '=') throw new Error(`expected assignment for ZON field ${name.value}`);
+    const valueStart = zonSkipTrivia(source, index + 1);
+    const valueEnd = zonValueEnd(source, valueStart);
+    if (name.value === field) matches.push({ start: valueStart, end: valueEnd });
+    index = zonSkipTrivia(source, valueEnd);
+    if (index === source.length) break;
+    if (source[index] !== ',') throw new Error(`expected comma after ZON field ${name.value}`);
+    index += 1;
+  }
+  if (matches.length !== 1) throw new Error(`expected exactly one ${label}, got ${matches.length}`);
+  return matches[0];
+}
+
+function zonFieldNameAt(source, start) {
+  let index = start;
+  if (source[index] !== '.') throw new Error('expected ZON struct field');
+  index += 1;
+  if (source[index] === '@') {
+    const quoted = zonQuotedStringAt(source, index + 1, 'ZON field name');
+    return { value: quoted.value, end: quoted.end };
+  }
+  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(index));
+  if (!match) throw new Error('invalid ZON struct field');
+  return { value: match[0], end: index + match[0].length };
+}
+
+function zonValueEnd(source, start) {
+  const stack = [];
+  let index = start;
+  while (index < source.length) {
+    const triviaEnd = zonSkipTrivia(source, index);
+    if (triviaEnd !== index) {
+      index = triviaEnd;
+      continue;
+    }
+    if (source[index] === '"' || source[index] === "'") {
+      index = zonSkipQuoted(source, index);
+      continue;
+    }
+    if (source.startsWith('\\\\', index)) {
+      index = zonMultilineStringAt(source, index).end;
+      continue;
+    }
+    const character = source[index];
+    if (character === '{' || character === '[' || character === '(') stack.push(character);
+    else if (character === '}' || character === ']' || character === ')') {
+      const opening = stack.pop();
+      const expected = character === '}' ? '{' : character === ']' ? '[' : '(';
+      if (opening !== expected) throw new Error('unbalanced ZON value delimiter');
+    } else if (character === ',' && stack.length === 0) {
+      return index;
+    }
+    index += 1;
+  }
+  if (stack.length !== 0) throw new Error('unterminated ZON value');
+  return source.length;
 }
 
 function findClosingZonBrace(source, openingBrace) {
   let depth = 0;
-  let quote = null;
-  let escaped = false;
-  for (let index = openingBrace; index < source.length; index += 1) {
+  let index = openingBrace;
+  while (index < source.length) {
+    const triviaEnd = zonSkipTrivia(source, index);
+    if (triviaEnd !== index) {
+      index = triviaEnd;
+      continue;
+    }
+    if (source[index] === '"' || source[index] === "'") {
+      index = zonSkipQuoted(source, index);
+      continue;
+    }
+    if (source.startsWith('\\\\', index)) {
+      index = zonMultilineStringAt(source, index).end;
+      continue;
+    }
     const character = source[index];
-    if (quote !== null) {
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === quote) quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      continue;
-    }
     if (character === '{') depth += 1;
     else if (character === '}') {
       depth -= 1;
       if (depth === 0) return index;
       if (depth < 0) break;
     }
+    index += 1;
   }
   throw new Error('unterminated ZON struct literal');
 }
 
-function zonBraceDepthAt(source, end) {
-  let depth = 0;
-  let quote = null;
-  let escaped = false;
-  for (let index = 0; index < end; index += 1) {
-    const character = source[index];
-    if (quote !== null) {
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === quote) quote = null;
+function zonSkipTrivia(source, start) {
+  let index = start;
+  while (index < source.length) {
+    if (/\s/.test(source[index])) {
+      index += 1;
       continue;
     }
-    if (character === '"' || character === "'") quote = character;
-    else if (character === '{') depth += 1;
-    else if (character === '}') depth -= 1;
+    if (source[index] === '/' && source[index + 1] === '/') {
+      index += 2;
+      while (index < source.length && source[index] !== '\n') index += 1;
+      continue;
+    }
+    if (source[index] === '/' && source[index + 1] === '*') {
+      const closing = source.indexOf('*/', index + 2);
+      if (closing === -1) throw new Error('unterminated block comment in build.zig.zon');
+      index = closing + 2;
+      continue;
+    }
+    break;
   }
-  return depth;
+  return index;
+}
+
+function zonSkipQuoted(source, start) {
+  const quote = source[start];
+  let escaped = false;
+  for (let index = start + 1; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '\n' || character === '\r') throw new Error('newline in quoted ZON literal');
+    if (escaped) escaped = false;
+    else if (character === '\\') escaped = true;
+    else if (character === quote) return index + 1;
+  }
+  throw new Error('unterminated quoted ZON literal');
+}
+
+function zonQuotedStringAt(source, start, label) {
+  if (source[start] !== '"') throw new Error(`expected quoted ${label}`);
+  const end = zonSkipQuoted(source, start);
+  return {
+    value: decodeZonString(source.slice(start + 1, end - 1), label),
+    end,
+  };
+}
+
+function zonStringAt(source, start, label) {
+  if (source[start] === '"') return zonQuotedStringAt(source, start, label);
+  if (source.startsWith('\\\\', start)) return zonMultilineStringAt(source, start);
+  throw new Error(`expected string ${label}`);
+}
+
+function zonMultilineStringAt(source, start) {
+  const lines = [];
+  let lineStart = start;
+  let end = start;
+  while (true) {
+    if (!source.startsWith('\\\\', lineStart)) throw new Error('invalid ZON multiline string');
+    const newline = source.indexOf('\n', lineStart + 2);
+    const lineEnd = newline === -1 ? source.length : newline;
+    const contentEnd = lineEnd > lineStart + 2 && source[lineEnd - 1] === '\r' ? lineEnd - 1 : lineEnd;
+    lines.push(source.slice(lineStart + 2, contentEnd));
+    end = lineEnd;
+    if (newline === -1) break;
+
+    let probe = newline + 1;
+    let nextLine = null;
+    while (probe < source.length) {
+      while (source[probe] === ' ' || source[probe] === '\t' || source[probe] === '\r') probe += 1;
+      if (source[probe] === '\n') {
+        probe += 1;
+        continue;
+      }
+      if (source.startsWith('\\\\', probe)) nextLine = probe;
+      break;
+    }
+    if (nextLine === null) break;
+    lineStart = nextLine;
+  }
+  return { value: lines.join('\n'), end };
 }
 
 function decodeZonString(raw, label) {
@@ -925,6 +1101,24 @@ function generatorSourceIdentity(root, overrides = new Map()) {
     contentLength.writeBigUInt64LE(BigInt(bytes.length));
     hasher.update(pathLength);
     hasher.update(path, 'utf8');
+    hasher.update(contentLength);
+    hasher.update(bytes);
+  }
+  return hasher.digest('hex');
+}
+
+function candidateTreeIdentity(root) {
+  const hasher = createHash('sha256');
+  hasher.update(candidateAdmissionIdentityDomain);
+  for (const path of listFiles(root)) {
+    const pathBytes = Buffer.from(path, 'utf8');
+    const bytes = readFileSync(join(root, path));
+    const pathLength = Buffer.alloc(4);
+    pathLength.writeUInt32LE(pathBytes.length);
+    const contentLength = Buffer.alloc(8);
+    contentLength.writeBigUInt64LE(BigInt(bytes.length));
+    hasher.update(pathLength);
+    hasher.update(pathBytes);
     hasher.update(contentLength);
     hasher.update(bytes);
   }
@@ -1087,14 +1281,27 @@ function listFiles(root) {
 }
 
 function generatorSourceInventory(root) {
-  const files = [...sourcePackageRootFiles];
-  for (const sourceRoot of sourcePackageDirs) {
-    for (const relativePath of listFiles(join(root, sourceRoot))) {
-      const path = `${sourceRoot}/${relativePath}`;
-      if (!path.startsWith(generatorSourceExcludedPrefix)) files.push(path);
+  const files = [];
+  for (const packagePath of sourcePackagePaths) {
+    const absolutePath = join(root, packagePath);
+    const stat = lstatSync(absolutePath);
+    if (stat.isFile()) {
+      if (!packagePath.startsWith(generatorSourceExcludedPrefix)) files.push(packagePath);
+    } else if (stat.isDirectory()) {
+      for (const relativePath of listFiles(absolutePath)) {
+        const path = `${packagePath}/${relativePath}`;
+        if (!path.startsWith(generatorSourceExcludedPrefix)) files.push(path);
+      }
+    } else {
+      throw new Error(`unsupported root package path: ${packagePath}`);
     }
   }
   files.sort(compareAscii);
+  for (let index = 1; index < files.length; index += 1) {
+    if (files[index] === files[index - 1]) {
+      throw new Error(`overlapping root package paths include ${files[index]} more than once`);
+    }
+  }
   return files;
 }
 

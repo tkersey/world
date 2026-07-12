@@ -55,61 +55,118 @@ fn dependOnNativeRunOrCompile(
     }
 }
 
-const world_source_package_root_files = [_][]const u8{
-    "README.md",
-    "build.zig",
-    "build.zig.zon",
+const WorldPackageProjection = struct {
+    paths: []const []const u8,
 };
 
-const world_source_package_dirs = [_][]const u8{
-    "src",
-    "examples",
-    "scripts",
-    "test",
-    "docs",
-    "conformance",
-};
+fn worldSourcePackageRoots(b: *std.Build) []const []const u8 {
+    const raw_source = std.Io.Dir.cwd().readFileAlloc(
+        b.graph.io,
+        "build.zig.zon",
+        b.allocator,
+        .limited(1024 * 1024),
+    ) catch |err| std.debug.panic("failed to read build.zig.zon: {s}", .{@errorName(err)});
+    defer b.allocator.free(raw_source);
+    const source = b.allocator.dupeZ(u8, raw_source) catch @panic("oom");
+    defer b.allocator.free(source);
+    const projection = std.zon.parse.fromSliceAlloc(
+        WorldPackageProjection,
+        b.allocator,
+        source,
+        null,
+        .{ .ignore_unknown_fields = true },
+    ) catch |err| std.debug.panic("failed to project build.zig.zon .paths: {s}", .{@errorName(err)});
+    if (projection.paths.len == 0) @panic("build.zig.zon .paths must not be empty");
+    for (projection.paths, 0..) |path, index| {
+        validateWorldSourcePackageRoot(path);
+        for (projection.paths[0..index]) |previous| {
+            if (std.mem.eql(u8, path, previous)) {
+                std.debug.panic("duplicate build.zig.zon package path '{s}'", .{path});
+            }
+        }
+    }
+    return projection.paths;
+}
+
+fn validateWorldSourcePackageRoot(path: []const u8) void {
+    if (path.len == 0 or std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, '\\') != null) {
+        std.debug.panic("invalid build.zig.zon package path '{s}'", .{path});
+    }
+    var components = std.mem.splitScalar(u8, path, '/');
+    while (components.next()) |component| {
+        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) {
+            std.debug.panic("invalid build.zig.zon package path '{s}'", .{path});
+        }
+    }
+}
 
 fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
     for (worldSourcePackagePaths(b, null)) |path| run.addFileInput(b.path(path));
 }
 
 fn worldSourcePackagePaths(b: *std.Build, excluded_prefix: ?[]const u8) []const []const u8 {
+    return worldSourcePackagePathsForRoots(b, worldSourcePackageRoots(b), excluded_prefix);
+}
+
+fn worldSourcePackagePathsForRoots(
+    b: *std.Build,
+    package_roots: []const []const u8,
+    excluded_prefix: ?[]const u8,
+) []const []const u8 {
     var paths: std.ArrayList([]const u8) = .empty;
 
-    for (world_source_package_root_files) |path| {
-        if (excluded_prefix) |prefix| {
-            if (std.mem.startsWith(u8, path, prefix)) continue;
-        }
-        paths.append(b.allocator, b.dupe(path)) catch @panic("oom");
-    }
-
-    for (world_source_package_dirs) |root| {
-        var dir = std.Io.Dir.cwd().openDir(b.graph.io, root, .{ .iterate = true }) catch |err| {
-            std.debug.panic("failed to open source package directory '{s}': {s}", .{ root, @errorName(err) });
+    for (package_roots) |root| {
+        const root_stat = std.Io.Dir.cwd().statFile(b.graph.io, root, .{ .follow_symlinks = false }) catch |err| {
+            std.debug.panic("failed to inspect source package path '{s}': {s}", .{ root, @errorName(err) });
         };
-        defer dir.close(b.graph.io);
-
-        var walker = dir.walk(b.allocator) catch @panic("oom");
-        defer walker.deinit();
-        while (walker.next(b.graph.io) catch |err| {
-            std.debug.panic("failed to walk source package directory '{s}': {s}", .{ root, @errorName(err) });
-        }) |entry| {
-            if (entry.kind != .file) continue;
-            const path = b.fmt("{s}/{s}", .{ root, entry.path });
-            if (std.fs.path.sep != '/') {
-                for (path) |*byte| if (byte.* == std.fs.path.sep) {
-                    byte.* = '/';
+        switch (root_stat.kind) {
+            .file => {
+                if (excluded_prefix) |prefix| {
+                    if (std.mem.startsWith(u8, root, prefix)) continue;
+                }
+                paths.append(b.allocator, b.dupe(root)) catch @panic("oom");
+            },
+            .directory => {
+                var dir = std.Io.Dir.cwd().openDir(b.graph.io, root, .{
+                    .follow_symlinks = false,
+                    .iterate = true,
+                }) catch |err| {
+                    std.debug.panic("failed to open source package directory '{s}': {s}", .{ root, @errorName(err) });
                 };
-            }
-            if (excluded_prefix) |prefix| {
-                if (std.mem.startsWith(u8, path, prefix)) continue;
-            }
-            paths.append(b.allocator, path) catch @panic("oom");
+                defer dir.close(b.graph.io);
+
+                var walker = dir.walk(b.allocator) catch @panic("oom");
+                defer walker.deinit();
+                while (walker.next(b.graph.io) catch |err| {
+                    std.debug.panic("failed to walk source package directory '{s}': {s}", .{ root, @errorName(err) });
+                }) |entry| {
+                    switch (entry.kind) {
+                        .file => {},
+                        .directory => continue,
+                        else => std.debug.panic("unsupported source package entry '{s}/{s}'", .{ root, entry.path }),
+                    }
+                    const path = b.fmt("{s}/{s}", .{ root, entry.path });
+                    if (std.fs.path.sep != '/') {
+                        for (path) |*byte| if (byte.* == std.fs.path.sep) {
+                            byte.* = '/';
+                        };
+                    }
+                    if (excluded_prefix) |prefix| {
+                        if (std.mem.startsWith(u8, path, prefix)) continue;
+                    }
+                    paths.append(b.allocator, path) catch @panic("oom");
+                }
+            },
+            else => std.debug.panic("unsupported source package path '{s}'", .{root}),
         }
     }
 
     std.mem.sort([]const u8, paths.items, {}, sourcePathLessThan);
+    for (paths.items[1..], paths.items[0 .. paths.items.len - 1]) |current, previous| {
+        if (std.mem.eql(u8, current, previous)) {
+            std.debug.panic("overlapping build.zig.zon package paths include '{s}' more than once", .{current});
+        }
+    }
     return paths.toOwnedSlice(b.allocator) catch @panic("oom");
 }
 
@@ -124,7 +181,12 @@ fn worldTransitionOracleSourceClosureModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
-    const source_paths = worldSourcePackagePaths(b, world_transition_oracle_source_excluded_prefix);
+    const package_roots = worldSourcePackageRoots(b);
+    const source_paths = worldSourcePackagePathsForRoots(
+        b,
+        package_roots,
+        world_transition_oracle_source_excluded_prefix,
+    );
     const files = b.addWriteFiles();
     var root_source: std.ArrayList(u8) = .empty;
     root_source.appendSlice(
@@ -133,13 +195,9 @@ fn worldTransitionOracleSourceClosureModule(
             "    path: []const u8,\n" ++
             "    bytes: []const u8,\n" ++
             "};\n" ++
-            "pub const root_files = [_][]const u8{\n",
+            "pub const package_paths = [_][]const u8{\n",
     ) catch @panic("oom");
-    for (world_source_package_root_files) |path| {
-        root_source.print(b.allocator, "    \"{f}\",\n", .{std.zig.fmtString(path)}) catch @panic("oom");
-    }
-    root_source.appendSlice(b.allocator, "};\npub const source_dirs = [_][]const u8{\n") catch @panic("oom");
-    for (world_source_package_dirs) |path| {
+    for (package_roots) |path| {
         root_source.print(b.allocator, "    \"{f}\",\n", .{std.zig.fmtString(path)}) catch @panic("oom");
     }
     root_source.print(
@@ -421,27 +479,46 @@ pub fn build(b: *std.Build) void {
     const world_transition_oracle_tests = b.addTest(.{ .root_module = world_transition_oracle_test_mod });
     const run_world_transition_oracle_tests = b.addRunArtifact(world_transition_oracle_tests);
 
-    const update_world_transition_oracle_run = b.addRunArtifact(world_transition_oracle_exe);
-    update_world_transition_oracle_run.setCwd(b.tmpPath());
-    update_world_transition_oracle_run.addArgs(&.{
+    const update_world_transition_oracle_root = b.tmpPath();
+    const update_world_transition_oracle_candidate = update_world_transition_oracle_root.path(b, "bundle");
+    const generate_world_transition_oracle_candidate = b.addRunArtifact(world_transition_oracle_exe);
+    generate_world_transition_oracle_candidate.setName("generate World Image v1 transition oracle update candidate");
+    generate_world_transition_oracle_candidate.setCwd(update_world_transition_oracle_root);
+    generate_world_transition_oracle_candidate.addArgs(&.{
         "generate",
-        "--trusted-prefix",
-        b.pathFromRoot("."),
+        "--out-dir",
+        "./bundle",
         "--source-root",
         b.pathFromRoot("."),
     });
-    const validate_updated_world_transition_oracle = b.addSystemCommand(&.{"node"});
-    validate_updated_world_transition_oracle.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
-    validate_updated_world_transition_oracle.setCwd(b.tmpPath());
-    validate_updated_world_transition_oracle.addArgs(&.{ "--mode", "check", "--expected" });
-    validate_updated_world_transition_oracle.addDirectoryArg(b.path(world_image_v1_transition_oracle_dir));
-    validate_updated_world_transition_oracle.addArgs(&.{ "--zig-version", builtin.zig_version_string });
-    validate_updated_world_transition_oracle.step.dependOn(&update_world_transition_oracle_run.step);
+    const validate_world_transition_oracle_candidate = b.addSystemCommand(&.{"node"});
+    validate_world_transition_oracle_candidate.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
+    validate_world_transition_oracle_candidate.setCwd(b.tmpPath());
+    validate_world_transition_oracle_candidate.addArgs(&.{ "--mode", "check", "--expected" });
+    validate_world_transition_oracle_candidate.addDirectoryArg(update_world_transition_oracle_candidate);
+    validate_world_transition_oracle_candidate.addArgs(&.{ "--zig-version", builtin.zig_version_string });
+    validate_world_transition_oracle_candidate.addArg("--admission-digest");
+    const world_transition_oracle_admission_digest = validate_world_transition_oracle_candidate.addOutputFileArg(
+        "world-transition-oracle-admission.sha256",
+    );
+    validate_world_transition_oracle_candidate.step.dependOn(&generate_world_transition_oracle_candidate.step);
+    const publish_world_transition_oracle_candidate = b.addRunArtifact(world_transition_oracle_exe);
+    publish_world_transition_oracle_candidate.setName("publish admitted World Image v1 transition oracle candidate");
+    publish_world_transition_oracle_candidate.setCwd(b.tmpPath());
+    publish_world_transition_oracle_candidate.addArgs(&.{ "publish", "--source-dir" });
+    publish_world_transition_oracle_candidate.addDirectoryArg(update_world_transition_oracle_candidate);
+    publish_world_transition_oracle_candidate.addArg("--admission-digest");
+    publish_world_transition_oracle_candidate.addFileArg(world_transition_oracle_admission_digest);
+    publish_world_transition_oracle_candidate.addArgs(&.{
+        "--trusted-prefix",
+        b.pathFromRoot("."),
+    });
+    publish_world_transition_oracle_candidate.step.dependOn(&validate_world_transition_oracle_candidate.step);
     const update_world_transition_oracle_step = b.step(
         "update-world-image-v1-transition-oracle",
         "Update the checked-in World Image v1 transition oracle corpus.",
     );
-    update_world_transition_oracle_step.dependOn(&validate_updated_world_transition_oracle.step);
+    update_world_transition_oracle_step.dependOn(&publish_world_transition_oracle_candidate.step);
 
     const world_transition_oracle_a_root = b.tmpPath();
     const world_transition_oracle_b_root = b.tmpPath();
