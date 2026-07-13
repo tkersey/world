@@ -236,6 +236,21 @@ fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
     for (worldSourcePackagePaths(b, null)) |path| run.addFileInput(b.path(path));
 }
 
+const WorldSourceMaterialization = enum {
+    paths_only,
+    snapshot,
+};
+
+const WorldSourceFile = struct {
+    path: []const u8,
+    bytes: ?[]const u8,
+};
+
+const WorldSourceSnapshot = struct {
+    // Snapshot bytes, never live source paths, cross into the generated module.
+    files: []const WorldSourceFile,
+};
+
 fn worldSourcePackagePaths(b: *std.Build, excluded_prefix: ?[]const u8) []const []const u8 {
     return worldSourcePackagePathsForRoots(b, worldSourcePackageRoots(b), excluded_prefix);
 }
@@ -245,7 +260,27 @@ fn worldSourcePackagePathsForRoots(
     package_roots: []const []const u8,
     excluded_prefix: ?[]const u8,
 ) []const []const u8 {
-    var paths: std.ArrayList([]const u8) = .empty;
+    const source_files = worldSourcePackageFilesForRoots(b, package_roots, excluded_prefix, .paths_only);
+    const paths = b.allocator.alloc([]const u8, source_files.len) catch @panic("oom");
+    for (source_files, paths) |source_file, *path| path.* = source_file.path;
+    return paths;
+}
+
+fn worldSourcePackageSnapshotForRoots(
+    b: *std.Build,
+    package_roots: []const []const u8,
+    excluded_prefix: ?[]const u8,
+) WorldSourceSnapshot {
+    return .{ .files = worldSourcePackageFilesForRoots(b, package_roots, excluded_prefix, .snapshot) };
+}
+
+fn worldSourcePackageFilesForRoots(
+    b: *std.Build,
+    package_roots: []const []const u8,
+    excluded_prefix: ?[]const u8,
+    materialization: WorldSourceMaterialization,
+) []const WorldSourceFile {
+    var source_files: std.ArrayList(WorldSourceFile) = .empty;
     var budget: WorldSourceTreeBudget = .{};
 
     for (package_roots) |root| {
@@ -255,11 +290,16 @@ fn worldSourcePackagePathsForRoots(
         };
         switch (root_stat.kind) {
             .file => {
-                accountWorldSourceContent(&budget, root_stat.size);
                 if (excluded_prefix) |prefix| {
                     if (std.mem.startsWith(u8, root, prefix)) continue;
                 }
-                paths.append(b.allocator, b.dupe(root)) catch @panic("oom");
+                source_files.append(b.allocator, .{
+                    .path = b.dupe(root),
+                    .bytes = if (materialization == .snapshot)
+                        captureWorldSourceFile(b, b.build_root.handle, root, root, &budget)
+                    else
+                        null,
+                }) catch @panic("oom");
             },
             .directory => {
                 var dir = b.build_root.handle.openDir(b.graph.io, root, .{
@@ -278,46 +318,91 @@ fn worldSourcePackagePathsForRoots(
                     const path_depth = portablePathDepth(entry.path, std.fs.path.sep);
                     const traversal_depth = if (entry.kind == .directory) path_depth else path_depth -| 1;
                     accountWorldSourceEntry(&budget, root, entry.path, traversal_depth);
-                    switch (entry.kind) {
-                        .file => {
-                            const stat = dir.statFile(b.graph.io, entry.path, .{ .follow_symlinks = false }) catch |err| {
-                                std.debug.panic("failed to inspect source package file '{s}/{s}': {s}", .{ root, entry.path, @errorName(err) });
-                            };
-                            if (stat.kind != .file) {
-                                std.debug.panic("source package file changed kind during traversal '{s}/{s}'", .{ root, entry.path });
-                            }
-                            accountWorldSourceContent(&budget, stat.size);
-                        },
-                        .directory => continue,
-                        else => std.debug.panic("unsupported source package entry '{s}/{s}'", .{ root, entry.path }),
-                    }
                     const path = b.fmt("{s}/{s}", .{ root, entry.path });
                     if (std.fs.path.sep != '/') {
                         for (path) |*byte| if (byte.* == std.fs.path.sep) {
                             byte.* = '/';
                         };
                     }
+                    switch (entry.kind) {
+                        .file => {},
+                        .directory => continue,
+                        else => std.debug.panic("unsupported source package entry '{s}/{s}'", .{ root, entry.path }),
+                    }
                     if (excluded_prefix) |prefix| {
                         if (std.mem.startsWith(u8, path, prefix)) continue;
                     }
-                    paths.append(b.allocator, path) catch @panic("oom");
+                    source_files.append(b.allocator, .{
+                        .path = path,
+                        .bytes = if (materialization == .snapshot)
+                            captureWorldSourceFile(b, dir, entry.path, path, &budget)
+                        else
+                            null,
+                    }) catch @panic("oom");
                 }
             },
             else => std.debug.panic("unsupported source package path '{s}'", .{root}),
         }
     }
 
-    std.mem.sort([]const u8, paths.items, {}, sourcePathLessThan);
-    for (paths.items[1..], paths.items[0 .. paths.items.len - 1]) |current, previous| {
-        if (std.mem.eql(u8, current, previous)) {
-            std.debug.panic("overlapping build.zig.zon package paths include '{s}' more than once", .{current});
+    std.mem.sort(WorldSourceFile, source_files.items, {}, sourceFileLessThan);
+    if (source_files.items.len > 1) {
+        for (source_files.items[1..], source_files.items[0 .. source_files.items.len - 1]) |current, previous| {
+            if (std.mem.eql(u8, current.path, previous.path)) {
+                std.debug.panic("overlapping build.zig.zon package paths include '{s}' more than once", .{current.path});
+            }
         }
     }
-    return paths.toOwnedSlice(b.allocator) catch @panic("oom");
+    return source_files.toOwnedSlice(b.allocator) catch @panic("oom");
 }
 
-fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
-    return std.mem.lessThan(u8, lhs, rhs);
+fn captureWorldSourceFile(
+    b: *std.Build,
+    directory: std.Io.Dir,
+    sub_path: []const u8,
+    portable_path: []const u8,
+    budget: *WorldSourceTreeBudget,
+) []const u8 {
+    var file = directory.openFile(b.graph.io, sub_path, .{
+        .allow_directory = false,
+        .follow_symlinks = false,
+        .resolve_beneath = true,
+    }) catch |err| {
+        std.debug.panic("failed to open source package file '{s}': {s}", .{ portable_path, @errorName(err) });
+    };
+    defer file.close(b.graph.io);
+
+    const stat = file.stat(b.graph.io) catch |err| {
+        std.debug.panic("failed to inspect source package file '{s}': {s}", .{ portable_path, @errorName(err) });
+    };
+    if (stat.kind != .file) std.debug.panic("source package file is not regular '{s}'", .{portable_path});
+    accountWorldSourceContent(budget, stat.size);
+
+    const byte_count = std.math.cast(usize, stat.size) orelse {
+        std.debug.panic("source package file exceeds addressable memory '{s}'", .{portable_path});
+    };
+    const bytes = b.allocator.alloc(u8, byte_count) catch @panic("oom");
+    const bytes_read = file.readPositionalAll(b.graph.io, bytes, 0) catch |err| {
+        std.debug.panic("failed to snapshot source package file '{s}': {s}", .{ portable_path, @errorName(err) });
+    };
+    if (bytes_read != bytes.len) {
+        std.debug.panic("source package file shrank during snapshot '{s}'", .{portable_path});
+    }
+    var extra: [1]u8 = undefined;
+    const extra_read = file.readPositional(b.graph.io, &.{extra[0..]}, stat.size) catch |err| {
+        std.debug.panic("failed to finish source package snapshot '{s}': {s}", .{ portable_path, @errorName(err) });
+    };
+    const final_stat = file.stat(b.graph.io) catch |err| {
+        std.debug.panic("failed to verify source package snapshot '{s}': {s}", .{ portable_path, @errorName(err) });
+    };
+    if (extra_read != 0 or final_stat.kind != .file or final_stat.size != stat.size) {
+        std.debug.panic("source package file changed during snapshot '{s}'", .{portable_path});
+    }
+    return bytes;
+}
+
+fn sourceFileLessThan(_: void, lhs: WorldSourceFile, rhs: WorldSourceFile) bool {
+    return std.mem.lessThan(u8, lhs.path, rhs.path);
 }
 
 const world_transition_oracle_source_excluded_prefix = "conformance/world-image-v1/v0/world/";
@@ -328,7 +413,7 @@ fn worldTransitionOracleSourceClosureModule(
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
     const package_roots = worldSourcePackageRoots(b);
-    const source_paths = worldSourcePackagePathsForRoots(
+    const source_snapshot = worldSourcePackageSnapshotForRoots(
         b,
         package_roots,
         world_transition_oracle_source_excluded_prefix,
@@ -351,12 +436,12 @@ fn worldTransitionOracleSourceClosureModule(
         "}};\npub const excluded_prefix = \"{f}\";\npub const sources = [_]Source{{\n",
         .{std.zig.fmtString(world_transition_oracle_source_excluded_prefix)},
     ) catch @panic("oom");
-    for (source_paths) |path| {
-        _ = files.addCopyFile(b.path(path), path);
+    for (source_snapshot.files) |source_file| {
+        _ = files.add(source_file.path, source_file.bytes.?);
         root_source.print(
             b.allocator,
             "    .{{ .path = \"{f}\", .bytes = @embedFile(\"{f}\") }},\n",
-            .{ std.zig.fmtString(path), std.zig.fmtString(path) },
+            .{ std.zig.fmtString(source_file.path), std.zig.fmtString(source_file.path) },
         ) catch @panic("oom");
     }
     root_source.appendSlice(b.allocator, "};\n") catch @panic("oom");

@@ -1489,6 +1489,7 @@ function withCrlf(bytes) {
 
 function testGeneratorSourceIdentity() {
   testPackageVersionProjection();
+  testGeneratorSourceInventoryBudgets();
   assertJsonEqual(
     ['\u{10000}', '\uE000'].sort(compareUtf8Bytes),
     ['\uE000', '\u{10000}'],
@@ -1513,6 +1514,45 @@ function testGeneratorSourceIdentity() {
     throw error;
   }
   throw new Error('bare carriage return accepted in generator source');
+}
+
+function testGeneratorSourceInventoryBudgets() {
+  const root = mkdtempSync(join(tmpdir(), 'world-oracle-source-inventory-'));
+  try {
+    for (const packagePath of ['first', 'second']) {
+      mkdirSync(join(root, packagePath));
+      writeFileSync(join(root, packagePath, 'source.zig'), `${packagePath}\n`);
+    }
+
+    let sharedEntryBudgetRejected = false;
+    try {
+      generatorSourceInventory(
+        root,
+        ['first', 'second'],
+        { entries: maxOracleTreeEntries - 3, pathBytes: 0 },
+      );
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'oracle tree path budget exceeded') throw error;
+      sharedEntryBudgetRejected = true;
+    }
+    if (!sharedEntryBudgetRejected) throw new Error('generator source entry budget reset between package roots');
+
+    const packagePath = 'first';
+    const sourcePath = `${packagePath}/source.zig`;
+    const exactPathBytes = Buffer.byteLength(packagePath, 'utf8') + Buffer.byteLength(sourcePath, 'utf8');
+    const budget = {
+      entries: 0,
+      pathBytes: maxOracleTreePathBytes - exactPathBytes,
+    };
+    assertArrayEqual(
+      generatorSourceInventory(root, [packagePath], budget),
+      [sourcePath],
+      'generator source complete-path inventory',
+    );
+    assertEqual(budget.pathBytes, maxOracleTreePathBytes, 'generator source complete-path budget boundary');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 function testChecksumInventoryAdmission() {
@@ -1952,18 +1992,22 @@ function captureCorpus(root) {
   };
 }
 
-function generatorSourceInventory(root) {
+function generatorSourceInventory(
+  root,
+  packagePaths = sourcePackagePaths,
+  budget = { entries: 0, pathBytes: 0 },
+) {
   const files = [];
-  for (const packagePath of sourcePackagePaths) {
+  for (const packagePath of packagePaths) {
+    accountOracleTreeEntry(budget, packagePath);
     const absolutePath = join(root, packagePath);
     const stat = lstatSync(absolutePath);
     if (stat.isFile()) {
       if (!packagePath.startsWith(generatorSourceExcludedPrefix)) files.push(packagePath);
     } else if (stat.isDirectory()) {
-      for (const relativePath of listFiles(absolutePath)) {
-        const path = `${packagePath}/${relativePath}`;
-        if (!path.startsWith(generatorSourceExcludedPrefix)) files.push(path);
-      }
+      const packageFiles = [];
+      walk(absolutePath, absolutePath, packageFiles, budget, 0, packagePath);
+      for (const path of packageFiles) if (!path.startsWith(generatorSourceExcludedPrefix)) files.push(path);
     } else {
       throw new Error(`unsupported root package path: ${packagePath}`);
     }
@@ -2008,23 +2052,28 @@ function expectRootRejected(root) {
   throw new Error(`symlinked corpus root accepted: ${root}`);
 }
 
-function walk(root, current, files, budget, depth) {
+function accountOracleTreeEntry(budget, portablePath) {
+  budget.pathBytes = accountOracleTreePath(
+    budget.entries,
+    budget.pathBytes,
+    Buffer.byteLength(portablePath, 'utf8'),
+  );
+  budget.entries += 1;
+}
+
+function walk(root, current, files, budget, depth, portablePrefix = '') {
   const directory = opendirSync(current);
   try {
     for (;;) {
       const entry = directory.readSync();
       if (entry === null) return;
       const path = join(current, entry.name);
-      const portablePath = relative(root, path).split(sep).join('/');
-      budget.pathBytes = accountOracleTreePath(
-        budget.entries,
-        budget.pathBytes,
-        Buffer.byteLength(portablePath, 'utf8'),
-      );
-      budget.entries += 1;
+      const relativePath = relative(root, path).split(sep).join('/');
+      const portablePath = portablePrefix === '' ? relativePath : `${portablePrefix}/${relativePath}`;
+      accountOracleTreeEntry(budget, portablePath);
       if (entry.isDirectory()) {
         assertOracleTreeDepth(depth + 1);
-        walk(root, path, files, budget, depth + 1);
+        walk(root, path, files, budget, depth + 1, portablePrefix);
       } else if (entry.isFile()) {
         files.push(portablePath);
       } else {
