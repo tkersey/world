@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync, readFileSync, readSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, relative, resolve, sep } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
 
@@ -13,6 +13,9 @@ const maxOracleTreePathBytes = 4 * 1024 * 1024;
 const maxOracleTreeDepth = 64;
 const maxOracleFileBytes = 64 * 1024 * 1024;
 const maxOracleCorpusBytes = 256 * 1024 * 1024;
+const maxOracleSnapshotBytes = 16 + maxOracleTreePathBytes + maxOracleCorpusBytes + maxOracleTreeEntries * 12;
+const oracleSnapshotMagic = Buffer.from('WORLSNP1', 'ascii');
+const oracleSnapshotVersion = 1;
 const canonicalGeneratorCommand = 'zig build update-world-image-v1-transition-oracle';
 const canonicalNormalCheckCommand = 'zig build check-world-image-v1-transition-oracle --summary all';
 
@@ -306,9 +309,23 @@ const generatorSourceIdentityAlgorithm = 'sha256-domain-u32le-path-u64le-canonic
 const generatorSourceNormalization = 'crlf-to-lf;bare-cr-reject';
 const generatorSourceIdentityDomain = Buffer.from('world.oracle.generator-source-identity.v1\0', 'utf8');
 const candidateAdmissionIdentityDomain = Buffer.from('world.oracle.candidate-admission.v1\0', 'utf8');
-const sourcePackagePaths = rootPackagePaths();
 const generatorSourceExcludedPrefix = 'conformance/world-image-v1/v0/world/';
-const generatorSourceFiles = generatorSourceInventory(repositoryRoot);
+const args = parseArgs(process.argv.slice(2));
+requireArg(args.snapshotHelper, '--snapshot-helper');
+const packageManifestSnapshot = captureSnapshot(repositoryRoot, {
+  packagePaths: ['build.zig.zon'],
+  allowRootAlias: true,
+});
+const packageManifestProjection = rootPackageProjectionFromZon(
+  strictUtf8Text(packageManifestSnapshot.read('build.zig.zon'), 'build.zig.zon'),
+);
+const sourcePackagePaths = packageManifestProjection.paths;
+const generatorSourceSnapshot = captureSnapshot(repositoryRoot, {
+  packagePaths: sourcePackagePaths,
+  excludedPrefix: generatorSourceExcludedPrefix,
+  allowRootAlias: true,
+});
+const generatorSourceFiles = generatorSourceSnapshot.files;
 
 const expectedBinaryFamilyPolicy = {
   scope: 'exhaustive-top-level-binary-artifacts',
@@ -505,9 +522,7 @@ const binaryFamilyMatchers = {
   world_appliance_root_result_value_image: [/^artifacts\/results\/[^/]+\.root-result$/],
 };
 
-const expectedBoundaryPackage = rootBoundaryPackage();
-
-const args = parseArgs(process.argv.slice(2));
+const expectedBoundaryPackage = packageManifestProjection.boundary;
 
 if (args.mode === 'coordinate') {
   requireArg(args.operation, '--operation');
@@ -579,6 +594,7 @@ function parseArgs(raw) {
     else if (arg === '--zig-version') parsed.zigVersion = raw[++index];
     else if (arg === '--admission-digest') parsed.admissionDigest = raw[++index];
     else if (arg === '--operation') parsed.operation = raw[++index];
+    else if (arg === '--snapshot-helper') parsed.snapshotHelper = raw[++index];
     else throw new Error(`unknown argument ${arg}`);
   }
   return parsed;
@@ -588,12 +604,24 @@ function requireArg(value, name) {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`missing ${name}`);
 }
 
+function strictUtf8Text(bytes, label) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new Error(`invalid UTF-8 in ${label}`);
+  }
+}
+
 function packageVersionFromZon(zon) {
   return zonStringField(zonRootStructBody(zon), 'version', 'root package version');
 }
 
 function packagePathsFromZon(zon) {
   const paths = zonStringListField(zonRootStructBody(zon), 'paths', 'root package paths');
+  return validatePackagePaths(paths);
+}
+
+function validatePackagePaths(paths) {
   if (paths.length === 0) throw new Error('root package paths must not be empty');
   const seen = new Set();
   for (const path of paths) {
@@ -602,6 +630,15 @@ function packagePathsFromZon(zon) {
     seen.add(path);
   }
   return paths;
+}
+
+function rootPackageProjectionFromZon(zon) {
+  const root = zonRootStructBody(zon);
+  return {
+    version: zonStringField(root, 'version', 'root package version'),
+    paths: validatePackagePaths(zonStringListField(root, 'paths', 'root package paths')),
+    boundary: boundaryPackageFromRootBody(root),
+  };
 }
 
 function validateSourcePackagePath(path) {
@@ -617,6 +654,15 @@ function validateSourcePackagePath(path) {
 }
 
 function testPackageVersionProjection() {
+  let invalidManifestUtf8Rejected = false;
+  try {
+    strictUtf8Text(Buffer.from([0xff]), 'build.zig.zon');
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'invalid UTF-8 in build.zig.zon') throw error;
+    invalidManifestUtf8Rejected = true;
+  }
+  if (!invalidManifestUtf8Rejected) throw new Error('invalid UTF-8 build.zig.zon accepted');
+
   const zon = `.{
     .name = .world,
     // owner field
@@ -720,11 +766,7 @@ function testPackageVersionProjection() {
 }
 
 function rootPackageVersion() {
-  return packageVersionFromZon(readFileSync(new URL('../build.zig.zon', import.meta.url), 'utf8'));
-}
-
-function rootPackagePaths() {
-  return packagePathsFromZon(readFileSync(new URL('../build.zig.zon', import.meta.url), 'utf8'));
+  return packageManifestProjection.version;
 }
 
 function validateCorpus(root, expectedZigVersion) {
@@ -1093,7 +1135,8 @@ function validateArtifactTranscriptClaims(caseId, fields, read) {
   }
 }
 
-function validateChecksums(root, checksumText, expectedPaths, read = (path) => readFileSync(join(root, path))) {
+function validateChecksums(root, checksumText, expectedPaths, read) {
+  if (typeof read !== 'function') throw new Error(`missing retained snapshot reader: ${root}`);
   const checksumLines = checksumText
     .trimEnd()
     .split('\n')
@@ -1114,12 +1157,12 @@ function validateChecksums(root, checksumText, expectedPaths, read = (path) => r
   }
 }
 
-function rootBoundaryPackage() {
-  return boundaryPackageFromZon(readFileSync(new URL('../build.zig.zon', import.meta.url), 'utf8'));
-}
-
 function boundaryPackageFromZon(zon) {
   const root = zonRootStructBody(zon);
+  return boundaryPackageFromRootBody(root);
+}
+
+function boundaryPackageFromRootBody(root) {
   const dependencies = zonStructFieldBody(root, 'dependencies', '.dependencies');
   const body = zonStructFieldBody(dependencies, 'boundary', '.dependencies.boundary');
   const url = zonStringField(body, 'url', '.boundary.url');
@@ -1434,14 +1477,12 @@ function canonicalSourceBytes(bytes, path) {
 }
 
 function generatorSourceIdentity(root, overrides = new Map()) {
+  if (resolve(root) !== resolve(repositoryRoot)) throw new Error('generator source root does not match retained snapshot');
   const hasher = createHash('sha256');
   hasher.update(generatorSourceIdentityDomain);
   let totalBytes = 0;
   for (const path of generatorSourceFiles) {
-    const fullPath = join(root, path);
-    if (!lstatSync(fullPath).isFile()) throw new Error(`invalid generator source entry: ${path}`);
-    const remainingBytes = maxOracleCorpusBytes - totalBytes;
-    const sourceBytes = overrides.get(path) ?? readBoundedRegularFile(fullPath, path, Math.min(maxOracleFileBytes, remainingBytes));
+    const sourceBytes = overrides.get(path) ?? generatorSourceSnapshot.read(path);
     if (sourceBytes.length > maxOracleFileBytes) throw new Error(`oracle file content budget exceeded: ${path}`);
     totalBytes = accountOracleContentBytes(totalBytes, sourceBytes.length);
     const bytes = canonicalSourceBytes(sourceBytes, path);
@@ -1496,7 +1537,7 @@ function testGeneratorSourceIdentity() {
     'UTF-8 byte path order',
   );
   const path = 'build.zig';
-  const canonical = canonicalSourceBytes(readFileSync(join(repositoryRoot, path)), path);
+  const canonical = canonicalSourceBytes(generatorSourceSnapshot.read(path), path);
   const expected = generatorSourceIdentity(repositoryRoot);
   const crlfIdentity = generatorSourceIdentity(repositoryRoot, new Map([[path, withCrlf(canonical)]]));
   assertEqual(crlfIdentity, expected, 'generator source CRLF equivalence');
@@ -1517,42 +1558,26 @@ function testGeneratorSourceIdentity() {
 }
 
 function testGeneratorSourceInventoryBudgets() {
-  const root = mkdtempSync(join(tmpdir(), 'world-oracle-source-inventory-'));
+  const budget = { entries: maxOracleTreeEntries - 3, pathBytes: 0 };
+  accountOracleTreeEntry(budget, 'first');
+  accountOracleTreeEntry(budget, 'first/source.zig');
+  accountOracleTreeEntry(budget, 'second');
+  let sharedEntryBudgetRejected = false;
   try {
-    for (const packagePath of ['first', 'second']) {
-      mkdirSync(join(root, packagePath));
-      writeFileSync(join(root, packagePath, 'source.zig'), `${packagePath}\n`);
-    }
-
-    let sharedEntryBudgetRejected = false;
-    try {
-      generatorSourceInventory(
-        root,
-        ['first', 'second'],
-        { entries: maxOracleTreeEntries - 3, pathBytes: 0 },
-      );
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'oracle tree path budget exceeded') throw error;
-      sharedEntryBudgetRejected = true;
-    }
-    if (!sharedEntryBudgetRejected) throw new Error('generator source entry budget reset between package roots');
-
-    const packagePath = 'first';
-    const sourcePath = `${packagePath}/source.zig`;
-    const exactPathBytes = Buffer.byteLength(packagePath, 'utf8') + Buffer.byteLength(sourcePath, 'utf8');
-    const budget = {
-      entries: 0,
-      pathBytes: maxOracleTreePathBytes - exactPathBytes,
-    };
-    assertArrayEqual(
-      generatorSourceInventory(root, [packagePath], budget),
-      [sourcePath],
-      'generator source complete-path inventory',
-    );
-    assertEqual(budget.pathBytes, maxOracleTreePathBytes, 'generator source complete-path budget boundary');
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+    accountOracleTreeEntry(budget, 'second/source.zig');
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'oracle tree path budget exceeded') throw error;
+    sharedEntryBudgetRejected = true;
   }
+  if (!sharedEntryBudgetRejected) throw new Error('generator source entry budget reset between package roots');
+
+  const packagePath = 'first';
+  const sourcePath = `${packagePath}/source.zig`;
+  const exactPathBytes = Buffer.byteLength(packagePath, 'utf8') + Buffer.byteLength(sourcePath, 'utf8');
+  const exactBudget = { entries: 0, pathBytes: maxOracleTreePathBytes - exactPathBytes };
+  accountOracleTreeEntry(exactBudget, packagePath);
+  accountOracleTreeEntry(exactBudget, sourcePath);
+  assertEqual(exactBudget.pathBytes, maxOracleTreePathBytes, 'generator source complete-path budget boundary');
 }
 
 function testChecksumInventoryAdmission() {
@@ -1571,6 +1596,7 @@ function testChecksumInventoryAdmission() {
     if (!(error instanceof Error) || !error.message.startsWith('checksum inventory')) throw error;
     if (error.message.includes(outsideDigest)) throw new Error('outside-root digest leaked before checksum admission');
     testCandidateSnapshotIdentity();
+    testOracleSnapshotDecoder();
     testOracleTreePathBudgets();
     testOracleContentBudgets();
     testManifestCommandAdmission();
@@ -1611,24 +1637,6 @@ function testOracleTreePathBudgets() {
   }
   if (!depthRejected) throw new Error('oracle tree depth overflow accepted');
 
-  const root = mkdtempSync(join(tmpdir(), 'world-oracle-depth-budget-'));
-  try {
-    let current = root;
-    for (let depth = 0; depth <= maxOracleTreeDepth; depth += 1) {
-      current = join(current, 'd');
-      mkdirSync(current);
-    }
-    let treeRejected = false;
-    try {
-      listFiles(root);
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'oracle tree depth budget exceeded') throw error;
-      treeRejected = true;
-    }
-    if (!treeRejected) throw new Error('directory-only depth overflow accepted');
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 }
 
 function testOracleContentBudgets() {
@@ -1646,21 +1654,6 @@ function testOracleContentBudgets() {
   }
   if (!aggregateRejected) throw new Error('oracle corpus content overflow accepted');
 
-  const root = mkdtempSync(join(tmpdir(), 'world-oracle-bounded-read-'));
-  try {
-    const path = join(root, 'oversized.bin');
-    writeFileSync(path, 'four');
-    let fileRejected = false;
-    try {
-      readBoundedRegularFile(path, 'oversized.bin', 3);
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'oracle file content budget exceeded: oversized.bin') throw error;
-      fileRejected = true;
-    }
-    if (!fileRejected) throw new Error('oracle file content overflow accepted');
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 }
 
 function testManifestCommandAdmission() {
@@ -1795,7 +1788,7 @@ function testTranscriptClaimAdmission() {
 }
 
 function testCandidateSnapshotIdentity() {
-  const root = mkdtempSync(join(tmpdir(), 'world-oracle-candidate-snapshot-'));
+  const root = mkdtempSync(join(repositoryRoot, '.zig-cache', 'world-oracle-candidate-snapshot-'));
   try {
     writeFileSync(join(root, 'manifest.json'), 'admitted manifest\n');
     writeFileSync(join(root, 'checksums.sha256'), 'admitted checksums\n');
@@ -1914,16 +1907,6 @@ function compareCorpusSnapshots(expected, actual, label) {
   }
 }
 
-function listFiles(root) {
-  const inspectedRoot = resolve(root);
-  if (!lstatSync(inspectedRoot).isDirectory()) throw new Error(`not a directory: ${root}`);
-  const files = [];
-  const budget = { entries: 0, pathBytes: 0 };
-  walk(inspectedRoot, inspectedRoot, files, budget, 0);
-  files.sort(compareUtf8Bytes);
-  return files;
-}
-
 function accountOracleTreePath(entryCount, totalPathBytes, nextPathBytes) {
   if (entryCount >= maxOracleTreeEntries) throw new Error('oracle tree path budget exceeded');
   const nextTotal = totalPathBytes + nextPathBytes;
@@ -1947,41 +1930,132 @@ function accountOracleContentBytes(totalBytes, nextBytes) {
   return nextTotal;
 }
 
-function readBoundedRegularFile(path, label, maxBytes = maxOracleFileBytes) {
-  const fd = openSync(path, 'r');
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) throw new Error(`invalid regular file: ${label}`);
-    if (!Number.isSafeInteger(stat.size) || stat.size > maxBytes) {
-      throw new Error(`oracle file content budget exceeded: ${label}`);
+function validateSnapshotPath(path) {
+  const components = path.split('/');
+  if (
+    path.length === 0 ||
+    path.startsWith('/') ||
+    /^[A-Za-z]:/.test(path) ||
+    path.includes('\\') ||
+    components.some((component) => component.length === 0 || component === '.' || component === '..')
+  ) {
+    throw new Error(`invalid oracle snapshot path: ${path}`);
+  }
+  assertOracleTreeDepth(components.length - 1);
+}
+
+function encodeOracleSnapshotForTest(entries, options = {}) {
+  const header = Buffer.alloc(16);
+  oracleSnapshotMagic.copy(header, 0);
+  header.writeUInt16LE(options.version ?? oracleSnapshotVersion, 8);
+  header.writeUInt16LE(options.flags ?? 0, 10);
+  header.writeUInt32LE(options.count ?? entries.length, 12);
+  const parts = [header];
+  for (const entry of entries) {
+    const pathBytes = entry.pathBytes ?? Buffer.from(entry.path, 'utf8');
+    const content = entry.bytes ?? Buffer.alloc(0);
+    const entryHeader = Buffer.alloc(12);
+    entryHeader.writeUInt32LE(pathBytes.length, 0);
+    entryHeader.writeBigUInt64LE(entry.contentLength ?? BigInt(content.length), 4);
+    parts.push(entryHeader, pathBytes, content);
+  }
+  if (options.trailing !== undefined) parts.push(options.trailing);
+  return Buffer.concat(parts);
+}
+
+function testOracleSnapshotDecoder() {
+  const valid = encodeOracleSnapshotForTest([{ path: 'a.txt', bytes: Buffer.from('a') }]);
+  assertEqual(decodeOracleSnapshot(valid, 'fixture').read('a.txt', 'utf8'), 'a', 'snapshot decoder fixture');
+  const invalidMagic = Buffer.from(valid);
+  invalidMagic[0] ^= 0xff;
+  const malformed = [
+    invalidMagic,
+    encodeOracleSnapshotForTest([], { version: oracleSnapshotVersion + 1 }),
+    encodeOracleSnapshotForTest([], { flags: 1 }),
+    encodeOracleSnapshotForTest([], { count: maxOracleTreeEntries + 1 }),
+    encodeOracleSnapshotForTest([{ path: 'same' }, { path: 'same' }]),
+    encodeOracleSnapshotForTest([{ path: 'z' }, { path: 'a' }]),
+    encodeOracleSnapshotForTest([{ pathBytes: Buffer.from([0xff]) }]),
+    encodeOracleSnapshotForTest([{ path: 'a', contentLength: BigInt(maxOracleFileBytes + 1) }]),
+    encodeOracleSnapshotForTest([{ path: `${'d/'.repeat(maxOracleTreeDepth + 1)}leaf` }]),
+    encodeOracleSnapshotForTest([], { trailing: Buffer.from([0]) }),
+    valid.subarray(0, valid.length - 1),
+  ];
+  for (const encoded of malformed) {
+    let rejected = false;
+    try {
+      decodeOracleSnapshot(encoded, 'malformed fixture');
+    } catch {
+      rejected = true;
     }
-    const bytes = Buffer.allocUnsafe(stat.size);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const read = readSync(fd, bytes, offset, bytes.length - offset, null);
-      if (read === 0) break;
-      offset += read;
-    }
-    const extra = Buffer.allocUnsafe(1);
-    if (readSync(fd, extra, 0, 1, null) !== 0) {
-      throw new Error(`oracle file content budget exceeded: ${label}`);
-    }
-    return offset === bytes.length ? bytes : Buffer.from(bytes.subarray(0, offset));
-  } finally {
-    closeSync(fd);
+    if (!rejected) throw new Error('malformed oracle snapshot accepted');
   }
 }
 
-function captureCorpus(root) {
-  const files = listFiles(root);
-  const bytesByPath = new Map();
-  let totalBytes = 0;
-  for (const path of files) {
-    const remainingBytes = maxOracleCorpusBytes - totalBytes;
-    const bytes = readBoundedRegularFile(join(root, path), path, Math.min(maxOracleFileBytes, remainingBytes));
-    totalBytes = accountOracleContentBytes(totalBytes, bytes.length);
-    bytesByPath.set(path, bytes);
+function decodeOracleSnapshot(encoded, label = 'oracle snapshot') {
+  if (!Buffer.isBuffer(encoded)) throw new Error(`${label}: expected bytes`);
+  let cursor = 0;
+  const take = (length, field) => {
+    if (!Number.isSafeInteger(length) || length < 0 || cursor + length > encoded.length) {
+      throw new Error(`${label}: truncated ${field}`);
+    }
+    const bytes = encoded.subarray(cursor, cursor + length);
+    cursor += length;
+    return bytes;
+  };
+  const readU16 = (field) => {
+    const bytes = take(2, field);
+    return bytes.readUInt16LE(0);
+  };
+  const readU32 = (field) => {
+    const bytes = take(4, field);
+    return bytes.readUInt32LE(0);
+  };
+  const readU64 = (field) => {
+    const bytes = take(8, field);
+    return bytes.readBigUInt64LE(0);
+  };
+
+  if (!take(oracleSnapshotMagic.length, 'magic').equals(oracleSnapshotMagic)) {
+    throw new Error(`${label}: invalid magic`);
   }
+  if (readU16('version') !== oracleSnapshotVersion) throw new Error(`${label}: unsupported version`);
+  if (readU16('flags') !== 0) throw new Error(`${label}: unsupported flags`);
+  const count = readU32('entry count');
+  if (count > maxOracleTreeEntries) throw new Error(`${label}: oracle tree path budget exceeded`);
+
+  const files = [];
+  const bytesByPath = new Map();
+  const budget = { entries: 0, pathBytes: 0 };
+  let totalBytes = 0;
+  let previousPathBytes;
+  for (let index = 0; index < count; index += 1) {
+    const pathLength = readU32(`entry ${index} path length`);
+    const contentLengthBig = readU64(`entry ${index} content length`);
+    if (contentLengthBig > BigInt(maxOracleFileBytes) || contentLengthBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error(`${label}: oracle file content budget exceeded`);
+    }
+    const contentLength = Number(contentLengthBig);
+    const pathBytes = take(pathLength, `entry ${index} path`);
+    let path;
+    try {
+      path = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(pathBytes);
+    } catch {
+      throw new Error(`${label}: invalid UTF-8 path`);
+    }
+    if (!Buffer.from(path, 'utf8').equals(pathBytes)) throw new Error(`${label}: non-canonical UTF-8 path`);
+    validateSnapshotPath(path);
+    accountOracleTreeEntry(budget, path);
+    if (previousPathBytes !== undefined && Buffer.compare(previousPathBytes, pathBytes) >= 0) {
+      throw new Error(`${label}: non-canonical or duplicate path order`);
+    }
+    const bytes = take(contentLength, `entry ${index} content`);
+    totalBytes = accountOracleContentBytes(totalBytes, bytes.length);
+    files.push(path);
+    bytesByPath.set(path, bytes);
+    previousPathBytes = pathBytes;
+  }
+  if (cursor !== encoded.length) throw new Error(`${label}: trailing bytes`);
   return {
     files,
     read(path, encoding) {
@@ -1992,39 +2066,44 @@ function captureCorpus(root) {
   };
 }
 
-function generatorSourceInventory(
-  root,
-  packagePaths = sourcePackagePaths,
-  budget = { entries: 0, pathBytes: 0 },
-) {
-  const files = [];
-  for (const packagePath of packagePaths) {
-    accountOracleTreeEntry(budget, packagePath);
-    const absolutePath = join(root, packagePath);
-    const stat = lstatSync(absolutePath);
-    if (stat.isFile()) {
-      if (!packagePath.startsWith(generatorSourceExcludedPrefix)) files.push(packagePath);
-    } else if (stat.isDirectory()) {
-      const packageFiles = [];
-      walk(absolutePath, absolutePath, packageFiles, budget, 0, packagePath);
-      for (const path of packageFiles) if (!path.startsWith(generatorSourceExcludedPrefix)) files.push(path);
-    } else {
-      throw new Error(`unsupported root package path: ${packagePath}`);
-    }
+function captureSnapshot(root, options = {}) {
+  const argv = ['snapshot', '--root', resolve(root)];
+  if (options.allowRootAlias === true) argv.push('--allow-root-alias');
+  for (const packagePath of options.packagePaths ?? []) {
+    validateSourcePackagePath(packagePath);
+    argv.push('--package-root', packagePath);
   }
-  files.sort(compareUtf8Bytes);
-  for (let index = 1; index < files.length; index += 1) {
-    if (files[index] === files[index - 1]) {
-      throw new Error(`overlapping root package paths include ${files[index]} more than once`);
-    }
+  if (options.excludedPrefix !== undefined) {
+    const prefix = options.excludedPrefix.endsWith('/')
+      ? options.excludedPrefix.slice(0, -1)
+      : options.excludedPrefix;
+    validateSourcePackagePath(prefix);
+    argv.push('--exclude-prefix', options.excludedPrefix);
   }
-  return files;
+  const result = spawnSync(args.snapshotHelper, argv, {
+    encoding: null,
+    maxBuffer: maxOracleSnapshotBytes,
+    windowsHide: true,
+  });
+  if (result.error !== undefined) throw new Error(`oracle snapshot helper failed: ${result.error.message}`);
+  if (result.status !== 0) {
+    const diagnostic = Buffer.from(result.stderr ?? Buffer.alloc(0)).subarray(0, 4096).toString('utf8').trim();
+    throw new Error(`oracle snapshot helper rejected ${root}${diagnostic.length === 0 ? '' : `: ${diagnostic}`}`);
+  }
+  if (!Buffer.isBuffer(result.stdout) || result.stdout.length > maxOracleSnapshotBytes) {
+    throw new Error('oracle snapshot helper returned invalid output');
+  }
+  return decodeOracleSnapshot(result.stdout, `oracle snapshot ${root}`);
+}
+
+function captureCorpus(root) {
+  return captureSnapshot(root);
 }
 
 function testRootSymlinkRejection() {
   if (process.platform === 'win32') return;
 
-  const temporaryRoot = mkdtempSync(join(tmpdir(), 'world-oracle-root-symlink-'));
+  const temporaryRoot = mkdtempSync(join(repositoryRoot, '.zig-cache', 'world-oracle-root-symlink-'));
   try {
     const realParent = join(temporaryRoot, 'real-parent');
     const realCorpus = join(realParent, 'corpus');
@@ -2036,7 +2115,7 @@ function testRootSymlinkRejection() {
 
     expectRootRejected(linkedCorpus);
     expectRootRejected(`${linkedCorpus}${sep}`);
-    assertArrayEqual(listFiles(join(linkedParent, 'corpus')), [], 'symlinked ancestor inventory');
+    expectRootRejected(join(linkedParent, 'corpus'));
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
@@ -2044,9 +2123,9 @@ function testRootSymlinkRejection() {
 
 function expectRootRejected(root) {
   try {
-    listFiles(root);
+    captureSnapshot(root);
   } catch (error) {
-    if (error instanceof Error && error.message === `not a directory: ${root}`) return;
+    if (error instanceof Error && error.message.startsWith('oracle snapshot helper rejected')) return;
     throw error;
   }
   throw new Error(`symlinked corpus root accepted: ${root}`);
@@ -2059,30 +2138,6 @@ function accountOracleTreeEntry(budget, portablePath) {
     Buffer.byteLength(portablePath, 'utf8'),
   );
   budget.entries += 1;
-}
-
-function walk(root, current, files, budget, depth, portablePrefix = '') {
-  const directory = opendirSync(current);
-  try {
-    for (;;) {
-      const entry = directory.readSync();
-      if (entry === null) return;
-      const path = join(current, entry.name);
-      const relativePath = relative(root, path).split(sep).join('/');
-      const portablePath = portablePrefix === '' ? relativePath : `${portablePrefix}/${relativePath}`;
-      accountOracleTreeEntry(budget, portablePath);
-      if (entry.isDirectory()) {
-        assertOracleTreeDepth(depth + 1);
-        walk(root, path, files, budget, depth + 1, portablePrefix);
-      } else if (entry.isFile()) {
-        files.push(portablePath);
-      } else {
-        throw new Error(`unsupported filesystem entry: ${path}`);
-      }
-    }
-  } finally {
-    directory.closeSync();
-  }
 }
 
 function sha256(bytes) {

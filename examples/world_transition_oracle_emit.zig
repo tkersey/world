@@ -92,6 +92,8 @@ const generator_source_identity_algorithm = "sha256-domain-u32le-path-u64le-cano
 const generator_source_normalization = "crlf-to-lf;bare-cr-reject";
 const generator_source_identity_domain = "world.oracle.generator-source-identity.v1\x00";
 const candidate_admission_identity_domain = "world.oracle.candidate-admission.v1\x00";
+const oracle_snapshot_magic = "WORLSNP1";
+const oracle_snapshot_version: u16 = 1;
 const max_oracle_tree_entries: usize = 4 * 1024;
 const max_oracle_tree_path_bytes: usize = 4 * 1024 * 1024;
 const max_oracle_tree_depth: usize = 64;
@@ -438,6 +440,10 @@ pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next();
     const command = args.next() orelse return error.InvalidArguments;
+    if (std.mem.eql(u8, command, "snapshot")) {
+        try emitOracleSnapshot(init, allocator, &args);
+        return;
+    }
     if (std.mem.eql(u8, command, "publish")) {
         const source_flag = args.next() orelse return error.InvalidArguments;
         const source_dir = args.next() orelse return error.InvalidArguments;
@@ -516,19 +522,13 @@ fn publishCandidate(
     admission_digest_path: []const u8,
     trusted_prefix: []const u8,
 ) !void {
-    var source_dir = try std.Io.Dir.cwd().openDir(io, source_root, .{
-        .follow_symlinks = false,
-        .iterate = true,
-    });
+    var source_dir = try openPublicationPathNoFollow(io, source_root);
     defer source_dir.close(io);
     if ((try source_dir.stat(io)).kind != .directory) return error.InvalidCandidateDirectory;
 
-    var candidate_paths = try listFiles(io, allocator, source_dir);
-    defer candidate_paths.deinit();
-    if (candidate_paths.items.len == 0) return error.EmptyCandidateCorpus;
-
-    var snapshot = try captureCandidateSnapshot(io, allocator, source_dir, candidate_paths.items);
+    var snapshot = try captureOracleSnapshot(io, allocator, source_dir, .{});
     defer snapshot.deinit();
+    if (snapshot.paths.len == 0) return error.EmptyCandidateCorpus;
     const candidate_identity = candidateSnapshotIdentity(snapshot);
     try validateCandidateAdmissionDigest(io, allocator, admission_digest_path, candidate_identity);
     try promoteSnapshot(io, allocator, snapshot, .{ .trusted_prefix = trusted_prefix });
@@ -548,6 +548,411 @@ const CandidateSnapshot = struct {
     }
 };
 
+const SnapshotEntry = struct {
+    path: []u8,
+    bytes: []u8,
+};
+
+const SnapshotCaptureOptions = struct {
+    excluded_prefix: ?[]const u8 = null,
+};
+
+const SnapshotCollector = struct {
+    allocator: std.mem.Allocator,
+    budget: OracleTreeBudget = .{},
+    total_bytes: usize = 0,
+    entries: std.ArrayList(SnapshotEntry) = .empty,
+
+    fn deinit(self: *@This()) void {
+        for (self.entries.items) |entry| {
+            self.allocator.free(entry.path);
+            self.allocator.free(entry.bytes);
+        }
+        self.entries.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn finish(self: *@This()) !CandidateSnapshot {
+        std.mem.sort(SnapshotEntry, self.entries.items, {}, snapshotEntryLessThan);
+        if (self.entries.items.len > 1)
+            for (self.entries.items[1..], self.entries.items[0 .. self.entries.items.len - 1]) |current, previous| {
+                if (std.mem.eql(u8, current.path, previous.path)) return error.InvalidCandidateInventory;
+            };
+
+        const paths = try self.allocator.alloc([]u8, self.entries.items.len);
+        errdefer self.allocator.free(paths);
+        const bytes = try self.allocator.alloc([]u8, self.entries.items.len);
+        errdefer self.allocator.free(bytes);
+        for (self.entries.items, 0..) |entry, index| {
+            paths[index] = entry.path;
+            bytes[index] = entry.bytes;
+        }
+        self.entries.deinit(self.allocator);
+        self.entries = .empty;
+        return .{ .allocator = self.allocator, .paths = paths, .bytes = bytes };
+    }
+};
+
+fn snapshotEntryLessThan(_: void, lhs: SnapshotEntry, rhs: SnapshotEntry) bool {
+    return std.mem.lessThan(u8, lhs.path, rhs.path);
+}
+
+fn snapshotStatStable(before: std.Io.File.Stat, after: std.Io.File.Stat) bool {
+    return before.inode == after.inode and
+        before.nlink == after.nlink and
+        before.kind == after.kind and
+        before.size == after.size and
+        before.mtime.nanoseconds == after.mtime.nanoseconds and
+        before.ctime.nanoseconds == after.ctime.nanoseconds;
+}
+
+fn validateSnapshotPortablePath(path: []const u8) !void {
+    if (path.len == 0 or !std.unicode.utf8ValidateSlice(path) or std.mem.indexOfScalar(u8, path, '\\') != null) {
+        return error.InvalidCandidatePath;
+    }
+    var components = std.mem.splitScalar(u8, path, '/');
+    var component_count: usize = 0;
+    while (components.next()) |component| {
+        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) {
+            return error.InvalidCandidatePath;
+        }
+        component_count += 1;
+    }
+    try requireOracleTreeDepth(component_count - 1);
+}
+
+fn retainedEntryMatches(entry_inode: std.Io.File.INode, stat: std.Io.File.Stat) bool {
+    return entry_inode == 0 or entry_inode == stat.inode;
+}
+
+fn captureSnapshotFile(
+    io: std.Io,
+    collector: *SnapshotCollector,
+    parent: std.Io.Dir,
+    name: []const u8,
+    entry_inode: std.Io.File.INode,
+    portable_path: []u8,
+) !void {
+    var file = parent.openFile(io, name, .{
+        .mode = .read_only,
+        .follow_symlinks = false,
+    }) catch |err| switch (err) {
+        error.IsDir, error.NotDir, error.SymLinkLoop => return error.UnsupportedOracleTreeEntry,
+        else => |unexpected| return unexpected,
+    };
+    defer file.close(io);
+    const before = try file.stat(io);
+    if (before.kind != .file or !retainedEntryMatches(entry_inode, before)) return error.InvalidCandidateEntry;
+    const admitted_size = try admittedOracleFileSize(collector.total_bytes, before.size);
+    const bytes = try collector.allocator.alloc(u8, admitted_size);
+    errdefer collector.allocator.free(bytes);
+    var read_buffer: [4096]u8 = undefined;
+    var reader = file.reader(io, &read_buffer);
+    try reader.interface.readSliceAll(bytes);
+    if (reader.interface.takeByte()) |_| {
+        return error.CandidateCorpusTooLarge;
+    } else |err| switch (err) {
+        error.EndOfStream => {},
+        else => |unexpected| return unexpected,
+    }
+    const after = try file.stat(io);
+    if (!snapshotStatStable(before, after)) return error.CandidateSourceChanged;
+    collector.total_bytes = std.math.add(usize, collector.total_bytes, bytes.len) catch return error.CandidateCorpusTooLarge;
+    try collector.entries.append(collector.allocator, .{ .path = portable_path, .bytes = bytes });
+}
+
+fn captureSnapshotDirectory(
+    io: std.Io,
+    collector: *SnapshotCollector,
+    directory: std.Io.Dir,
+    portable_prefix: []const u8,
+    depth: usize,
+    options: SnapshotCaptureOptions,
+) !void {
+    const before = try directory.stat(io);
+    if (before.kind != .directory) return error.InvalidCandidateDirectory;
+    var iterator = directory.iterate();
+    while (try iterator.next(io)) |entry| {
+        const separator_bytes: usize = if (portable_prefix.len == 0) 0 else 1;
+        const prefix_length = std.math.add(usize, portable_prefix.len, separator_bytes) catch return error.CandidateCorpusTooLarge;
+        const next_path_length = std.math.add(usize, prefix_length, entry.name.len) catch return error.CandidateCorpusTooLarge;
+        try collector.budget.account(next_path_length);
+        const portable_path = if (portable_prefix.len == 0)
+            try collector.allocator.dupe(u8, entry.name)
+        else
+            try std.fmt.allocPrint(collector.allocator, "{s}/{s}", .{ portable_prefix, entry.name });
+        errdefer collector.allocator.free(portable_path);
+        try validateSnapshotPortablePath(portable_path);
+
+        switch (entry.kind) {
+            .file => {
+                if (options.excluded_prefix) |prefix| {
+                    if (std.mem.startsWith(u8, portable_path, prefix)) {
+                        collector.allocator.free(portable_path);
+                        continue;
+                    }
+                }
+                try captureSnapshotFile(io, collector, directory, entry.name, entry.inode, portable_path);
+            },
+            .directory => {
+                try requireOracleTreeDepth(depth + 1);
+                var child = directory.openDir(io, entry.name, .{
+                    .follow_symlinks = false,
+                    .iterate = true,
+                }) catch |err| switch (err) {
+                    error.NotDir, error.SymLinkLoop => return error.UnsupportedOracleTreeEntry,
+                    else => |unexpected| return unexpected,
+                };
+                defer child.close(io);
+                const child_before = try child.stat(io);
+                if (child_before.kind != .directory or !retainedEntryMatches(entry.inode, child_before)) {
+                    return error.InvalidCandidateEntry;
+                }
+                try captureSnapshotDirectory(io, collector, child, portable_path, depth + 1, options);
+                const child_after = try child.stat(io);
+                if (!snapshotStatStable(child_before, child_after)) return error.CandidateSourceChanged;
+                collector.allocator.free(portable_path);
+            },
+            .block_device,
+            .character_device,
+            .named_pipe,
+            .sym_link,
+            .unix_domain_socket,
+            .whiteout,
+            .door,
+            .event_port,
+            .unknown,
+            => return error.UnsupportedOracleTreeEntry,
+        }
+    }
+    const after = try directory.stat(io);
+    if (!snapshotStatStable(before, after)) return error.CandidateSourceChanged;
+}
+
+fn captureOracleSnapshot(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    source_dir: std.Io.Dir,
+    options: SnapshotCaptureOptions,
+) !CandidateSnapshot {
+    var collector = SnapshotCollector{ .allocator = allocator };
+    errdefer collector.deinit();
+    try captureSnapshotDirectory(io, &collector, source_dir, "", 0, options);
+    return collector.finish();
+}
+
+fn capturePackageSnapshotRoot(
+    io: std.Io,
+    collector: *SnapshotCollector,
+    source_dir: std.Io.Dir,
+    package_path: []const u8,
+    options: SnapshotCaptureOptions,
+) !void {
+    try validateSnapshotPortablePath(package_path);
+    try collector.budget.account(package_path.len);
+
+    var current = source_dir;
+    var current_owned = false;
+    defer if (current_owned) current.close(io);
+    var components = std.fs.path.componentIterator(package_path);
+    while (components.next()) |component| {
+        if (components.peekNext() != null) {
+            const child = current.openDir(io, component.name, .{
+                .follow_symlinks = false,
+                .iterate = true,
+            }) catch |err| switch (err) {
+                error.NotDir, error.SymLinkLoop => return error.InvalidGeneratorSourceEntry,
+                else => |unexpected| return unexpected,
+            };
+            if (current_owned) current.close(io);
+            current = child;
+            current_owned = true;
+            continue;
+        }
+
+        const entry_stat = current.statFile(io, component.name, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.NotDir, error.SymLinkLoop => return error.InvalidGeneratorSourceEntry,
+            else => |unexpected| return unexpected,
+        };
+        switch (entry_stat.kind) {
+            .file => {
+                if (options.excluded_prefix) |prefix| {
+                    if (std.mem.startsWith(u8, package_path, prefix)) return;
+                }
+                const portable_path = try collector.allocator.dupe(u8, package_path);
+                errdefer collector.allocator.free(portable_path);
+                try captureSnapshotFile(io, collector, current, component.name, entry_stat.inode, portable_path);
+            },
+            .directory => {
+                var package_dir = current.openDir(io, component.name, .{
+                    .follow_symlinks = false,
+                    .iterate = true,
+                }) catch |err| switch (err) {
+                    error.NotDir, error.SymLinkLoop => return error.InvalidGeneratorSourceEntry,
+                    else => |unexpected| return unexpected,
+                };
+                defer package_dir.close(io);
+                const before = try package_dir.stat(io);
+                if (before.kind != .directory or before.inode != entry_stat.inode) return error.InvalidGeneratorSourceEntry;
+                try captureSnapshotDirectory(io, collector, package_dir, package_path, 0, options);
+                const after = try package_dir.stat(io);
+                if (!snapshotStatStable(before, after)) return error.CandidateSourceChanged;
+            },
+            else => return error.InvalidGeneratorSourceEntry,
+        }
+        return;
+    }
+    return error.InvalidGeneratorSourceEntry;
+}
+
+fn capturePackageSnapshot(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    source_dir: std.Io.Dir,
+    package_paths: []const []const u8,
+    options: SnapshotCaptureOptions,
+) !CandidateSnapshot {
+    var collector = SnapshotCollector{ .allocator = allocator };
+    errdefer collector.deinit();
+    const before = try source_dir.stat(io);
+    if (before.kind != .directory) return error.InvalidGeneratorSourceEntry;
+    for (package_paths) |package_path| {
+        try capturePackageSnapshotRoot(io, &collector, source_dir, package_path, options);
+    }
+    const after = try source_dir.stat(io);
+    if (!snapshotStatStable(before, after)) return error.CandidateSourceChanged;
+    return collector.finish();
+}
+
+fn openSnapshotRoot(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    allow_root_alias: bool,
+) !std.Io.Dir {
+    if (!std.fs.path.isAbsolute(root_path)) return error.InvalidSnapshotRoot;
+    if (!allow_root_alias) return openPublicationPathNoFollow(io, root_path);
+    const physical_root = try std.Io.Dir.realPathFileAbsoluteAlloc(io, root_path, allocator);
+    defer allocator.free(physical_root);
+    return openPublicationPathNoFollow(io, physical_root);
+}
+
+fn writeOracleSnapshot(io: std.Io, snapshot: CandidateSnapshot) !void {
+    var buffer: [4096]u8 = undefined;
+    var file_writer = std.Io.File.stdout().writer(io, &buffer);
+    const writer = &file_writer.interface;
+    try writer.writeAll(oracle_snapshot_magic);
+    try writer.writeInt(u16, oracle_snapshot_version, .little);
+    try writer.writeInt(u16, 0, .little);
+    try writer.writeInt(u32, @intCast(snapshot.paths.len), .little);
+    for (snapshot.paths, snapshot.bytes) |path, bytes| {
+        try writer.writeInt(u32, @intCast(path.len), .little);
+        try writer.writeInt(u64, @intCast(bytes.len), .little);
+        try writer.writeAll(path);
+        try writer.writeAll(bytes);
+    }
+    try file_writer.flush();
+}
+
+fn emitOracleSnapshot(
+    init: std.process.Init,
+    allocator: std.mem.Allocator,
+    args: *std.process.Args.Iterator,
+) !void {
+    var root_path: ?[]const u8 = null;
+    var allow_root_alias = false;
+    var excluded_prefix: ?[]const u8 = null;
+    var package_paths: std.ArrayList([]const u8) = .empty;
+    defer package_paths.deinit(allocator);
+    while (args.next()) |flag| {
+        if (std.mem.eql(u8, flag, "--root")) {
+            if (root_path != null) return error.InvalidArguments;
+            root_path = args.next() orelse return error.InvalidArguments;
+        } else if (std.mem.eql(u8, flag, "--allow-root-alias")) {
+            if (allow_root_alias) return error.InvalidArguments;
+            allow_root_alias = true;
+        } else if (std.mem.eql(u8, flag, "--package-root")) {
+            try package_paths.append(allocator, args.next() orelse return error.InvalidArguments);
+        } else if (std.mem.eql(u8, flag, "--exclude-prefix")) {
+            if (excluded_prefix != null) return error.InvalidArguments;
+            excluded_prefix = args.next() orelse return error.InvalidArguments;
+        } else return error.InvalidArguments;
+    }
+    const root = root_path orelse return error.InvalidArguments;
+    if (root.len == 0) return error.InvalidArguments;
+    if (excluded_prefix) |prefix| {
+        const validated_prefix = if (std.mem.endsWith(u8, prefix, "/")) prefix[0 .. prefix.len - 1] else prefix;
+        try validateSnapshotPortablePath(validated_prefix);
+    }
+
+    var source_dir = try openSnapshotRoot(init.io, allocator, root, allow_root_alias);
+    defer source_dir.close(init.io);
+    var snapshot = if (package_paths.items.len == 0)
+        try captureOracleSnapshot(init.io, allocator, source_dir, .{ .excluded_prefix = excluded_prefix })
+    else
+        try capturePackageSnapshot(init.io, allocator, source_dir, package_paths.items, .{ .excluded_prefix = excluded_prefix });
+    defer snapshot.deinit();
+    try writeOracleSnapshot(init.io, snapshot);
+}
+
+test "oracle snapshot reads through retained directory authority" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "source/cases");
+    try tmp.dir.writeFile(io, .{ .sub_path = "source/cases/example.txt", .data = "retained\n" });
+
+    var retained = try tmp.dir.openDir(io, "source", .{ .follow_symlinks = false, .iterate = true });
+    defer retained.close(io);
+    try tmp.dir.rename("source", tmp.dir, "admitted", io);
+    try tmp.dir.createDirPath(io, "source/cases");
+    try tmp.dir.writeFile(io, .{ .sub_path = "source/cases/example.txt", .data = "replacement\n" });
+
+    var snapshot = try captureOracleSnapshot(io, std.testing.allocator, retained, .{});
+    defer snapshot.deinit();
+    try std.testing.expectEqual(1, snapshot.paths.len);
+    try std.testing.expectEqualStrings("cases/example.txt", snapshot.paths[0]);
+    try std.testing.expectEqualStrings("retained\n", snapshot.bytes[0]);
+}
+
+test "package snapshot shares structural budget across roots" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "first", .default_dir);
+    try tmp.dir.createDir(io, "second", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "first/source.zig", .data = "first\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "second/source.zig", .data = "second\n" });
+
+    var collector = SnapshotCollector{ .allocator = std.testing.allocator };
+    defer collector.deinit();
+    collector.budget.entries = max_oracle_tree_entries - 3;
+    try capturePackageSnapshotRoot(io, &collector, tmp.dir, "first", .{});
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        capturePackageSnapshotRoot(io, &collector, tmp.dir, "second", .{}),
+    );
+}
+
+test "package snapshot rejects an oversized manifest before allocation" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    {
+        var manifest = try tmp.dir.createFile(io, "build.zig.zon", .{ .read = true });
+        defer manifest.close(io);
+        try manifest.setLength(io, max_oracle_file_bytes + 1);
+    }
+
+    var collector = SnapshotCollector{ .allocator = std.testing.allocator };
+    defer collector.deinit();
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        capturePackageSnapshotRoot(io, &collector, tmp.dir, "build.zig.zon", .{}),
+    );
+}
+
 fn admittedOracleFileSize(total_bytes: usize, stat_size: u64) !usize {
     if (total_bytes > max_oracle_corpus_bytes) return error.CandidateCorpusTooLarge;
     const remaining_bytes = max_oracle_corpus_bytes - total_bytes;
@@ -555,37 +960,6 @@ fn admittedOracleFileSize(total_bytes: usize, stat_size: u64) !usize {
         return error.CandidateCorpusTooLarge;
     }
     return @intCast(stat_size);
-}
-
-fn readOracleFileAtAdmittedSize(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    file: std.Io.File,
-    admitted_size: usize,
-) ![]u8 {
-    var read_buffer: [4096]u8 = undefined;
-    var reader = file.reader(io, &read_buffer);
-    const bytes = try allocator.alloc(u8, admitted_size);
-    errdefer allocator.free(bytes);
-    const actual_size = try reader.interface.readSliceShort(bytes);
-    if (actual_size != bytes.len) return allocator.realloc(bytes, actual_size);
-    _ = reader.interface.takeByte() catch |err| switch (err) {
-        error.EndOfStream => return bytes,
-        else => |unexpected| return unexpected,
-    };
-    return error.CandidateCorpusTooLarge;
-}
-
-fn readBoundedOracleFile(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    file: std.Io.File,
-    total_bytes: usize,
-) ![]u8 {
-    const stat = try file.stat(io);
-    if (stat.kind != .file) return error.InvalidCandidateEntry;
-    const admitted_size = try admittedOracleFileSize(total_bytes, stat.size);
-    return readOracleFileAtAdmittedSize(io, allocator, file, admitted_size);
 }
 
 test "candidate content admission applies exact and remaining aggregate bounds before allocation" {
@@ -603,75 +977,6 @@ test "candidate content admission applies exact and remaining aggregate bounds b
         error.CandidateCorpusTooLarge,
         admittedOracleFileSize(max_oracle_corpus_bytes, 1),
     );
-}
-
-test "candidate content capture rejects growth and returns exact shrunken bytes" {
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(io, .{ .sub_path = "candidate.bin", .data = "four" });
-    var file = try tmp.dir.openFile(io, "candidate.bin", .{ .mode = .read_only });
-    defer file.close(io);
-    try std.testing.expectError(
-        error.CandidateCorpusTooLarge,
-        readOracleFileAtAdmittedSize(io, std.testing.allocator, file, 3),
-    );
-
-    var exact_file = try tmp.dir.openFile(io, "candidate.bin", .{ .mode = .read_only });
-    defer exact_file.close(io);
-    const exact = try readOracleFileAtAdmittedSize(io, std.testing.allocator, exact_file, 4);
-    defer std.testing.allocator.free(exact);
-    try std.testing.expectEqualStrings("four", exact);
-
-    var short_file = try tmp.dir.openFile(io, "candidate.bin", .{ .mode = .read_only });
-    defer short_file.close(io);
-    const shrunken = try readOracleFileAtAdmittedSize(io, std.testing.allocator, short_file, 5);
-    defer std.testing.allocator.free(shrunken);
-    try std.testing.expectEqualStrings("four", shrunken);
-}
-
-fn captureCandidateSnapshot(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    source_dir: std.Io.Dir,
-    candidate_paths: []const []const u8,
-) !CandidateSnapshot {
-    var paths: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (paths.items) |path| allocator.free(path);
-        paths.deinit(allocator);
-    }
-    var contents: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (contents.items) |bytes| allocator.free(bytes);
-        contents.deinit(allocator);
-    }
-    var total_bytes: usize = 0;
-    for (candidate_paths) |relative_path| {
-        var file = source_dir.openFile(io, relative_path, .{
-            .mode = .read_only,
-            .follow_symlinks = false,
-            .resolve_beneath = true,
-        }) catch |err| switch (err) {
-            error.SymLinkLoop => return error.InvalidCandidateEntry,
-            else => |other| return other,
-        };
-        defer file.close(io);
-        const bytes = try readBoundedOracleFile(io, allocator, file, total_bytes);
-        errdefer allocator.free(bytes);
-        total_bytes += bytes.len;
-        const path = try allocator.dupe(u8, relative_path);
-        errdefer allocator.free(path);
-        try paths.append(allocator, path);
-        try contents.append(allocator, bytes);
-    }
-    const owned_paths = try paths.toOwnedSlice(allocator);
-    errdefer {
-        for (owned_paths) |path| allocator.free(path);
-        allocator.free(owned_paths);
-    }
-    const owned_contents = try contents.toOwnedSlice(allocator);
-    return .{ .allocator = allocator, .paths = owned_paths, .bytes = owned_contents };
 }
 
 fn candidateSnapshotIdentity(snapshot: CandidateSnapshot) [32]u8 {
@@ -732,14 +1037,9 @@ fn writeCandidateAdmissionDigestForTest(
     source_root: []const u8,
     admission_digest_path: []const u8,
 ) !void {
-    var source_dir = try std.Io.Dir.cwd().openDir(io, source_root, .{
-        .follow_symlinks = false,
-        .iterate = true,
-    });
+    var source_dir = try openPublicationPathNoFollow(io, source_root);
     defer source_dir.close(io);
-    var candidate_paths = try listFiles(io, allocator, source_dir);
-    defer candidate_paths.deinit();
-    var snapshot = try captureCandidateSnapshot(io, allocator, source_dir, candidate_paths.items);
+    var snapshot = try captureOracleSnapshot(io, allocator, source_dir, .{});
     defer snapshot.deinit();
     const identity = candidateSnapshotIdentity(snapshot);
     const text = candidateAdmissionDigestText(identity);
@@ -2848,13 +3148,12 @@ fn promoteSnapshot(io: std.Io, allocator: std.mem.Allocator, snapshot: Candidate
 }
 
 fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, target: PublicationTarget) !void {
-    var source_dir = try std.Io.Dir.cwd().openDir(writer.io, writer.root, .{
-        .follow_symlinks = false,
-        .iterate = true,
-    });
+    var source_dir = try openPublicationPathNoFollow(writer.io, writer.root);
     defer source_dir.close(writer.io);
-    var snapshot = try captureCandidateSnapshot(writer.io, allocator, source_dir, writer.paths.items);
+    var snapshot = try captureOracleSnapshot(writer.io, allocator, source_dir, .{});
     defer snapshot.deinit();
+    if (snapshot.paths.len != writer.paths.items.len) return error.InvalidCandidateInventory;
+    for (snapshot.paths) |path| if (!isExpectedPath(writer.paths.items, path)) return error.InvalidCandidateInventory;
     try promoteSnapshot(writer.io, allocator, snapshot, target);
 }
 
@@ -2948,8 +3247,7 @@ test "publication consumes captured candidate bytes without reopening source pat
 
     var source_dir = try cwd.openDir(io, candidate_root, .{ .follow_symlinks = false, .iterate = true });
     defer source_dir.close(io);
-    const paths = [_][]const u8{"cases/example.txt"};
-    var snapshot = try captureCandidateSnapshot(io, allocator, source_dir, &paths);
+    var snapshot = try captureOracleSnapshot(io, allocator, source_dir, .{});
     defer snapshot.deinit();
     try cwd.writeFile(io, .{ .sub_path = candidate_path, .data = "mutated after snapshot\n" });
     try promoteSnapshot(io, allocator, snapshot, .{ .isolated = output_root });
@@ -2993,7 +3291,7 @@ test "publication retains nested parent authority after real directory replaceme
 
     var source_dir = try cwd.openDir(io, candidate_root, .{ .follow_symlinks = false, .iterate = true });
     defer source_dir.close(io);
-    var snapshot = try captureCandidateSnapshot(io, allocator, source_dir, writer.paths.items);
+    var snapshot = try captureOracleSnapshot(io, allocator, source_dir, .{});
     defer snapshot.deinit();
 
     var publication_dir = try cwd.openDir(io, published_root, .{ .follow_symlinks = false, .iterate = true });
@@ -3305,51 +3603,6 @@ fn canonicalSourceBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return canonical.toOwnedSlice(allocator);
 }
 
-fn generatorSourceInventory(io: std.Io, allocator: std.mem.Allocator, source_dir: std.Io.Dir) !OwnedPaths {
-    var items: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (items.items) |item| allocator.free(item);
-        items.deinit(allocator);
-    }
-    var budget: OracleTreeBudget = .{};
-
-    for (generator_source_package_paths) |package_path| {
-        try budget.account(package_path.len);
-        const path_stat = try source_dir.statFile(io, package_path, .{ .follow_symlinks = false });
-        switch (path_stat.kind) {
-            .file => {
-                if (std.mem.startsWith(u8, package_path, generator_source_excluded_prefix)) continue;
-                try items.append(allocator, try allocator.dupe(u8, package_path));
-            },
-            .directory => {
-                var root = try source_dir.openDir(io, package_path, .{ .follow_symlinks = false, .iterate = true });
-                defer root.close(io);
-                var root_files: std.ArrayList([]u8) = .empty;
-                defer root_files.deinit(allocator);
-                errdefer for (root_files.items) |path| allocator.free(path);
-                try collectFiles(io, allocator, root, package_path, 0, &budget, &root_files);
-                try items.ensureUnusedCapacity(allocator, root_files.items.len);
-                for (root_files.items) |path| {
-                    if (std.mem.startsWith(u8, path, generator_source_excluded_prefix)) {
-                        allocator.free(path);
-                        continue;
-                    }
-                    items.appendAssumeCapacity(path);
-                }
-                root_files.items.len = 0;
-            },
-            else => return error.InvalidGeneratorSourceEntry,
-        }
-    }
-
-    const owned = try items.toOwnedSlice(allocator);
-    std.mem.sort([]u8, owned, {}, mutablePathLessThan);
-    for (owned[1..], owned[0 .. owned.len - 1]) |current, previous| {
-        if (std.mem.eql(u8, current, previous)) return error.InvalidGeneratorSourceInventory;
-    }
-    return .{ .allocator = allocator, .items = owned };
-}
-
 fn validateGeneratorSourceInventory(actual_files: anytype) !void {
     if (actual_files.len != compiled_generator_sources.len) return error.InvalidGeneratorSourceInventory;
     for (actual_files, compiled_generator_sources) |actual_path, compiled_source| {
@@ -3358,31 +3611,17 @@ fn validateGeneratorSourceInventory(actual_files: anytype) !void {
 }
 
 fn generatorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root: []const u8) ![32]u8 {
-    var source_dir = try std.Io.Dir.cwd().openDir(io, source_root, .{ .follow_symlinks = true, .iterate = true });
+    var source_dir = try openSnapshotRoot(io, allocator, source_root, true);
     defer source_dir.close(io);
-    var actual_files = try generatorSourceInventory(io, allocator, source_dir);
-    defer actual_files.deinit();
-    try validateGeneratorSourceInventory(actual_files.items);
+    var snapshot = try capturePackageSnapshot(io, allocator, source_dir, &generator_source_package_paths, .{
+        .excluded_prefix = generator_source_excluded_prefix,
+    });
+    defer snapshot.deinit();
+    try validateGeneratorSourceInventory(snapshot.paths);
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update(generator_source_identity_domain);
-    var total_bytes: usize = 0;
-    for (actual_files.items) |relative_path| {
-        var file = source_dir.openFile(io, relative_path, .{
-            .mode = .read_only,
-            .follow_symlinks = false,
-            .resolve_beneath = true,
-        }) catch |err| switch (err) {
-            error.SymLinkLoop => return error.InvalidGeneratorSourceEntry,
-            else => |other| return other,
-        };
-        defer file.close(io);
-        const raw_bytes = readBoundedOracleFile(io, allocator, file, total_bytes) catch |err| switch (err) {
-            error.InvalidCandidateEntry => return error.InvalidGeneratorSourceEntry,
-            else => |unexpected| return unexpected,
-        };
-        defer allocator.free(raw_bytes);
-        total_bytes += raw_bytes.len;
+    for (snapshot.paths, snapshot.bytes) |relative_path, raw_bytes| {
         try updateGeneratorSourceIdentity(&hasher, allocator, relative_path, raw_bytes);
     }
     var digest = [_]u8{0} ** 32;

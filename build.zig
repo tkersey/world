@@ -335,7 +335,7 @@ fn worldSourcePackageFilesForRoots(
                     source_files.append(b.allocator, .{
                         .path = path,
                         .bytes = if (materialization == .snapshot)
-                            captureWorldSourceFile(b, dir, entry.path, path, &budget)
+                            captureWorldSourceFile(b, entry.dir, entry.basename, path, &budget)
                         else
                             null,
                     }) catch @panic("oom");
@@ -395,10 +395,19 @@ fn captureWorldSourceFile(
     const final_stat = file.stat(b.graph.io) catch |err| {
         std.debug.panic("failed to verify source package snapshot '{s}': {s}", .{ portable_path, @errorName(err) });
     };
-    if (extra_read != 0 or final_stat.kind != .file or final_stat.size != stat.size) {
+    if (extra_read != 0 or !worldSourceFileStatStable(stat, final_stat)) {
         std.debug.panic("source package file changed during snapshot '{s}'", .{portable_path});
     }
     return bytes;
+}
+
+fn worldSourceFileStatStable(before: std.Io.File.Stat, after: std.Io.File.Stat) bool {
+    return before.inode == after.inode and
+        before.nlink == after.nlink and
+        before.kind == after.kind and
+        before.size == after.size and
+        before.mtime.nanoseconds == after.mtime.nanoseconds and
+        before.ctime.nanoseconds == after.ctime.nanoseconds;
 }
 
 fn sourceFileLessThan(_: void, lhs: WorldSourceFile, rhs: WorldSourceFile) bool {
@@ -615,6 +624,8 @@ const WorldOracleOperationStep = struct {
             operation.second.getPath2(b, step),
             "--zig-version",
             operation.zig_version,
+            "--snapshot-helper",
+            operation.publisher.getPath2(b, step),
         });
         try runChild(step, options, argv.items);
 
@@ -660,6 +671,8 @@ const WorldOracleOperationStep = struct {
                 operation.emit_dir,
                 "--zig-version",
                 operation.zig_version,
+                "--snapshot-helper",
+                operation.publisher.getPath2(b, step),
             };
             try runChild(step, options, &verify_argv);
         }
@@ -960,6 +973,8 @@ pub fn build(b: *std.Build) void {
     validate_world_transition_oracle_candidate.addArgs(&.{ "--mode", "check", "--expected" });
     validate_world_transition_oracle_candidate.addDirectoryArg(world_transition_oracle_a_dir);
     validate_world_transition_oracle_candidate.addArgs(&.{ "--zig-version", builtin.zig_version_string });
+    validate_world_transition_oracle_candidate.addArg("--snapshot-helper");
+    validate_world_transition_oracle_candidate.addFileArg(world_transition_oracle_exe.getEmittedBin());
     validate_world_transition_oracle_candidate.addArg("--admission-digest");
     const world_transition_oracle_admission_digest = validate_world_transition_oracle_candidate.addOutputFileArg(
         "world-transition-oracle-admission.sha256",
@@ -973,6 +988,8 @@ pub fn build(b: *std.Build) void {
     verify_world_transition_oracle_update_candidates.addArg("--actual");
     verify_world_transition_oracle_update_candidates.addDirectoryArg(world_transition_oracle_b_dir);
     verify_world_transition_oracle_update_candidates.addArgs(&.{ "--zig-version", builtin.zig_version_string });
+    verify_world_transition_oracle_update_candidates.addArg("--snapshot-helper");
+    verify_world_transition_oracle_update_candidates.addFileArg(world_transition_oracle_exe.getEmittedBin());
     verify_world_transition_oracle_update_candidates.step.dependOn(&generate_world_transition_oracle_a.step);
     verify_world_transition_oracle_update_candidates.step.dependOn(&generate_world_transition_oracle_b.step);
     const update_world_transition_oracle_step = b.step(
@@ -982,12 +999,18 @@ pub fn build(b: *std.Build) void {
     const check_world_transition_oracle_root_symlink = b.addSystemCommand(&.{"node"});
     check_world_transition_oracle_root_symlink.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
     check_world_transition_oracle_root_symlink.addArgs(&.{ "--mode", "self-test-root-symlink" });
+    check_world_transition_oracle_root_symlink.addArg("--snapshot-helper");
+    check_world_transition_oracle_root_symlink.addFileArg(world_transition_oracle_exe.getEmittedBin());
     const check_world_transition_oracle_source_identity = b.addSystemCommand(&.{"node"});
     check_world_transition_oracle_source_identity.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
     check_world_transition_oracle_source_identity.addArgs(&.{ "--mode", "self-test-generator-source" });
+    check_world_transition_oracle_source_identity.addArg("--snapshot-helper");
+    check_world_transition_oracle_source_identity.addFileArg(world_transition_oracle_exe.getEmittedBin());
     const check_world_transition_oracle_checksum_inventory = b.addSystemCommand(&.{"node"});
     check_world_transition_oracle_checksum_inventory.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
     check_world_transition_oracle_checksum_inventory.addArgs(&.{ "--mode", "self-test-checksum-inventory" });
+    check_world_transition_oracle_checksum_inventory.addArg("--snapshot-helper");
+    check_world_transition_oracle_checksum_inventory.addFileArg(world_transition_oracle_exe.getEmittedBin());
     const check_world_transition_oracle_foreign_cwd = b.addSystemCommand(&.{b.graph.zig_exe});
     check_world_transition_oracle_foreign_cwd.setName("configure World Image v1 transition oracle from a foreign cwd");
     check_world_transition_oracle_foreign_cwd.setCwd(b.tmpPath());
