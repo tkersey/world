@@ -246,6 +246,7 @@ const WorldOracleOperationStep = struct {
     step: std.Build.Step,
     update_root: *std.Build.Step,
     check_root: *std.Build.Step,
+    emit_root: *std.Build.Step,
     script: std.Build.LazyPath,
     publisher: std.Build.LazyPath,
     expected: std.Build.LazyPath,
@@ -254,6 +255,8 @@ const WorldOracleOperationStep = struct {
     admission_digest: std.Build.LazyPath,
     zig_version: []const u8,
     trusted_prefix: []const u8,
+    emit_prefix: []const u8,
+    emit_dir: []const u8,
     source_root: []const u8,
     coordination_dir: []const u8,
 
@@ -261,6 +264,7 @@ const WorldOracleOperationStep = struct {
         b: *std.Build,
         update_root: *std.Build.Step,
         check_root: *std.Build.Step,
+        emit_root: *std.Build.Step,
         args: struct {
             script: std.Build.LazyPath,
             publisher: std.Build.LazyPath,
@@ -270,6 +274,8 @@ const WorldOracleOperationStep = struct {
             admission_digest: std.Build.LazyPath,
             zig_version: []const u8,
             trusted_prefix: []const u8,
+            emit_prefix: []const u8,
+            emit_dir: []const u8,
             source_root: []const u8,
             coordination_dir: []const u8,
         },
@@ -284,6 +290,7 @@ const WorldOracleOperationStep = struct {
             }),
             .update_root = update_root,
             .check_root = check_root,
+            .emit_root = emit_root,
             .script = args.script,
             .publisher = args.publisher,
             .expected = args.expected,
@@ -292,6 +299,8 @@ const WorldOracleOperationStep = struct {
             .admission_digest = args.admission_digest,
             .zig_version = b.dupe(args.zig_version),
             .trusted_prefix = b.dupePath(args.trusted_prefix),
+            .emit_prefix = b.dupePath(args.emit_prefix),
+            .emit_dir = b.dupePath(args.emit_dir),
             .source_root = b.dupePath(args.source_root),
             .coordination_dir = b.dupePath(args.coordination_dir),
         };
@@ -337,15 +346,38 @@ const WorldOracleOperationStep = struct {
         }
     }
 
+    fn runChild(
+        step: *std.Build.Step,
+        options: std.Build.Step.MakeOptions,
+        argv: []const []const u8,
+    ) !void {
+        const graph = step.owner.graph;
+        try std.Build.Step.handleChildProcUnsupported(step);
+        try std.Build.Step.handleVerbose(step.owner, .inherit, argv);
+        const result = std.process.run(graph.arena, graph.io, .{
+            .argv = argv,
+            .environ_map = &graph.environ_map,
+            .progress_node = options.progress_node,
+        }) catch |err| return step.fail("failed to run {s}: {t}", .{ argv[0], err });
+        switch (result.term) {
+            .exited => |code| if (code == 0) return,
+            else => {},
+        }
+        step.result_failed_command = try std.Build.Step.allocPrintCmd(options.gpa, .inherit, null, argv);
+        if (result.stderr.len > 0) try step.result_error_msgs.append(graph.arena, result.stderr);
+        try step.handleChildProcessTerm(result.term);
+    }
+
     fn make(step: *std.Build.Step, options: std.Build.Step.MakeOptions) !void {
         const operation: *@This() = @fieldParentPtr("step", step);
         const update_selected = rootSelected(operation.update_root);
         const check_selected = rootSelected(operation.check_root);
+        const emit_selected = rootSelected(operation.emit_root);
         const selected = if (update_selected and check_selected)
-            "check-update"
+            "check-prepare-update"
         else if (update_selected)
-            "update"
-        else if (check_selected)
+            "prepare-update"
+        else if (check_selected or emit_selected)
             "check"
         else
             return step.fail("oracle operation has no selected public root", .{});
@@ -372,22 +404,67 @@ const WorldOracleOperationStep = struct {
             operation.second.getPath2(b, step),
             "--zig-version",
             operation.zig_version,
-            "--publisher",
-            operation.publisher.getPath2(b, step),
-            "--source-dir",
-            operation.first.getPath2(b, step),
-            "--admission-digest",
-            operation.admission_digest.getPath2(b, step),
-            "--trusted-prefix",
-            operation.trusted_prefix,
-            "--source-root",
-            operation.source_root,
         });
-        const result = try step.captureChildProcess(options.gpa, options.progress_node, argv.items);
-        try step.handleChildProcessTerm(result.term);
+        try runChild(step, options, argv.items);
+
+        if (update_selected) {
+            const publish_argv = [_][]const u8{
+                operation.publisher.getPath2(b, step),
+                "publish",
+                "--source-dir",
+                operation.first.getPath2(b, step),
+                "--admission-digest",
+                operation.admission_digest.getPath2(b, step),
+                "--trusted-prefix",
+                operation.trusted_prefix,
+                "--source-root",
+                operation.source_root,
+            };
+            try runChild(step, options, &publish_argv);
+        }
+
+        if (emit_selected) {
+            const publish_argv = [_][]const u8{
+                operation.publisher.getPath2(b, step),
+                "publish",
+                "--source-dir",
+                operation.first.getPath2(b, step),
+                "--admission-digest",
+                operation.admission_digest.getPath2(b, step),
+                "--trusted-prefix",
+                operation.emit_prefix,
+                "--source-root",
+                operation.source_root,
+            };
+            try runChild(step, options, &publish_argv);
+
+            const verify_argv = [_][]const u8{
+                "node",
+                operation.script.getPath2(b, step),
+                "--mode",
+                "verify",
+                "--expected",
+                operation.expected.getPath2(b, step),
+                "--actual",
+                operation.emit_dir,
+                "--zig-version",
+                operation.zig_version,
+            };
+            try runChild(step, options, &verify_argv);
+        }
         step.result_cached = false;
     }
 };
+
+fn worldOracleCoordinationDir(b: *std.Build) []const u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(b.pathFromRoot("."), &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    return b.graph.global_cache_root.join(
+        b.allocator,
+        &.{ "world-transition-oracle-coordination", &hex },
+    ) catch @panic("oom");
+}
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -645,6 +722,7 @@ pub fn build(b: *std.Build) void {
     world_transition_oracle_test_mod.addImport("world_transition_oracle_sources", world_transition_oracle_source_closure);
     const world_transition_oracle_tests = b.addTest(.{ .root_module = world_transition_oracle_test_mod });
     const run_world_transition_oracle_tests = b.addRunArtifact(world_transition_oracle_tests);
+    run_world_transition_oracle_tests.setCwd(b.tmpPath());
 
     const world_transition_oracle_a_root = b.tmpPath();
     const world_transition_oracle_b_root = b.tmpPath();
@@ -699,16 +777,29 @@ pub fn build(b: *std.Build) void {
     check_world_transition_oracle_foreign_cwd.addArgs(&.{ "build", "--build-file" });
     check_world_transition_oracle_foreign_cwd.addFileArg(b.path("build.zig"));
     check_world_transition_oracle_foreign_cwd.addArg("-h");
+    check_world_transition_oracle_foreign_cwd.addArg("--cache-dir");
+    check_world_transition_oracle_foreign_cwd.addDirectoryArg(b.tmpPath());
     check_world_transition_oracle_foreign_cwd.expectExitCode(0);
     _ = check_world_transition_oracle_foreign_cwd.captureStdOut(.{});
     const check_world_transition_oracle_step = b.step(
         "check-world-image-v1-transition-oracle",
         "Check deterministic exact World Image v1 transition oracle bytes.",
     );
+    const world_transition_oracle_emit_dir = b.pathFromRoot(
+        b.getInstallPath(.prefix, "conformance/world-image-v1/v0/world"),
+    );
+    const world_transition_oracle_emit_prefix = b.pathFromRoot(
+        b.getInstallPath(.prefix, ""),
+    );
+    const emit_world_transition_oracle_step = b.step(
+        "emit-world-image-v1-transition-oracle",
+        "Emit the verified World Image v1 transition oracle under zig-out.",
+    );
     const world_transition_oracle_operation = WorldOracleOperationStep.create(
         b,
         update_world_transition_oracle_step,
         check_world_transition_oracle_step,
+        emit_world_transition_oracle_step,
         .{
             .script = b.path("scripts/world_transition_oracle.mjs"),
             .publisher = world_transition_oracle_exe.getEmittedBin(),
@@ -718,8 +809,10 @@ pub fn build(b: *std.Build) void {
             .admission_digest = world_transition_oracle_admission_digest,
             .zig_version = builtin.zig_version_string,
             .trusted_prefix = b.pathFromRoot("."),
+            .emit_prefix = world_transition_oracle_emit_prefix,
+            .emit_dir = world_transition_oracle_emit_dir,
             .source_root = b.pathFromRoot("."),
-            .coordination_dir = b.pathFromRoot(".zig-cache/world-transition-oracle-coordination"),
+            .coordination_dir = worldOracleCoordinationDir(b),
         },
     );
     world_transition_oracle_operation.step.dependOn(&verify_world_transition_oracle_update_candidates.step);
@@ -730,37 +823,7 @@ pub fn build(b: *std.Build) void {
     world_transition_oracle_operation.step.dependOn(&run_world_transition_oracle_tests.step);
     update_world_transition_oracle_step.dependOn(&world_transition_oracle_operation.step);
     check_world_transition_oracle_step.dependOn(&world_transition_oracle_operation.step);
-
-    const world_transition_oracle_emit_dir = b.pathFromRoot(
-        b.getInstallPath(.prefix, "conformance/world-image-v1/v0/world"),
-    );
-    const world_transition_oracle_emit_prefix = b.pathFromRoot(
-        b.getInstallPath(.prefix, ""),
-    );
-    const emit_world_transition_oracle_run = b.addRunArtifact(world_transition_oracle_exe);
-    emit_world_transition_oracle_run.setCwd(b.tmpPath());
-    emit_world_transition_oracle_run.addArgs(&.{
-        "generate",
-        "--trusted-prefix",
-        world_transition_oracle_emit_prefix,
-        "--source-root",
-        b.pathFromRoot("."),
-    });
-    emit_world_transition_oracle_run.step.dependOn(check_world_transition_oracle_step);
-    const verify_emitted_world_transition_oracle = b.addSystemCommand(&.{"node"});
-    verify_emitted_world_transition_oracle.addFileArg(b.path("scripts/world_transition_oracle.mjs"));
-    verify_emitted_world_transition_oracle.setCwd(b.tmpPath());
-    verify_emitted_world_transition_oracle.addArgs(&.{ "--mode", "verify", "--expected" });
-    verify_emitted_world_transition_oracle.addDirectoryArg(b.path(world_image_v1_transition_oracle_dir));
-    verify_emitted_world_transition_oracle.addArg("--actual");
-    verify_emitted_world_transition_oracle.addDirectoryArg(.{ .cwd_relative = world_transition_oracle_emit_dir });
-    verify_emitted_world_transition_oracle.addArgs(&.{ "--zig-version", builtin.zig_version_string });
-    verify_emitted_world_transition_oracle.step.dependOn(&emit_world_transition_oracle_run.step);
-    const emit_world_transition_oracle_step = b.step(
-        "emit-world-image-v1-transition-oracle",
-        "Emit the verified World Image v1 transition oracle under zig-out.",
-    );
-    emit_world_transition_oracle_step.dependOn(&verify_emitted_world_transition_oracle.step);
+    emit_world_transition_oracle_step.dependOn(&world_transition_oracle_operation.step);
 
     const run_universal_appliance_node = b.addSystemCommand(&.{
         "node",
@@ -1172,7 +1235,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(check_world_target_step);
     test_step.dependOn(&addRunArtifactWithArgs(b, wasm_guest_tests, test_args.passthrough).step);
     if (validation_target.query.isNative()) {
-        test_step.dependOn(&addRunArtifactWithArgs(b, tests, test_args.passthrough).step);
+        const run_tests = addRunArtifactWithArgs(b, tests, test_args.passthrough);
+        run_tests.setCwd(b.tmpPath());
+        test_step.dependOn(&run_tests.step);
         test_step.dependOn(&addRunArtifactWithArgs(b, archive_tests, test_args.passthrough).step);
         test_step.dependOn(&addRunArtifactWithArgs(b, appliance_tests, test_args.passthrough).step);
         test_step.dependOn(&addRunArtifactWithArgs(b, world_module_tests, test_args.passthrough).step);
@@ -2895,6 +2960,7 @@ pub fn build(b: *std.Build) void {
         const run_step = b.step(example.step, example.desc);
         if (validation_target.query.isNative()) {
             const run = addRunArtifactWithArgs(b, exe, if (b.args) |args| args else &.{});
+            if (std.mem.eql(u8, example.step, "run-world-agent-closure-fixture")) run.setCwd(b.tmpPath());
             run.expectStdOutEqual(example.expected_stdout);
             if (example.serial_after_tests) run.step.dependOn(test_step);
             run_step.dependOn(&run.step);

@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, opendirSync, readFileSync, readSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
 
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
-const maxOracleTreeFiles = 4 * 1024;
+const maxOracleTreeEntries = 4 * 1024;
 const maxOracleTreePathBytes = 4 * 1024 * 1024;
+const maxOracleTreeDepth = 64;
+const maxOracleFileBytes = 64 * 1024 * 1024;
+const maxOracleCorpusBytes = 256 * 1024 * 1024;
+const canonicalGeneratorCommand = 'zig build update-world-image-v1-transition-oracle';
+const canonicalNormalCheckCommand = 'zig build check-world-image-v1-transition-oracle --summary all';
 
 const expectedCases = [
   'one-port-execution',
@@ -511,15 +515,10 @@ if (args.mode === 'coordinate') {
   requireArg(args.first, '--first');
   requireArg(args.second, '--second');
   requireArg(args.zigVersion, '--zig-version');
-  requireArg(args.publisher, '--publisher');
-  requireArg(args.sourceDir, '--source-dir');
-  requireArg(args.admissionDigest, '--admission-digest');
-  requireArg(args.trustedPrefix, '--trusted-prefix');
-  requireArg(args.sourceRoot, '--source-root');
-  if (!['check', 'update', 'check-update'].includes(args.operation)) {
+  if (!['check', 'prepare-update', 'check-prepare-update'].includes(args.operation)) {
     throw new Error(`unsupported --operation ${String(args.operation)}`);
   }
-  if (args.operation === 'check' || args.operation === 'check-update') {
+  if (args.operation === 'check' || args.operation === 'check-prepare-update') {
     const expected = validateCorpus(args.expected, args.zigVersion);
     const first = validateCorpus(args.first, args.zigVersion);
     const second = validateCorpus(args.second, args.zigVersion);
@@ -527,11 +526,10 @@ if (args.mode === 'coordinate') {
     compareCorpusSnapshots(expected, second, 'tracked/second');
     compareCorpusSnapshots(first, second, 'first/second');
   }
-  if (args.operation === 'update' || args.operation === 'check-update') {
+  if (args.operation === 'prepare-update') {
     const first = validateCorpus(args.first, args.zigVersion);
     const second = validateCorpus(args.second, args.zigVersion);
     compareCorpusSnapshots(first, second, 'first/second before publication');
-    publishCandidate(args);
   }
 } else if (args.mode === 'compare') {
   requireArg(args.expected, '--expected');
@@ -580,36 +578,10 @@ function parseArgs(raw) {
     else if (arg === '--actual') parsed.actual = raw[++index];
     else if (arg === '--zig-version') parsed.zigVersion = raw[++index];
     else if (arg === '--admission-digest') parsed.admissionDigest = raw[++index];
-    else if (arg === '--publisher') parsed.publisher = raw[++index];
-    else if (arg === '--source-dir') parsed.sourceDir = raw[++index];
-    else if (arg === '--trusted-prefix') parsed.trustedPrefix = raw[++index];
-    else if (arg === '--source-root') parsed.sourceRoot = raw[++index];
     else if (arg === '--operation') parsed.operation = raw[++index];
     else throw new Error(`unknown argument ${arg}`);
   }
   return parsed;
-}
-
-function publishCandidate(args) {
-  const result = spawnSync(
-    args.publisher,
-    [
-      'publish',
-      '--source-dir',
-      args.sourceDir,
-      '--admission-digest',
-      args.admissionDigest,
-      '--trusted-prefix',
-      args.trustedPrefix,
-      '--source-root',
-      args.sourceRoot,
-    ],
-    { stdio: 'inherit' },
-  );
-  if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`oracle publisher exited with ${result.status === null ? String(result.signal) : String(result.status)}`);
-  }
 }
 
 function requireArg(value, name) {
@@ -915,6 +887,7 @@ function validateCorpus(root, expectedZigVersion) {
     'requires-preseeded-boundary-package-cache',
     'manifest.offline_regeneration',
   );
+  validateManifestCommands(manifest);
   assertEqual(manifest.case_count, expectedCases.length, 'manifest.case_count');
   for (const [index, entry] of manifest.cases.entries()) {
     assertExactObjectKeys(entry, ['id', 'transcript'], `manifest.cases[${index}]`);
@@ -974,6 +947,11 @@ function validateCorpus(root, expectedZigVersion) {
     read,
   );
   return snapshot;
+}
+
+function validateManifestCommands(manifest) {
+  assertEqual(manifest.generator, canonicalGeneratorCommand, 'manifest.generator');
+  assertEqual(manifest.normal_check, canonicalNormalCheckCommand, 'manifest.normal_check');
 }
 
 function decodeSemanticUtf8(bytes, label) {
@@ -1458,10 +1436,15 @@ function canonicalSourceBytes(bytes, path) {
 function generatorSourceIdentity(root, overrides = new Map()) {
   const hasher = createHash('sha256');
   hasher.update(generatorSourceIdentityDomain);
+  let totalBytes = 0;
   for (const path of generatorSourceFiles) {
     const fullPath = join(root, path);
     if (!lstatSync(fullPath).isFile()) throw new Error(`invalid generator source entry: ${path}`);
-    const bytes = canonicalSourceBytes(overrides.get(path) ?? readFileSync(fullPath), path);
+    const remainingBytes = maxOracleCorpusBytes - totalBytes;
+    const sourceBytes = overrides.get(path) ?? readBoundedRegularFile(fullPath, path, Math.min(maxOracleFileBytes, remainingBytes));
+    if (sourceBytes.length > maxOracleFileBytes) throw new Error(`oracle file content budget exceeded: ${path}`);
+    totalBytes = accountOracleContentBytes(totalBytes, sourceBytes.length);
+    const bytes = canonicalSourceBytes(sourceBytes, path);
     const pathLength = Buffer.alloc(4);
     pathLength.writeUInt32LE(Buffer.byteLength(path, 'utf8'));
     const contentLength = Buffer.alloc(8);
@@ -1549,6 +1532,8 @@ function testChecksumInventoryAdmission() {
     if (error.message.includes(outsideDigest)) throw new Error('outside-root digest leaked before checksum admission');
     testCandidateSnapshotIdentity();
     testOracleTreePathBudgets();
+    testOracleContentBudgets();
+    testManifestCommandAdmission();
     testSemanticTextAdmission();
     testTranscriptClaimAdmission();
     return;
@@ -1558,23 +1543,105 @@ function testChecksumInventoryAdmission() {
 
 function testOracleTreePathBudgets() {
   assertEqual(
-    accountOracleTreePath(maxOracleTreeFiles - 1, maxOracleTreePathBytes - 1, 1),
+    accountOracleTreePath(maxOracleTreeEntries - 1, maxOracleTreePathBytes - 1, 1),
     maxOracleTreePathBytes,
     'oracle tree path budget boundary',
   );
-  for (const [fileCount, pathBytes, nextPathBytes] of [
-    [maxOracleTreeFiles, 0, 1],
+  for (const [entryCount, pathBytes, nextPathBytes] of [
+    [maxOracleTreeEntries, 0, 1],
     [0, maxOracleTreePathBytes, 1],
     [0, Number.MAX_SAFE_INTEGER, 1],
   ]) {
     let rejected = false;
     try {
-      accountOracleTreePath(fileCount, pathBytes, nextPathBytes);
+      accountOracleTreePath(entryCount, pathBytes, nextPathBytes);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== 'oracle tree path budget exceeded') throw error;
       rejected = true;
     }
     if (!rejected) throw new Error('oracle tree path budget overflow accepted');
+  }
+  assertOracleTreeDepth(maxOracleTreeDepth);
+  let depthRejected = false;
+  try {
+    assertOracleTreeDepth(maxOracleTreeDepth + 1);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'oracle tree depth budget exceeded') throw error;
+    depthRejected = true;
+  }
+  if (!depthRejected) throw new Error('oracle tree depth overflow accepted');
+
+  const root = mkdtempSync(join(tmpdir(), 'world-oracle-depth-budget-'));
+  try {
+    let current = root;
+    for (let depth = 0; depth <= maxOracleTreeDepth; depth += 1) {
+      current = join(current, 'd');
+      mkdirSync(current);
+    }
+    let treeRejected = false;
+    try {
+      listFiles(root);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'oracle tree depth budget exceeded') throw error;
+      treeRejected = true;
+    }
+    if (!treeRejected) throw new Error('directory-only depth overflow accepted');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function testOracleContentBudgets() {
+  assertEqual(
+    accountOracleContentBytes(maxOracleCorpusBytes - 1, 1),
+    maxOracleCorpusBytes,
+    'oracle corpus content budget boundary',
+  );
+  let aggregateRejected = false;
+  try {
+    accountOracleContentBytes(maxOracleCorpusBytes, 1);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'oracle corpus content budget exceeded') throw error;
+    aggregateRejected = true;
+  }
+  if (!aggregateRejected) throw new Error('oracle corpus content overflow accepted');
+
+  const root = mkdtempSync(join(tmpdir(), 'world-oracle-bounded-read-'));
+  try {
+    const path = join(root, 'oversized.bin');
+    writeFileSync(path, 'four');
+    let fileRejected = false;
+    try {
+      readBoundedRegularFile(path, 'oversized.bin', 3);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'oracle file content budget exceeded: oversized.bin') throw error;
+      fileRejected = true;
+    }
+    if (!fileRejected) throw new Error('oracle file content overflow accepted');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function testManifestCommandAdmission() {
+  validateManifestCommands({
+    generator: canonicalGeneratorCommand,
+    normal_check: canonicalNormalCheckCommand,
+  });
+  for (const manifest of [
+    { generator: null, normal_check: canonicalNormalCheckCommand },
+    { generator: canonicalGeneratorCommand, normal_check: {} },
+    { generator: 'false generator', normal_check: canonicalNormalCheckCommand },
+    { generator: canonicalGeneratorCommand, normal_check: 'false check' },
+  ]) {
+    let rejected = false;
+    try {
+      validateManifestCommands(manifest);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('manifest.')) throw error;
+      rejected = true;
+    }
+    if (!rejected) throw new Error('invalid manifest command metadata accepted');
   }
 }
 
@@ -1811,14 +1878,14 @@ function listFiles(root) {
   const inspectedRoot = resolve(root);
   if (!lstatSync(inspectedRoot).isDirectory()) throw new Error(`not a directory: ${root}`);
   const files = [];
-  const budget = { pathBytes: 0 };
-  walk(inspectedRoot, inspectedRoot, files, budget);
+  const budget = { entries: 0, pathBytes: 0 };
+  walk(inspectedRoot, inspectedRoot, files, budget, 0);
   files.sort(compareUtf8Bytes);
   return files;
 }
 
-function accountOracleTreePath(fileCount, totalPathBytes, nextPathBytes) {
-  if (fileCount >= maxOracleTreeFiles) throw new Error('oracle tree path budget exceeded');
+function accountOracleTreePath(entryCount, totalPathBytes, nextPathBytes) {
+  if (entryCount >= maxOracleTreeEntries) throw new Error('oracle tree path budget exceeded');
   const nextTotal = totalPathBytes + nextPathBytes;
   if (!Number.isSafeInteger(nextTotal) || nextTotal > maxOracleTreePathBytes) {
     throw new Error('oracle tree path budget exceeded');
@@ -1826,10 +1893,55 @@ function accountOracleTreePath(fileCount, totalPathBytes, nextPathBytes) {
   return nextTotal;
 }
 
+function assertOracleTreeDepth(depth) {
+  if (!Number.isSafeInteger(depth) || depth > maxOracleTreeDepth) {
+    throw new Error('oracle tree depth budget exceeded');
+  }
+}
+
+function accountOracleContentBytes(totalBytes, nextBytes) {
+  const nextTotal = totalBytes + nextBytes;
+  if (!Number.isSafeInteger(nextTotal) || nextTotal > maxOracleCorpusBytes) {
+    throw new Error('oracle corpus content budget exceeded');
+  }
+  return nextTotal;
+}
+
+function readBoundedRegularFile(path, label, maxBytes = maxOracleFileBytes) {
+  const fd = openSync(path, 'r');
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`invalid regular file: ${label}`);
+    if (!Number.isSafeInteger(stat.size) || stat.size > maxBytes) {
+      throw new Error(`oracle file content budget exceeded: ${label}`);
+    }
+    const bytes = Buffer.allocUnsafe(stat.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = readSync(fd, bytes, offset, bytes.length - offset, null);
+      if (read === 0) break;
+      offset += read;
+    }
+    const extra = Buffer.allocUnsafe(1);
+    if (readSync(fd, extra, 0, 1, null) !== 0) {
+      throw new Error(`oracle file content budget exceeded: ${label}`);
+    }
+    return offset === bytes.length ? bytes : Buffer.from(bytes.subarray(0, offset));
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function captureCorpus(root) {
   const files = listFiles(root);
   const bytesByPath = new Map();
-  for (const path of files) bytesByPath.set(path, readFileSync(join(root, path)));
+  let totalBytes = 0;
+  for (const path of files) {
+    const remainingBytes = maxOracleCorpusBytes - totalBytes;
+    const bytes = readBoundedRegularFile(join(root, path), path, Math.min(maxOracleFileBytes, remainingBytes));
+    totalBytes = accountOracleContentBytes(totalBytes, bytes.length);
+    bytesByPath.set(path, bytes);
+  }
   return {
     files,
     read(path, encoding) {
@@ -1896,22 +2008,24 @@ function expectRootRejected(root) {
   throw new Error(`symlinked corpus root accepted: ${root}`);
 }
 
-function walk(root, current, files, budget) {
+function walk(root, current, files, budget, depth) {
   const directory = opendirSync(current);
   try {
     for (;;) {
       const entry = directory.readSync();
       if (entry === null) return;
       const path = join(current, entry.name);
+      const portablePath = relative(root, path).split(sep).join('/');
+      budget.pathBytes = accountOracleTreePath(
+        budget.entries,
+        budget.pathBytes,
+        Buffer.byteLength(portablePath, 'utf8'),
+      );
+      budget.entries += 1;
       if (entry.isDirectory()) {
-        walk(root, path, files, budget);
+        assertOracleTreeDepth(depth + 1);
+        walk(root, path, files, budget, depth + 1);
       } else if (entry.isFile()) {
-        const portablePath = relative(root, path).split(sep).join('/');
-        budget.pathBytes = accountOracleTreePath(
-          files.length,
-          budget.pathBytes,
-          Buffer.byteLength(portablePath, 'utf8'),
-        );
         files.push(portablePath);
       } else {
         throw new Error(`unsupported filesystem entry: ${path}`);

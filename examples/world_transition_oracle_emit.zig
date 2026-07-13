@@ -92,8 +92,10 @@ const generator_source_identity_algorithm = "sha256-domain-u32le-path-u64le-cano
 const generator_source_normalization = "crlf-to-lf;bare-cr-reject";
 const generator_source_identity_domain = "world.oracle.generator-source-identity.v1\x00";
 const candidate_admission_identity_domain = "world.oracle.candidate-admission.v1\x00";
-const max_oracle_tree_files: usize = 4 * 1024;
+const max_oracle_tree_entries: usize = 4 * 1024;
 const max_oracle_tree_path_bytes: usize = 4 * 1024 * 1024;
+const max_oracle_tree_depth: usize = 64;
+const max_oracle_publication_parents: usize = 512;
 const compiled_generator_sources = world_transition_oracle_sources.sources;
 const generator_source_package_paths = world_transition_oracle_sources.package_paths;
 const generator_source_excluded_prefix = world_transition_oracle_sources.excluded_prefix;
@@ -2199,8 +2201,8 @@ fn mutablePathLessThan(_: void, lhs: []u8, rhs: []u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
 }
 
-fn accountOracleTreePath(file_count: usize, total_path_bytes: usize, next_path_bytes: usize) !usize {
-    if (file_count >= max_oracle_tree_files) return error.CandidateCorpusTooLarge;
+fn accountOracleTreePath(entry_count: usize, total_path_bytes: usize, next_path_bytes: usize) !usize {
+    if (entry_count >= max_oracle_tree_entries) return error.CandidateCorpusTooLarge;
     const next_total = std.math.add(usize, total_path_bytes, next_path_bytes) catch return error.CandidateCorpusTooLarge;
     if (next_total > max_oracle_tree_path_bytes) return error.CandidateCorpusTooLarge;
     return next_total;
@@ -2209,11 +2211,11 @@ fn accountOracleTreePath(file_count: usize, total_path_bytes: usize, next_path_b
 test "oracle tree path budgets reject before path allocation" {
     try std.testing.expectEqual(
         max_oracle_tree_path_bytes,
-        try accountOracleTreePath(max_oracle_tree_files - 1, max_oracle_tree_path_bytes - 1, 1),
+        try accountOracleTreePath(max_oracle_tree_entries - 1, max_oracle_tree_path_bytes - 1, 1),
     );
     try std.testing.expectError(
         error.CandidateCorpusTooLarge,
-        accountOracleTreePath(max_oracle_tree_files, 0, 1),
+        accountOracleTreePath(max_oracle_tree_entries, 0, 1),
     );
     try std.testing.expectError(
         error.CandidateCorpusTooLarge,
@@ -2223,27 +2225,80 @@ test "oracle tree path budgets reject before path allocation" {
         error.CandidateCorpusTooLarge,
         accountOracleTreePath(0, std.math.maxInt(usize), 1),
     );
+    try requireOracleTreeDepth(max_oracle_tree_depth);
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        requireOracleTreeDepth(max_oracle_tree_depth + 1),
+    );
 }
 
-fn listFiles(io: std.Io, allocator: std.mem.Allocator, root: std.Io.Dir) !OwnedPaths {
-    var walker = try root.walk(allocator);
-    defer walker.deinit();
-    var items: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (items.items) |item| allocator.free(item);
-        items.deinit(allocator);
+test "oracle tree walk rejects directory-only depth before descent" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var path: std.ArrayList(u8) = .empty;
+    defer path.deinit(std.testing.allocator);
+    for (0..max_oracle_tree_depth + 1) |_| {
+        if (path.items.len != 0) try path.append(std.testing.allocator, std.fs.path.sep);
+        try path.append(std.testing.allocator, 'd');
+        try tmp.dir.createDir(io, path.items, .default_dir);
     }
-    var total_path_bytes: usize = 0;
-    while (try walker.next(io)) |entry| {
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        listFiles(io, std.testing.allocator, tmp.dir),
+    );
+}
+
+fn requireOracleTreeDepth(depth: usize) !void {
+    if (depth > max_oracle_tree_depth) return error.CandidateCorpusTooLarge;
+}
+
+const OracleTreeBudget = struct {
+    entries: usize = 0,
+    path_bytes: usize = 0,
+
+    fn account(self: *@This(), next_path_bytes: usize) !void {
+        self.path_bytes = try accountOracleTreePath(self.entries, self.path_bytes, next_path_bytes);
+        self.entries += 1;
+    }
+};
+
+fn collectFiles(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    directory: std.Io.Dir,
+    portable_prefix: []const u8,
+    depth: usize,
+    budget: *OracleTreeBudget,
+    items: *std.ArrayList([]u8),
+) !void {
+    var iterator = directory.iterate();
+    while (try iterator.next(io)) |entry| {
+        const separator_bytes: usize = if (portable_prefix.len == 0) 0 else 1;
+        const path_len = std.math.add(usize, portable_prefix.len, separator_bytes) catch return error.CandidateCorpusTooLarge;
+        const next_path_len = std.math.add(usize, path_len, entry.name.len) catch return error.CandidateCorpusTooLarge;
+        try budget.account(next_path_len);
+
+        const portable_path = if (portable_prefix.len == 0)
+            try allocator.dupe(u8, entry.name)
+        else
+            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ portable_prefix, entry.name });
+        errdefer allocator.free(portable_path);
         switch (entry.kind) {
-            .file => {
-                total_path_bytes = try accountOracleTreePath(items.items.len, total_path_bytes, entry.path.len);
-                const portable_path = try allocator.dupe(u8, entry.path);
-                errdefer allocator.free(portable_path);
-                canonicalizePathSeparators(portable_path, std.fs.path.sep);
-                try items.append(allocator, portable_path);
+            .file => try items.append(allocator, portable_path),
+            .directory => {
+                try requireOracleTreeDepth(depth + 1);
+                var child = directory.openDir(io, entry.name, .{
+                    .follow_symlinks = false,
+                    .iterate = true,
+                }) catch |err| switch (err) {
+                    error.NotDir, error.SymLinkLoop => return error.UnsupportedOracleTreeEntry,
+                    else => |unexpected| return unexpected,
+                };
+                defer child.close(io);
+                try collectFiles(io, allocator, child, portable_path, depth + 1, budget, items);
+                allocator.free(portable_path);
             },
-            .directory => {},
             .block_device,
             .character_device,
             .named_pipe,
@@ -2256,6 +2311,16 @@ fn listFiles(io: std.Io, allocator: std.mem.Allocator, root: std.Io.Dir) !OwnedP
             => return error.UnsupportedOracleTreeEntry,
         }
     }
+}
+
+fn listFiles(io: std.Io, allocator: std.mem.Allocator, root: std.Io.Dir) !OwnedPaths {
+    var items: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (items.items) |item| allocator.free(item);
+        items.deinit(allocator);
+    }
+    var budget: OracleTreeBudget = .{};
+    try collectFiles(io, allocator, root, "", 0, &budget, &items);
     const owned = try items.toOwnedSlice(allocator);
     std.mem.sort([]u8, owned, {}, mutablePathLessThan);
     return .{ .allocator = allocator, .items = owned };
@@ -2319,22 +2384,33 @@ fn openExistingPublicationChild(parent: std.Io.Dir, io: std.Io, name: []const u8
     return requirePublicationDirectory(child, io);
 }
 
-fn openPublicationLeaf(
-    root: std.Io.Dir,
-    io: std.Io,
-    relative_path: []const u8,
-    create_parents: bool,
-) !PublicationLeaf {
+fn publicationParentPath(relative_path: []const u8) []const u8 {
+    return std.fs.path.dirname(relative_path) orelse "";
+}
+
+fn validatePublicationRelativePath(relative_path: []const u8) ![]const u8 {
     if (relative_path.len == 0 or std.fs.path.isAbsolute(relative_path)) return error.UnsafePublicationPath;
     const leaf = std.fs.path.basename(relative_path);
     if (leaf.len == 0 or std.mem.eql(u8, leaf, ".") or std.mem.eql(u8, leaf, "..")) {
         return error.UnsafePublicationPath;
     }
-    const parent_path = std.fs.path.dirname(relative_path) orelse return .{
-        .parent = root,
-        .leaf = leaf,
-        .parent_owned = false,
-    };
+    var components = std.fs.path.componentIterator(publicationParentPath(relative_path));
+    if (components.root() != null) return error.UnsafePublicationPath;
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component.name, ".") or std.mem.eql(u8, component.name, "..")) {
+            return error.UnsafePublicationPath;
+        }
+    }
+    return leaf;
+}
+
+fn openPublicationParent(
+    root: std.Io.Dir,
+    io: std.Io,
+    parent_path: []const u8,
+    create_parents: bool,
+) !struct { directory: std.Io.Dir, owned: bool } {
+    if (parent_path.len == 0) return .{ .directory = root, .owned = false };
 
     var current = root;
     var current_owned = false;
@@ -2353,11 +2429,38 @@ fn openPublicationLeaf(
         current = child;
         current_owned = true;
     }
-    return .{
-        .parent = current,
-        .leaf = leaf,
-        .parent_owned = current_owned,
+    return .{ .directory = current, .owned = current_owned };
+}
+
+fn preflightPublicationLeaf(
+    root: std.Io.Dir,
+    io: std.Io,
+    relative_path: []const u8,
+    require_existing: bool,
+) !void {
+    const leaf = try validatePublicationRelativePath(relative_path);
+    const parent_path = publicationParentPath(relative_path);
+    var current = root;
+    var current_owned = false;
+    defer if (current_owned) current.close(io);
+    var components = std.fs.path.componentIterator(parent_path);
+    while (components.next()) |component| {
+        const child = openExistingPublicationChild(current, io, component.name) catch |err| switch (err) {
+            error.FileNotFound => if (require_existing) return error.FileNotFound else return,
+            else => |unexpected| return unexpected,
+        };
+        if (current_owned) current.close(io);
+        current = child;
+        current_owned = true;
+    }
+    const destination_stat = current.statFile(io, leaf, .{
+        .follow_symlinks = false,
+    }) catch |err| switch (err) {
+        error.FileNotFound => if (require_existing) return error.FileNotFound else return,
+        error.NotDir, error.SymLinkLoop => return error.UnsafePublicationPath,
+        else => |unexpected| return unexpected,
     };
+    if (destination_stat.kind != .file) return error.UnsafePublicationPath;
 }
 
 const PlannedPublicationLeaf = struct {
@@ -2367,17 +2470,19 @@ const PlannedPublicationLeaf = struct {
 
     fn init(
         allocator: std.mem.Allocator,
-        root: std.Io.Dir,
-        io: std.Io,
+        parent: std.Io.Dir,
         relative_path: []const u8,
-        create_parents: bool,
     ) !@This() {
         const owned_path = try allocator.dupe(u8, relative_path);
         errdefer allocator.free(owned_path);
         return .{
             .allocator = allocator,
             .relative_path = owned_path,
-            .destination = try openPublicationLeaf(root, io, owned_path, create_parents),
+            .destination = .{
+                .parent = parent,
+                .leaf = std.fs.path.basename(owned_path),
+                .parent_owned = false,
+            },
         };
     }
 
@@ -2388,19 +2493,121 @@ const PlannedPublicationLeaf = struct {
     }
 };
 
+const PublicationParentSpec = struct {
+    allocator: std.mem.Allocator,
+    relative_path: []u8,
+    create: bool,
+
+    fn deinit(self: *@This()) void {
+        self.allocator.free(self.relative_path);
+        self.* = undefined;
+    }
+};
+
+const PlannedPublicationParent = struct {
+    allocator: std.mem.Allocator,
+    relative_path: []u8,
+    directory: std.Io.Dir,
+    owned: bool,
+
+    fn deinit(self: *@This(), io: std.Io) void {
+        if (self.owned) self.directory.close(io);
+        self.allocator.free(self.relative_path);
+        self.* = undefined;
+    }
+};
+
 const PublicationPlan = struct {
     allocator: std.mem.Allocator,
+    parents: []PlannedPublicationParent,
     writes: []PlannedPublicationLeaf,
     deletions: []PlannedPublicationLeaf,
 
     fn deinit(self: *@This(), io: std.Io) void {
         for (self.writes) |*entry| entry.deinit(io);
         for (self.deletions) |*entry| entry.deinit(io);
+        for (self.parents) |*entry| entry.deinit(io);
         self.allocator.free(self.writes);
         self.allocator.free(self.deletions);
+        self.allocator.free(self.parents);
         self.* = undefined;
     }
 };
+
+fn findPublicationParent(specs: []const PublicationParentSpec, parent_path: []const u8) ?usize {
+    for (specs, 0..) |spec, index| {
+        if (std.mem.eql(u8, spec.relative_path, parent_path)) return index;
+    }
+    return null;
+}
+
+fn addPublicationParentSpec(
+    allocator: std.mem.Allocator,
+    specs: *std.ArrayList(PublicationParentSpec),
+    parent_path: []const u8,
+    create: bool,
+) !void {
+    if (findPublicationParent(specs.items, parent_path)) |index| {
+        specs.items[index].create = specs.items[index].create or create;
+        return;
+    }
+    if (specs.items.len >= max_oracle_publication_parents) return error.PublicationCapabilityLimitExceeded;
+    const owned_path = try allocator.dupe(u8, parent_path);
+    errdefer allocator.free(owned_path);
+    try specs.append(allocator, .{
+        .allocator = allocator,
+        .relative_path = owned_path,
+        .create = create,
+    });
+}
+
+test "publication parent capability inventory shares and bounds parents" {
+    var specs: std.ArrayList(PublicationParentSpec) = .empty;
+    defer {
+        for (specs.items) |*spec| spec.deinit();
+        specs.deinit(std.testing.allocator);
+    }
+    try addPublicationParentSpec(std.testing.allocator, &specs, "shared", false);
+    try addPublicationParentSpec(std.testing.allocator, &specs, "shared", true);
+    try std.testing.expectEqual(1, specs.items.len);
+    try std.testing.expect(specs.items[0].create);
+    for (1..max_oracle_publication_parents) |index| {
+        const parent = try std.fmt.allocPrint(std.testing.allocator, "parent-{d}", .{index});
+        defer std.testing.allocator.free(parent);
+        try addPublicationParentSpec(std.testing.allocator, &specs, parent, true);
+    }
+    try std.testing.expectEqual(max_oracle_publication_parents, specs.items.len);
+    try std.testing.expectError(
+        error.PublicationCapabilityLimitExceeded,
+        addPublicationParentSpec(std.testing.allocator, &specs, "one-too-many", true),
+    );
+}
+
+fn openPublicationParents(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    root: std.Io.Dir,
+    specs: []const PublicationParentSpec,
+) ![]PlannedPublicationParent {
+    var parents: std.ArrayList(PlannedPublicationParent) = .empty;
+    errdefer {
+        for (parents.items) |*parent| parent.deinit(io);
+        parents.deinit(allocator);
+    }
+    try parents.ensureTotalCapacity(allocator, specs.len);
+    for (specs) |spec| {
+        const owned_path = try allocator.dupe(u8, spec.relative_path);
+        errdefer allocator.free(owned_path);
+        const opened = try openPublicationParent(root, io, owned_path, spec.create);
+        parents.appendAssumeCapacity(.{
+            .allocator = allocator,
+            .relative_path = owned_path,
+            .directory = opened.directory,
+            .owned = opened.owned,
+        });
+    }
+    return parents.toOwnedSlice(allocator);
+}
 
 fn buildPublicationPlan(
     io: std.Io,
@@ -2419,13 +2626,40 @@ fn buildPublicationPlan(
         }
     }
 
+    for (snapshot.paths) |relative_path| {
+        try preflightPublicationLeaf(output_dir, io, relative_path, false);
+    }
+    if (target == .trusted_prefix) for (existing_paths.items) |relative_path| {
+        if (isExpectedPath(snapshot.paths, relative_path)) continue;
+        try preflightPublicationLeaf(output_dir, io, relative_path, true);
+    };
+
+    var parent_specs: std.ArrayList(PublicationParentSpec) = .empty;
+    defer {
+        for (parent_specs.items) |*spec| spec.deinit();
+        parent_specs.deinit(allocator);
+    }
+    for (snapshot.paths) |relative_path| {
+        try addPublicationParentSpec(allocator, &parent_specs, publicationParentPath(relative_path), true);
+    }
+    if (target == .trusted_prefix) for (existing_paths.items) |relative_path| {
+        if (isExpectedPath(snapshot.paths, relative_path)) continue;
+        try addPublicationParentSpec(allocator, &parent_specs, publicationParentPath(relative_path), false);
+    };
+    const parents = try openPublicationParents(io, allocator, output_dir, parent_specs.items);
+    errdefer {
+        for (parents) |*parent| parent.deinit(io);
+        allocator.free(parents);
+    }
+
     var writes: std.ArrayList(PlannedPublicationLeaf) = .empty;
     errdefer {
         for (writes.items) |*entry| entry.deinit(io);
         writes.deinit(allocator);
     }
     for (snapshot.paths) |relative_path| {
-        var planned = try PlannedPublicationLeaf.init(allocator, output_dir, io, relative_path, true);
+        const parent_index = findPublicationParent(parent_specs.items, publicationParentPath(relative_path)).?;
+        var planned = try PlannedPublicationLeaf.init(allocator, parents[parent_index].directory, relative_path);
         errdefer planned.deinit(io);
         const destination_stat = planned.destination.parent.statFile(io, planned.destination.leaf, .{
             .follow_symlinks = false,
@@ -2445,7 +2679,8 @@ fn buildPublicationPlan(
     }
     if (target == .trusted_prefix) for (existing_paths.items) |relative_path| {
         if (isExpectedPath(snapshot.paths, relative_path)) continue;
-        var planned = try PlannedPublicationLeaf.init(allocator, output_dir, io, relative_path, false);
+        const parent_index = findPublicationParent(parent_specs.items, publicationParentPath(relative_path)).?;
+        var planned = try PlannedPublicationLeaf.init(allocator, parents[parent_index].directory, relative_path);
         errdefer planned.deinit(io);
         const stat = try planned.destination.parent.statFile(io, planned.destination.leaf, .{
             .follow_symlinks = false,
@@ -2459,7 +2694,7 @@ fn buildPublicationPlan(
         allocator.free(owned_writes);
     }
     const owned_deletions = try deletions.toOwnedSlice(allocator);
-    return .{ .allocator = allocator, .writes = owned_writes, .deletions = owned_deletions };
+    return .{ .allocator = allocator, .parents = parents, .writes = owned_writes, .deletions = owned_deletions };
 }
 
 fn replacePublicationLeaf(io: std.Io, destination: PublicationLeaf, bytes: []const u8) !void {
@@ -2685,6 +2920,7 @@ test "publication retains nested parent authority after real directory replaceme
     defer publication_dir.close(io);
     var plan = try buildPublicationPlan(io, allocator, snapshot, .{ .trusted_prefix = trusted_prefix }, publication_dir);
     defer plan.deinit(io);
+    try std.testing.expectEqual(1, plan.parents.len);
     try cwd.rename(published_cases, cwd, admitted_cases, io);
     try cwd.createDirPath(io, published_cases);
     try cwd.writeFile(io, .{ .sub_path = replacement_case, .data = "replacement case sentinel\n" });
@@ -2760,14 +2996,14 @@ test "publication rejects an expected file directory collision before writing" {
     const allocator = arena.allocator();
     const staging_dir = try std.fs.path.join(allocator, &.{ root, "staging" });
     const output_dir = try std.fs.path.join(allocator, &.{ root, "output" });
-    const first_relative_path = "cases/first.txt";
-    const collision_relative_path = "cases/second.txt";
+    const first_relative_path = "a-missing/first.txt";
+    const collision_relative_path = "z-existing/second.txt";
     const first_path = try std.fs.path.join(allocator, &.{ output_dir, first_relative_path });
+    const first_parent = std.fs.path.dirname(first_path).?;
     const collision_path = try std.fs.path.join(allocator, &.{ output_dir, collision_relative_path });
 
     const cwd = std.Io.Dir.cwd();
-    try cwd.createDirPath(io, std.fs.path.dirname(first_path).?);
-    try cwd.writeFile(io, .{ .sub_path = first_path, .data = "must survive\n" });
+    try cwd.createDirPath(io, std.fs.path.dirname(collision_path).?);
     try cwd.createDirPath(io, collision_path);
 
     var writer = Writer{ .io = io, .allocator = allocator, .root = staging_dir };
@@ -2778,8 +3014,7 @@ test "publication rejects an expected file directory collision before writing" {
         promoteCorpus(allocator, &writer, .{ .isolated = output_dir }),
     );
 
-    const first_bytes = try cwd.readFileAlloc(io, first_path, allocator, .limited(1024));
-    try std.testing.expectEqualStrings("must survive\n", first_bytes);
+    try std.testing.expectError(error.FileNotFound, cwd.access(io, first_parent, .{}));
     try std.testing.expectEqual(std.Io.File.Kind.directory, (try cwd.statFile(io, collision_path, .{})).kind);
 
     try cwd.deleteTree(io, collision_path);
