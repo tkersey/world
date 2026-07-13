@@ -32,12 +32,17 @@ const requiredTranscriptFacts = {
     'waiting_status: needs_host',
     'completed_status: completed',
     'request_count: 1',
+    'result_transport_owner: Wire.TurnInput',
+    'result_bytes_present: true',
+    'archive_append_present: true',
   ],
   'internal-provider-execution': [
     'case_id: internal-provider-execution',
     'owner_surface: Executable/Runspace/Fabric/TurnClosure',
     'status: completed',
     'provider_module_count: 1',
+    'module_count: 2',
+    'route_count: 1',
     'external_request_count: 0',
   ],
   'provider-parked-externally': [
@@ -45,6 +50,8 @@ const requiredTranscriptFacts = {
     'owner_surface: Runspace/Fabric/Capsule',
     'fixture_provenance: synthetic-owner-state',
     'fabric_invocation_status: provider_parked',
+    'parent_status: parked_on_port',
+    'provider_status: parked_on_port',
   ],
   'active-provider-restore': [
     'case_id: active-provider-restore',
@@ -58,6 +65,8 @@ const requiredTranscriptFacts = {
     'receiver_authority_claimed: false',
     'provider_completed: true',
     'root_completed: true',
+    'restored_route_count: 1',
+    'restored_invocation_count: 1',
     'completed_state_artifact: artifacts/states/active-provider.completed.capsule',
   ],
   'replay-without-fresh-effect': [
@@ -66,6 +75,9 @@ const requiredTranscriptFacts = {
     'turn_closure_authority: false',
     'fresh_handler_calls: 1',
     'replay_handler_calls: 0',
+    'replayed_response_count: 1',
+    'fresh_result: 7',
+    'replay_result: 7',
   ],
   'lost-output-retry': [
     'case_id: lost-output-retry',
@@ -79,6 +91,7 @@ const requiredTranscriptFacts = {
     'first_retry_output_byte_equal: true',
     'first_retry_closure_byte_equal: true',
     'wire_restore_equivalence_claimed: false',
+    'result_transport_owner: Wire.TurnInput',
   ],
   'migration': [
     'case_id: migration',
@@ -91,6 +104,7 @@ const requiredTranscriptFacts = {
     'require_local_permit: false',
     'require_link_match: false',
     'receiver_authority_claimed: false',
+    'restore_accepted: true',
     'completed_after_migration: true',
     'completed_state_artifact: artifacts/states/active-provider.completed.capsule',
   ],
@@ -99,6 +113,8 @@ const requiredTranscriptFacts = {
     'owner_surface: Machine/Transcript/Timeline/RunImage',
     'turn_closure_authority: false',
     'parent_unchanged: true',
+    'baseline_result: final=actuate skeleton complete',
+    'alternate_result: final=branch alternate',
   ],
   'partial-response-batch': [
     'case_id: partial-response-batch',
@@ -109,6 +125,7 @@ const requiredTranscriptFacts = {
     'remaining_request_identity_preserved: true',
     'closure_chain_validated: true',
     'final_status: completed',
+    'result_transport_owner: Wire.TurnInput',
   ],
   'deterministic-failure': [
     'case_id: deterministic-failure',
@@ -121,6 +138,7 @@ const requiredTranscriptFacts = {
     'parent_output_artifact: artifacts/outputs/failure.parent.turn-output',
     'parent_closure_artifact: artifacts/transitions/failure.parent.turn-closure',
     'parent_checkpoint_artifact: artifacts/states/failure.parent.checkpoint',
+    'result_transport_owner: Wire.TurnInput',
   ],
   'capacity-exhaustion': [
     'case_id: capacity-exhaustion',
@@ -129,6 +147,8 @@ const requiredTranscriptFacts = {
     'error: CapacityExceeded',
     'state_unchanged: true',
     'pending_command_preserved: true',
+    'turn_sequence_number: 0',
+    'output_bytes: 0',
   ],
   'malformed-records': [
     'case_id: malformed-records',
@@ -142,29 +162,58 @@ const requiredTranscriptFacts = {
     'diagnostic_error_published_after_wrong_result: true',
     'diagnostic_error_published_after_duplicate_result: true',
     'diagnostic_error_published_after_stale_result: true',
+    'malformed_image_error: InvalidFrameEncoding',
+    'malformed_state_error: InvalidFrameEncoding',
+    'duplicate_preflight_error: DuplicateHostReply',
+    'partial_transition_published: false',
   ],
 };
 
-const transcriptTurnClosureClaims = {
+const transcriptArtifactFingerprintClaims = {
   'one-port-execution': {
-    parent_closure_fingerprint: 'artifacts/transitions/one-port.waiting.turn-closure',
-    completed_closure_fingerprint: 'artifacts/transitions/one-port.completed.turn-closure',
+    parent_closure_fingerprint: { path: 'artifacts/transitions/one-port.waiting.turn-closure', offset: 8 },
+    completed_closure_fingerprint: { path: 'artifacts/transitions/one-port.completed.turn-closure', offset: 8 },
   },
   'internal-provider-execution': {
-    closure_fingerprint: 'artifacts/transitions/internal-provider.completed.turn-closure',
+    image_fingerprint: { path: 'artifacts/images/internal-provider.executable-image', offset: 46 },
+    closure_fingerprint: { path: 'artifacts/transitions/internal-provider.completed.turn-closure', offset: 8 },
+  },
+  'provider-parked-externally': {
+    capsule_fingerprint: { path: 'artifacts/states/active-provider.source.capsule', offset: 8 },
+  },
+  'active-provider-restore': {
+    completed_capsule_fingerprint: { path: 'artifacts/states/active-provider.completed.capsule', offset: 8 },
+  },
+  'replay-without-fresh-effect': {
+    transcript_image_fingerprint: { path: 'artifacts/states/replay.transcript-image', offset: 8 },
+    run_image_fingerprint: { path: 'artifacts/states/replay.completed.run-image', offset: 8 },
   },
   'lost-output-retry': {
-    parent_closure_fingerprint: 'artifacts/transitions/retry.parent.turn-closure',
-    result_closure_fingerprint: 'artifacts/transitions/retry.first.turn-closure',
+    parent_closure_fingerprint: { path: 'artifacts/transitions/retry.parent.turn-closure', offset: 8 },
+    result_closure_fingerprint: { path: 'artifacts/transitions/retry.first.turn-closure', offset: 8 },
+  },
+  migration: {
+    source_capsule_fingerprint: { path: 'artifacts/states/active-provider.source.capsule', offset: 8 },
+    migrated_capsule_fingerprint: { path: 'artifacts/states/active-provider.migrated.capsule', offset: 8 },
+    completed_capsule_fingerprint: { path: 'artifacts/states/active-provider.completed.capsule', offset: 8 },
+  },
+  branching: {
+    baseline_transcript_fingerprint: { path: 'artifacts/states/branch.baseline.transcript-image', offset: 8 },
+    alternate_transcript_fingerprint: { path: 'artifacts/states/branch.alternate.transcript-image', offset: 8 },
   },
   'partial-response-batch': {
-    parent_closure_fingerprint: 'artifacts/transitions/partial-batch.parent.turn-closure',
-    partial_closure_fingerprint: 'artifacts/transitions/partial-batch.remaining.turn-closure',
+    parent_closure_fingerprint: { path: 'artifacts/transitions/partial-batch.parent.turn-closure', offset: 8 },
+    partial_closure_fingerprint: { path: 'artifacts/transitions/partial-batch.remaining.turn-closure', offset: 8 },
   },
   'deterministic-failure': {
-    parent_closure_fingerprint: 'artifacts/transitions/failure.parent.turn-closure',
-    failed_closure_fingerprint: 'artifacts/transitions/failure.failed.turn-closure',
+    parent_closure_fingerprint: { path: 'artifacts/transitions/failure.parent.turn-closure', offset: 8 },
+    failed_closure_fingerprint: { path: 'artifacts/transitions/failure.failed.turn-closure', offset: 8 },
   },
+};
+
+const transcriptProducedU64Claims = {
+  'provider-parked-externally': ['pending_port_fingerprint'],
+  branching: ['checkpoint_fingerprint', 'common_parent_request_fingerprint'],
 };
 
 const expectedArtifacts = [
@@ -454,54 +503,52 @@ const expectedBoundaryPackage = rootBoundaryPackage();
 
 const args = parseArgs(process.argv.slice(2));
 
-if (args.mode === 'publish') {
+if (args.mode === 'coordinate') {
+  requireArg(args.operation, '--operation');
+  requireArg(args.expected, '--expected');
+  requireArg(args.first, '--first');
+  requireArg(args.second, '--second');
+  requireArg(args.zigVersion, '--zig-version');
   requireArg(args.publisher, '--publisher');
   requireArg(args.sourceDir, '--source-dir');
   requireArg(args.admissionDigest, '--admission-digest');
   requireArg(args.trustedPrefix, '--trusted-prefix');
-  requireArg(args.coordinationDir, '--coordination-dir');
-  withCorpusCoordination(args.coordinationDir, 'publish', () => {
-    requireNoPriorValidationFailure(args.coordinationDir);
-    const result = spawnSync(
-      args.publisher,
-      [
-        'publish',
-        '--source-dir',
-        args.sourceDir,
-        '--admission-digest',
-        args.admissionDigest,
-        '--trusted-prefix',
-        args.trustedPrefix,
-      ],
-      { stdio: 'inherit' },
-    );
-    if (result.error !== undefined) throw result.error;
-    if (result.status !== 0) {
-      throw new Error(`oracle publisher exited with ${result.status === null ? String(result.signal) : String(result.status)}`);
-    }
-  });
+  requireArg(args.sourceRoot, '--source-root');
+  if (!['check', 'update', 'check-update'].includes(args.operation)) {
+    throw new Error(`unsupported --operation ${String(args.operation)}`);
+  }
+  if (args.operation === 'check' || args.operation === 'check-update') {
+    const expected = validateCorpus(args.expected, args.zigVersion);
+    const first = validateCorpus(args.first, args.zigVersion);
+    const second = validateCorpus(args.second, args.zigVersion);
+    compareCorpusSnapshots(expected, first, 'tracked/first');
+    compareCorpusSnapshots(expected, second, 'tracked/second');
+    compareCorpusSnapshots(first, second, 'first/second');
+  }
+  if (args.operation === 'update' || args.operation === 'check-update') {
+    const first = validateCorpus(args.first, args.zigVersion);
+    const second = validateCorpus(args.second, args.zigVersion);
+    compareCorpusSnapshots(first, second, 'first/second before publication');
+    publishCandidate(args);
+  }
 } else if (args.mode === 'compare') {
   requireArg(args.expected, '--expected');
   requireArg(args.first, '--first');
   requireArg(args.second, '--second');
   requireArg(args.zigVersion, '--zig-version');
-  const compare = () => {
-    validateCorpus(args.expected, args.zigVersion);
-    validateCorpus(args.first, args.zigVersion);
-    validateCorpus(args.second, args.zigVersion);
-    compareTrees(args.expected, args.first, 'tracked/first');
-    compareTrees(args.expected, args.second, 'tracked/second');
-    compareTrees(args.first, args.second, 'first/second');
-  };
-  if (args.coordinationDir === undefined) compare();
-  else withCorpusCoordination(args.coordinationDir, 'check', compare);
+  const expected = validateCorpus(args.expected, args.zigVersion);
+  const first = validateCorpus(args.first, args.zigVersion);
+  const second = validateCorpus(args.second, args.zigVersion);
+  compareCorpusSnapshots(expected, first, 'tracked/first');
+  compareCorpusSnapshots(expected, second, 'tracked/second');
+  compareCorpusSnapshots(first, second, 'first/second');
 } else if (args.mode === 'verify') {
   requireArg(args.expected, '--expected');
   requireArg(args.actual, '--actual');
   requireArg(args.zigVersion, '--zig-version');
-  validateCorpus(args.expected, args.zigVersion);
-  validateCorpus(args.actual, args.zigVersion);
-  compareTrees(args.expected, args.actual, 'expected/actual');
+  const expected = validateCorpus(args.expected, args.zigVersion);
+  const actual = validateCorpus(args.actual, args.zigVersion);
+  compareCorpusSnapshots(expected, actual, 'expected/actual');
 } else if (args.mode === 'check') {
   requireArg(args.expected, '--expected');
   requireArg(args.zigVersion, '--zig-version');
@@ -534,37 +581,32 @@ function parseArgs(raw) {
     else if (arg === '--publisher') parsed.publisher = raw[++index];
     else if (arg === '--source-dir') parsed.sourceDir = raw[++index];
     else if (arg === '--trusted-prefix') parsed.trustedPrefix = raw[++index];
-    else if (arg === '--coordination-dir') parsed.coordinationDir = raw[++index];
+    else if (arg === '--source-root') parsed.sourceRoot = raw[++index];
+    else if (arg === '--operation') parsed.operation = raw[++index];
     else throw new Error(`unknown argument ${arg}`);
   }
   return parsed;
 }
 
-function withCorpusCoordination(root, role, action) {
-  mkdirSync(root, { recursive: true });
-  const lock = join(root, 'trusted-corpus-lock');
-  for (;;) {
-    try {
-      mkdirSync(lock);
-      break;
-    } catch (error) {
-      if (!(error instanceof Error) || error.code !== 'EEXIST') throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-    }
-  }
-  try {
-    return action();
-  } catch (error) {
-    if (role === 'check') mkdirSync(join(root, 'tracked-validation-failed'), { recursive: true });
-    throw error;
-  } finally {
-    rmSync(lock, { recursive: true, force: true });
-  }
-}
-
-function requireNoPriorValidationFailure(root) {
-  if (existsSync(join(root, 'tracked-validation-failed'))) {
-    throw new Error('tracked oracle validation failed before publication');
+function publishCandidate(args) {
+  const result = spawnSync(
+    args.publisher,
+    [
+      'publish',
+      '--source-dir',
+      args.sourceDir,
+      '--admission-digest',
+      args.admissionDigest,
+      '--trusted-prefix',
+      args.trustedPrefix,
+      '--source-root',
+      args.sourceRoot,
+    ],
+    { stdio: 'inherit' },
+  );
+  if (result.error !== undefined) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`oracle publisher exited with ${result.status === null ? String(result.signal) : String(result.status)}`);
   }
 }
 
@@ -721,6 +763,54 @@ function validateCorpus(root, expectedZigVersion) {
 
   const manifestBytes = read('manifest.json');
   const manifest = parseJsonDocument(manifestBytes, 'manifest.json');
+  assertExactObjectKeys(manifest, [
+    'format',
+    'format_version',
+    'semantic_source',
+    'binary_family_policy',
+    'binary_families',
+    'publication_atomicity',
+    'transcript_claim_policy',
+    'offline_regeneration',
+    'generator',
+    'normal_check',
+    'case_count',
+    'cases',
+    'artifact_set_sha256',
+    'artifact_count',
+    'artifacts',
+  ], 'manifest');
+  assertExactObjectKeys(manifest.semantic_source, [
+    'package',
+    'package_version',
+    'baseline_commit',
+    'baseline_tree',
+    'boundary_package',
+    'boundary_package_hash',
+    'baseline_scope',
+    'generator_source_identity',
+    'version_fields_scope',
+    'world_executable_image_format',
+    'world_executable_image_fingerprint',
+    'world_executable_image_codec',
+    'world_turn_closure_format',
+    'world_turn_closure_fingerprint',
+    'world_archive_append_batch_format',
+    'world_archive_append_batch_fingerprint',
+    'world_appliance_abi',
+    'world_appliance_manifest_format',
+    'world_appliance_manifest_fingerprint',
+    'world_appliance_command_format',
+    'world_appliance_command_fingerprint',
+    'world_appliance_wire_turn_input_format',
+    'world_appliance_wire_resolution_input_format',
+    'zig_version',
+  ], 'manifest.semantic_source');
+  assertExactObjectKeys(
+    manifest.semantic_source?.generator_source_identity,
+    ['algorithm', 'normalization', 'sha256', 'files'],
+    'manifest.semantic_source.generator_source_identity',
+  );
   assertEqual(manifest.format, 'world-image-v1-rewrite-world-oracle-v0', 'manifest.format');
   assertEqual(manifest.format_version, 1, 'manifest.format_version');
   assertEqual(manifest.semantic_source?.package, 'world', 'manifest.semantic_source.package');
@@ -809,11 +899,24 @@ function validateCorpus(root, expectedZigVersion) {
   );
   assertEqual(manifest.semantic_source?.zig_version, expectedZigVersion, 'manifest.semantic_source.zig_version');
   assertEqual(
+    manifest.publication_atomicity,
+    'per-file-atomic-replacement;corpus-wide-crash-atomicity-not-claimed',
+    'manifest.publication_atomicity',
+  );
+  assertEqual(
+    manifest.transcript_claim_policy,
+    'exact-field-set;artifact-fingerprints-independently-decoded;typed-producer-assertions-explicit',
+    'manifest.transcript_claim_policy',
+  );
+  assertEqual(
     manifest.offline_regeneration,
     'requires-preseeded-boundary-package-cache',
     'manifest.offline_regeneration',
   );
   assertEqual(manifest.case_count, expectedCases.length, 'manifest.case_count');
+  for (const [index, entry] of manifest.cases.entries()) {
+    assertExactObjectKeys(entry, ['id', 'transcript'], `manifest.cases[${index}]`);
+  }
   assertArrayEqual(manifest.cases.map((entry) => entry.id), expectedCases, 'manifest.cases');
   assertArrayEqual(Object.keys(requiredTranscriptFacts), expectedCases, 'required transcript fact cases');
 
@@ -835,13 +938,16 @@ function validateCorpus(root, expectedZigVersion) {
       const expected = fact.slice(separator + 2);
       assertEqual(transcriptFields.get(key), expected, `provenance fact ${caseId}.${key}`);
     }
-    validateTranscriptTurnClosureClaims(caseId, transcriptFields, read);
+    validateTranscriptClaims(caseId, facts, transcriptFields, read);
   }
 
   const contentFiles = files.filter((path) => path !== 'manifest.json' && path !== 'checksums.sha256');
   assertArrayEqual(contentFiles, expectedArtifacts, 'expected artifact inventory');
   validateBinaryFamilies(contentFiles, manifest, read);
   const manifestArtifacts = manifest.artifacts.map((entry) => entry.path);
+  for (const [index, entry] of manifest.artifacts.entries()) {
+    assertExactObjectKeys(entry, ['path', 'length', 'sha256'], `manifest.artifacts[${index}]`);
+  }
   assertArrayEqual(manifestArtifacts, contentFiles, 'manifest artifact inventory');
 
   const artifactHasher = createHash('sha256');
@@ -877,7 +983,95 @@ function decodeSemanticUtf8(bytes, label) {
 }
 
 function parseJsonDocument(bytes, label) {
-  return JSON.parse(decodeSemanticUtf8(bytes, label));
+  const text = decodeSemanticUtf8(bytes, label);
+  assertDuplicateFreeJson(text, label);
+  return JSON.parse(text);
+}
+
+function assertDuplicateFreeJson(text, label) {
+  let index = 0;
+  const skipWhitespace = () => {
+    while (index < text.length && /[\t\n\r ]/.test(text[index])) index += 1;
+  };
+  const parseStringToken = () => {
+    if (text[index] !== '"') throw new Error(`invalid JSON string in ${label}`);
+    const start = index++;
+    while (index < text.length) {
+      const code = text.charCodeAt(index);
+      if (code < 0x20) throw new Error(`invalid JSON control character in ${label}`);
+      if (text[index] === '"') {
+        index += 1;
+        return JSON.parse(text.slice(start, index));
+      }
+      if (text[index] === '\\') {
+        index += 1;
+        if (index >= text.length || !/["\\/bfnrtu]/.test(text[index])) throw new Error(`invalid JSON escape in ${label}`);
+        if (text[index] === 'u') {
+          if (!/^[0-9a-fA-F]{4}$/.test(text.slice(index + 1, index + 5))) throw new Error(`invalid JSON unicode escape in ${label}`);
+          index += 4;
+        }
+      }
+      index += 1;
+    }
+    throw new Error(`unterminated JSON string in ${label}`);
+  };
+  const parseValue = (depth) => {
+    if (depth > 64) throw new Error(`JSON nesting limit exceeded in ${label}`);
+    skipWhitespace();
+    if (text[index] === '{') {
+      index += 1;
+      skipWhitespace();
+      const keys = new Set();
+      if (text[index] === '}') {
+        index += 1;
+        return;
+      }
+      for (;;) {
+        skipWhitespace();
+        const key = parseStringToken();
+        if (keys.has(key)) throw new Error(`duplicate JSON member in ${label}: ${key}`);
+        keys.add(key);
+        skipWhitespace();
+        if (text[index++] !== ':') throw new Error(`missing JSON member separator in ${label}`);
+        parseValue(depth + 1);
+        skipWhitespace();
+        const delimiter = text[index++];
+        if (delimiter === '}') return;
+        if (delimiter !== ',') throw new Error(`invalid JSON object delimiter in ${label}`);
+      }
+    }
+    if (text[index] === '[') {
+      index += 1;
+      skipWhitespace();
+      if (text[index] === ']') {
+        index += 1;
+        return;
+      }
+      for (;;) {
+        parseValue(depth + 1);
+        skipWhitespace();
+        const delimiter = text[index++];
+        if (delimiter === ']') return;
+        if (delimiter !== ',') throw new Error(`invalid JSON array delimiter in ${label}`);
+      }
+    }
+    if (text[index] === '"') {
+      parseStringToken();
+      return;
+    }
+    for (const literal of ['true', 'false', 'null']) {
+      if (text.startsWith(literal, index)) {
+        index += literal.length;
+        return;
+      }
+    }
+    const number = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(text.slice(index));
+    if (number === null) throw new Error(`invalid JSON value in ${label}`);
+    index += number[0].length;
+  };
+  parseValue(0);
+  skipWhitespace();
+  if (index !== text.length) throw new Error(`trailing JSON bytes in ${label}`);
 }
 
 function parseTranscript(text, caseId) {
@@ -894,11 +1088,27 @@ function parseTranscript(text, caseId) {
   return fields;
 }
 
-function validateTranscriptTurnClosureClaims(caseId, fields, read) {
-  for (const [key, artifactPath] of Object.entries(transcriptTurnClosureClaims[caseId] ?? {})) {
-    const bytes = read(artifactPath);
-    if (bytes.length < 16) throw new Error(`TurnClosure too short for transcript claim: ${artifactPath}`);
-    const expected = `0x${bytes.readBigUInt64LE(8).toString(16).padStart(16, '0')}`;
+function validateTranscriptClaims(caseId, literalFacts, fields, read) {
+  const literalKeys = literalFacts.map((fact) => fact.slice(0, fact.indexOf(': ')));
+  const artifactClaims = transcriptArtifactFingerprintClaims[caseId] ?? {};
+  const producedU64Claims = transcriptProducedU64Claims[caseId] ?? [];
+  const expectedKeys = [...literalKeys, ...Object.keys(artifactClaims), ...producedU64Claims].sort(compareUtf8Bytes);
+  const actualKeys = [...fields.keys()].sort(compareUtf8Bytes);
+  assertArrayEqual(actualKeys, expectedKeys, `transcript claim policy ${caseId}`);
+
+  validateArtifactTranscriptClaims(caseId, fields, read);
+  for (const key of producedU64Claims) {
+    if (!/^0x[0-9a-f]{16}$/.test(fields.get(key) ?? '') || fields.get(key) === '0x0000000000000000') {
+      throw new Error(`invalid typed producer transcript fact ${caseId}.${key}`);
+    }
+  }
+}
+
+function validateArtifactTranscriptClaims(caseId, fields, read) {
+  for (const [key, claim] of Object.entries(transcriptArtifactFingerprintClaims[caseId] ?? {})) {
+    const bytes = read(claim.path);
+    if (bytes.length < claim.offset + 8) throw new Error(`artifact too short for transcript claim: ${claim.path}`);
+    const expected = `0x${bytes.readBigUInt64LE(claim.offset).toString(16).padStart(16, '0')}`;
     assertEqual(fields.get(key), expected, `artifact-bound transcript fact ${caseId}.${key}`);
   }
 }
@@ -1338,7 +1548,6 @@ function testChecksumInventoryAdmission() {
     testCandidateSnapshotIdentity();
     testSemanticTextAdmission();
     testTranscriptClaimAdmission();
-    testCorpusCoordination();
     return;
   }
   throw new Error('checksum traversal path accepted');
@@ -1362,6 +1571,24 @@ function testSemanticTextAdmission() {
     bomRejected = true;
   }
   if (!bomRejected) throw new Error('BOM-prefixed manifest accepted');
+
+  let duplicateMemberRejected = false;
+  try {
+    parseJsonDocument(Buffer.from('{"field":1,"field":2}'), 'manifest.json');
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'duplicate JSON member in manifest.json: field') throw error;
+    duplicateMemberRejected = true;
+  }
+  if (!duplicateMemberRejected) throw new Error('duplicate manifest member accepted');
+
+  let unknownMemberRejected = false;
+  try {
+    assertExactObjectKeys({ format: 'fixture', unknown: true }, ['format'], 'fixture manifest');
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith('fixture manifest keys')) throw error;
+    unknownMemberRejected = true;
+  }
+  if (!unknownMemberRejected) throw new Error('unknown manifest member accepted');
 }
 
 function testTranscriptClaimAdmission() {
@@ -1378,48 +1605,49 @@ function testTranscriptClaimAdmission() {
   closureBytes.writeUInt32LE(1, 0);
   closureBytes.writeUInt32LE(1, 4);
   closureBytes.writeBigUInt64LE(0x0123456789abcdefn, 8);
-  const fields = new Map([['closure_fingerprint', '0x0123456789abcdef']]);
-  validateTranscriptTurnClosureClaims('internal-provider-execution', fields, () => closureBytes);
+  const fields = new Map([
+    ['image_fingerprint', '0x0123456789abcdef'],
+    ['closure_fingerprint', '0x0123456789abcdef'],
+  ]);
+  validateArtifactTranscriptClaims('internal-provider-execution', fields, (path) => {
+    if (path.endsWith('.executable-image')) {
+      const image = Buffer.alloc(54);
+      image.writeBigUInt64LE(0x0123456789abcdefn, 46);
+      return image;
+    }
+    return closureBytes;
+  });
   fields.set('closure_fingerprint', '0xfedcba9876543210');
   let forgedRejected = false;
   try {
-    validateTranscriptTurnClosureClaims('internal-provider-execution', fields, () => closureBytes);
+    validateArtifactTranscriptClaims('internal-provider-execution', fields, (path) => {
+      if (path.endsWith('.executable-image')) {
+        const image = Buffer.alloc(54);
+        image.writeBigUInt64LE(0x0123456789abcdefn, 46);
+        return image;
+      }
+      return closureBytes;
+    });
   } catch (error) {
     if (!(error instanceof Error) || !error.message.startsWith('artifact-bound transcript fact')) throw error;
     forgedRejected = true;
   }
   if (!forgedRejected) throw new Error('forged transcript closure fingerprint accepted');
-}
 
-function testCorpusCoordination() {
-  const root = mkdtempSync(join(tmpdir(), 'world-oracle-coordination-'));
+  const capacityFacts = requiredTranscriptFacts['capacity-exhaustion'];
+  const exhaustiveFields = new Map(capacityFacts.map((fact) => {
+    const separator = fact.indexOf(': ');
+    return [fact.slice(0, separator), fact.slice(separator + 2)];
+  }));
+  exhaustiveFields.set('unreviewed_claim', 'true');
+  let unknownClaimRejected = false;
   try {
-    let checkFailed = false;
-    try {
-      withCorpusCoordination(root, 'check', () => {
-        throw new Error('expected tracked validation failure');
-      });
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'expected tracked validation failure') throw error;
-      checkFailed = true;
-    }
-    if (!checkFailed) throw new Error('coordination check failure not observed');
-
-    let publisherRan = false;
-    let publicationRejected = false;
-    try {
-      withCorpusCoordination(root, 'publish', () => {
-        requireNoPriorValidationFailure(root);
-        publisherRan = true;
-      });
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== 'tracked oracle validation failed before publication') throw error;
-      publicationRejected = true;
-    }
-    if (!publicationRejected || publisherRan) throw new Error('publication ran after tracked validation failure');
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+    validateTranscriptClaims('capacity-exhaustion', capacityFacts, exhaustiveFields, () => Buffer.alloc(0));
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith('transcript claim policy')) throw error;
+    unknownClaimRejected = true;
   }
+  if (!unknownClaimRejected) throw new Error('unknown transcript claim accepted');
 }
 
 function testCandidateSnapshotIdentity() {
@@ -1428,9 +1656,11 @@ function testCandidateSnapshotIdentity() {
     writeFileSync(join(root, 'manifest.json'), 'admitted manifest\n');
     writeFileSync(join(root, 'checksums.sha256'), 'admitted checksums\n');
     const snapshot = captureCorpus(root);
+    const peer = captureCorpus(root);
     const admitted = candidateTreeIdentity(snapshot);
     writeFileSync(join(root, 'manifest.json'), 'mutated after capture\n');
     assertEqual(candidateTreeIdentity(snapshot), admitted, 'captured candidate identity');
+    compareCorpusSnapshots(snapshot, peer, 'captured snapshot equality');
     if (candidateTreeIdentity(captureCorpus(root)) === admitted) {
       throw new Error('live candidate mutation did not change identity');
     }
@@ -1517,13 +1747,18 @@ function assertJsonEqual(actual, expected, label) {
   }
 }
 
-function compareTrees(expectedRoot, actualRoot, label) {
-  const expected = listFiles(expectedRoot);
-  const actual = listFiles(actualRoot);
-  assertArrayEqual(actual, expected, `${label} file inventory`);
-  for (const path of expected) {
-    const expectedBytes = readFileSync(join(expectedRoot, path));
-    const actualBytes = readFileSync(join(actualRoot, path));
+function assertExactObjectKeys(actual, expectedKeys, label) {
+  if (actual === null || typeof actual !== 'object' || Array.isArray(actual)) {
+    throw new Error(`${label}: expected object`);
+  }
+  assertArrayEqual(Object.keys(actual), expectedKeys, `${label} keys`);
+}
+
+function compareCorpusSnapshots(expected, actual, label) {
+  assertArrayEqual(actual.files, expected.files, `${label} file inventory`);
+  for (const path of expected.files) {
+    const expectedBytes = expected.read(path);
+    const actualBytes = actual.read(path);
     if (!expectedBytes.equals(actualBytes)) {
       throw new Error(`${label} byte mismatch: ${path}`);
     }

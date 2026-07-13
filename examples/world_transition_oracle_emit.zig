@@ -439,23 +439,27 @@ pub fn main(init: std.process.Init) !void {
         const admission_digest_path = args.next() orelse return error.InvalidArguments;
         const target_flag = args.next() orelse return error.InvalidArguments;
         const trusted_prefix = args.next() orelse return error.InvalidArguments;
+        const source_root_flag = args.next() orelse return error.InvalidArguments;
+        const source_root = args.next() orelse return error.InvalidArguments;
         if (args.next() != null or
             !std.mem.eql(u8, source_flag, "--source-dir") or
             source_dir.len == 0 or
             !std.mem.eql(u8, admission_flag, "--admission-digest") or
             admission_digest_path.len == 0 or
             !std.mem.eql(u8, target_flag, "--trusted-prefix") or
-            !std.fs.path.isAbsolute(trusted_prefix))
+            !std.fs.path.isAbsolute(trusted_prefix) or
+            !std.mem.eql(u8, source_root_flag, "--source-root") or
+            !std.fs.path.isAbsolute(source_root))
         {
             return error.InvalidArguments;
         }
+        _ = try validatedGeneratorSourceIdentity(init.io, allocator, source_root);
         try publishCandidate(
             init.io,
             allocator,
             source_dir,
             admission_digest_path,
             trusted_prefix,
-            "./world-transition-oracle-publish-staging",
         );
         return;
     }
@@ -505,12 +509,7 @@ fn publishCandidate(
     source_root: []const u8,
     admission_digest_path: []const u8,
     trusted_prefix: []const u8,
-    staging_root: []const u8,
 ) !void {
-    try std.Io.Dir.cwd().deleteTree(io, staging_root);
-    try std.Io.Dir.cwd().createDirPath(io, staging_root);
-    defer std.Io.Dir.cwd().deleteTree(io, staging_root) catch {};
-
     var source_dir = try std.Io.Dir.cwd().openDir(io, source_root, .{
         .follow_symlinks = false,
         .iterate = true,
@@ -522,28 +521,44 @@ fn publishCandidate(
     defer candidate_paths.deinit();
     if (candidate_paths.items.len == 0) return error.EmptyCandidateCorpus;
 
-    var writer = Writer{ .io = io, .allocator = allocator, .root = staging_root };
-    defer writer.paths.deinit(allocator);
-    const candidate_identity = try candidateTreeIdentity(
-        io,
-        allocator,
-        source_dir,
-        candidate_paths.items,
-        &writer,
-    );
+    var snapshot = try captureCandidateSnapshot(io, allocator, source_dir, candidate_paths.items);
+    defer snapshot.deinit();
+    const candidate_identity = candidateSnapshotIdentity(snapshot);
     try validateCandidateAdmissionDigest(io, allocator, admission_digest_path, candidate_identity);
-    try promoteCorpus(allocator, &writer, .{ .trusted_prefix = trusted_prefix });
+    try promoteSnapshot(io, allocator, snapshot, .{ .trusted_prefix = trusted_prefix });
 }
 
-fn candidateTreeIdentity(
+const CandidateSnapshot = struct {
+    allocator: std.mem.Allocator,
+    paths: []const []u8,
+    bytes: []const []u8,
+
+    fn deinit(self: *@This()) void {
+        for (self.paths) |path| self.allocator.free(path);
+        for (self.bytes) |bytes| self.allocator.free(bytes);
+        self.allocator.free(self.paths);
+        self.allocator.free(self.bytes);
+        self.* = undefined;
+    }
+};
+
+fn captureCandidateSnapshot(
     io: std.Io,
     allocator: std.mem.Allocator,
     source_dir: std.Io.Dir,
-    candidate_paths: []const []u8,
-    snapshot_writer: ?*Writer,
-) ![32]u8 {
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update(candidate_admission_identity_domain);
+    candidate_paths: []const []const u8,
+) !CandidateSnapshot {
+    var paths: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit(allocator);
+    }
+    var contents: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (contents.items) |bytes| allocator.free(bytes);
+        contents.deinit(allocator);
+    }
+    var total_bytes: usize = 0;
     for (candidate_paths) |relative_path| {
         var file = source_dir.openFile(io, relative_path, .{
             .mode = .read_only,
@@ -558,9 +573,27 @@ fn candidateTreeIdentity(
         var read_buffer: [4096]u8 = undefined;
         var reader = file.reader(io, &read_buffer);
         const bytes = try reader.interface.allocRemaining(allocator, .limited(64 * 1024 * 1024));
-        defer allocator.free(bytes);
-        if (snapshot_writer) |writer| try writer.write(relative_path, bytes);
+        errdefer allocator.free(bytes);
+        total_bytes = std.math.add(usize, total_bytes, bytes.len) catch return error.CandidateCorpusTooLarge;
+        if (total_bytes > 256 * 1024 * 1024) return error.CandidateCorpusTooLarge;
+        const path = try allocator.dupe(u8, relative_path);
+        errdefer allocator.free(path);
+        try paths.append(allocator, path);
+        try contents.append(allocator, bytes);
+    }
+    const owned_paths = try paths.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_paths) |path| allocator.free(path);
+        allocator.free(owned_paths);
+    }
+    const owned_contents = try contents.toOwnedSlice(allocator);
+    return .{ .allocator = allocator, .paths = owned_paths, .bytes = owned_contents };
+}
 
+fn candidateSnapshotIdentity(snapshot: CandidateSnapshot) [32]u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(candidate_admission_identity_domain);
+    for (snapshot.paths, snapshot.bytes) |relative_path, bytes| {
         var path_length = [_]u8{0} ** 4;
         std.mem.writeInt(u32, &path_length, @intCast(relative_path.len), .little);
         var content_length = [_]u8{0} ** 8;
@@ -622,7 +655,9 @@ fn writeCandidateAdmissionDigestForTest(
     defer source_dir.close(io);
     var candidate_paths = try listFiles(io, allocator, source_dir);
     defer candidate_paths.deinit();
-    const identity = try candidateTreeIdentity(io, allocator, source_dir, candidate_paths.items, null);
+    var snapshot = try captureCandidateSnapshot(io, allocator, source_dir, candidate_paths.items);
+    defer snapshot.deinit();
+    const identity = candidateSnapshotIdentity(snapshot);
     const text = candidateAdmissionDigestText(identity);
     try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = admission_digest_path, .data = &text });
 }
@@ -1472,6 +1507,17 @@ fn forkBranchTranscript(
     return forked;
 }
 
+fn requireSharedBranchPrefix(
+    baseline: []const world.TranscriptImage.EventImage,
+    alternate: []const world.TranscriptImage.EventImage,
+    checkpoint_event_index: usize,
+) !void {
+    if (checkpoint_event_index > baseline.len or checkpoint_event_index > alternate.len) return error.BranchParentMismatch;
+    for (baseline[0..checkpoint_event_index], alternate[0..checkpoint_event_index]) |baseline_event, alternate_event| {
+        if (baseline_event.event_fingerprint != alternate_event.event_fingerprint) return error.BranchParentMismatch;
+    }
+}
+
 fn emitBranching(allocator: std.mem.Allocator, writer: *Writer) !void {
     var baseline = try runBranch(allocator, false);
     defer {
@@ -1484,10 +1530,8 @@ fn emitBranching(allocator: std.mem.Allocator, writer: *Writer) !void {
         alternate.transcript.deinit();
     }
     const checkpoint_event_index = 2;
+    try requireSharedBranchPrefix(baseline.image.events, alternate.image.events, checkpoint_event_index);
     const checkpoint_event = baseline.image.events[checkpoint_event_index - 1];
-    if (alternate.image.events[checkpoint_event_index - 1].request_fingerprint != checkpoint_event.request_fingerprint) {
-        return error.BranchParentMismatch;
-    }
     const checkpoint = world.Timeline.Checkpoint.init(.{
         .world_surface_fingerprint = fixtures.Agent.Target.WorldSurface.surface_fingerprint,
         .target_certificate_fingerprint = fixtures.Agent.Target.Certificate.certificate_fingerprint,
@@ -1591,6 +1635,16 @@ fn emitBranching(allocator: std.mem.Allocator, writer: *Writer) !void {
         },
     );
     try writer.write("cases/branching.txt", case_transcript);
+}
+
+test "branching rejects a divergent earlier checkpoint-prefix event" {
+    const baseline = [_]world.TranscriptImage.EventImage{
+        .{ .event_fingerprint = 1, .kind = .run_started, .world_surface_fingerprint = 2, .target_certificate_fingerprint = 3 },
+        .{ .event_fingerprint = 4, .kind = .port_requested, .world_surface_fingerprint = 2, .target_certificate_fingerprint = 3 },
+    };
+    var alternate = baseline;
+    alternate[0].event_fingerprint = 5;
+    try std.testing.expectError(error.BranchParentMismatch, requireSharedBranchPrefix(&baseline, &alternate, 2));
 }
 
 fn emitPartialBatch(allocator: std.mem.Allocator, writer: *Writer) !void {
@@ -2177,57 +2231,11 @@ fn listFiles(io: std.Io, allocator: std.mem.Allocator, root: std.Io.Dir) !OwnedP
     return .{ .allocator = allocator, .items = owned };
 }
 
-fn isExpectedPath(writer: *const Writer, relative_path: []const u8) bool {
-    for (writer.paths.items) |expected| {
+fn isExpectedPath(expected_paths: []const []const u8, relative_path: []const u8) bool {
+    for (expected_paths) |expected| {
         if (std.mem.eql(u8, expected, relative_path)) return true;
     }
     return false;
-}
-
-fn validatePublicationDestination(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    writer: *const Writer,
-    target: PublicationTarget,
-    output_dir: std.Io.Dir,
-) !void {
-    var existing_paths = try listFiles(io, allocator, output_dir);
-    defer existing_paths.deinit();
-    for (existing_paths.items) |relative_path| {
-        if (std.mem.endsWith(u8, relative_path, ".oracle-tmp")) {
-            return error.UnsafePublicationTemporaryPath;
-        }
-        switch (target) {
-            .isolated => if (!isExpectedPath(writer, relative_path)) return error.UnexpectedIsolatedOutputPath,
-            .trusted_prefix => {},
-        }
-    }
-    for (writer.paths.items) |relative_path| {
-        const destination_stat = output_dir.statFile(io, relative_path, .{ .follow_symlinks = false }) catch |err| switch (err) {
-            error.FileNotFound => continue,
-            error.NotDir, error.SymLinkLoop => return error.UnsafePublicationPath,
-            else => |unexpected| return unexpected,
-        };
-        if (destination_stat.kind != .file) return error.UnsafePublicationPath;
-    }
-}
-
-fn promoteFile(
-    allocator: std.mem.Allocator,
-    writer: *Writer,
-    output_dir: std.Io.Dir,
-    relative_path: []const u8,
-) !void {
-    const source_path = try std.fs.path.join(allocator, &.{ writer.root, relative_path });
-    var destination = try openPublicationLeaf(output_dir, writer.io, relative_path, true);
-    defer destination.deinit(writer.io);
-    try std.Io.Dir.cwd().copyFile(
-        source_path,
-        destination.parent,
-        destination.leaf,
-        writer.io,
-        .{ .make_path = false, .replace = true },
-    );
 }
 
 const PublicationLeaf = struct {
@@ -2322,10 +2330,118 @@ fn openPublicationLeaf(
     };
 }
 
-fn deletePublicationFile(io: std.Io, publication_dir: std.Io.Dir, relative_path: []const u8) !void {
-    var destination = try openPublicationLeaf(publication_dir, io, relative_path, false);
-    defer destination.deinit(io);
-    try destination.parent.deleteFile(io, destination.leaf);
+const PlannedPublicationLeaf = struct {
+    allocator: std.mem.Allocator,
+    relative_path: []u8,
+    destination: PublicationLeaf,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        root: std.Io.Dir,
+        io: std.Io,
+        relative_path: []const u8,
+        create_parents: bool,
+    ) !@This() {
+        const owned_path = try allocator.dupe(u8, relative_path);
+        errdefer allocator.free(owned_path);
+        return .{
+            .allocator = allocator,
+            .relative_path = owned_path,
+            .destination = try openPublicationLeaf(root, io, owned_path, create_parents),
+        };
+    }
+
+    fn deinit(self: *@This(), io: std.Io) void {
+        self.destination.deinit(io);
+        self.allocator.free(self.relative_path);
+        self.* = undefined;
+    }
+};
+
+const PublicationPlan = struct {
+    allocator: std.mem.Allocator,
+    writes: []PlannedPublicationLeaf,
+    deletions: []PlannedPublicationLeaf,
+
+    fn deinit(self: *@This(), io: std.Io) void {
+        for (self.writes) |*entry| entry.deinit(io);
+        for (self.deletions) |*entry| entry.deinit(io);
+        self.allocator.free(self.writes);
+        self.allocator.free(self.deletions);
+        self.* = undefined;
+    }
+};
+
+fn buildPublicationPlan(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    snapshot: CandidateSnapshot,
+    target: PublicationTarget,
+    output_dir: std.Io.Dir,
+) !PublicationPlan {
+    var existing_paths = try listFiles(io, allocator, output_dir);
+    defer existing_paths.deinit();
+    for (existing_paths.items) |relative_path| {
+        if (std.mem.endsWith(u8, relative_path, ".oracle-tmp")) return error.UnsafePublicationTemporaryPath;
+        switch (target) {
+            .isolated => if (!isExpectedPath(snapshot.paths, relative_path)) return error.UnexpectedIsolatedOutputPath,
+            .trusted_prefix => {},
+        }
+    }
+
+    var writes: std.ArrayList(PlannedPublicationLeaf) = .empty;
+    errdefer {
+        for (writes.items) |*entry| entry.deinit(io);
+        writes.deinit(allocator);
+    }
+    for (snapshot.paths) |relative_path| {
+        var planned = try PlannedPublicationLeaf.init(allocator, output_dir, io, relative_path, true);
+        errdefer planned.deinit(io);
+        const destination_stat = planned.destination.parent.statFile(io, planned.destination.leaf, .{
+            .follow_symlinks = false,
+        }) catch |err| switch (err) {
+            error.FileNotFound => null,
+            error.NotDir, error.SymLinkLoop => return error.UnsafePublicationPath,
+            else => |unexpected| return unexpected,
+        };
+        if (destination_stat) |stat| if (stat.kind != .file) return error.UnsafePublicationPath;
+        try writes.append(allocator, planned);
+    }
+
+    var deletions: std.ArrayList(PlannedPublicationLeaf) = .empty;
+    errdefer {
+        for (deletions.items) |*entry| entry.deinit(io);
+        deletions.deinit(allocator);
+    }
+    if (target == .trusted_prefix) for (existing_paths.items) |relative_path| {
+        if (isExpectedPath(snapshot.paths, relative_path)) continue;
+        var planned = try PlannedPublicationLeaf.init(allocator, output_dir, io, relative_path, false);
+        errdefer planned.deinit(io);
+        const stat = try planned.destination.parent.statFile(io, planned.destination.leaf, .{
+            .follow_symlinks = false,
+        });
+        if (stat.kind != .file) return error.UnsafePublicationPath;
+        try deletions.append(allocator, planned);
+    };
+    const owned_writes = try writes.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_writes) |*entry| entry.deinit(io);
+        allocator.free(owned_writes);
+    }
+    const owned_deletions = try deletions.toOwnedSlice(allocator);
+    return .{ .allocator = allocator, .writes = owned_writes, .deletions = owned_deletions };
+}
+
+fn replacePublicationLeaf(io: std.Io, destination: PublicationLeaf, bytes: []const u8) !void {
+    var atomic_file = try destination.parent.createFileAtomic(io, destination.leaf, .{
+        .replace = true,
+    });
+    defer atomic_file.deinit(io);
+    var buffer: [4096]u8 = undefined;
+    var file_writer = atomic_file.file.writer(io, &buffer);
+    try file_writer.interface.writeAll(bytes);
+    try file_writer.flush();
+    try atomic_file.replace(io);
 }
 
 fn openPublicationPathNoFollow(io: std.Io, output_dir: []const u8) !std.Io.Dir {
@@ -2371,31 +2487,30 @@ fn openPublicationDirectory(io: std.Io, target: PublicationTarget) !std.Io.Dir {
     };
 }
 
+fn promoteSnapshot(io: std.Io, allocator: std.mem.Allocator, snapshot: CandidateSnapshot, target: PublicationTarget) !void {
+    var publication_dir = try openPublicationDirectory(io, target);
+    defer publication_dir.close(io);
+    var plan = try buildPublicationPlan(io, allocator, snapshot, target, publication_dir);
+    defer plan.deinit(io);
+
+    for (plan.writes, snapshot.bytes) |entry, bytes| {
+        try replacePublicationLeaf(io, entry.destination, bytes);
+    }
+    // Obsolete artifacts are removed only after the complete new file set is present.
+    for (plan.deletions) |entry| {
+        try entry.destination.parent.deleteFile(io, entry.destination.leaf);
+    }
+}
+
 fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, target: PublicationTarget) !void {
-    var publication_dir = try openPublicationDirectory(writer.io, target);
-    defer publication_dir.close(writer.io);
-    try validatePublicationDestination(writer.io, allocator, writer, target, publication_dir);
-
-    // The standard atomic-copy primitive owns collision-safe temporary files
-    // beside each destination and replaces only after the full file is ready.
-    for (writer.paths.items) |relative_path| {
-        try promoteFile(allocator, writer, publication_dir, relative_path);
-    }
-
-    switch (target) {
-        .isolated => {},
-        .trusted_prefix => {
-            // Retire obsolete artifacts only after the complete new file set is present.
-            // An interrupted cleanup can leave detectable extras, but cannot remove any
-            // artifact required by the new manifest.
-            var published_paths = try listFiles(writer.io, allocator, publication_dir);
-            defer published_paths.deinit();
-            for (published_paths.items) |relative_path| {
-                if (isExpectedPath(writer, relative_path)) continue;
-                try deletePublicationFile(writer.io, publication_dir, relative_path);
-            }
-        },
-    }
+    var source_dir = try std.Io.Dir.cwd().openDir(writer.io, writer.root, .{
+        .follow_symlinks = false,
+        .iterate = true,
+    });
+    defer source_dir.close(writer.io);
+    var snapshot = try captureCandidateSnapshot(writer.io, allocator, source_dir, writer.paths.items);
+    defer snapshot.deinit();
+    try promoteSnapshot(writer.io, allocator, snapshot, target);
 }
 
 test "candidate publisher copies the exact candidate tree" {
@@ -2412,7 +2527,6 @@ test "candidate publisher copies the exact candidate tree" {
     const candidate_root = try std.fs.path.join(allocator, &.{ root, "candidate" });
     const trusted_prefix = try std.fs.path.join(allocator, &.{ root, "prefix" });
     const admission_digest = try std.fs.path.join(allocator, &.{ root, "admission.sha256" });
-    const staging_root = try std.fs.path.join(allocator, &.{ root, "staging" });
     const published_root = try std.fs.path.join(allocator, &.{ trusted_prefix, canonical_output_suffix });
     const candidate_case = try std.fs.path.join(allocator, &.{ candidate_root, "cases/example.txt" });
     const candidate_manifest = try std.fs.path.join(allocator, &.{ candidate_root, "manifest.json" });
@@ -2427,7 +2541,7 @@ test "candidate publisher copies the exact candidate tree" {
     try cwd.writeFile(io, .{ .sub_path = obsolete, .data = "obsolete\n" });
 
     try writeCandidateAdmissionDigestForTest(io, allocator, candidate_root, admission_digest);
-    try publishCandidate(io, allocator, candidate_root, admission_digest, trusted_prefix, staging_root);
+    try publishCandidate(io, allocator, candidate_root, admission_digest, trusted_prefix);
 
     const case_bytes = try cwd.readFileAlloc(io, published_case, allocator, .limited(1024));
     try std.testing.expectEqualStrings("admitted case\n", case_bytes);
@@ -2448,7 +2562,6 @@ test "candidate publisher rejects a post-admission mutation before target mutati
     const candidate_root = try std.fs.path.join(allocator, &.{ root, "candidate" });
     const trusted_prefix = try std.fs.path.join(allocator, &.{ root, "prefix" });
     const admission_digest = try std.fs.path.join(allocator, &.{ root, "admission.sha256" });
-    const staging_root = try std.fs.path.join(allocator, &.{ root, "staging" });
     const candidate_case = try std.fs.path.join(allocator, &.{ candidate_root, "cases/example.txt" });
     const published_root = try std.fs.path.join(allocator, &.{ trusted_prefix, canonical_output_suffix });
     const sentinel = try std.fs.path.join(allocator, &.{ published_root, "sentinel.txt" });
@@ -2463,13 +2576,44 @@ test "candidate publisher rejects a post-admission mutation before target mutati
 
     try std.testing.expectError(
         error.CandidateAdmissionMismatch,
-        publishCandidate(io, allocator, candidate_root, admission_digest, trusted_prefix, staging_root),
+        publishCandidate(io, allocator, candidate_root, admission_digest, trusted_prefix),
     );
     const sentinel_bytes = try cwd.readFileAlloc(io, sentinel, allocator, .limited(1024));
     try std.testing.expectEqualStrings("must survive\n", sentinel_bytes);
 }
 
-test "publication retains no-follow nested parent authority after preflight" {
+test "publication consumes captured candidate bytes without reopening source paths" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const root = root_buffer[0..root_len];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const candidate_root = try std.fs.path.join(allocator, &.{ root, "candidate" });
+    const candidate_path = try std.fs.path.join(allocator, &.{ candidate_root, "cases/example.txt" });
+    const output_root = try std.fs.path.join(allocator, &.{ root, "output" });
+    const output_path = try std.fs.path.join(allocator, &.{ output_root, "cases/example.txt" });
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, std.fs.path.dirname(candidate_path).?);
+    try cwd.writeFile(io, .{ .sub_path = candidate_path, .data = "admitted bytes\n" });
+
+    var source_dir = try cwd.openDir(io, candidate_root, .{ .follow_symlinks = false, .iterate = true });
+    defer source_dir.close(io);
+    const paths = [_][]const u8{"cases/example.txt"};
+    var snapshot = try captureCandidateSnapshot(io, allocator, source_dir, &paths);
+    defer snapshot.deinit();
+    try cwd.writeFile(io, .{ .sub_path = candidate_path, .data = "mutated after snapshot\n" });
+    try promoteSnapshot(io, allocator, snapshot, .{ .isolated = output_root });
+
+    const output_bytes = try cwd.readFileAlloc(io, output_path, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("admitted bytes\n", output_bytes);
+}
+
+test "publication retains nested parent authority after real directory replacement" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const io = std.testing.io;
@@ -2488,39 +2632,43 @@ test "publication retains no-follow nested parent authority after preflight" {
     const published_cases = try std.fs.path.join(allocator, &.{ published_root, "cases" });
     const published_case = try std.fs.path.join(allocator, &.{ published_cases, "example.txt" });
     const published_obsolete = try std.fs.path.join(allocator, &.{ published_cases, "obsolete.txt" });
-    const external_cases = try std.fs.path.join(allocator, &.{ root, "external-cases" });
-    const external_case = try std.fs.path.join(allocator, &.{ external_cases, "example.txt" });
-    const external_obsolete = try std.fs.path.join(allocator, &.{ external_cases, "obsolete.txt" });
+    const admitted_cases = try std.fs.path.join(allocator, &.{ published_root, "admitted-cases" });
+    const admitted_case = try std.fs.path.join(allocator, &.{ admitted_cases, "example.txt" });
+    const admitted_obsolete = try std.fs.path.join(allocator, &.{ admitted_cases, "obsolete.txt" });
+    const replacement_case = try std.fs.path.join(allocator, &.{ published_cases, "example.txt" });
+    const replacement_obsolete = try std.fs.path.join(allocator, &.{ published_cases, "obsolete.txt" });
 
     const cwd = std.Io.Dir.cwd();
     try cwd.createDirPath(io, candidate_root);
     try cwd.createDirPath(io, published_cases);
-    try cwd.createDirPath(io, external_cases);
     var writer = Writer{ .io = io, .allocator = allocator, .root = candidate_root };
     try writer.write("cases/example.txt", "candidate bytes\n");
     try cwd.writeFile(io, .{ .sub_path = published_case, .data = "published bytes\n" });
     try cwd.writeFile(io, .{ .sub_path = published_obsolete, .data = "published obsolete\n" });
-    try cwd.writeFile(io, .{ .sub_path = external_case, .data = "external case sentinel\n" });
-    try cwd.writeFile(io, .{ .sub_path = external_obsolete, .data = "external obsolete sentinel\n" });
+
+    var source_dir = try cwd.openDir(io, candidate_root, .{ .follow_symlinks = false, .iterate = true });
+    defer source_dir.close(io);
+    var snapshot = try captureCandidateSnapshot(io, allocator, source_dir, writer.paths.items);
+    defer snapshot.deinit();
 
     var publication_dir = try cwd.openDir(io, published_root, .{ .follow_symlinks = false, .iterate = true });
     defer publication_dir.close(io);
-    try validatePublicationDestination(io, allocator, &writer, .{ .trusted_prefix = trusted_prefix }, publication_dir);
-    try cwd.deleteTree(io, published_cases);
-    try cwd.symLink(io, external_cases, published_cases, .{});
+    var plan = try buildPublicationPlan(io, allocator, snapshot, .{ .trusted_prefix = trusted_prefix }, publication_dir);
+    defer plan.deinit(io);
+    try cwd.rename(published_cases, cwd, admitted_cases, io);
+    try cwd.createDirPath(io, published_cases);
+    try cwd.writeFile(io, .{ .sub_path = replacement_case, .data = "replacement case sentinel\n" });
+    try cwd.writeFile(io, .{ .sub_path = replacement_obsolete, .data = "replacement obsolete sentinel\n" });
 
-    try std.testing.expectError(
-        error.UnsafePublicationPath,
-        promoteFile(allocator, &writer, publication_dir, "cases/example.txt"),
-    );
-    try std.testing.expectError(
-        error.UnsafePublicationPath,
-        deletePublicationFile(io, publication_dir, "cases/obsolete.txt"),
-    );
-    const external_case_bytes = try cwd.readFileAlloc(io, external_case, allocator, .limited(1024));
-    const external_obsolete_bytes = try cwd.readFileAlloc(io, external_obsolete, allocator, .limited(1024));
-    try std.testing.expectEqualStrings("external case sentinel\n", external_case_bytes);
-    try std.testing.expectEqualStrings("external obsolete sentinel\n", external_obsolete_bytes);
+    try replacePublicationLeaf(io, plan.writes[0].destination, snapshot.bytes[0]);
+    try plan.deletions[0].destination.parent.deleteFile(io, plan.deletions[0].destination.leaf);
+    const replacement_case_bytes = try cwd.readFileAlloc(io, replacement_case, allocator, .limited(1024));
+    const replacement_obsolete_bytes = try cwd.readFileAlloc(io, replacement_obsolete, allocator, .limited(1024));
+    const admitted_case_bytes = try cwd.readFileAlloc(io, admitted_case, allocator, .limited(1024));
+    try std.testing.expectEqualStrings("replacement case sentinel\n", replacement_case_bytes);
+    try std.testing.expectEqualStrings("replacement obsolete sentinel\n", replacement_obsolete_bytes);
+    try std.testing.expectEqualStrings("candidate bytes\n", admitted_case_bytes);
+    try std.testing.expectError(error.FileNotFound, cwd.access(io, admitted_obsolete, .{}));
 }
 
 test "isolated publication rejects unowned paths before writing" {
@@ -3084,6 +3232,8 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
             "    {\"id\":\"world_transcript_image\",\"owner\":\"world.TranscriptImage\",\"versioning\":\"header\",\"expected_count\":3,\"header_fields\":[{\"name\":\"format_version\",\"constant\":\"world_transcript_image_format_version\",\"offset\":0,\"value\":3},{\"name\":\"fingerprint_version\",\"constant\":\"world_transcript_image_fingerprint_version\",\"offset\":4,\"value\":1}]},\n" ++
             "    {\"id\":\"world_appliance_root_result_value_image\",\"owner\":\"world.Appliance.validateRootResultValueImageBytes\",\"versioning\":\"unversioned-container-owned\",\"expected_count\":2,\"label\":\"world.appliance.root_result.value_image\",\"label_length_offset\":0,\"label_offset\":4,\"value_fingerprint_offset\":43}\n" ++
             "  ],\n" ++
+            "  \"publication_atomicity\": \"per-file-atomic-replacement;corpus-wide-crash-atomicity-not-claimed\",\n" ++
+            "  \"transcript_claim_policy\": \"exact-field-set;artifact-fingerprints-independently-decoded;typed-producer-assertions-explicit\",\n" ++
             "  \"offline_regeneration\": \"requires-preseeded-boundary-package-cache\",\n" ++
             "  \"generator\": \"zig build update-world-image-v1-transition-oracle\",\n" ++
             "  \"normal_check\": \"zig build check-world-image-v1-transition-oracle --summary all\",\n" ++
