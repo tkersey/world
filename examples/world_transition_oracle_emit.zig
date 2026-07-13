@@ -103,10 +103,20 @@ const max_oracle_publication_parents: usize = 512;
 const compiled_generator_sources = world_transition_oracle_sources.sources;
 const generator_source_package_paths = world_transition_oracle_sources.package_paths;
 const generator_source_excluded_prefix = world_transition_oracle_sources.excluded_prefix;
+const compiled_package_version = world_transition_oracle_sources.package_version;
+const compiled_boundary_package_version = world_transition_oracle_sources.boundary_package_version;
+const compiled_boundary_package_hash = world_transition_oracle_sources.boundary_package_hash;
 
 comptime {
     @setEvalBranchQuota(100_000);
     if (compiled_generator_sources.len == 0) @compileError("compiled generator source inventory must not be empty");
+    if (generator_source_package_paths.len == 0) @compileError("compiled package root inventory must not be empty");
+    if (compiled_package_version.len == 0 or
+        compiled_boundary_package_version.len == 0 or
+        compiled_boundary_package_hash.len == 0)
+    {
+        @compileError("compiled package descriptor must be complete");
+    }
     for (compiled_generator_sources[1..], compiled_generator_sources[0 .. compiled_generator_sources.len - 1]) |current, previous| {
         if (!std.mem.lessThan(u8, previous.path, current.path)) {
             @compileError("compiled generator source inventory must be unique and preserve canonical order");
@@ -114,196 +124,17 @@ comptime {
     }
 }
 
-fn compiledGeneratorSourceBytes(relative_path: []const u8) ![]const u8 {
-    for (compiled_generator_sources) |source| {
-        if (std.mem.eql(u8, source.path, relative_path)) return source.bytes;
-    }
-    return error.MissingCompiledGeneratorSource;
-}
-
-fn packageVersionFromZon(allocator: std.mem.Allocator, zon_bytes: []const u8) ![]const u8 {
-    const source = try allocator.dupeZ(u8, zon_bytes);
-    defer allocator.free(source);
-    const PackageProjection = struct { version: []const u8 };
-    const projection = std.zon.parse.fromSliceAlloc(
-        PackageProjection,
-        allocator,
-        source,
-        null,
-        .{ .ignore_unknown_fields = true },
-    ) catch return error.InvalidPackageManifest;
-    defer std.zon.parse.free(allocator, projection);
-    if (projection.version.len == 0) return error.InvalidPackageVersionField;
-    return allocator.dupe(u8, projection.version);
-}
-
-fn compiledPackageVersion(allocator: std.mem.Allocator) ![]const u8 {
-    return packageVersionFromZon(allocator, try compiledGeneratorSourceBytes("build.zig.zon"));
-}
-
-const BoundaryDependencyProjection = struct {
-    url: []const u8,
-    hash: []const u8,
-};
-
-const BoundaryPackageManifestProjection = struct {
-    dependencies: struct {
-        boundary: BoundaryDependencyProjection,
-    },
-};
-
-const BoundaryPackage = struct {
-    version: []u8,
-    hash: []u8,
-
-    fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.version);
-        allocator.free(self.hash);
-        self.* = undefined;
-    }
-};
-
-fn boundaryPackageFromZon(allocator: std.mem.Allocator, zon_bytes: []const u8) !BoundaryPackage {
-    const source = try allocator.dupeZ(u8, zon_bytes);
-    defer allocator.free(source);
-    const projection = std.zon.parse.fromSliceAlloc(
-        BoundaryPackageManifestProjection,
-        allocator,
-        source,
-        null,
-        .{ .ignore_unknown_fields = true },
-    ) catch return error.InvalidPackageManifest;
-    defer std.zon.parse.free(allocator, projection);
-
-    const url_prefix = "https://github.com/tkersey/boundary/archive/refs/tags/v";
-    const url_suffix = ".tar.gz";
-    if (!std.mem.startsWith(u8, projection.dependencies.boundary.url, url_prefix) or
-        !std.mem.endsWith(u8, projection.dependencies.boundary.url, url_suffix))
-    {
-        return error.InvalidBoundaryPackageIdentity;
-    }
-    const version_end = projection.dependencies.boundary.url.len - url_suffix.len;
-    if (version_end <= url_prefix.len) return error.InvalidBoundaryPackageIdentity;
-    const version = projection.dependencies.boundary.url[url_prefix.len..version_end];
-    if (std.mem.indexOfScalar(u8, version, '/') != null) return error.InvalidBoundaryPackageIdentity;
-    const hash_prefix = try std.fmt.allocPrint(allocator, "boundary-{s}-", .{version});
-    defer allocator.free(hash_prefix);
-    if (!std.mem.startsWith(u8, projection.dependencies.boundary.hash, hash_prefix) or
-        projection.dependencies.boundary.hash.len == hash_prefix.len)
-    {
-        return error.InvalidBoundaryPackageIdentity;
-    }
-
-    const owned_version = try allocator.dupe(u8, version);
-    errdefer allocator.free(owned_version);
-    return .{
-        .version = owned_version,
-        .hash = try allocator.dupe(u8, projection.dependencies.boundary.hash),
-    };
-}
-
-fn compiledBoundaryPackage(allocator: std.mem.Allocator) !BoundaryPackage {
-    return boundaryPackageFromZon(allocator, try compiledGeneratorSourceBytes("build.zig.zon"));
-}
-
-test "package version projection accepts valid ZON whitespace and comments" {
-    const zon =
-        \\.{
-        \\    .name = .world,
-        \\    // owner field
-        \\    .version   =   "1.2.3", // retained provenance
-        \\    .paths = .{"src"},
-        \\}
-    ;
-    const version = try packageVersionFromZon(std.testing.allocator, zon);
-    defer std.testing.allocator.free(version);
-    try std.testing.expectEqualStrings("1.2.3", version);
-    const escaped_version = try packageVersionFromZon(std.testing.allocator, ".{ .@\"version\" = \"2.0.0\" }");
-    defer std.testing.allocator.free(escaped_version);
-    try std.testing.expectEqualStrings("2.0.0", escaped_version);
-
-    const multiline_zon =
-        \\.{
-        \\    .note =
-        \\        \\literal { } // not a comment
-        \\        \\.version = "not a field"
-        \\    ,
-        \\    .version =
-        \\        \\3.0.0
-        \\    ,
-        \\}
-    ;
-    const multiline_version = try packageVersionFromZon(std.testing.allocator, multiline_zon);
-    defer std.testing.allocator.free(multiline_version);
-    try std.testing.expectEqualStrings("3.0.0", multiline_version);
-}
-
-test "boundary dependency provenance projects one pinned package owner" {
-    const zon =
-        \\.{
-        \\    .name = .world,
-        \\    .dependencies = .{
-        \\        .boundary = .{
-        \\            // selected package owner
-        \\            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz",
-        \\            .hash = "boundary-1.2.3-fixture",
-        \\        },
-        \\    },
-        \\}
-    ;
-    var package = try boundaryPackageFromZon(std.testing.allocator, zon);
-    defer package.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("1.2.3", package.version);
-    try std.testing.expectEqualStrings("boundary-1.2.3-fixture", package.hash);
-
-    const escaped =
-        \\.{
-        \\    .@"dependencies" = .{
-        \\        .@"boundary" = .{
-        \\            .@"url" = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz",
-        \\            .@"hash" = "boundary-1.2.3-fixture"
-        \\        }
-        \\    },
-        \\}
-    ;
-    var escaped_package = try boundaryPackageFromZon(std.testing.allocator, escaped);
-    defer escaped_package.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings(package.version, escaped_package.version);
-    try std.testing.expectEqualStrings(package.hash, escaped_package.hash);
-
-    const multiline =
-        \\.{
-        \\    .dependencies = .{
-        \\        .boundary = .{
-        \\            .url =
-        \\                \\https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz
-        \\            ,
-        \\            .hash =
-        \\                \\boundary-1.2.3-fixture
-        \\            ,
-        \\        },
-        \\    },
-        \\}
-    ;
-    var multiline_package = try boundaryPackageFromZon(std.testing.allocator, multiline);
-    defer multiline_package.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings(package.version, multiline_package.version);
-    try std.testing.expectEqualStrings(package.hash, multiline_package.hash);
-
-    const mismatched =
-        \\.{
-        \\    .dependencies = .{
-        \\        .boundary = .{
-        \\            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.4.tar.gz",
-        \\            .hash = "boundary-1.2.3-fixture",
-        \\        },
-        \\    },
-        \\}
-    ;
-    try std.testing.expectError(
-        error.InvalidBoundaryPackageIdentity,
-        boundaryPackageFromZon(std.testing.allocator, mismatched),
+test "compiled package descriptor binds one admitted manifest authority" {
+    try std.testing.expect(compiled_package_version.len != 0);
+    try std.testing.expect(compiled_boundary_package_version.len != 0);
+    const expected_hash_prefix = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "boundary-{s}-",
+        .{compiled_boundary_package_version},
     );
+    defer std.testing.allocator.free(expected_hash_prefix);
+    try std.testing.expect(std.mem.startsWith(u8, compiled_boundary_package_hash, expected_hash_prefix));
+    try std.testing.expect(compiled_boundary_package_hash.len > expected_hash_prefix.len);
 }
 
 const Writer = struct {
@@ -522,7 +353,7 @@ fn publishCandidate(
     admission_digest_path: []const u8,
     trusted_prefix: []const u8,
 ) !void {
-    var source_dir = try openPublicationPathNoFollow(io, source_root);
+    var source_dir = try openExistingPathNoFollow(io, source_root);
     defer source_dir.close(io);
     if ((try source_dir.stat(io)).kind != .directory) return error.InvalidCandidateDirectory;
 
@@ -741,7 +572,7 @@ fn captureOracleSnapshot(
     return collector.finish();
 }
 
-fn capturePackageSnapshotRoot(
+fn capturePackageSnapshotRootEntries(
     io: std.Io,
     collector: *SnapshotCollector,
     source_dir: std.Io.Dir,
@@ -805,6 +636,36 @@ fn capturePackageSnapshotRoot(
     return error.InvalidGeneratorSourceEntry;
 }
 
+fn capturePackageSnapshotRoot(
+    io: std.Io,
+    collector: *SnapshotCollector,
+    source_dir: std.Io.Dir,
+    package_path: []const u8,
+    options: SnapshotCaptureOptions,
+) !void {
+    const contribution_start = collector.entries.items.len;
+    try capturePackageSnapshotRootEntries(io, collector, source_dir, package_path, options);
+    if (collector.entries.items.len == contribution_start) return error.EmptyGeneratorSourceRoot;
+}
+
+fn packageSnapshotRootsOverlap(left: []const u8, right: []const u8) bool {
+    if (std.mem.eql(u8, left, right)) return true;
+    const shorter, const longer = if (left.len < right.len) .{ left, right } else .{ right, left };
+    return std.mem.startsWith(u8, longer, shorter) and longer[shorter.len] == '/';
+}
+
+fn validatePackageSnapshotRoots(package_paths: []const []const u8) !void {
+    if (package_paths.len == 0) return error.EmptyGeneratorSourceRoots;
+    for (package_paths, 0..) |package_path, index| {
+        try validateSnapshotPortablePath(package_path);
+        for (package_paths[0..index]) |previous| {
+            if (packageSnapshotRootsOverlap(package_path, previous)) {
+                return error.OverlappingGeneratorSourceRoots;
+            }
+        }
+    }
+}
+
 fn capturePackageSnapshot(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -812,6 +673,7 @@ fn capturePackageSnapshot(
     package_paths: []const []const u8,
     options: SnapshotCaptureOptions,
 ) !CandidateSnapshot {
+    try validatePackageSnapshotRoots(package_paths);
     var collector = SnapshotCollector{ .allocator = allocator };
     errdefer collector.deinit();
     const before = try source_dir.stat(io);
@@ -831,10 +693,10 @@ fn openSnapshotRoot(
     allow_root_alias: bool,
 ) !std.Io.Dir {
     if (!std.fs.path.isAbsolute(root_path)) return error.InvalidSnapshotRoot;
-    if (!allow_root_alias) return openPublicationPathNoFollow(io, root_path);
+    if (!allow_root_alias) return openExistingPathNoFollow(io, root_path);
     const physical_root = try std.Io.Dir.realPathFileAbsoluteAlloc(io, root_path, allocator);
     defer allocator.free(physical_root);
-    return openPublicationPathNoFollow(io, physical_root);
+    return openExistingPathNoFollow(io, physical_root);
 }
 
 fn writeOracleSnapshot(io: std.Io, snapshot: CandidateSnapshot) !void {
@@ -861,6 +723,7 @@ fn emitOracleSnapshot(
 ) !void {
     var root_path: ?[]const u8 = null;
     var allow_root_alias = false;
+    var use_compiled_package_roots = false;
     var excluded_prefix: ?[]const u8 = null;
     var package_paths: std.ArrayList([]const u8) = .empty;
     defer package_paths.deinit(allocator);
@@ -871,6 +734,9 @@ fn emitOracleSnapshot(
         } else if (std.mem.eql(u8, flag, "--allow-root-alias")) {
             if (allow_root_alias) return error.InvalidArguments;
             allow_root_alias = true;
+        } else if (std.mem.eql(u8, flag, "--compiled-package-roots")) {
+            if (use_compiled_package_roots) return error.InvalidArguments;
+            use_compiled_package_roots = true;
         } else if (std.mem.eql(u8, flag, "--package-root")) {
             try package_paths.append(allocator, args.next() orelse return error.InvalidArguments);
         } else if (std.mem.eql(u8, flag, "--exclude-prefix")) {
@@ -880,6 +746,7 @@ fn emitOracleSnapshot(
     }
     const root = root_path orelse return error.InvalidArguments;
     if (root.len == 0) return error.InvalidArguments;
+    if (use_compiled_package_roots and package_paths.items.len != 0) return error.InvalidArguments;
     if (excluded_prefix) |prefix| {
         const validated_prefix = if (std.mem.endsWith(u8, prefix, "/")) prefix[0 .. prefix.len - 1] else prefix;
         try validateSnapshotPortablePath(validated_prefix);
@@ -887,7 +754,9 @@ fn emitOracleSnapshot(
 
     var source_dir = try openSnapshotRoot(init.io, allocator, root, allow_root_alias);
     defer source_dir.close(init.io);
-    var snapshot = if (package_paths.items.len == 0)
+    var snapshot = if (use_compiled_package_roots)
+        try capturePackageSnapshot(init.io, allocator, source_dir, &generator_source_package_paths, .{ .excluded_prefix = excluded_prefix })
+    else if (package_paths.items.len == 0)
         try captureOracleSnapshot(init.io, allocator, source_dir, .{ .excluded_prefix = excluded_prefix })
     else
         try capturePackageSnapshot(init.io, allocator, source_dir, package_paths.items, .{ .excluded_prefix = excluded_prefix });
@@ -916,6 +785,25 @@ test "oracle snapshot reads through retained directory authority" {
     try std.testing.expectEqualStrings("retained\n", snapshot.bytes[0]);
 }
 
+test "snapshot root rejection does not create missing components" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var root_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(io, &root_buffer);
+    const missing_root = try std.fs.path.join(std.testing.allocator, &.{ root_buffer[0..root_len], "missing", "child" });
+    defer std.testing.allocator.free(missing_root);
+
+    try std.testing.expectError(
+        error.FileNotFound,
+        openSnapshotRoot(io, std.testing.allocator, missing_root, false),
+    );
+    try std.testing.expectError(
+        error.FileNotFound,
+        tmp.dir.statFile(io, "missing", .{ .follow_symlinks = false }),
+    );
+}
+
 test "package snapshot shares structural budget across roots" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{ .iterate = true });
@@ -932,6 +820,31 @@ test "package snapshot shares structural budget across roots" {
     try std.testing.expectError(
         error.CandidateCorpusTooLarge,
         capturePackageSnapshotRoot(io, &collector, tmp.dir, "second", .{}),
+    );
+}
+
+test "package snapshot rejects overlapping and non-contributing roots" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "root/child");
+    try tmp.dir.writeFile(io, .{ .sub_path = "root/child/source.zig", .data = "source\n" });
+    try tmp.dir.createDir(io, "empty", .default_dir);
+
+    try std.testing.expectError(
+        error.OverlappingGeneratorSourceRoots,
+        capturePackageSnapshot(io, std.testing.allocator, tmp.dir, &.{ "root", "root/child" }, .{}),
+    );
+
+    var collector = SnapshotCollector{ .allocator = std.testing.allocator };
+    defer collector.deinit();
+    try std.testing.expectError(
+        error.EmptyGeneratorSourceRoot,
+        capturePackageSnapshotRoot(io, &collector, tmp.dir, "empty", .{}),
+    );
+    try std.testing.expectError(
+        error.EmptyGeneratorSourceRoot,
+        capturePackageSnapshotRoot(io, &collector, tmp.dir, "root", .{ .excluded_prefix = "root/" }),
     );
 }
 
@@ -1037,7 +950,7 @@ fn writeCandidateAdmissionDigestForTest(
     source_root: []const u8,
     admission_digest_path: []const u8,
 ) !void {
-    var source_dir = try openPublicationPathNoFollow(io, source_root);
+    var source_dir = try openExistingPathNoFollow(io, source_root);
     defer source_dir.close(io);
     var snapshot = try captureOracleSnapshot(io, allocator, source_dir, .{});
     defer snapshot.deinit();
@@ -3108,6 +3021,25 @@ fn openPublicationPathNoFollow(io: std.Io, output_dir: []const u8) !std.Io.Dir {
     return current;
 }
 
+fn openExistingPathNoFollow(io: std.Io, input_dir: []const u8) !std.Io.Dir {
+    var components = std.fs.path.componentIterator(input_dir);
+    const initial = if (components.root()) |root|
+        try std.Io.Dir.cwd().openDir(io, root, .{ .follow_symlinks = false, .iterate = true })
+    else
+        try std.Io.Dir.cwd().openDir(io, ".", .{ .follow_symlinks = false, .iterate = true });
+    var current = try requirePublicationDirectory(initial, io);
+    errdefer current.close(io);
+
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component.name, ".")) continue;
+        if (std.mem.eql(u8, component.name, "..")) return error.UnsafePublicationPath;
+        const child = try openExistingPublicationChild(current, io, component.name);
+        current.close(io);
+        current = child;
+    }
+    return current;
+}
+
 fn openTrustedPublicationDirectory(io: std.Io, trusted_prefix: []const u8) !std.Io.Dir {
     const cwd = std.Io.Dir.cwd();
     const prefix_dir = try cwd.createDirPathOpen(io, trusted_prefix, .{
@@ -3148,7 +3080,7 @@ fn promoteSnapshot(io: std.Io, allocator: std.mem.Allocator, snapshot: Candidate
 }
 
 fn promoteCorpus(allocator: std.mem.Allocator, writer: *Writer, target: PublicationTarget) !void {
-    var source_dir = try openPublicationPathNoFollow(writer.io, writer.root);
+    var source_dir = try openExistingPathNoFollow(writer.io, writer.root);
     defer source_dir.close(writer.io);
     var snapshot = try captureOracleSnapshot(writer.io, allocator, source_dir, .{});
     defer snapshot.deinit();
@@ -3744,10 +3676,6 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
     artifact_set_hasher.final(&artifact_set_digest);
     const artifact_set_hex = digestHex(artifact_set_digest);
     const generator_source_identity_hex = digestHex(generator_source_identity);
-    const package_version = try compiledPackageVersion(allocator);
-    defer allocator.free(package_version);
-    var boundary_package = try compiledBoundaryPackage(allocator);
-    defer boundary_package.deinit(allocator);
 
     var manifest: std.ArrayList(u8) = .empty;
     try manifest.print(
@@ -3762,7 +3690,7 @@ fn writeManifest(allocator: std.mem.Allocator, writer: *Writer, generator_source
             "    \"baseline_tree\": \"b2bd776125bc17215916e2a48bc7102a861788db\",\n" ++
             "    \"boundary_package\": \"{s}\",\n" ++
             "    \"boundary_package_hash\": \"{s}\",\n",
-        .{ package_version, boundary_package.version, boundary_package.hash },
+        .{ compiled_package_version, compiled_boundary_package_version, compiled_boundary_package_hash },
     );
     try manifest.print(
         allocator,

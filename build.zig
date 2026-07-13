@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const world_package = @import("build.zig.zon");
 
 const TestArgs = struct {
     filters: []const []const u8,
@@ -55,10 +56,6 @@ fn dependOnNativeRunOrCompile(
     }
 }
 
-const WorldPackageProjection = struct {
-    paths: []const []const u8,
-};
-
 const max_world_source_tree_entries: usize = 4 * 1024;
 const max_world_source_tree_path_bytes: usize = 4 * 1024 * 1024;
 const max_world_source_tree_depth: usize = 64;
@@ -101,11 +98,18 @@ fn portablePathDepth(path: []const u8, separator: u8) usize {
     return depth;
 }
 
+fn worldSourcePathDepth(root: []const u8, relative_path: ?[]const u8) usize {
+    const root_components = portablePathDepth(root, '/');
+    const relative_components = if (relative_path) |path| portablePathDepth(path, std.fs.path.sep) else 0;
+    return (std.math.add(usize, root_components, relative_components) catch {
+        std.debug.panic("World source tree depth budget exceeded", .{});
+    }) -| 1;
+}
+
 fn accountWorldSourceEntry(
     budget: *WorldSourceTreeBudget,
     root: []const u8,
     relative_path: ?[]const u8,
-    traversal_depth: usize,
 ) void {
     const relative_len = if (relative_path) |path| path.len else 0;
     const separator_len: usize = if (relative_path == null or relative_len == 0) 0 else 1;
@@ -115,7 +119,7 @@ fn accountWorldSourceEntry(
     const path_len = std.math.add(usize, root_and_separator, relative_len) catch {
         std.debug.panic("World source tree path budget exceeded", .{});
     };
-    budget.account(path_len, traversal_depth) catch {
+    budget.account(path_len, worldSourcePathDepth(root, relative_path)) catch {
         std.debug.panic("World source tree exceeds {d} entries, {d} path bytes, or depth {d}", .{
             max_world_source_tree_entries,
             max_world_source_tree_path_bytes,
@@ -134,6 +138,15 @@ fn accountWorldSourceContent(budget: *WorldSourceTreeBudget, file_bytes: u64) vo
 }
 
 fn checkWorldSourceTreeBudgetBoundaries() void {
+    const nested_relative = if (std.fs.path.sep == '/') "child/file.zig" else "child\\file.zig";
+    const root_depth = worldSourcePathDepth("nested/root", null);
+    const descendant_depth = worldSourcePathDepth("nested/root", nested_relative);
+    if (root_depth != 1 or descendant_depth != 3) {
+        std.debug.panic("complete portable source path depth mismatch: root={d} descendant={d}", .{
+            root_depth,
+            descendant_depth,
+        });
+    }
     var accepted: WorldSourceTreeBudget = .{
         .entries = max_world_source_tree_entries - 1,
         .path_bytes = max_world_source_tree_path_bytes - 1,
@@ -172,32 +185,13 @@ fn checkWorldSourceTreeBudgetBoundaries() void {
 }
 
 fn worldSourcePackageRoots(b: *std.Build) []const []const u8 {
-    const raw_source = b.build_root.handle.readFileAlloc(
-        b.graph.io,
-        "build.zig.zon",
-        b.allocator,
-        .limited(1024 * 1024),
-    ) catch |err| std.debug.panic("failed to read build.zig.zon: {s}", .{@errorName(err)});
-    defer b.allocator.free(raw_source);
-    const source = b.allocator.dupeZ(u8, raw_source) catch @panic("oom");
-    defer b.allocator.free(source);
-    const projection = std.zon.parse.fromSliceAlloc(
-        WorldPackageProjection,
-        b.allocator,
-        source,
-        null,
-        .{ .ignore_unknown_fields = true },
-    ) catch |err| std.debug.panic("failed to project build.zig.zon .paths: {s}", .{@errorName(err)});
-    if (projection.paths.len == 0) @panic("build.zig.zon .paths must not be empty");
-    for (projection.paths, 0..) |path, index| {
+    const roots = b.allocator.alloc([]const u8, world_package.paths.len) catch @panic("oom");
+    inline for (world_package.paths, 0..) |path, index| {
         validateWorldSourcePackageRoot(path);
-        for (projection.paths[0..index]) |previous| {
-            if (std.mem.eql(u8, path, previous)) {
-                std.debug.panic("duplicate build.zig.zon package path '{s}'", .{path});
-            }
-        }
+        roots[index] = b.dupe(path);
     }
-    return projection.paths;
+    validateWorldSourcePackageRootSet(roots);
+    return roots;
 }
 
 fn validateWorldSourcePackageRoot(path: []const u8) void {
@@ -222,7 +216,56 @@ fn isPortableWorldSourcePackageRoot(path: []const u8) bool {
     return true;
 }
 
+fn worldSourcePackageRootsOverlap(left: []const u8, right: []const u8) bool {
+    if (std.mem.eql(u8, left, right)) return true;
+    const shorter, const longer = if (left.len < right.len) .{ left, right } else .{ right, left };
+    return std.mem.startsWith(u8, longer, shorter) and longer[shorter.len] == '/';
+}
+
+fn validateWorldSourcePackageRootSet(roots: []const []const u8) void {
+    for (roots, 0..) |root, index| {
+        validateWorldSourcePackageRoot(root);
+        for (roots[0..index]) |previous| {
+            if (worldSourcePackageRootsOverlap(root, previous)) {
+                std.debug.panic("overlapping build.zig.zon package paths '{s}' and '{s}'", .{ previous, root });
+            }
+        }
+    }
+}
+
 comptime {
+    assertExactComptimeStructFields(@TypeOf(world_package), &.{
+        "name",
+        "version",
+        "fingerprint",
+        "dependencies",
+        "minimum_zig_version",
+        "paths",
+    }, "World package manifest");
+    assertExactComptimeStructFields(@TypeOf(world_package.dependencies), &.{"boundary"}, "World package dependencies");
+    assertExactComptimeStructFields(@TypeOf(world_package.dependencies.boundary), &.{ "url", "hash" }, "Boundary package dependency");
+    if (world_package.name != .world) @compileError("World package manifest name must be .world");
+    const package_version: []const u8 = world_package.version;
+    const package_fingerprint: u64 = world_package.fingerprint;
+    const minimum_zig_version: []const u8 = world_package.minimum_zig_version;
+    const boundary_url: []const u8 = world_package.dependencies.boundary.url;
+    const boundary_hash: []const u8 = world_package.dependencies.boundary.hash;
+    _ = package_fingerprint;
+    if (package_version.len == 0 or minimum_zig_version.len == 0 or boundary_url.len == 0 or boundary_hash.len == 0) {
+        @compileError("World package manifest string fields must not be empty");
+    }
+    if (world_package.paths.len == 0) @compileError("World package manifest paths must not be empty");
+    for (world_package.paths, 0..) |path, index| {
+        const portable_path: []const u8 = path;
+        if (!isPortableWorldSourcePackageRoot(portable_path)) @compileError("World package manifest contains a non-portable path");
+        for (world_package.paths, 0..) |previous, previous_index| {
+            if (previous_index < index and worldSourcePackageRootsOverlap(portable_path, previous)) {
+                @compileError("World package manifest contains duplicate or ancestor-overlapping paths");
+            }
+        }
+    }
+    _ = boundary_package_version;
+
     if (!isPortableWorldSourcePackageRoot("src") or !isPortableWorldSourcePackageRoot("src/nested")) {
         @compileError("portable package roots must remain accepted");
     }
@@ -230,6 +273,67 @@ comptime {
         if (isPortableWorldSourcePackageRoot(path)) @compileError("non-portable package root accepted: " ++ path);
     }
     if (isPortableWorldSourcePackageRoot("src/\xff")) @compileError("invalid UTF-8 package root accepted");
+}
+
+fn assertExactComptimeStructFields(
+    comptime T: type,
+    comptime expected: []const []const u8,
+    comptime label: []const u8,
+) void {
+    const fields = switch (@typeInfo(T)) {
+        .@"struct" => |info| info.fields,
+        else => @compileError(label ++ " must be a struct"),
+    };
+    if (fields.len != expected.len) @compileError(label ++ " has unsupported fields");
+    inline for (expected) |name| {
+        if (!@hasField(T, name)) @compileError(label ++ " is missing field " ++ name);
+    }
+}
+
+const boundary_package_version: []const u8 = blk: {
+    const url = world_package.dependencies.boundary.url;
+    const prefix = "https://github.com/tkersey/boundary/archive/refs/tags/v";
+    const suffix = ".tar.gz";
+    if (!std.mem.startsWith(u8, url, prefix) or !std.mem.endsWith(u8, url, suffix)) {
+        @compileError("unsupported Boundary dependency URL");
+    }
+    const version_end = url.len - suffix.len;
+    if (version_end <= prefix.len) @compileError("empty Boundary package version");
+    const version = url[prefix.len..version_end];
+    if (std.mem.indexOfScalar(u8, version, '/') != null) @compileError("invalid Boundary package version");
+    const expected_hash_prefix = std.fmt.comptimePrint("boundary-{s}-", .{version});
+    if (!std.mem.startsWith(u8, world_package.dependencies.boundary.hash, expected_hash_prefix) or
+        world_package.dependencies.boundary.hash.len == expected_hash_prefix.len)
+    {
+        @compileError("Boundary dependency URL/hash version mismatch");
+    }
+    break :blk version;
+};
+
+const WorldOraclePackageDescriptor = struct {
+    version: []const u8,
+    boundary_version: []const u8,
+    boundary_hash: []const u8,
+    package_roots: []const []const u8,
+};
+
+fn worldOraclePackageDescriptor(b: *std.Build) WorldOraclePackageDescriptor {
+    const declared_hash = world_package.dependencies.boundary.hash;
+    const admitted_hash = for (b.available_deps) |dependency| {
+        if (std.mem.eql(u8, dependency[0], "boundary")) break dependency[1];
+    } else @panic("Zig admitted dependency graph is missing Boundary");
+    if (!std.mem.eql(u8, admitted_hash, declared_hash)) {
+        std.debug.panic(
+            "build-compiled Boundary hash '{s}' does not match Zig admitted dependency '{s}'",
+            .{ declared_hash, admitted_hash },
+        );
+    }
+    return .{
+        .version = world_package.version,
+        .boundary_version = boundary_package_version,
+        .boundary_hash = admitted_hash,
+        .package_roots = worldSourcePackageRoots(b),
+    };
 }
 
 fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
@@ -282,24 +386,29 @@ fn worldSourcePackageFilesForRoots(
 ) []const WorldSourceFile {
     var source_files: std.ArrayList(WorldSourceFile) = .empty;
     var budget: WorldSourceTreeBudget = .{};
+    validateWorldSourcePackageRootSet(package_roots);
 
     for (package_roots) |root| {
-        accountWorldSourceEntry(&budget, root, null, 0);
+        const contribution_start = source_files.items.len;
+        accountWorldSourceEntry(&budget, root, null);
         const root_stat = b.build_root.handle.statFile(b.graph.io, root, .{ .follow_symlinks = false }) catch |err| {
             std.debug.panic("failed to inspect source package path '{s}': {s}", .{ root, @errorName(err) });
         };
         switch (root_stat.kind) {
             .file => {
-                if (excluded_prefix) |prefix| {
-                    if (std.mem.startsWith(u8, root, prefix)) continue;
+                const excluded = if (excluded_prefix) |prefix|
+                    std.mem.startsWith(u8, root, prefix)
+                else
+                    false;
+                if (!excluded) {
+                    source_files.append(b.allocator, .{
+                        .path = b.dupe(root),
+                        .bytes = if (materialization == .snapshot)
+                            captureWorldSourceFile(b, b.build_root.handle, root, root, &budget)
+                        else
+                            null,
+                    }) catch @panic("oom");
                 }
-                source_files.append(b.allocator, .{
-                    .path = b.dupe(root),
-                    .bytes = if (materialization == .snapshot)
-                        captureWorldSourceFile(b, b.build_root.handle, root, root, &budget)
-                    else
-                        null,
-                }) catch @panic("oom");
             },
             .directory => {
                 var dir = b.build_root.handle.openDir(b.graph.io, root, .{
@@ -315,9 +424,7 @@ fn worldSourcePackageFilesForRoots(
                 while (walker.next(b.graph.io) catch |err| {
                     std.debug.panic("failed to walk source package directory '{s}': {s}", .{ root, @errorName(err) });
                 }) |entry| {
-                    const path_depth = portablePathDepth(entry.path, std.fs.path.sep);
-                    const traversal_depth = if (entry.kind == .directory) path_depth else path_depth -| 1;
-                    accountWorldSourceEntry(&budget, root, entry.path, traversal_depth);
+                    accountWorldSourceEntry(&budget, root, entry.path);
                     const path = b.fmt("{s}/{s}", .{ root, entry.path });
                     if (std.fs.path.sep != '/') {
                         for (path) |*byte| if (byte.* == std.fs.path.sep) {
@@ -342,6 +449,9 @@ fn worldSourcePackageFilesForRoots(
                 }
             },
             else => std.debug.panic("unsupported source package path '{s}'", .{root}),
+        }
+        if (source_files.items.len == contribution_start) {
+            std.debug.panic("build.zig.zon package path contributes no admitted source file '{s}'", .{root});
         }
     }
 
@@ -420,11 +530,11 @@ fn worldTransitionOracleSourceClosureModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    descriptor: WorldOraclePackageDescriptor,
 ) *std.Build.Module {
-    const package_roots = worldSourcePackageRoots(b);
     const source_snapshot = worldSourcePackageSnapshotForRoots(
         b,
-        package_roots,
+        descriptor.package_roots,
         world_transition_oracle_source_excluded_prefix,
     );
     const files = b.addWriteFiles();
@@ -434,10 +544,21 @@ fn worldTransitionOracleSourceClosureModule(
         "pub const Source = struct {\n" ++
             "    path: []const u8,\n" ++
             "    bytes: []const u8,\n" ++
-            "};\n" ++
-            "pub const package_paths = [_][]const u8{\n",
+            "};\n",
     ) catch @panic("oom");
-    for (package_roots) |path| {
+    root_source.print(
+        b.allocator,
+        "pub const package_version = \"{f}\";\n" ++
+            "pub const boundary_package_version = \"{f}\";\n" ++
+            "pub const boundary_package_hash = \"{f}\";\n" ++
+            "pub const package_paths = [_][]const u8{{\n",
+        .{
+            std.zig.fmtString(descriptor.version),
+            std.zig.fmtString(descriptor.boundary_version),
+            std.zig.fmtString(descriptor.boundary_hash),
+        },
+    ) catch @panic("oom");
+    for (descriptor.package_roots) |path| {
         root_source.print(b.allocator, "    \"{f}\",\n", .{std.zig.fmtString(path)}) catch @panic("oom");
     }
     root_source.print(
@@ -478,7 +599,6 @@ const WorldOracleOperationStep = struct {
     emit_prefix: []const u8,
     emit_dir: []const u8,
     source_root: []const u8,
-    coordination_dir: []const u8,
 
     fn create(
         b: *std.Build,
@@ -497,7 +617,6 @@ const WorldOracleOperationStep = struct {
             emit_prefix: []const u8,
             emit_dir: []const u8,
             source_root: []const u8,
-            coordination_dir: []const u8,
         },
     ) *@This() {
         const operation = b.allocator.create(@This()) catch @panic("oom");
@@ -522,7 +641,6 @@ const WorldOracleOperationStep = struct {
             .emit_prefix = b.dupePath(args.emit_prefix),
             .emit_dir = b.dupePath(args.emit_dir),
             .source_root = b.dupePath(args.source_root),
-            .coordination_dir = b.dupePath(args.coordination_dir),
         };
         args.script.addStepDependencies(&operation.step);
         args.publisher.addStepDependencies(&operation.step);
@@ -537,25 +655,59 @@ const WorldOracleOperationStep = struct {
         return root.state != .precheck_unstarted;
     }
 
-    fn acquireCorpusLock(step: *std.Build.Step) !std.Io.File {
-        const operation: *@This() = @fieldParentPtr("step", step);
+    const HeldDestinationLocks = struct {
+        files: [2]?std.Io.File = .{ null, null },
+        len: usize = 0,
+
+        fn close(self: *@This(), io: std.Io) void {
+            while (self.len != 0) {
+                self.len -= 1;
+                self.files[self.len].?.close(io);
+                self.files[self.len] = null;
+            }
+        }
+    };
+
+    fn canonicalDestinationPrefix(
+        step: *std.Build.Step,
+        prefix: []const u8,
+        create_prefix: bool,
+    ) ![]const u8 {
         const io = step.owner.graph.io;
-        try std.Io.Dir.cwd().createDirPath(io, operation.coordination_dir);
-        const lock_path = step.owner.fmt("{s}{c}trusted-corpus.lock", .{
-            operation.coordination_dir,
-            std.fs.path.sep,
-        });
+        if (create_prefix) try std.Io.Dir.cwd().createDirPath(io, prefix);
+        return std.Io.Dir.cwd().realPathFileAlloc(io, prefix, step.owner.allocator) catch |err| {
+            return step.fail("failed to resolve oracle publication destination '{s}': {s}", .{
+                prefix,
+                @errorName(err),
+            });
+        };
+    }
+
+    fn ensureDestinationLockFile(step: *std.Build.Step, lock_path: []const u8) !void {
+        const io = step.owner.graph.io;
+        var file = std.Io.Dir.cwd().createFile(io, lock_path, .{
+            .truncate = false,
+            .exclusive = true,
+        }) catch |err| switch (err) {
+            error.PathAlreadyExists => return,
+            else => |unexpected| return unexpected,
+        };
+        file.close(io);
+    }
+
+    fn acquireDestinationLock(step: *std.Build.Step, lock_path: []const u8) !std.Io.File {
+        const io = step.owner.graph.io;
         const deadline = std.Io.Timestamp.now(io, .awake).addDuration(.fromSeconds(30 * 60));
         while (true) {
-            const file = std.Io.Dir.cwd().createFile(io, lock_path, .{
-                .read = true,
-                .truncate = false,
+            const file = std.Io.Dir.cwd().openFile(io, lock_path, .{
+                .mode = .read_only,
                 .lock = .exclusive,
                 .lock_nonblocking = true,
+                .follow_symlinks = false,
             }) catch |err| switch (err) {
                 error.WouldBlock => {
                     if (std.Io.Timestamp.now(io, .awake).nanoseconds >= deadline.nanoseconds) {
-                        return step.fail("timed out waiting for oracle corpus coordination lock", .{});
+                        return step.fail("timed out waiting for oracle destination lock '{s}'", .{lock_path});
                     }
                     try std.Io.sleep(io, .fromMilliseconds(25), .awake);
                     continue;
@@ -564,6 +716,41 @@ const WorldOracleOperationStep = struct {
             };
             return file;
         }
+    }
+
+    fn acquireDestinationLocks(step: *std.Build.Step, include_emit: bool) !HeldDestinationLocks {
+        const operation: *@This() = @fieldParentPtr("step", step);
+        const b = step.owner;
+        const tracked_prefix = try canonicalDestinationPrefix(step, operation.trusted_prefix, false);
+        const tracked_lock_path = try std.fs.path.join(
+            b.allocator,
+            &.{ tracked_prefix, ".world-transition-oracle.lock" },
+        );
+
+        var lock_paths = [_]?[]const u8{ tracked_lock_path, null };
+        if (include_emit) {
+            const emit_prefix = try canonicalDestinationPrefix(step, operation.emit_prefix, true);
+            if (!std.mem.eql(u8, tracked_prefix, emit_prefix)) {
+                const emit_lock_path = try std.fs.path.join(
+                    b.allocator,
+                    &.{ emit_prefix, ".world-transition-oracle.lock" },
+                );
+                try ensureDestinationLockFile(step, emit_lock_path);
+                lock_paths[1] = emit_lock_path;
+                if (std.mem.lessThan(u8, emit_lock_path, tracked_lock_path)) {
+                    std.mem.swap(?[]const u8, &lock_paths[0], &lock_paths[1]);
+                }
+            }
+        }
+
+        var held: HeldDestinationLocks = .{};
+        errdefer held.close(b.graph.io);
+        for (lock_paths) |lock_path_optional| {
+            const lock_path = lock_path_optional orelse continue;
+            held.files[held.len] = try acquireDestinationLock(step, lock_path);
+            held.len += 1;
+        }
+        return held;
     }
 
     fn runChild(
@@ -603,8 +790,8 @@ const WorldOracleOperationStep = struct {
             return step.fail("oracle operation has no selected public root", .{});
 
         const io = step.owner.graph.io;
-        const corpus_lock = try acquireCorpusLock(step);
-        defer corpus_lock.close(io);
+        var destination_locks = try acquireDestinationLocks(step, emit_selected);
+        defer destination_locks.close(io);
 
         const b = step.owner;
         var argv: std.ArrayList([]const u8) = .empty;
@@ -679,21 +866,6 @@ const WorldOracleOperationStep = struct {
         step.result_cached = false;
     }
 };
-
-fn worldOracleCoordinationDir(b: *std.Build) []const u8 {
-    const canonical_build_root = b.build_root.handle.realPathFileAlloc(
-        b.graph.io,
-        ".",
-        b.allocator,
-    ) catch |err| std.debug.panic("failed to canonicalize World checkout identity: {s}", .{@errorName(err)});
-    var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(canonical_build_root, &digest, .{});
-    const hex = std.fmt.bytesToHex(digest, .lower);
-    return b.graph.global_cache_root.join(
-        b.allocator,
-        &.{ "world-transition-oracle-coordination", &hex },
-    ) catch @panic("oom");
-}
 
 pub fn build(b: *std.Build) void {
     checkWorldSourceTreeBudgetBoundaries();
@@ -927,7 +1099,13 @@ pub fn build(b: *std.Build) void {
     check_world_agent_runtime_artifacts_step.dependOn(&check_world_agent_runtime_artifacts_cmd.step);
 
     const world_image_v1_transition_oracle_dir = "conformance/world-image-v1/v0/world";
-    const world_transition_oracle_source_closure = worldTransitionOracleSourceClosureModule(b, b.graph.host, optimize);
+    const world_oracle_package = worldOraclePackageDescriptor(b);
+    const world_transition_oracle_source_closure = worldTransitionOracleSourceClosureModule(
+        b,
+        b.graph.host,
+        optimize,
+        world_oracle_package,
+    );
     const world_transition_oracle_mod = b.createModule(.{
         .root_source_file = b.path("examples/world_transition_oracle_emit.zig"),
         .target = b.graph.host,
@@ -1052,7 +1230,6 @@ pub fn build(b: *std.Build) void {
             .emit_prefix = world_transition_oracle_emit_prefix,
             .emit_dir = world_transition_oracle_emit_dir,
             .source_root = b.pathFromRoot("."),
-            .coordination_dir = worldOracleCoordinationDir(b),
         },
     );
     world_transition_oracle_operation.step.dependOn(&verify_world_transition_oracle_update_candidates.step);

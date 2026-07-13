@@ -2,12 +2,14 @@
 
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
 
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
+const hostTemporaryDirectory = realpathSync(tmpdir());
 const maxOracleTreeEntries = 4 * 1024;
 const maxOracleTreePathBytes = 4 * 1024 * 1024;
 const maxOracleTreeDepth = 64;
@@ -312,19 +314,14 @@ const candidateAdmissionIdentityDomain = Buffer.from('world.oracle.candidate-adm
 const generatorSourceExcludedPrefix = 'conformance/world-image-v1/v0/world/';
 const args = parseArgs(process.argv.slice(2));
 requireArg(args.snapshotHelper, '--snapshot-helper');
-const packageManifestSnapshot = captureSnapshot(repositoryRoot, {
-  packagePaths: ['build.zig.zon'],
-  allowRootAlias: true,
-});
-const packageManifestProjection = rootPackageProjectionFromZon(
-  strictUtf8Text(packageManifestSnapshot.read('build.zig.zon'), 'build.zig.zon'),
-);
-const sourcePackagePaths = packageManifestProjection.paths;
 const generatorSourceSnapshot = captureSnapshot(repositoryRoot, {
-  packagePaths: sourcePackagePaths,
+  compiledPackageRoots: true,
   excludedPrefix: generatorSourceExcludedPrefix,
   allowRootAlias: true,
 });
+const packageManifestProjection = rootPackageProjectionFromZon(
+  strictUtf8Text(generatorSourceSnapshot.read('build.zig.zon'), 'build.zig.zon'),
+);
 const generatorSourceFiles = generatorSourceSnapshot.files;
 
 const expectedBinaryFamilyPolicy = {
@@ -612,30 +609,41 @@ function strictUtf8Text(bytes, label) {
   }
 }
 
-function packageVersionFromZon(zon) {
-  return zonStringField(zonRootStructBody(zon), 'version', 'root package version');
-}
-
-function packagePathsFromZon(zon) {
-  const paths = zonStringListField(zonRootStructBody(zon), 'paths', 'root package paths');
-  return validatePackagePaths(paths);
-}
-
 function validatePackagePaths(paths) {
   if (paths.length === 0) throw new Error('root package paths must not be empty');
-  const seen = new Set();
-  for (const path of paths) {
+  for (const [index, path] of paths.entries()) {
     validateSourcePackagePath(path);
-    if (seen.has(path)) throw new Error(`duplicate root package path: ${path}`);
-    seen.add(path);
+    for (const previous of paths.slice(0, index)) {
+      const [shorter, longer] = previous.length < path.length ? [previous, path] : [path, previous];
+      if (shorter === longer || (longer.startsWith(shorter) && longer[shorter.length] === '/')) {
+        throw new Error(`overlapping root package paths: ${previous} and ${path}`);
+      }
+    }
   }
   return paths;
 }
 
 function rootPackageProjectionFromZon(zon) {
   const root = zonRootStructBody(zon);
+  assertExactZonStructFields(root, [
+    'name',
+    'version',
+    'fingerprint',
+    'dependencies',
+    'minimum_zig_version',
+    'paths',
+  ], 'root package manifest');
+  if (zonEnumField(root, 'name', 'root package name') !== 'world') {
+    throw new Error('root package name must be .world');
+  }
+  zonUnsignedIntegerField(root, 'fingerprint', 'root package fingerprint');
+  if (zonStringField(root, 'minimum_zig_version', 'minimum Zig version').length === 0) {
+    throw new Error('minimum Zig version must not be empty');
+  }
+  const version = zonStringField(root, 'version', 'root package version');
+  if (version.length === 0) throw new Error('root package version must not be empty');
   return {
-    version: zonStringField(root, 'version', 'root package version'),
+    version,
     paths: validatePackagePaths(zonStringListField(root, 'paths', 'root package paths')),
     boundary: boundaryPackageFromRootBody(root),
   };
@@ -663,106 +671,61 @@ function testPackageVersionProjection() {
   }
   if (!invalidManifestUtf8Rejected) throw new Error('invalid UTF-8 build.zig.zon accepted');
 
-  const zon = `.{
+  const validZon = ` .{
     .name = .world,
-    // owner field
-    .version   =   "1.2.3", // retained provenance
-    .url = "https://example.invalid/archive.tar.gz",
-  }`;
-  assertEqual(packageVersionFromZon(zon), '1.2.3', 'commented package version projection');
-  assertEqual(packageVersionFromZon('.{ .version = "2.0.0", }'), '2.0.0', 'inline package version projection');
-
-  const dependencyZon = `.{
+    .version = "1.2.3",
+    .fingerprint = 0x1234_abcd,
     .dependencies = .{
       .boundary = .{
-        // selected package owner
         .url = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz",
         .hash = "boundary-1.2.3-fixture",
       },
     },
-  }`;
-  const boundaryPackage = boundaryPackageFromZon(dependencyZon);
-  assertEqual(boundaryPackage.version, '1.2.3', 'Boundary dependency version projection');
-  assertEqual(boundaryPackage.hash, 'boundary-1.2.3-fixture', 'Boundary dependency hash projection');
-
-  const escapedDependencyZon = `.{
-    .@"dependencies" = .{
-      .@"boundary" = .{
-        .@"url" = "https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz",
-        .@"hash" = "boundary-1.2.3-fixture"
-      }
-    },
-  }`;
+    .minimum_zig_version = "0.16.0",
+    .paths = .{ "README.md", "src/\\xC3\\xA9" },
+  }`.trim();
+  const projection = rootPackageProjectionFromZon(validZon);
+  assertEqual(projection.version, '1.2.3', 'strict package version');
+  assertJsonEqual(projection.paths, ['README.md', 'src/é'], 'strict package paths');
   assertJsonEqual(
-    boundaryPackageFromZon(escapedDependencyZon),
-    boundaryPackage,
-    'escaped Boundary dependency without trailing commas',
+    projection.boundary,
+    { version: '1.2.3', hash: 'boundary-1.2.3-fixture' },
+    'strict Boundary dependency',
   );
 
-  const multilineZon = String.raw`.{
-    .note =
-        \\literal { } // not a comment
+  const invalidCases = [
+    [validZon.replace('.name = .world', '.name = .other'), 'root package name must be .world'],
+    [validZon.replace('.fingerprint = 0x1234_abcd', '.fingerprint = "1234"'), 'expected root package fingerprint unsigned integer'],
+    [validZon.replace('.version = "1.2.3"', '.version = ""'), 'root package version must not be empty'],
+    [validZon.replace('.minimum_zig_version = "0.16.0"', '.minimum_zig_version = 16'), 'expected string minimum Zig version'],
+    [validZon.replace('.version = "1.2.3",', '.version = "1.2.3",\n    .unknown = true,'), 'root package manifest fields'],
+    [validZon.replace('.fingerprint = 0x1234_abcd,', '.fingerprint = 0x1234_abcd,\n    .fingerprint = 1,'), 'duplicate ZON struct field: fingerprint'],
+    [validZon.replace('.boundary = .{', '.extra = .{},\n      .boundary = .{'), 'root package dependencies fields'],
+    [validZon.replace('.hash = "boundary-1.2.3-fixture",', '.hash = "boundary-1.2.3-fixture",\n        .extra = true,'), 'Boundary package dependency fields'],
+    [validZon.replace('.paths = .{ "README.md", "src/\\xC3\\xA9" }', '.paths = .{}'), 'root package paths must not be empty'],
+    [validZon.replace('"README.md", "src/\\xC3\\xA9"', '"src", "src/child"'), 'overlapping root package paths'],
+    [validZon.replace('v1.2.3.tar.gz', 'v1.2.4.tar.gz'), 'Boundary dependency URL/hash version mismatch'],
+  ];
+  for (const [invalid, expectedMessage] of invalidCases) {
+    let rejected = false;
+    try {
+      rootPackageProjectionFromZon(invalid);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith(expectedMessage)) throw error;
+      rejected = true;
+    }
+    if (!rejected) throw new Error(`invalid root package manifest accepted: ${expectedMessage}`);
+  }
 
-        \\.version = "not a field"
-    ,
-    .version =
-        \\1.2.3
-    ,
-    .paths = .{
-        \\README.md
-    ,
-        "src",
-    },
-    .dependencies = .{
-        .boundary = .{
-            .url =
-                \\https://github.com/tkersey/boundary/archive/refs/tags/v1.2.3.tar.gz
-            ,
-            .hash =
-                \\boundary-1.2.3-fixture
-            ,
-        },
-    },
-  }`;
-  assertEqual(packageVersionFromZon(multilineZon), '1.2.3', 'multiline package version projection');
-  assertJsonEqual(
-    packagePathsFromZon(multilineZon),
-    ['README.md', 'src'],
-    'multiline package paths projection',
-  );
-  assertJsonEqual(
-    boundaryPackageFromZon(multilineZon),
-    boundaryPackage,
-    'multiline Boundary dependency projection',
-  );
-  assertJsonEqual(
-    packagePathsFromZon(String.raw`.{ .paths = .{ "src/\xC3\xA9" } }`),
-    ['src/é'],
-    'hexadecimal byte escape package path',
-  );
-  assertJsonEqual(
-    packagePathsFromZon(String.raw`.{ .paths = .{ "\xEF\xBB\xBFsrc" } }`),
-    ['\uFEFFsrc'],
-    'leading UTF-8 byte-order mark path',
-  );
+  const invalidUtf8Path = validZon.replace('"src/\\xC3\\xA9"', '"src/\\xFF"');
   let invalidUtf8Rejected = false;
   try {
-    packagePathsFromZon(String.raw`.{ .paths = .{ "src/\xFF" } }`);
+    rootPackageProjectionFromZon(invalidUtf8Path);
   } catch (error) {
     if (!(error instanceof Error) || error.message !== 'invalid UTF-8 in root package paths item') throw error;
     invalidUtf8Rejected = true;
   }
   if (!invalidUtf8Rejected) throw new Error('invalid UTF-8 package path accepted');
-
-  try {
-    boundaryPackageFromZon(
-      dependencyZon.replace('v1.2.3.tar.gz', 'v1.2.4.tar.gz'),
-    );
-  } catch (error) {
-    if (error instanceof Error && error.message === 'Boundary dependency URL/hash version mismatch') return;
-    throw error;
-  }
-  throw new Error('Boundary dependency URL/hash version mismatch accepted');
 }
 
 function rootPackageVersion() {
@@ -1157,14 +1120,11 @@ function validateChecksums(root, checksumText, expectedPaths, read) {
   }
 }
 
-function boundaryPackageFromZon(zon) {
-  const root = zonRootStructBody(zon);
-  return boundaryPackageFromRootBody(root);
-}
-
 function boundaryPackageFromRootBody(root) {
   const dependencies = zonStructFieldBody(root, 'dependencies', '.dependencies');
+  assertExactZonStructFields(dependencies, ['boundary'], 'root package dependencies');
   const body = zonStructFieldBody(dependencies, 'boundary', '.dependencies.boundary');
+  assertExactZonStructFields(body, ['url', 'hash'], 'Boundary package dependency');
   const url = zonStringField(body, 'url', '.boundary.url');
   const hash = zonStringField(body, 'hash', '.boundary.hash');
   const urlPrefix = 'https://github.com/tkersey/boundary/archive/refs/tags/v';
@@ -1239,6 +1199,56 @@ function zonStringListField(body, field, label) {
     index += 1;
   }
   return items;
+}
+
+function zonEnumField(body, field, label) {
+  const value = zonFieldValue(body, field, label);
+  const parsed = zonFieldNameAt(body, zonSkipTrivia(body, value.start));
+  if (zonSkipTrivia(body, parsed.end) !== value.end) throw new Error(`trailing ${label} value tokens`);
+  return parsed.value;
+}
+
+function zonUnsignedIntegerField(body, field, label) {
+  const value = zonFieldValue(body, field, label);
+  const start = zonSkipTrivia(body, value.start);
+  const match = /^(?:0x[0-9A-Fa-f_]+|[0-9][0-9_]*)/.exec(body.slice(start));
+  if (match === null || zonSkipTrivia(body, start + match[0].length) !== value.end) {
+    throw new Error(`expected ${label} unsigned integer`);
+  }
+  const canonical = match[0].replaceAll('_', '');
+  const parsed = BigInt(canonical);
+  if (parsed > 0xffffffffffffffffn) throw new Error(`${label} exceeds u64`);
+  return parsed;
+}
+
+function zonStructFieldNames(source) {
+  const names = [];
+  const seen = new Set();
+  let index = 0;
+  while (true) {
+    index = zonSkipTrivia(source, index);
+    if (index === source.length) break;
+    const name = zonFieldNameAt(source, index);
+    if (seen.has(name.value)) throw new Error(`duplicate ZON struct field: ${name.value}`);
+    seen.add(name.value);
+    names.push(name.value);
+    index = zonSkipTrivia(source, name.end);
+    if (source[index] !== '=') throw new Error(`expected assignment for ZON field ${name.value}`);
+    const valueStart = zonSkipTrivia(source, index + 1);
+    const valueEnd = zonValueEnd(source, valueStart);
+    index = zonSkipTrivia(source, valueEnd);
+    if (index === source.length) break;
+    if (source[index] !== ',') throw new Error(`expected comma after ZON field ${name.value}`);
+    index += 1;
+  }
+  return names;
+}
+
+function assertExactZonStructFields(source, expected, label) {
+  const actual = zonStructFieldNames(source);
+  if (actual.length !== expected.length || expected.some((field) => !actual.includes(field))) {
+    throw new Error(`${label} fields: expected ${expected.join(',')}; got ${actual.join(',')}`);
+  }
 }
 
 function zonFieldValue(source, field, label) {
@@ -1788,7 +1798,7 @@ function testTranscriptClaimAdmission() {
 }
 
 function testCandidateSnapshotIdentity() {
-  const root = mkdtempSync(join(repositoryRoot, '.zig-cache', 'world-oracle-candidate-snapshot-'));
+  const root = mkdtempSync(join(hostTemporaryDirectory, 'world-oracle-candidate-snapshot-'));
   try {
     writeFileSync(join(root, 'manifest.json'), 'admitted manifest\n');
     writeFileSync(join(root, 'checksums.sha256'), 'admitted checksums\n');
@@ -2069,6 +2079,10 @@ function decodeOracleSnapshot(encoded, label = 'oracle snapshot') {
 function captureSnapshot(root, options = {}) {
   const argv = ['snapshot', '--root', resolve(root)];
   if (options.allowRootAlias === true) argv.push('--allow-root-alias');
+  if (options.compiledPackageRoots === true) argv.push('--compiled-package-roots');
+  if (options.compiledPackageRoots === true && (options.packagePaths?.length ?? 0) !== 0) {
+    throw new Error('compiled package roots and explicit package roots are mutually exclusive');
+  }
   for (const packagePath of options.packagePaths ?? []) {
     validateSourcePackagePath(packagePath);
     argv.push('--package-root', packagePath);
@@ -2103,7 +2117,7 @@ function captureCorpus(root) {
 function testRootSymlinkRejection() {
   if (process.platform === 'win32') return;
 
-  const temporaryRoot = mkdtempSync(join(repositoryRoot, '.zig-cache', 'world-oracle-root-symlink-'));
+  const temporaryRoot = mkdtempSync(join(hostTemporaryDirectory, 'world-oracle-root-symlink-'));
   try {
     const realParent = join(temporaryRoot, 'real-parent');
     const realCorpus = join(realParent, 'corpus');
