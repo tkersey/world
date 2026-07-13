@@ -2,13 +2,15 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TextDecoder } from 'node:util';
 
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url));
+const maxOracleTreeFiles = 4 * 1024;
+const maxOracleTreePathBytes = 4 * 1024 * 1024;
 
 const expectedCases = [
   'one-port-execution',
@@ -1546,11 +1548,34 @@ function testChecksumInventoryAdmission() {
     if (!(error instanceof Error) || !error.message.startsWith('checksum inventory')) throw error;
     if (error.message.includes(outsideDigest)) throw new Error('outside-root digest leaked before checksum admission');
     testCandidateSnapshotIdentity();
+    testOracleTreePathBudgets();
     testSemanticTextAdmission();
     testTranscriptClaimAdmission();
     return;
   }
   throw new Error('checksum traversal path accepted');
+}
+
+function testOracleTreePathBudgets() {
+  assertEqual(
+    accountOracleTreePath(maxOracleTreeFiles - 1, maxOracleTreePathBytes - 1, 1),
+    maxOracleTreePathBytes,
+    'oracle tree path budget boundary',
+  );
+  for (const [fileCount, pathBytes, nextPathBytes] of [
+    [maxOracleTreeFiles, 0, 1],
+    [0, maxOracleTreePathBytes, 1],
+    [0, Number.MAX_SAFE_INTEGER, 1],
+  ]) {
+    let rejected = false;
+    try {
+      accountOracleTreePath(fileCount, pathBytes, nextPathBytes);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'oracle tree path budget exceeded') throw error;
+      rejected = true;
+    }
+    if (!rejected) throw new Error('oracle tree path budget overflow accepted');
+  }
 }
 
 function testSemanticTextAdmission() {
@@ -1563,6 +1588,18 @@ function testSemanticTextAdmission() {
     invalidRejected = true;
   }
   if (!invalidRejected) throw new Error('malformed UTF-8 manifest accepted');
+
+  let textArtifactRejected = false;
+  try {
+    validateSemanticTextArtifacts(
+      ['artifacts/states/capacity-exhaustion.after.txt'],
+      () => Buffer.from([0xff]),
+    );
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'invalid UTF-8 in artifacts/states/capacity-exhaustion.after.txt') throw error;
+    textArtifactRejected = true;
+  }
+  if (!textArtifactRejected) throw new Error('malformed UTF-8 text artifact accepted');
 
   let bomRejected = false;
   try {
@@ -1675,6 +1712,7 @@ function validateBinaryFamilies(contentFiles, manifest, read) {
 
   const textArtifacts = contentFiles.filter((path) => path.startsWith('artifacts/') && path.endsWith('.txt'));
   assertArrayEqual(textArtifacts, ['artifacts/states/capacity-exhaustion.after.txt'], 'text artifact inventory');
+  validateSemanticTextArtifacts(textArtifacts, read);
   const binaryArtifacts = contentFiles.filter((path) => path.startsWith('artifacts/') && !path.endsWith('.txt'));
   assertEqual(
     binaryArtifacts.length,
@@ -1695,6 +1733,10 @@ function validateBinaryFamilies(contentFiles, manifest, read) {
   for (const family of expectedBinaryFamilies) {
     assertEqual(familyCounts.get(family.id), family.expected_count, `binary family count ${family.id}`);
   }
+}
+
+function validateSemanticTextArtifacts(paths, read) {
+  for (const path of paths) decodeSemanticUtf8(read(path), path);
 }
 
 function validateBinaryFamilyHeader(path, family, read) {
@@ -1769,9 +1811,19 @@ function listFiles(root) {
   const inspectedRoot = resolve(root);
   if (!lstatSync(inspectedRoot).isDirectory()) throw new Error(`not a directory: ${root}`);
   const files = [];
-  walk(inspectedRoot, inspectedRoot, files);
+  const budget = { pathBytes: 0 };
+  walk(inspectedRoot, inspectedRoot, files, budget);
   files.sort(compareUtf8Bytes);
   return files;
+}
+
+function accountOracleTreePath(fileCount, totalPathBytes, nextPathBytes) {
+  if (fileCount >= maxOracleTreeFiles) throw new Error('oracle tree path budget exceeded');
+  const nextTotal = totalPathBytes + nextPathBytes;
+  if (!Number.isSafeInteger(nextTotal) || nextTotal > maxOracleTreePathBytes) {
+    throw new Error('oracle tree path budget exceeded');
+  }
+  return nextTotal;
 }
 
 function captureCorpus(root) {
@@ -1844,14 +1896,29 @@ function expectRootRejected(root) {
   throw new Error(`symlinked corpus root accepted: ${root}`);
 }
 
-function walk(root, current, files) {
-  const entries = readdirSync(current, { withFileTypes: true });
-  entries.sort((left, right) => compareUtf8Bytes(left.name, right.name));
-  for (const entry of entries) {
-    const path = join(current, entry.name);
-    if (entry.isDirectory()) walk(root, path, files);
-    else if (entry.isFile()) files.push(relative(root, path).split(sep).join('/'));
-    else throw new Error(`unsupported filesystem entry: ${path}`);
+function walk(root, current, files, budget) {
+  const directory = opendirSync(current);
+  try {
+    for (;;) {
+      const entry = directory.readSync();
+      if (entry === null) return;
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(root, path, files, budget);
+      } else if (entry.isFile()) {
+        const portablePath = relative(root, path).split(sep).join('/');
+        budget.pathBytes = accountOracleTreePath(
+          files.length,
+          budget.pathBytes,
+          Buffer.byteLength(portablePath, 'utf8'),
+        );
+        files.push(portablePath);
+      } else {
+        throw new Error(`unsupported filesystem entry: ${path}`);
+      }
+    }
+  } finally {
+    directory.closeSync();
   }
 }
 

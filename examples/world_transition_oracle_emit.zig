@@ -92,6 +92,8 @@ const generator_source_identity_algorithm = "sha256-domain-u32le-path-u64le-cano
 const generator_source_normalization = "crlf-to-lf;bare-cr-reject";
 const generator_source_identity_domain = "world.oracle.generator-source-identity.v1\x00";
 const candidate_admission_identity_domain = "world.oracle.candidate-admission.v1\x00";
+const max_oracle_tree_files: usize = 4 * 1024;
+const max_oracle_tree_path_bytes: usize = 4 * 1024 * 1024;
 const compiled_generator_sources = world_transition_oracle_sources.sources;
 const generator_source_package_paths = world_transition_oracle_sources.package_paths;
 const generator_source_excluded_prefix = world_transition_oracle_sources.excluded_prefix;
@@ -2197,6 +2199,32 @@ fn mutablePathLessThan(_: void, lhs: []u8, rhs: []u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
 }
 
+fn accountOracleTreePath(file_count: usize, total_path_bytes: usize, next_path_bytes: usize) !usize {
+    if (file_count >= max_oracle_tree_files) return error.CandidateCorpusTooLarge;
+    const next_total = std.math.add(usize, total_path_bytes, next_path_bytes) catch return error.CandidateCorpusTooLarge;
+    if (next_total > max_oracle_tree_path_bytes) return error.CandidateCorpusTooLarge;
+    return next_total;
+}
+
+test "oracle tree path budgets reject before path allocation" {
+    try std.testing.expectEqual(
+        max_oracle_tree_path_bytes,
+        try accountOracleTreePath(max_oracle_tree_files - 1, max_oracle_tree_path_bytes - 1, 1),
+    );
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        accountOracleTreePath(max_oracle_tree_files, 0, 1),
+    );
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        accountOracleTreePath(0, max_oracle_tree_path_bytes, 1),
+    );
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        accountOracleTreePath(0, std.math.maxInt(usize), 1),
+    );
+}
+
 fn listFiles(io: std.Io, allocator: std.mem.Allocator, root: std.Io.Dir) !OwnedPaths {
     var walker = try root.walk(allocator);
     defer walker.deinit();
@@ -2205,9 +2233,11 @@ fn listFiles(io: std.Io, allocator: std.mem.Allocator, root: std.Io.Dir) !OwnedP
         for (items.items) |item| allocator.free(item);
         items.deinit(allocator);
     }
+    var total_path_bytes: usize = 0;
     while (try walker.next(io)) |entry| {
         switch (entry.kind) {
             .file => {
+                total_path_bytes = try accountOracleTreePath(items.items.len, total_path_bytes, entry.path.len);
                 const portable_path = try allocator.dupe(u8, entry.path);
                 errdefer allocator.free(portable_path);
                 canonicalizePathSeparators(portable_path, std.fs.path.sep);
