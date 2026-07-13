@@ -1965,7 +1965,7 @@ function encodeOracleSnapshotForTest(entries, options = {}) {
     const pathBytes = entry.pathBytes ?? Buffer.from(entry.path, 'utf8');
     const content = entry.bytes ?? Buffer.alloc(0);
     const entryHeader = Buffer.alloc(12);
-    entryHeader.writeUInt32LE(pathBytes.length, 0);
+    entryHeader.writeUInt32LE(entry.pathLength ?? pathBytes.length, 0);
     entryHeader.writeBigUInt64LE(entry.contentLength ?? BigInt(content.length), 4);
     parts.push(entryHeader, pathBytes, content);
   }
@@ -1976,6 +1976,25 @@ function encodeOracleSnapshotForTest(entries, options = {}) {
 function testOracleSnapshotDecoder() {
   const valid = encodeOracleSnapshotForTest([{ path: 'a.txt', bytes: Buffer.from('a') }]);
   assertEqual(decodeOracleSnapshot(valid, 'fixture').read('a.txt', 'utf8'), 'a', 'snapshot decoder fixture');
+  const oversizedPathDeclaration = encodeOracleSnapshotForTest([{
+    pathBytes: Buffer.alloc(0),
+    pathLength: maxOracleTreePathBytes + 1,
+  }]);
+  let oversizedPathRejected = false;
+  try {
+    decodeOracleSnapshot(oversizedPathDeclaration, 'oversized path declaration');
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === 'oversized path declaration: oracle tree path budget exceeded'
+    ) {
+      // The declared path is rejected before its absent bytes can be sliced or decoded.
+      oversizedPathRejected = true;
+    } else {
+      throw error;
+    }
+  }
+  if (!oversizedPathRejected) throw new Error('oversized snapshot path declaration accepted');
   const invalidMagic = Buffer.from(valid);
   invalidMagic[0] ^= 0xff;
   const malformed = [
@@ -2046,6 +2065,9 @@ function decodeOracleSnapshot(encoded, label = 'oracle snapshot') {
       throw new Error(`${label}: oracle file content budget exceeded`);
     }
     const contentLength = Number(contentLengthBig);
+    if (pathLength > maxOracleTreePathBytes - budget.pathBytes) {
+      throw new Error(`${label}: oracle tree path budget exceeded`);
+    }
     const pathBytes = take(pathLength, `entry ${index} path`);
     let path;
     try {

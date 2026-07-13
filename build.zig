@@ -378,6 +378,67 @@ fn worldSourcePackageSnapshotForRoots(
     return .{ .files = worldSourcePackageFilesForRoots(b, package_roots, excluded_prefix, .snapshot) };
 }
 
+const WorldSourceRootAuthority = struct {
+    parent: std.Io.Dir,
+    basename: []const u8,
+    stat: std.Io.File.Stat,
+
+    fn close(self: *@This(), io: std.Io) void {
+        self.parent.close(io);
+        self.* = undefined;
+    }
+};
+
+fn openWorldSourceRootAuthority(
+    io: std.Io,
+    build_root: std.Io.Dir,
+    portable_root: []const u8,
+) !WorldSourceRootAuthority {
+    var parent = try build_root.openDir(io, ".", .{
+        .follow_symlinks = false,
+        .iterate = true,
+    });
+    errdefer parent.close(io);
+
+    var components = std.mem.splitScalar(u8, portable_root, '/');
+    var basename = components.next() orelse return error.InvalidWorldSourcePackageRoot;
+    while (components.next()) |next| {
+        const child = try parent.openDir(io, basename, .{
+            .follow_symlinks = false,
+            .iterate = true,
+        });
+        parent.close(io);
+        parent = child;
+        basename = next;
+    }
+
+    return .{
+        .parent = parent,
+        .basename = basename,
+        .stat = try parent.statFile(io, basename, .{ .follow_symlinks = false }),
+    };
+}
+
+test "World source package root rejects a symlink ancestor" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "real/root");
+    try tmp.dir.writeFile(io, .{ .sub_path = "real/root/source.zig", .data = "source\n" });
+    try tmp.dir.symLink(io, "real", "linked", .{});
+
+    var real = try openWorldSourceRootAuthority(io, tmp.dir, "real/root");
+    defer real.close(io);
+    try std.testing.expectEqual(std.Io.File.Kind.directory, real.stat.kind);
+
+    if (openWorldSourceRootAuthority(io, tmp.dir, "linked/root")) |escaped| {
+        var unexpected = escaped;
+        unexpected.close(io);
+        return error.TestUnexpectedResult;
+    } else |_| {}
+}
+
 fn worldSourcePackageFilesForRoots(
     b: *std.Build,
     package_roots: []const []const u8,
@@ -391,10 +452,11 @@ fn worldSourcePackageFilesForRoots(
     for (package_roots) |root| {
         const contribution_start = source_files.items.len;
         accountWorldSourceEntry(&budget, root, null);
-        const root_stat = b.build_root.handle.statFile(b.graph.io, root, .{ .follow_symlinks = false }) catch |err| {
+        var root_authority = openWorldSourceRootAuthority(b.graph.io, b.build_root.handle, root) catch |err| {
             std.debug.panic("failed to inspect source package path '{s}': {s}", .{ root, @errorName(err) });
         };
-        switch (root_stat.kind) {
+        defer root_authority.close(b.graph.io);
+        switch (root_authority.stat.kind) {
             .file => {
                 const excluded = if (excluded_prefix) |prefix|
                     std.mem.startsWith(u8, root, prefix)
@@ -404,14 +466,14 @@ fn worldSourcePackageFilesForRoots(
                     source_files.append(b.allocator, .{
                         .path = b.dupe(root),
                         .bytes = if (materialization == .snapshot)
-                            captureWorldSourceFile(b, b.build_root.handle, root, root, &budget)
+                            captureWorldSourceFile(b, root_authority.parent, root_authority.basename, root, &budget)
                         else
                             null,
                     }) catch @panic("oom");
                 }
             },
             .directory => {
-                var dir = b.build_root.handle.openDir(b.graph.io, root, .{
+                var dir = root_authority.parent.openDir(b.graph.io, root_authority.basename, .{
                     .follow_symlinks = false,
                     .iterate = true,
                 }) catch |err| {
@@ -597,8 +659,7 @@ const WorldOracleOperationStep = struct {
     zig_version: []const u8,
     trusted_prefix: []const u8,
     emit_prefix: []const u8,
-    emit_dir: []const u8,
-    source_root: []const u8,
+    corpus_subdir: []const u8,
 
     fn create(
         b: *std.Build,
@@ -615,8 +676,7 @@ const WorldOracleOperationStep = struct {
             zig_version: []const u8,
             trusted_prefix: []const u8,
             emit_prefix: []const u8,
-            emit_dir: []const u8,
-            source_root: []const u8,
+            corpus_subdir: []const u8,
         },
     ) *@This() {
         const operation = b.allocator.create(@This()) catch @panic("oom");
@@ -639,8 +699,7 @@ const WorldOracleOperationStep = struct {
             .zig_version = b.dupe(args.zig_version),
             .trusted_prefix = b.dupePath(args.trusted_prefix),
             .emit_prefix = b.dupePath(args.emit_prefix),
-            .emit_dir = b.dupePath(args.emit_dir),
-            .source_root = b.dupePath(args.source_root),
+            .corpus_subdir = b.dupePath(args.corpus_subdir),
         };
         args.script.addStepDependencies(&operation.step);
         args.publisher.addStepDependencies(&operation.step);
@@ -658,6 +717,8 @@ const WorldOracleOperationStep = struct {
     const HeldDestinationLocks = struct {
         files: [2]?std.Io.File = .{ null, null },
         len: usize = 0,
+        tracked_prefix: []const u8,
+        emit_prefix: ?[]const u8 = null,
 
         fn close(self: *@This(), io: std.Io) void {
             while (self.len != 0) {
@@ -727,9 +788,11 @@ const WorldOracleOperationStep = struct {
             &.{ tracked_prefix, ".world-transition-oracle.lock" },
         );
 
+        var held: HeldDestinationLocks = .{ .tracked_prefix = tracked_prefix };
         var lock_paths = [_]?[]const u8{ tracked_lock_path, null };
         if (include_emit) {
             const emit_prefix = try canonicalDestinationPrefix(step, operation.emit_prefix, true);
+            held.emit_prefix = emit_prefix;
             if (!std.mem.eql(u8, tracked_prefix, emit_prefix)) {
                 const emit_lock_path = try std.fs.path.join(
                     b.allocator,
@@ -743,7 +806,6 @@ const WorldOracleOperationStep = struct {
             }
         }
 
-        var held: HeldDestinationLocks = .{};
         errdefer held.close(b.graph.io);
         for (lock_paths) |lock_path_optional| {
             const lock_path = lock_path_optional orelse continue;
@@ -794,6 +856,18 @@ const WorldOracleOperationStep = struct {
         defer destination_locks.close(io);
 
         const b = step.owner;
+        const trusted_dir = try std.fs.path.join(
+            b.allocator,
+            &.{ destination_locks.tracked_prefix, operation.corpus_subdir },
+        );
+        const emit_prefix = if (emit_selected)
+            destination_locks.emit_prefix orelse return step.fail("selected oracle emit has no canonical destination", .{})
+        else
+            null;
+        const emit_dir = if (emit_prefix) |prefix|
+            try std.fs.path.join(b.allocator, &.{ prefix, operation.corpus_subdir })
+        else
+            null;
         var argv: std.ArrayList([]const u8) = .empty;
         defer argv.deinit(options.gpa);
         try argv.appendSlice(options.gpa, &.{
@@ -804,7 +878,7 @@ const WorldOracleOperationStep = struct {
             "--operation",
             selected,
             "--expected",
-            operation.expected.getPath2(b, step),
+            trusted_dir,
             "--first",
             operation.first.getPath2(b, step),
             "--second",
@@ -825,9 +899,9 @@ const WorldOracleOperationStep = struct {
                 "--admission-digest",
                 operation.admission_digest.getPath2(b, step),
                 "--trusted-prefix",
-                operation.trusted_prefix,
+                destination_locks.tracked_prefix,
                 "--source-root",
-                operation.source_root,
+                destination_locks.tracked_prefix,
             };
             try runChild(step, options, &publish_argv);
         }
@@ -841,9 +915,9 @@ const WorldOracleOperationStep = struct {
                 "--admission-digest",
                 operation.admission_digest.getPath2(b, step),
                 "--trusted-prefix",
-                operation.emit_prefix,
+                emit_prefix.?,
                 "--source-root",
-                operation.source_root,
+                destination_locks.tracked_prefix,
             };
             try runChild(step, options, &publish_argv);
 
@@ -853,9 +927,9 @@ const WorldOracleOperationStep = struct {
                 "--mode",
                 "verify",
                 "--expected",
-                operation.expected.getPath2(b, step),
+                trusted_dir,
                 "--actual",
-                operation.emit_dir,
+                emit_dir.?,
                 "--zig-version",
                 operation.zig_version,
                 "--snapshot-helper",
@@ -1203,9 +1277,6 @@ pub fn build(b: *std.Build) void {
         "check-world-image-v1-transition-oracle",
         "Check deterministic exact World Image v1 transition oracle bytes.",
     );
-    const world_transition_oracle_emit_dir = b.pathFromRoot(
-        b.getInstallPath(.prefix, "conformance/world-image-v1/v0/world"),
-    );
     const world_transition_oracle_emit_prefix = b.pathFromRoot(
         b.getInstallPath(.prefix, ""),
     );
@@ -1213,6 +1284,14 @@ pub fn build(b: *std.Build) void {
         "emit-world-image-v1-transition-oracle",
         "Emit the verified World Image v1 transition oracle under zig-out.",
     );
+    const world_build_source_authority_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+        }),
+    });
+    const run_world_build_source_authority_tests = b.addRunArtifact(world_build_source_authority_tests);
     const world_transition_oracle_operation = WorldOracleOperationStep.create(
         b,
         update_world_transition_oracle_step,
@@ -1228,8 +1307,7 @@ pub fn build(b: *std.Build) void {
             .zig_version = builtin.zig_version_string,
             .trusted_prefix = b.pathFromRoot("."),
             .emit_prefix = world_transition_oracle_emit_prefix,
-            .emit_dir = world_transition_oracle_emit_dir,
-            .source_root = b.pathFromRoot("."),
+            .corpus_subdir = world_image_v1_transition_oracle_dir,
         },
     );
     world_transition_oracle_operation.step.dependOn(&verify_world_transition_oracle_update_candidates.step);
@@ -1237,6 +1315,7 @@ pub fn build(b: *std.Build) void {
     world_transition_oracle_operation.step.dependOn(&check_world_transition_oracle_source_identity.step);
     world_transition_oracle_operation.step.dependOn(&check_world_transition_oracle_checksum_inventory.step);
     world_transition_oracle_operation.step.dependOn(&check_world_transition_oracle_foreign_cwd.step);
+    world_transition_oracle_operation.step.dependOn(&run_world_build_source_authority_tests.step);
     world_transition_oracle_operation.step.dependOn(&run_world_transition_oracle_tests.step);
     update_world_transition_oracle_step.dependOn(&world_transition_oracle_operation.step);
     check_world_transition_oracle_step.dependOn(&world_transition_oracle_operation.step);
