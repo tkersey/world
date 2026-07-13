@@ -95,6 +95,8 @@ const candidate_admission_identity_domain = "world.oracle.candidate-admission.v1
 const max_oracle_tree_entries: usize = 4 * 1024;
 const max_oracle_tree_path_bytes: usize = 4 * 1024 * 1024;
 const max_oracle_tree_depth: usize = 64;
+const max_oracle_file_bytes: usize = 64 * 1024 * 1024;
+const max_oracle_corpus_bytes: usize = 256 * 1024 * 1024;
 const max_oracle_publication_parents: usize = 512;
 const compiled_generator_sources = world_transition_oracle_sources.sources;
 const generator_source_package_paths = world_transition_oracle_sources.package_paths;
@@ -546,6 +548,88 @@ const CandidateSnapshot = struct {
     }
 };
 
+fn admittedOracleFileSize(total_bytes: usize, stat_size: u64) !usize {
+    if (total_bytes > max_oracle_corpus_bytes) return error.CandidateCorpusTooLarge;
+    const remaining_bytes = max_oracle_corpus_bytes - total_bytes;
+    if (stat_size > max_oracle_file_bytes or stat_size > remaining_bytes or stat_size > std.math.maxInt(usize)) {
+        return error.CandidateCorpusTooLarge;
+    }
+    return @intCast(stat_size);
+}
+
+fn readOracleFileAtAdmittedSize(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    file: std.Io.File,
+    admitted_size: usize,
+) ![]u8 {
+    var read_buffer: [4096]u8 = undefined;
+    var reader = file.reader(io, &read_buffer);
+    const bytes = try allocator.alloc(u8, admitted_size);
+    errdefer allocator.free(bytes);
+    const actual_size = try reader.interface.readSliceShort(bytes);
+    if (actual_size != bytes.len) return allocator.realloc(bytes, actual_size);
+    _ = reader.interface.takeByte() catch |err| switch (err) {
+        error.EndOfStream => return bytes,
+        else => |unexpected| return unexpected,
+    };
+    return error.CandidateCorpusTooLarge;
+}
+
+fn readBoundedOracleFile(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    file: std.Io.File,
+    total_bytes: usize,
+) ![]u8 {
+    const stat = try file.stat(io);
+    if (stat.kind != .file) return error.InvalidCandidateEntry;
+    const admitted_size = try admittedOracleFileSize(total_bytes, stat.size);
+    return readOracleFileAtAdmittedSize(io, allocator, file, admitted_size);
+}
+
+test "candidate content admission applies exact and remaining aggregate bounds before allocation" {
+    try std.testing.expectEqual(max_oracle_file_bytes, try admittedOracleFileSize(0, max_oracle_file_bytes));
+    try std.testing.expectEqual(1, try admittedOracleFileSize(max_oracle_corpus_bytes - 1, 1));
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        admittedOracleFileSize(0, max_oracle_file_bytes + 1),
+    );
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        admittedOracleFileSize(max_oracle_corpus_bytes - 1, 2),
+    );
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        admittedOracleFileSize(max_oracle_corpus_bytes, 1),
+    );
+}
+
+test "candidate content capture rejects growth and returns exact shrunken bytes" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "candidate.bin", .data = "four" });
+    var file = try tmp.dir.openFile(io, "candidate.bin", .{ .mode = .read_only });
+    defer file.close(io);
+    try std.testing.expectError(
+        error.CandidateCorpusTooLarge,
+        readOracleFileAtAdmittedSize(io, std.testing.allocator, file, 3),
+    );
+
+    var exact_file = try tmp.dir.openFile(io, "candidate.bin", .{ .mode = .read_only });
+    defer exact_file.close(io);
+    const exact = try readOracleFileAtAdmittedSize(io, std.testing.allocator, exact_file, 4);
+    defer std.testing.allocator.free(exact);
+    try std.testing.expectEqualStrings("four", exact);
+
+    var short_file = try tmp.dir.openFile(io, "candidate.bin", .{ .mode = .read_only });
+    defer short_file.close(io);
+    const shrunken = try readOracleFileAtAdmittedSize(io, std.testing.allocator, short_file, 5);
+    defer std.testing.allocator.free(shrunken);
+    try std.testing.expectEqualStrings("four", shrunken);
+}
+
 fn captureCandidateSnapshot(
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -573,13 +657,9 @@ fn captureCandidateSnapshot(
             else => |other| return other,
         };
         defer file.close(io);
-        if ((try file.stat(io)).kind != .file) return error.InvalidCandidateEntry;
-        var read_buffer: [4096]u8 = undefined;
-        var reader = file.reader(io, &read_buffer);
-        const bytes = try reader.interface.allocRemaining(allocator, .limited(64 * 1024 * 1024));
+        const bytes = try readBoundedOracleFile(io, allocator, file, total_bytes);
         errdefer allocator.free(bytes);
-        total_bytes = std.math.add(usize, total_bytes, bytes.len) catch return error.CandidateCorpusTooLarge;
-        if (total_bytes > 256 * 1024 * 1024) return error.CandidateCorpusTooLarge;
+        total_bytes += bytes.len;
         const path = try allocator.dupe(u8, relative_path);
         errdefer allocator.free(path);
         try paths.append(allocator, path);
@@ -3231,8 +3311,10 @@ fn generatorSourceInventory(io: std.Io, allocator: std.mem.Allocator, source_dir
         for (items.items) |item| allocator.free(item);
         items.deinit(allocator);
     }
+    var budget: OracleTreeBudget = .{};
 
     for (generator_source_package_paths) |package_path| {
+        try budget.account(package_path.len);
         const path_stat = try source_dir.statFile(io, package_path, .{ .follow_symlinks = false });
         switch (path_stat.kind) {
             .file => {
@@ -3242,18 +3324,19 @@ fn generatorSourceInventory(io: std.Io, allocator: std.mem.Allocator, source_dir
             .directory => {
                 var root = try source_dir.openDir(io, package_path, .{ .follow_symlinks = false, .iterate = true });
                 defer root.close(io);
-                var root_files = try listFiles(io, allocator, root);
-                defer root_files.deinit();
-                for (root_files.items) |relative_path| {
-                    const joined = try std.fs.path.join(allocator, &.{ package_path, relative_path });
-                    errdefer allocator.free(joined);
-                    canonicalizePathSeparators(joined, std.fs.path.sep);
-                    if (std.mem.startsWith(u8, joined, generator_source_excluded_prefix)) {
-                        allocator.free(joined);
+                var root_files: std.ArrayList([]u8) = .empty;
+                defer root_files.deinit(allocator);
+                errdefer for (root_files.items) |path| allocator.free(path);
+                try collectFiles(io, allocator, root, package_path, 0, &budget, &root_files);
+                try items.ensureUnusedCapacity(allocator, root_files.items.len);
+                for (root_files.items) |path| {
+                    if (std.mem.startsWith(u8, path, generator_source_excluded_prefix)) {
+                        allocator.free(path);
                         continue;
                     }
-                    try items.append(allocator, joined);
+                    items.appendAssumeCapacity(path);
                 }
+                root_files.items.len = 0;
             },
             else => return error.InvalidGeneratorSourceEntry,
         }
@@ -3283,6 +3366,7 @@ fn generatorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update(generator_source_identity_domain);
+    var total_bytes: usize = 0;
     for (actual_files.items) |relative_path| {
         var file = source_dir.openFile(io, relative_path, .{
             .mode = .read_only,
@@ -3293,11 +3377,12 @@ fn generatorSourceIdentity(io: std.Io, allocator: std.mem.Allocator, source_root
             else => |other| return other,
         };
         defer file.close(io);
-        if ((try file.stat(io)).kind != .file) return error.InvalidGeneratorSourceEntry;
-        var read_buffer: [4096]u8 = undefined;
-        var reader = file.reader(io, &read_buffer);
-        const raw_bytes = try reader.interface.allocRemaining(allocator, .limited(16 * 1024 * 1024));
+        const raw_bytes = readBoundedOracleFile(io, allocator, file, total_bytes) catch |err| switch (err) {
+            error.InvalidCandidateEntry => return error.InvalidGeneratorSourceEntry,
+            else => |unexpected| return unexpected,
+        };
         defer allocator.free(raw_bytes);
+        total_bytes += raw_bytes.len;
         try updateGeneratorSourceIdentity(&hasher, allocator, relative_path, raw_bytes);
     }
     var digest = [_]u8{0} ** 32;

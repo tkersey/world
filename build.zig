@@ -59,6 +59,118 @@ const WorldPackageProjection = struct {
     paths: []const []const u8,
 };
 
+const max_world_source_tree_entries: usize = 4 * 1024;
+const max_world_source_tree_path_bytes: usize = 4 * 1024 * 1024;
+const max_world_source_tree_depth: usize = 64;
+const max_world_source_file_bytes: u64 = 64 * 1024 * 1024;
+const max_world_source_content_bytes: u64 = 256 * 1024 * 1024;
+
+const WorldSourceTreeBudget = struct {
+    entries: usize = 0,
+    path_bytes: usize = 0,
+    content_bytes: u64 = 0,
+
+    fn account(self: *@This(), path_bytes: usize, depth: usize) !void {
+        if (self.entries >= max_world_source_tree_entries or depth > max_world_source_tree_depth) {
+            return error.WorldSourceTreeTooLarge;
+        }
+        const next_path_bytes = std.math.add(usize, self.path_bytes, path_bytes) catch {
+            return error.WorldSourceTreeTooLarge;
+        };
+        if (next_path_bytes > max_world_source_tree_path_bytes) return error.WorldSourceTreeTooLarge;
+        self.entries += 1;
+        self.path_bytes = next_path_bytes;
+    }
+
+    fn accountContent(self: *@This(), file_bytes: u64) !void {
+        if (file_bytes > max_world_source_file_bytes) return error.WorldSourceTreeTooLarge;
+        const next_content_bytes = std.math.add(u64, self.content_bytes, file_bytes) catch {
+            return error.WorldSourceTreeTooLarge;
+        };
+        if (next_content_bytes > max_world_source_content_bytes) return error.WorldSourceTreeTooLarge;
+        self.content_bytes = next_content_bytes;
+    }
+};
+
+fn portablePathDepth(path: []const u8, separator: u8) usize {
+    var depth: usize = 0;
+    var components = std.mem.splitScalar(u8, path, separator);
+    while (components.next()) |component| {
+        if (component.len != 0) depth += 1;
+    }
+    return depth;
+}
+
+fn accountWorldSourceEntry(
+    budget: *WorldSourceTreeBudget,
+    root: []const u8,
+    relative_path: ?[]const u8,
+    traversal_depth: usize,
+) void {
+    const relative_len = if (relative_path) |path| path.len else 0;
+    const separator_len: usize = if (relative_path == null or relative_len == 0) 0 else 1;
+    const root_and_separator = std.math.add(usize, root.len, separator_len) catch {
+        std.debug.panic("World source tree path budget exceeded", .{});
+    };
+    const path_len = std.math.add(usize, root_and_separator, relative_len) catch {
+        std.debug.panic("World source tree path budget exceeded", .{});
+    };
+    budget.account(path_len, traversal_depth) catch {
+        std.debug.panic("World source tree exceeds {d} entries, {d} path bytes, or depth {d}", .{
+            max_world_source_tree_entries,
+            max_world_source_tree_path_bytes,
+            max_world_source_tree_depth,
+        });
+    };
+}
+
+fn accountWorldSourceContent(budget: *WorldSourceTreeBudget, file_bytes: u64) void {
+    budget.accountContent(file_bytes) catch {
+        std.debug.panic("World source tree exceeds {d} bytes per file or {d} aggregate content bytes", .{
+            max_world_source_file_bytes,
+            max_world_source_content_bytes,
+        });
+    };
+}
+
+fn checkWorldSourceTreeBudgetBoundaries() void {
+    var accepted: WorldSourceTreeBudget = .{
+        .entries = max_world_source_tree_entries - 1,
+        .path_bytes = max_world_source_tree_path_bytes - 1,
+    };
+    accepted.account(1, max_world_source_tree_depth) catch @panic("World source tree boundary rejected");
+    if (accepted.account(0, 0)) |_| {
+        @panic("World source entry overflow accepted");
+    } else |err| if (err != error.WorldSourceTreeTooLarge) {
+        @panic("unexpected World source entry budget error");
+    }
+    var path_bytes: WorldSourceTreeBudget = .{ .path_bytes = max_world_source_tree_path_bytes };
+    if (path_bytes.account(1, 0)) |_| {
+        @panic("World source path-byte overflow accepted");
+    } else |err| if (err != error.WorldSourceTreeTooLarge) {
+        @panic("unexpected World source path-byte budget error");
+    }
+    var content: WorldSourceTreeBudget = .{ .content_bytes = max_world_source_content_bytes - 1 };
+    content.accountContent(1) catch @panic("World source content boundary rejected");
+    if (content.accountContent(1)) |_| {
+        @panic("World source aggregate content overflow accepted");
+    } else |err| if (err != error.WorldSourceTreeTooLarge) {
+        @panic("unexpected World source content budget error");
+    }
+    var file_content: WorldSourceTreeBudget = .{};
+    if (file_content.accountContent(max_world_source_file_bytes + 1)) |_| {
+        @panic("World source per-file content overflow accepted");
+    } else |err| if (err != error.WorldSourceTreeTooLarge) {
+        @panic("unexpected World source per-file budget error");
+    }
+    var depth: WorldSourceTreeBudget = .{};
+    if (depth.account(1, max_world_source_tree_depth + 1)) |_| {
+        @panic("World source depth overflow accepted");
+    } else |err| if (err != error.WorldSourceTreeTooLarge) {
+        @panic("unexpected World source depth budget error");
+    }
+}
+
 fn worldSourcePackageRoots(b: *std.Build) []const []const u8 {
     const raw_source = b.build_root.handle.readFileAlloc(
         b.graph.io,
@@ -134,13 +246,16 @@ fn worldSourcePackagePathsForRoots(
     excluded_prefix: ?[]const u8,
 ) []const []const u8 {
     var paths: std.ArrayList([]const u8) = .empty;
+    var budget: WorldSourceTreeBudget = .{};
 
     for (package_roots) |root| {
+        accountWorldSourceEntry(&budget, root, null, 0);
         const root_stat = b.build_root.handle.statFile(b.graph.io, root, .{ .follow_symlinks = false }) catch |err| {
             std.debug.panic("failed to inspect source package path '{s}': {s}", .{ root, @errorName(err) });
         };
         switch (root_stat.kind) {
             .file => {
+                accountWorldSourceContent(&budget, root_stat.size);
                 if (excluded_prefix) |prefix| {
                     if (std.mem.startsWith(u8, root, prefix)) continue;
                 }
@@ -160,8 +275,19 @@ fn worldSourcePackagePathsForRoots(
                 while (walker.next(b.graph.io) catch |err| {
                     std.debug.panic("failed to walk source package directory '{s}': {s}", .{ root, @errorName(err) });
                 }) |entry| {
+                    const path_depth = portablePathDepth(entry.path, std.fs.path.sep);
+                    const traversal_depth = if (entry.kind == .directory) path_depth else path_depth -| 1;
+                    accountWorldSourceEntry(&budget, root, entry.path, traversal_depth);
                     switch (entry.kind) {
-                        .file => {},
+                        .file => {
+                            const stat = dir.statFile(b.graph.io, entry.path, .{ .follow_symlinks = false }) catch |err| {
+                                std.debug.panic("failed to inspect source package file '{s}/{s}': {s}", .{ root, entry.path, @errorName(err) });
+                            };
+                            if (stat.kind != .file) {
+                                std.debug.panic("source package file changed kind during traversal '{s}/{s}'", .{ root, entry.path });
+                            }
+                            accountWorldSourceContent(&budget, stat.size);
+                        },
                         .directory => continue,
                         else => std.debug.panic("unsupported source package entry '{s}/{s}'", .{ root, entry.path }),
                     }
@@ -457,8 +583,13 @@ const WorldOracleOperationStep = struct {
 };
 
 fn worldOracleCoordinationDir(b: *std.Build) []const u8 {
+    const canonical_build_root = b.build_root.handle.realPathFileAlloc(
+        b.graph.io,
+        ".",
+        b.allocator,
+    ) catch |err| std.debug.panic("failed to canonicalize World checkout identity: {s}", .{@errorName(err)});
     var digest: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(b.pathFromRoot("."), &digest, .{});
+    std.crypto.hash.sha2.Sha256.hash(canonical_build_root, &digest, .{});
     const hex = std.fmt.bytesToHex(digest, .lower);
     return b.graph.global_cache_root.join(
         b.allocator,
@@ -467,6 +598,7 @@ fn worldOracleCoordinationDir(b: *std.Build) []const u8 {
 }
 
 pub fn build(b: *std.Build) void {
+    checkWorldSourceTreeBudgetBoundaries();
     const target = b.standardTargetOptions(.{});
     const validation_target = if (target.result.os.tag == .freestanding) b.graph.host else target;
     const optimize = b.standardOptimizeOption(.{});
