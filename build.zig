@@ -439,6 +439,45 @@ test "World source package root rejects a symlink ancestor" {
     } else |_| {}
 }
 
+fn pruneExcludedWorldSourceEntry(
+    walker: *std.Io.Dir.Walker,
+    io: std.Io,
+    portable_path: []const u8,
+    kind: std.Io.File.Kind,
+    excluded_prefix: ?[]const u8,
+) bool {
+    const prefix = excluded_prefix orelse return false;
+    const is_descendant = std.mem.startsWith(u8, portable_path, prefix);
+    const is_subtree_root = prefix.len == portable_path.len + 1 and
+        prefix[prefix.len - 1] == '/' and
+        std.mem.eql(u8, portable_path, prefix[0..portable_path.len]);
+    if (!is_descendant and !is_subtree_root) return false;
+    if (kind == .directory) walker.leave(io);
+    return true;
+}
+
+test "World source package walk prunes excluded subtrees" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "root/excluded/nested");
+    try tmp.dir.writeFile(io, .{ .sub_path = "root/kept.zig", .data = "kept\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "root/excluded/nested/ignored.zig", .data = "ignored\n" });
+
+    var root = try tmp.dir.openDir(io, "root", .{ .follow_symlinks = false, .iterate = true });
+    defer root.close(io);
+    var walker = try root.walk(std.testing.allocator);
+    defer walker.deinit();
+    var saw_kept = false;
+    while (try walker.next(io)) |entry| {
+        if (pruneExcludedWorldSourceEntry(&walker, io, entry.path, entry.kind, "excluded/")) continue;
+        try std.testing.expect(!std.mem.startsWith(u8, entry.path, "excluded/"));
+        if (std.mem.eql(u8, entry.path, "kept.zig")) saw_kept = true;
+    }
+    try std.testing.expect(saw_kept);
+}
+
 fn worldSourcePackageFilesForRoots(
     b: *std.Build,
     package_roots: []const []const u8,
@@ -486,20 +525,24 @@ fn worldSourcePackageFilesForRoots(
                 while (walker.next(b.graph.io) catch |err| {
                     std.debug.panic("failed to walk source package directory '{s}': {s}", .{ root, @errorName(err) });
                 }) |entry| {
-                    accountWorldSourceEntry(&budget, root, entry.path);
                     const path = b.fmt("{s}/{s}", .{ root, entry.path });
                     if (std.fs.path.sep != '/') {
                         for (path) |*byte| if (byte.* == std.fs.path.sep) {
                             byte.* = '/';
                         };
                     }
+                    if (pruneExcludedWorldSourceEntry(
+                        &walker,
+                        b.graph.io,
+                        path,
+                        entry.kind,
+                        excluded_prefix,
+                    )) continue;
+                    accountWorldSourceEntry(&budget, root, entry.path);
                     switch (entry.kind) {
                         .file => {},
                         .directory => continue,
                         else => std.debug.panic("unsupported source package entry '{s}/{s}'", .{ root, entry.path }),
-                    }
-                    if (excluded_prefix) |prefix| {
-                        if (std.mem.startsWith(u8, path, prefix)) continue;
                     }
                     source_files.append(b.allocator, .{
                         .path = path,
