@@ -40,7 +40,7 @@ Before reduction, the application validates pending membership, request identity
 
 ## Authority split
 
-The manifest and request declare requirements; they grant no authority. world-host applies receiver-local policy, approval, target validation, idempotency policy, and secret preflight before execution. Capabilities return outcomes only. They cannot author Frames, manifests, state, receipts, branch heads, or Boundary machines.
+The manifest and request declare requirements; they grant no authority. The manifest's required capability mask is the exact union of its residual effects' authority requirements. world-host applies receiver-local policy, approval, target validation, idempotency policy, and secret preflight before execution. Capabilities return outcomes only. They cannot author Frames, manifests, state, receipts, branch heads, or Boundary machines.
 
 ## Encoding
 

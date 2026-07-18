@@ -595,13 +595,16 @@ pub const ApplicationManifest = struct {
                 return error.InvalidManifest;
             }
         }
+        var derived_host_capabilities: u64 = 0;
         for (self.residual_effects, 0..) |effect, index| {
             try effect.allowed_statuses.validate();
+            derived_host_capabilities |= effect.authority_requirements;
             if (index != 0) {
                 const previous = self.residual_effects[index - 1];
                 if (compareResidualEffect(previous, effect) != .lt) return error.InvalidManifest;
             }
         }
+        if (self.required_host_capabilities != derived_host_capabilities) return error.InvalidManifest;
         if (!check_identity) return;
         var candidate = self;
         const actual_id = candidate.application_id;
@@ -1361,6 +1364,36 @@ test "world application v1 StepInput and manifest round trip" {
     const input_bytes_again = try decoded_input.encode(allocator, limits);
     defer allocator.free(input_bytes_again);
     try std.testing.expectEqualSlices(u8, input_bytes, input_bytes_again);
+}
+
+test "world application v1 manifest capabilities are derived exactly from residual effects" {
+    const allocator = std.testing.allocator;
+    const residual_effects = [_]ResidualEffect{
+        .{
+            .interface_id = digestLabel("test", "interface"),
+            .site_id = 7,
+            .payload_schema_id = digestLabel("test", "payload"),
+            .result_schema_id = digestLabel("test", "result"),
+            .allowed_statuses = .{},
+            .authority_requirements = 0b0101,
+        },
+    };
+    var manifest: ApplicationManifest = .{
+        .application_name = "capability-drift",
+        .application_version = "1.0.0",
+        .boundary_package_version = "1.0.0-rc.1",
+        .boundary_static_machine_abi_version = 1,
+        .world_package_version = "1.0.0-rc.1",
+        .root_program_id = digestLabel("test", "root"),
+        .residual_effects = &residual_effects,
+        .required_host_capabilities = 0b0001,
+    };
+    try std.testing.expectError(error.InvalidManifest, manifest.seal(allocator));
+    manifest.required_host_capabilities = 0b1101;
+    try std.testing.expectError(error.InvalidManifest, manifest.seal(allocator));
+    manifest.required_host_capabilities = 0b0101;
+    try manifest.seal(allocator);
+    try manifest.validate();
 }
 
 test "world application v1 StepInput rejects aggregate over-limit bytes before decode" {
