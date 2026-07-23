@@ -499,7 +499,7 @@ pub fn application(comptime spec: anytype) type {
         spec.boundary_package_version
     else
         boundary.Protocol.Manifest.boundary_package_version;
-    const world_version: []const u8 = if (@hasField(@TypeOf(spec), "world_package_version")) spec.world_package_version else "1.0.0-rc.1-dev";
+    const world_version: []const u8 = if (@hasField(@TypeOf(spec), "world_package_version")) spec.world_package_version else "1.0.0-rc.1";
 
     return struct {
         const Self = @This();
