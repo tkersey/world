@@ -22,6 +22,8 @@ The request identity is SHA-256 over the domain `world.effect-request.v1`, a zer
 
 The idempotency key is independently derived from request identity, interface identity, and application identity under the domain `world.idempotency-key.v1`. It is a stable correlation key, not an exactly-once guarantee.
 
+Application, interface, payload-schema, and result-schema identities are nonzero. `parent_frame_id` is the all-zero sentinel only for a sequence-`0` genesis request; every later request names a nonzero parent Frame.
+
 ## EffectResult
 
 An EffectResult binds request identity, status, result schema, optional result bytes, bounded semantic host claims, and a positive attempt number. Status is one of:
@@ -36,6 +38,8 @@ cancelled
 
 `ok` requires result bytes. `deferred` carries no result bytes. The result identity is SHA-256 over the domain `world.effect-result.v1`, a zero byte separator, and canonical result bytes with `result_id` zeroed.
 
+The referenced request and result-schema identities are nonzero.
+
 Before reduction, the application validates pending membership, request identity, allowed status, schema identity, byte limits, and single-use behavior. A capability-authored result is untrusted until this validation succeeds.
 
 ## Authority split
@@ -45,3 +49,5 @@ The manifest and request declare requirements; they grant no authority. The mani
 ## Encoding
 
 All integers are fixed-width little-endian. Lengths and counts are `u32`. Booleans are exactly `0` or `1`. Digests are 32 bytes. Enums reject unknown tags. Decoders check lengths before allocation, reject trailing bytes, enforce configured limits, and validate identities after decoding.
+
+The Zig semantic record types borrow their slices and expose no owning deinitializer. Each `decode` operation receives a caller-owned `std.heap.ArenaAllocator` and returns a validated semantic record whose slices remain valid for that arena's lifetime. Destroying or resetting the arena releases decode storage independently of later record mutation, and copying a decoded semantic record does not duplicate cleanup authority. The generated application runtime uses one bounded, resettable arena per call.
