@@ -437,6 +437,241 @@ pub fn build(b: *std.Build) void {
     });
     const check_world_application_spec_step = b.step("check-world-application-spec", "Run World Comptime v1 protocol and canonical codec checks.");
     dependOnNativeRunOrCompile(b, validation_target, check_world_application_spec_step, world_application_v1_tests, test_args.passthrough);
+    const world_comptime_application_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/application_v1_test.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = test_args.filters,
+    });
+    const application_v1_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_test.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "world", .module = world },
+            .{ .name = "boundary", .module = boundary },
+        },
+    });
+    const run_world_comptime_application_tests = addRunArtifactWithArgs(b, world_comptime_application_tests, test_args.passthrough);
+    const world_comptime_agent_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/application_v1_agent_fixtures.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = test_args.filters,
+    });
+    const run_world_comptime_agent_tests = addRunArtifactWithArgs(b, world_comptime_agent_tests, test_args.passthrough);
+    const check_world_comptime_closure_step = b.step("check-world-comptime-closure", "Run World compile-time handler closure and residual-row checks.");
+    check_world_comptime_closure_step.dependOn(&run_world_comptime_application_tests.step);
+    check_world_comptime_closure_step.dependOn(&run_world_comptime_agent_tests.step);
+    const check_world_application_native_step = b.step("check-world-application-native", "Run World native application step and provider parking checks.");
+    check_world_application_native_step.dependOn(&run_world_comptime_application_tests.step);
+    check_world_application_native_step.dependOn(&run_world_comptime_agent_tests.step);
+    const wasm_application_v1_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_test.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "world", .module = wasm_world },
+            .{ .name = "boundary", .module = wasm_boundary },
+        },
+    });
+    const one_effect_application_wasm_module = b.createModule(.{
+        .root_source_file = b.path("examples/world_application_v1_one_effect_wasm.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "world", .module = wasm_world },
+            .{ .name = "application_v1_fixtures", .module = wasm_application_v1_fixtures },
+        },
+    });
+    const one_effect_application_wasm = b.addExecutable(.{
+        .name = "one-effect.world",
+        .root_module = one_effect_application_wasm_module,
+    });
+    one_effect_application_wasm.entry = .disabled;
+    one_effect_application_wasm.rdynamic = true;
+    one_effect_application_wasm.export_memory = true;
+    one_effect_application_wasm.stack_size = 1024 * 1024;
+    one_effect_application_wasm.initial_memory = 8 * 1024 * 1024;
+    one_effect_application_wasm.max_memory = 8 * 1024 * 1024;
+    const install_one_effect_application_wasm = b.addInstallArtifact(one_effect_application_wasm, .{});
+    const world_one_effect_application_wasm_step = b.step("world-one-effect-application-wasm", "Build the standalone one-effect World application WASM.");
+    world_one_effect_application_wasm_step.dependOn(&install_one_effect_application_wasm.step);
+    const check_world_application_wasm_step = b.step("check-world-application-wasm", "Build and inspect the standalone World application WASM.");
+    const run_one_effect_application_wasm = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_application_v1_conformance.mjs",
+    });
+    run_one_effect_application_wasm.addFileArg(one_effect_application_wasm.getEmittedBin());
+    check_world_application_wasm_step.dependOn(&run_one_effect_application_wasm.step);
+    const wasm_application_v1_agent_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_agent_fixtures.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "world", .module = wasm_world },
+            .{ .name = "boundary", .module = wasm_boundary },
+        },
+    });
+    const host_application_v1_agent_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_agent_fixtures.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "world", .module = host_world },
+            .{ .name = "boundary", .module = host_boundary },
+        },
+    });
+    const host_skeleton_application_selector = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_skeleton_app.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "application_v1_agent_fixtures", .module = host_application_v1_agent_fixtures },
+        },
+    });
+    const host_fixture_application_selector = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_fixture_app.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "application_v1_agent_fixtures", .module = host_application_v1_agent_fixtures },
+        },
+    });
+    const skeleton_manifest_emitter = b.addExecutable(.{
+        .name = "world-v1-skeleton-manifest",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/world_application_v1_manifest.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world_application", .module = host_skeleton_application_selector },
+            },
+        }),
+    });
+    const fixture_manifest_emitter = b.addExecutable(.{
+        .name = "world-v1-fixture-manifest",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/world_application_v1_manifest.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world_application", .module = host_fixture_application_selector },
+            },
+        }),
+    });
+    const run_skeleton_manifest_emitter = b.addRunArtifact(skeleton_manifest_emitter);
+    const skeleton_manifest = run_skeleton_manifest_emitter.addOutputFileArg("skeleton-agent.manifest.bin");
+    const run_fixture_manifest_emitter = b.addRunArtifact(fixture_manifest_emitter);
+    const fixture_manifest = run_fixture_manifest_emitter.addOutputFileArg("fixture-agent.manifest.bin");
+    const skeleton_application_selector = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_skeleton_app.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "application_v1_agent_fixtures", .module = wasm_application_v1_agent_fixtures },
+        },
+    });
+    const fixture_application_selector = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_fixture_app.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "application_v1_agent_fixtures", .module = wasm_application_v1_agent_fixtures },
+        },
+    });
+    const skeleton_application_wasm_module = b.createModule(.{
+        .root_source_file = b.path("examples/world_application_v1_wasm.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "world", .module = wasm_world },
+            .{ .name = "world_application", .module = skeleton_application_selector },
+        },
+    });
+    const fixture_application_wasm_module = b.createModule(.{
+        .root_source_file = b.path("examples/world_application_v1_wasm.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "world", .module = wasm_world },
+            .{ .name = "world_application", .module = fixture_application_selector },
+        },
+    });
+    const skeleton_application_wasm = b.addExecutable(.{
+        .name = "skeleton-agent.world",
+        .root_module = skeleton_application_wasm_module,
+    });
+    skeleton_application_wasm.entry = .disabled;
+    skeleton_application_wasm.rdynamic = true;
+    skeleton_application_wasm.export_memory = true;
+    skeleton_application_wasm.stack_size = 1024 * 1024;
+    skeleton_application_wasm.initial_memory = 16 * 1024 * 1024;
+    skeleton_application_wasm.max_memory = 16 * 1024 * 1024;
+    const fixture_application_wasm = b.addExecutable(.{
+        .name = "fixture-agent.world",
+        .root_module = fixture_application_wasm_module,
+    });
+    fixture_application_wasm.entry = .disabled;
+    fixture_application_wasm.rdynamic = true;
+    fixture_application_wasm.export_memory = true;
+    fixture_application_wasm.stack_size = 1024 * 1024;
+    fixture_application_wasm.initial_memory = 16 * 1024 * 1024;
+    fixture_application_wasm.max_memory = 16 * 1024 * 1024;
+    const install_skeleton_application_wasm = b.addInstallArtifact(skeleton_application_wasm, .{});
+    const install_fixture_application_wasm = b.addInstallArtifact(fixture_application_wasm, .{});
+    const install_skeleton_world_application = b.addInstallFile(
+        skeleton_application_wasm.getEmittedBin(),
+        "world-apps/skeleton-agent.world.wasm",
+    );
+    const install_fixture_world_application = b.addInstallFile(
+        fixture_application_wasm.getEmittedBin(),
+        "world-apps/fixture-agent.world.wasm",
+    );
+    const install_skeleton_application_manifest = b.addInstallFile(
+        skeleton_manifest,
+        "world-apps/skeleton-agent.manifest.bin",
+    );
+    const install_fixture_application_manifest = b.addInstallFile(
+        fixture_manifest,
+        "world-apps/fixture-agent.manifest.bin",
+    );
+    const world_skeleton_agent_wasm_step = b.step("world-skeleton-agent-wasm", "Build skeleton-agent.world.wasm.");
+    world_skeleton_agent_wasm_step.dependOn(&install_skeleton_application_wasm.step);
+    world_skeleton_agent_wasm_step.dependOn(&install_skeleton_world_application.step);
+    world_skeleton_agent_wasm_step.dependOn(&install_skeleton_application_manifest.step);
+    const world_fixture_agent_wasm_step = b.step("world-fixture-agent-wasm", "Build fixture-agent.world.wasm.");
+    world_fixture_agent_wasm_step.dependOn(&install_fixture_application_wasm.step);
+    world_fixture_agent_wasm_step.dependOn(&install_fixture_world_application.step);
+    world_fixture_agent_wasm_step.dependOn(&install_fixture_application_manifest.step);
+    const run_skeleton_application_wasm = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_application_v1_agent_conformance.mjs",
+    });
+    run_skeleton_application_wasm.addFileArg(skeleton_application_wasm.getEmittedBin());
+    run_skeleton_application_wasm.addArg("skeleton");
+    run_skeleton_application_wasm.addFileArg(skeleton_manifest);
+    const run_fixture_application_wasm = b.addSystemCommand(&.{
+        "node",
+        "scripts/world_application_v1_agent_conformance.mjs",
+    });
+    run_fixture_application_wasm.addFileArg(fixture_application_wasm.getEmittedBin());
+    run_fixture_application_wasm.addArg("fixture");
+    run_fixture_application_wasm.addFileArg(fixture_manifest);
+    check_world_application_wasm_step.dependOn(&run_skeleton_application_wasm.step);
+    check_world_application_wasm_step.dependOn(&run_fixture_application_wasm.step);
     const world_application_v1_wasm_check = b.addLibrary(.{
         .linkage = .static,
         .name = "world-application-v1-protocol-wasm-check",
@@ -502,6 +737,12 @@ pub fn build(b: *std.Build) void {
     check_world_agent_conformance_corpus_step.dependOn(check_world_agent_closure_step);
     check_world_agent_conformance_corpus_step.dependOn(check_world_agent_replay_step);
     check_world_agent_conformance_corpus_step.dependOn(check_world_agent_migration_step);
+    const check_world_comptime_v0_v1_oracle_step = b.step(
+        "check-world-comptime-v0-v1-oracle",
+        "Run the frozen v0 agent oracle beside the six World Comptime v1 scenarios.",
+    );
+    check_world_comptime_v0_v1_oracle_step.dependOn(check_world_agent_conformance_corpus_step);
+    check_world_comptime_v0_v1_oracle_step.dependOn(check_world_application_wasm_step);
     const run_world_js_corpus = b.addSystemCommand(&.{
         "node",
         "scripts/world_conformance.mjs",
@@ -1004,6 +1245,91 @@ pub fn build(b: *std.Build) void {
     forged_descriptor_test.expect_errors = .{
         .contains = "World port descriptor metadata does not match target WorldPortTable",
     };
+    const application_v1_missing_binding_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/application_v1_missing_binding.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
+            },
+        }),
+    });
+    application_v1_missing_binding_test.expect_errors = .{
+        .contains = "World application has an unhandled operation site; declare an internal handler or explicit external effect",
+    };
+    const application_v1_ambiguous_binding_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/application_v1_ambiguous_binding.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
+            },
+        }),
+    });
+    application_v1_ambiguous_binding_test.expect_errors = .{
+        .contains = "World application operation site has ambiguous handler ownership",
+    };
+    const application_v1_incompatible_provider_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/application_v1_incompatible_provider.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
+            },
+        }),
+    });
+    application_v1_incompatible_provider_test.expect_errors = .{
+        .contains = "World StaticMachine provider InitialArgs must be exactly one parent payload value",
+    };
+    const application_v1_provider_cycle_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/application_v1_provider_cycle.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
+            },
+        }),
+    });
+    application_v1_provider_cycle_test.expect_errors = .{
+        .contains = "World application internal provider graph contains a static cycle",
+    };
+    const application_v1_provider_depth_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/application_v1_provider_depth.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+                .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
+            },
+        }),
+    });
+    application_v1_provider_depth_test.expect_errors = .{
+        .contains = "World application internal provider graph exceeds maximum_provider_depth",
+    };
+    const application_v1_wasm_region_too_small_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/application_v1_wasm_region_too_small.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
+            },
+        }),
+    });
+    application_v1_wasm_region_too_small_test.expect_errors = .{
+        .contains = "World application WASM input region is smaller than the declared StepInput limits",
+    };
     const appliance_missing_binding_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/appliance_missing_actuation_binding.zig"),
@@ -1104,6 +1430,12 @@ pub fn build(b: *std.Build) void {
     };
     const compile_fail_step = b.step("compile-fail", "Run compile-fail tests.");
     compile_fail_step.dependOn(&forged_descriptor_test.step);
+    compile_fail_step.dependOn(&application_v1_missing_binding_test.step);
+    compile_fail_step.dependOn(&application_v1_ambiguous_binding_test.step);
+    compile_fail_step.dependOn(&application_v1_incompatible_provider_test.step);
+    compile_fail_step.dependOn(&application_v1_provider_cycle_test.step);
+    compile_fail_step.dependOn(&application_v1_provider_depth_test.step);
+    compile_fail_step.dependOn(&application_v1_wasm_region_too_small_test.step);
     compile_fail_step.dependOn(&appliance_missing_binding_test.step);
     compile_fail_step.dependOn(&appliance_covered_port_bound_test.step);
     compile_fail_step.dependOn(&appliance_invalid_capacity_test.step);
@@ -1114,6 +1446,10 @@ pub fn build(b: *std.Build) void {
 
     const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
     check_step.dependOn(check_world_application_spec_step);
+    check_step.dependOn(check_world_comptime_closure_step);
+    check_step.dependOn(check_world_application_native_step);
+    check_step.dependOn(check_world_application_wasm_step);
+    check_step.dependOn(check_world_comptime_v0_v1_oracle_step);
     check_step.dependOn(test_step);
     check_step.dependOn(compile_fail_step);
     check_step.dependOn(check_world_target_step);
