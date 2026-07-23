@@ -496,12 +496,9 @@ pub fn application(comptime spec: anytype) type {
             return frame.encode(allocator, limits);
         }
 
-        pub fn decodeFrame(allocator: std.mem.Allocator, bytes: []const u8) protocol.Error!Frame {
-            const frame = try Frame.decode(allocator, bytes, limits);
-            errdefer {
-                var owned = frame;
-                owned.deinit(allocator);
-            }
+        /// Decode a borrowed Frame whose slice storage belongs to `arena`.
+        pub fn decodeFrame(arena: *std.heap.ArenaAllocator, bytes: []const u8) protocol.Error!Frame {
+            const frame = try Frame.decode(arena, bytes, limits);
             if (!std.mem.eql(u8, &frame.application_id, &Manifest.application_id)) return error.ApplicationMismatch;
             return frame;
         }
@@ -511,7 +508,9 @@ pub fn application(comptime spec: anytype) type {
             if (!std.mem.eql(u8, &frame.application_id, &Manifest.application_id)) return error.ApplicationMismatch;
         }
 
-        pub fn step(allocator: std.mem.Allocator, input: StepInput) protocol.Error!Frame {
+        /// Produce a borrowed Frame whose slice storage belongs to `arena`.
+        pub fn step(arena: *std.heap.ArenaAllocator, input: StepInput) protocol.Error!Frame {
+            const allocator = arena.allocator();
             try input.validate(limits);
             if (!std.mem.eql(u8, &input.application_id, &Manifest.application_id)) return error.ApplicationMismatch;
 
@@ -549,8 +548,7 @@ pub fn application(comptime spec: anytype) type {
                 );
             }
 
-            var prior = try Frame.decode(allocator, input.prior_frame_bytes.?, limits);
-            defer prior.deinit(allocator);
+            const prior = try Frame.decode(arena, input.prior_frame_bytes.?, limits);
             if (!std.mem.eql(u8, &prior.application_id, &Manifest.application_id)) return error.ApplicationMismatch;
             if (!std.mem.eql(u8, &prior.frame_id, &input.expected_parent_frame_id.?)) return error.InvalidFrame;
             if (prior.status != .needs_effect and prior.status != .yielded_fuel) return error.InvalidFrame;
@@ -600,11 +598,11 @@ pub fn application(comptime spec: anytype) type {
         }
 
         pub fn initialFrame(
-            allocator: std.mem.Allocator,
+            arena: *std.heap.ArenaAllocator,
             args_bytes: []const u8,
             fuel: u64,
         ) protocol.Error!Frame {
-            return step(allocator, .{
+            return step(arena, .{
                 .application_id = Manifest.application_id,
                 .initial_args_bytes = args_bytes,
                 .fuel = fuel,
@@ -962,8 +960,7 @@ pub fn application(comptime spec: anytype) type {
             counters: *protocol.ResourceCounters,
         ) protocol.Error!Frame {
             try replaceTopMachineState(Machine, allocator, machine_state, state);
-            var effect_request = try makeEffectRequest(Binding, allocator, request, parent_frame_id, sequence);
-            errdefer effect_request.deinit(allocator);
+            const effect_request = try makeEffectRequest(Binding, allocator, request, parent_frame_id, sequence);
             const state_bytes = try state.encode(Manifest.application_id, limits);
             errdefer allocator.free(state_bytes);
             try addCounter(&counters.external_effects, 1);
@@ -1008,7 +1005,7 @@ pub fn application(comptime spec: anytype) type {
                     .maximum_attempts = Binding.maximum_attempts,
                 },
             };
-            try effect_request.seal(allocator);
+            try effect_request.seal(allocator, limits);
             try effect_request.validate(limits);
             return effect_request;
         }
@@ -1052,14 +1049,13 @@ pub fn application(comptime spec: anytype) type {
                     request.expectSite(Site) catch return error.InvalidFrame;
                     inline for (externals) |Binding| {
                         if (comptime bindingTargets(Binding, Site)) {
-                            var expected = try makeEffectRequest(
+                            const expected = try makeEffectRequest(
                                 Binding,
                                 allocator,
                                 request,
                                 prior.parent_frame_id,
                                 prior.sequence,
                             );
-                            defer expected.deinit(allocator);
                             if (!std.mem.eql(u8, &expected.request_id, &prior.pending_effect.?.request_id)) return error.InvalidFrame;
                             if (result.status == .deferred) return .deferred;
                             if (result.status != .ok) return .terminal_failure;

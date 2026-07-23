@@ -43,6 +43,13 @@ The generated state is a bounded tagged stack. Each entry contains a dense stati
 
 An internal provider may park on an external effect. The encoded stack then retains both provider and parent continuations. Supplying the matching `EffectResult` resumes the provider, maps its typed result into the exact parent request, and continues reduction.
 
+`App.decodeFrame`, `App.initialFrame`, and `App.step` receive a caller-owned
+`std.heap.ArenaAllocator`. Their returned Frames borrow all variable-length
+storage from that arena and remain valid for its lifetime. Frame copies carry
+no cleanup authority. The application WASM wrapper creates one arena over its
+bounded scratch region for each call, encodes and copies the output Frame, and
+then discards the arena.
+
 ## Determinism
 
 For fixed application, parent Frame, semantic EffectResult, and fuel, `App.step` emits byte-identical child Frame bytes. Sequence and resource-counter arithmetic is checked. Schema identity treats Boundary's canonical `usize` word as target-neutral `u64`, keeping native and wasm32 application identities equal.

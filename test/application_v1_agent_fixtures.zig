@@ -264,10 +264,11 @@ pub const WasmOptions: world.v1.WasmOptions = .{
 fn continueWithString(
     comptime App: type,
     comptime Site: type,
-    allocator: std.mem.Allocator,
+    arena: *std.heap.ArenaAllocator,
     parent: world.v1.Frame,
     value: []const u8,
 ) !world.v1.Frame {
+    const allocator = arena.allocator();
     const result_bytes = try App.encodeExternalResult(allocator, Site, value);
     var result: world.v1.EffectResult = .{
         .request_id = parent.pending_effect.?.request_id,
@@ -276,11 +277,9 @@ fn continueWithString(
         .result_bytes = result_bytes,
         .attempt = 1,
     };
-    try result.seal(allocator);
-    defer result.deinit(allocator);
+    try result.seal(allocator, App.Limits);
     const parent_bytes = try App.encodeFrame(allocator, parent);
-    defer allocator.free(parent_bytes);
-    return App.step(allocator, .{
+    return App.step(arena, .{
         .application_id = App.Manifest.application_id,
         .expected_parent_frame_id = parent.frame_id,
         .prior_frame_bytes = parent_bytes,
@@ -296,28 +295,26 @@ fn expectStringPayload(allocator: std.mem.Allocator, frame: world.v1.Frame, expe
 }
 
 test "skeleton application closes toolbox and completes through two model effects" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     try std.testing.expectEqual(@as(usize, 1), SkeletonApp.internal_handler_ids.len);
     try std.testing.expectEqual(@as(usize, 2), SkeletonApp.residual_effect_row.len);
     for (SkeletonApp.residual_effect_row) |effect| {
         try std.testing.expect(effect.site_id != SkeletonToolboxSite.canonical_fingerprint);
     }
     const args = try SkeletonApp.encodeInitialArgs(allocator, .{@as([]const u8, "goal=invoke")});
-    defer allocator.free(args);
 
-    var first = try SkeletonApp.initialFrame(allocator, args, 100);
-    defer first.deinit(allocator);
+    const first = try SkeletonApp.initialFrame(&arena, args, 100);
     try std.testing.expectEqual(SkeletonModelSite0.canonical_fingerprint, first.pending_effect.?.site_id);
     try expectStringPayload(allocator, first, "goal=invoke");
 
-    var second = try continueWithString(SkeletonApp, SkeletonModelSite0, allocator, first, "actuate");
-    defer second.deinit(allocator);
+    const second = try continueWithString(SkeletonApp, SkeletonModelSite0, &arena, first, "actuate");
     try std.testing.expectEqual(SkeletonModelSite1.canonical_fingerprint, second.pending_effect.?.site_id);
     try expectStringPayload(allocator, second, "actuate");
     try std.testing.expectEqual(@as(u64, 1), second.resource_counters.internal_handler_calls);
 
-    var completed = try continueWithString(SkeletonApp, SkeletonModelSite1, allocator, second, "final=actuate skeleton complete");
-    defer completed.deinit(allocator);
+    const completed = try continueWithString(SkeletonApp, SkeletonModelSite1, &arena, second, "final=actuate skeleton complete");
     try std.testing.expectEqual(world.v1.FrameStatus.completed, completed.status);
     var result = try SkeletonApp.decodeFinalResult(allocator, completed);
     defer result.deinit();
@@ -325,7 +322,9 @@ test "skeleton application closes toolbox and completes through two model effect
 }
 
 test "fixture application exposes model read write model sequence through static providers" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     try std.testing.expectEqual(@as(usize, 2), FixtureApp.internal_handler_ids.len);
     try std.testing.expectEqual(@as(usize, 5), FixtureApp.residual_effect_row.len);
     for (FixtureApp.residual_effect_row) |effect| {
@@ -333,34 +332,27 @@ test "fixture application exposes model read write model sequence through static
         try std.testing.expect(effect.site_id != FixtureWriteSite.canonical_fingerprint);
     }
     const args = try FixtureApp.encodeInitialArgs(allocator, .{@as([]const u8, "goal=fixture")});
-    defer allocator.free(args);
 
-    var frame0 = try FixtureApp.initialFrame(allocator, args, 100);
-    defer frame0.deinit(allocator);
+    const frame0 = try FixtureApp.initialFrame(&arena, args, 100);
     try std.testing.expectEqual(FixtureModelSite0.canonical_fingerprint, frame0.pending_effect.?.site_id);
 
-    var frame1 = try continueWithString(FixtureApp, FixtureModelSite0, allocator, frame0, "fixture-input.txt");
-    defer frame1.deinit(allocator);
+    const frame1 = try continueWithString(FixtureApp, FixtureModelSite0, &arena, frame0, "fixture-input.txt");
     try std.testing.expectEqual(FileReadSite.canonical_fingerprint, frame1.pending_effect.?.site_id);
     try expectStringPayload(allocator, frame1, "fixture-input.txt");
 
-    var frame2 = try continueWithString(FixtureApp, FileReadSite, allocator, frame1, "rewrite this file through the agent loop\n");
-    defer frame2.deinit(allocator);
+    const frame2 = try continueWithString(FixtureApp, FileReadSite, &arena, frame1, "rewrite this file through the agent loop\n");
     try std.testing.expectEqual(FixtureModelSite1.canonical_fingerprint, frame2.pending_effect.?.site_id);
     try expectStringPayload(allocator, frame2, "rewrite this file through the agent loop\n");
 
-    var frame3 = try continueWithString(FixtureApp, FixtureModelSite1, allocator, frame2, "fixture-output.txt\nactuate updated the fixture");
-    defer frame3.deinit(allocator);
+    const frame3 = try continueWithString(FixtureApp, FixtureModelSite1, &arena, frame2, "fixture-output.txt\nactuate updated the fixture");
     try std.testing.expectEqual(FileWriteSite.canonical_fingerprint, frame3.pending_effect.?.site_id);
     try expectStringPayload(allocator, frame3, "fixture-output.txt\nactuate updated the fixture");
 
-    var frame4 = try continueWithString(FixtureApp, FileWriteSite, allocator, frame3, "write=ok");
-    defer frame4.deinit(allocator);
+    const frame4 = try continueWithString(FixtureApp, FileWriteSite, &arena, frame3, "write=ok");
     try std.testing.expectEqual(FixtureModelSite2.canonical_fingerprint, frame4.pending_effect.?.site_id);
     try expectStringPayload(allocator, frame4, "write=ok");
 
-    var completed = try continueWithString(FixtureApp, FixtureModelSite2, allocator, frame4, "final=fixture updated");
-    defer completed.deinit(allocator);
+    const completed = try continueWithString(FixtureApp, FixtureModelSite2, &arena, frame4, "final=fixture updated");
     try std.testing.expectEqual(world.v1.FrameStatus.completed, completed.status);
     var result = try FixtureApp.decodeFinalResult(allocator, completed);
     defer result.deinit();

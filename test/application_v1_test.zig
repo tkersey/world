@@ -192,7 +192,7 @@ fn okResult(
         .result_bytes = bytes,
         .attempt = 1,
     };
-    try result.seal(allocator);
+    try result.seal(allocator, App.Limits);
     return result;
 }
 
@@ -212,21 +212,19 @@ test "World comptime application derives one exact residual effect row" {
 }
 
 test "World comptime application executes one external effect deterministically" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const args = try OneEffectApp.encodeInitialArgs(allocator, .{});
-    defer allocator.free(args);
-    var parent = try OneEffectApp.initialFrame(allocator, args, 100);
-    defer parent.deinit(allocator);
+    const parent = try OneEffectApp.initialFrame(&arena, args, 100);
     try std.testing.expectEqual(world.v1.FrameStatus.needs_effect, parent.status);
     const request = parent.pending_effect.?;
     const expected_payload = try world.v1.encodeValue(allocator, @as([]const u8, "payload"));
     defer allocator.free(expected_payload);
     try std.testing.expectEqualSlices(u8, expected_payload, request.payload_bytes);
 
-    var result = try okResult(OneEffectApp, RootSite, allocator, request, @as(i32, 41));
-    defer result.deinit(allocator);
+    const result = try okResult(OneEffectApp, RootSite, allocator, request, @as(i32, 41));
     const parent_bytes = try OneEffectApp.encodeFrame(allocator, parent);
-    defer allocator.free(parent_bytes);
     const input: world.v1.StepInput = .{
         .application_id = OneEffectApp.Manifest.application_id,
         .expected_parent_frame_id = parent.frame_id,
@@ -234,48 +232,41 @@ test "World comptime application executes one external effect deterministically"
         .effect_result = result,
         .fuel = 100,
     };
-    var first = try OneEffectApp.step(allocator, input);
-    defer first.deinit(allocator);
-    var second = try OneEffectApp.step(allocator, input);
-    defer second.deinit(allocator);
+    const first = try OneEffectApp.step(&arena, input);
+    const second = try OneEffectApp.step(&arena, input);
     try std.testing.expectEqual(world.v1.FrameStatus.completed, first.status);
     var decoded = try OneEffectApp.decodeFinalResult(allocator, first);
     defer decoded.deinit();
     try std.testing.expectEqual(@as(i32, 41), decoded.value);
 
     const first_bytes = try OneEffectApp.encodeFrame(allocator, first);
-    defer allocator.free(first_bytes);
     const second_bytes = try OneEffectApp.encodeFrame(allocator, second);
-    defer allocator.free(second_bytes);
     try std.testing.expectEqualSlices(u8, first_bytes, second_bytes);
 }
 
 test "World comptime provider parks externally and resumes its exact parent" {
-    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     try std.testing.expectEqual(@as(usize, 1), ProviderApp.internal_handler_ids.len);
     try std.testing.expectEqual(@as(usize, 1), ProviderApp.residual_effect_row.len);
     try std.testing.expectEqual(ProviderSite.canonical_fingerprint, ProviderApp.residual_effect_row[0].site_id);
 
     const args = try ProviderApp.encodeInitialArgs(allocator, .{});
-    defer allocator.free(args);
-    var parent = try ProviderApp.initialFrame(allocator, args, 100);
-    defer parent.deinit(allocator);
+    const parent = try ProviderApp.initialFrame(&arena, args, 100);
     try std.testing.expectEqual(world.v1.FrameStatus.needs_effect, parent.status);
     try std.testing.expectEqual(ProviderSite.canonical_fingerprint, parent.pending_effect.?.site_id);
     try std.testing.expectEqual(@as(u64, 1), parent.resource_counters.internal_handler_calls);
 
-    var result = try okResult(ProviderApp, ProviderSite, allocator, parent.pending_effect.?, @as(i32, 52));
-    defer result.deinit(allocator);
+    const result = try okResult(ProviderApp, ProviderSite, allocator, parent.pending_effect.?, @as(i32, 52));
     const parent_bytes = try ProviderApp.encodeFrame(allocator, parent);
-    defer allocator.free(parent_bytes);
-    var completed = try ProviderApp.step(allocator, .{
+    const completed = try ProviderApp.step(&arena, .{
         .application_id = ProviderApp.Manifest.application_id,
         .expected_parent_frame_id = parent.frame_id,
         .prior_frame_bytes = parent_bytes,
         .effect_result = result,
         .fuel = 100,
     });
-    defer completed.deinit(allocator);
     try std.testing.expectEqual(world.v1.FrameStatus.completed, completed.status);
     var decoded = try ProviderApp.decodeFinalResult(allocator, completed);
     defer decoded.deinit();

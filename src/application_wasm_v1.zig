@@ -73,18 +73,18 @@ pub fn ApplicationAbi(comptime App: type, comptime options: Options) type {
                 return fail(.malformed_input, "StepInput is empty or exceeds the input region");
             }
 
-            const allocator = scratch.allocator();
-            var input = protocol.StepInput.decode(
-                allocator,
+            var arena = std.heap.ArenaAllocator.init(scratch.allocator());
+            defer arena.deinit();
+            const allocator = arena.allocator();
+            const input = protocol.StepInput.decode(
+                &arena,
                 input_storage[0..input_len],
                 App.Limits,
             ) catch |err| return fail(decodeStatus(err), @errorName(err));
-            defer input.deinit(allocator);
 
-            var frame = App.step(allocator, input) catch |err| {
+            const frame = App.step(&arena, input) catch |err| {
                 return fail(stepStatus(err), @errorName(err));
             };
-            defer frame.deinit(allocator);
 
             const encoded = App.encodeFrame(allocator, frame) catch |err| {
                 return fail(stepStatus(err), @errorName(err));
