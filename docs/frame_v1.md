@@ -32,7 +32,7 @@ A Frame contains at most one pending effect. This is a semantic v1 restriction, 
 - `completed` has a result schema and result bytes, and no pending effect or failure.
 - `failed` has a deterministic failure and no pending effect or terminal result.
 - `yielded_fuel` has resumable state and no pending effect or terminal outcome.
-- `cancelled` has no pending effect or terminal result.
+- `cancelled` has no pending effect, terminal result, or failure.
 
 Genesis has sequence `0`, no parent, and no accepted EffectResult. Every later Frame has a nonzero parent identity and a nonzero sequence. Every present accepted-result identity and final-result schema identity is nonzero. An emitted request uses the child Frame sequence and binds the prior Frame identity as `parent_frame_id`; genesis uses the all-zero parent identity for its first request.
 

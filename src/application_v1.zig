@@ -384,7 +384,9 @@ pub const Frame = struct {
                 if (self.state_bytes.len == 0) return error.InvalidFrame;
             },
             .cancelled => {
-                if (self.pending_effect != null or self.final_result_schema_id != null or self.final_result_bytes != null) return error.InvalidFrame;
+                if (self.pending_effect != null or self.final_result_schema_id != null or self.final_result_bytes != null or self.failure != null) {
+                    return error.InvalidFrame;
+                }
             },
         }
         if (!check_identity) return;
@@ -1426,6 +1428,23 @@ test "world application v1 rejects impossible Frame causal sentinels" {
     };
     try std.testing.expectError(error.InvalidFrame, later.seal(allocator, .{}));
     try std.testing.expectEqualSlices(u8, &zero_digest, &later.frame_id);
+}
+
+test "world application v1 permits failure only on failed Frames" {
+    const allocator = std.testing.allocator;
+    var frame: Frame = .{
+        .application_id = digestLabel("test", "application"),
+        .sequence = 0,
+        .state_bytes = "",
+        .status = .cancelled,
+        .failure = "cancelled-with-failure",
+    };
+    try std.testing.expectError(error.InvalidFrame, frame.seal(allocator, .{}));
+    try std.testing.expectEqualSlices(u8, &zero_digest, &frame.frame_id);
+
+    frame.status = .failed;
+    try frame.seal(allocator, .{});
+    try frame.validate(.{});
 }
 
 test "world application v1 yielded Frame golden bytes are frozen" {
