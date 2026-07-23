@@ -12,6 +12,7 @@ const application_limits: world.v1.Limits = .{
     .maximum_host_metadata_bytes = 8 * 1024,
     .maximum_failure_bytes = 8 * 1024,
 };
+const machine_state_limit = 64 * 1024;
 
 fn skeletonRootPlan() boundary.ir.ProgramPlan {
     const root = boundary.ir.builder.function(0);
@@ -168,7 +169,7 @@ const SkeletonRootBody = struct {
     pub const compiled_plan = skeletonRootPlan();
 };
 const SkeletonRootProgram = boundary.program("world-v1-skeleton-agent", struct {}, SkeletonRootBody);
-pub const SkeletonRootMachine = boundary.staticMachine(SkeletonRootProgram, .{ .maximum_state_bytes = application_limits.maximum_state_bytes });
+pub const SkeletonRootMachine = boundary.staticMachine(SkeletonRootProgram, .{ .maximum_state_bytes = machine_state_limit });
 pub const SkeletonModelSite0 = SkeletonRootMachine.EffectRow.operationSite("agent", "decide", 0);
 pub const SkeletonModelSite1 = SkeletonRootMachine.EffectRow.operationSite("agent", "decide", 1);
 pub const SkeletonToolboxSite = SkeletonRootMachine.EffectRow.operationSite("toolbox", "call", 0);
@@ -177,7 +178,7 @@ const PureToolboxBody = struct {
     pub const compiled_plan = pureToolboxPlan();
 };
 const PureToolboxProgram = boundary.program("world-v1-skeleton-toolbox", struct {}, PureToolboxBody);
-pub const PureToolboxMachine = boundary.staticMachine(PureToolboxProgram, .{ .maximum_state_bytes = application_limits.maximum_state_bytes });
+pub const PureToolboxMachine = boundary.staticMachine(PureToolboxProgram, .{ .maximum_state_bytes = machine_state_limit });
 
 pub const SkeletonApp = world.application(.{
     .name = "skeleton-agent",
@@ -201,7 +202,7 @@ const FixtureRootBody = struct {
     pub const compiled_plan = fixtureRootPlan();
 };
 const FixtureRootProgram = boundary.program("world-v1-fixture-agent", struct {}, FixtureRootBody);
-pub const FixtureRootMachine = boundary.staticMachine(FixtureRootProgram, .{ .maximum_state_bytes = application_limits.maximum_state_bytes });
+pub const FixtureRootMachine = boundary.staticMachine(FixtureRootProgram, .{ .maximum_state_bytes = machine_state_limit });
 pub const FixtureModelSite0 = FixtureRootMachine.EffectRow.operationSite("agent", "decide", 0);
 pub const FixtureModelSite1 = FixtureRootMachine.EffectRow.operationSite("agent", "decide", 1);
 pub const FixtureModelSite2 = FixtureRootMachine.EffectRow.operationSite("agent", "decide", 2);
@@ -212,14 +213,14 @@ const ReadProviderBody = struct {
     pub const compiled_plan = fileProviderPlan("world-v1-file-read-provider", 0x5202, "file", "read");
 };
 const ReadProviderProgram = boundary.program("world-v1-file-read-provider", struct {}, ReadProviderBody);
-pub const ReadProviderMachine = boundary.staticMachine(ReadProviderProgram, .{ .maximum_state_bytes = application_limits.maximum_state_bytes });
+pub const ReadProviderMachine = boundary.staticMachine(ReadProviderProgram, .{ .maximum_state_bytes = machine_state_limit });
 pub const FileReadSite = ReadProviderMachine.EffectRow.operationSite("file", "read", 0);
 
 const WriteProviderBody = struct {
     pub const compiled_plan = fileProviderPlan("world-v1-file-write-provider", 0x5203, "file", "write");
 };
 const WriteProviderProgram = boundary.program("world-v1-file-write-provider", struct {}, WriteProviderBody);
-pub const WriteProviderMachine = boundary.staticMachine(WriteProviderProgram, .{ .maximum_state_bytes = application_limits.maximum_state_bytes });
+pub const WriteProviderMachine = boundary.staticMachine(WriteProviderProgram, .{ .maximum_state_bytes = machine_state_limit });
 pub const FileWriteSite = WriteProviderMachine.EffectRow.operationSite("file", "write", 0);
 
 pub const FixtureApp = world.application(.{

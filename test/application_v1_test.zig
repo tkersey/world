@@ -124,8 +124,9 @@ const RootBody = struct {
     pub const compiled_plan = rootEffectPlan("world-v1-root");
 };
 const RootProgram = boundary.program("world-v1-root", struct {}, RootBody);
+const machine_state_limit = 16 * 1024;
 pub const RootMachine = boundary.staticMachine(RootProgram, .{
-    .maximum_state_bytes = 64 * 1024,
+    .maximum_state_bytes = machine_state_limit,
 });
 pub const RootSite = RootMachine.EffectRow.operationSite("root", "decide", 0);
 
@@ -134,7 +135,7 @@ const ProviderBody = struct {
 };
 const ProviderProgram = boundary.program("world-v1-provider", struct {}, ProviderBody);
 pub const ProviderMachine = boundary.staticMachine(ProviderProgram, .{
-    .maximum_state_bytes = 64 * 1024,
+    .maximum_state_bytes = machine_state_limit,
 });
 pub const ProviderSite = ProviderMachine.EffectRow.operationSite("provider", "external", 0);
 
@@ -177,6 +178,45 @@ pub const ProviderApp = world.v1.application(.{
     })},
 });
 
+pub const DeferredApp = world.v1.application(.{
+    .name = "deferred-effect",
+    .version = "1.0.0",
+    .root = RootMachine,
+    .limits = OneEffectApp.Limits,
+    .external = .{world.v1.external(RootSite, .{
+        .interface = "test.deferred-effect.v1",
+        .allowed_statuses = world.v1.AllowedStatuses{ .deferred = true },
+    })},
+});
+
+pub const TightResultApp = world.v1.application(.{
+    .name = "tight-result",
+    .version = "1.0.0",
+    .root = RootMachine,
+    .limits = OneEffectApp.Limits,
+    .external = .{world.v1.external(RootSite, .{
+        .interface = "test.tight-result.v1",
+        .maximum_result_bytes = 7,
+    })},
+});
+
+const SumTagA = enum(u8) {
+    left = 0,
+    right = 1,
+};
+const SumA = union(SumTagA) {
+    left: i32,
+    right: bool,
+};
+const SumTagB = enum(u8) {
+    left = 1,
+    right = 2,
+};
+const SumB = union(SumTagB) {
+    left: i32,
+    right: bool,
+};
+
 fn okResult(
     comptime App: type,
     comptime Site: type,
@@ -209,6 +249,59 @@ test "World comptime application derives one exact residual effect row" {
         OneEffectApp.Manifest.boundary_package_version,
     );
     try OneEffectApp.Manifest.validate();
+    try std.testing.expect(ProviderApp.maximum_encoded_runtime_state_bytes <= ProviderApp.Limits.maximum_state_bytes);
+}
+
+test "World value schema identity binds tagged-union discriminants" {
+    try std.testing.expect(!std.mem.eql(
+        u8,
+        &world.v1.valueSchemaId(SumA),
+        &world.v1.valueSchemaId(SumB),
+    ));
+}
+
+test "World external value encoder enforces its binding result limit" {
+    try std.testing.expectError(
+        error.LimitExceeded,
+        TightResultApp.encodeExternalResult(std.testing.allocator, RootSite, @as(i32, 41)),
+    );
+}
+
+test "World deferred result preserves the exact outstanding request and Frame" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const args = try DeferredApp.encodeInitialArgs(allocator, .{});
+    const parent = try DeferredApp.initialFrame(&arena, args, 100);
+    const parent_bytes = try DeferredApp.encodeFrame(allocator, parent);
+
+    var deferred: world.v1.EffectResult = .{
+        .request_id = parent.pending_effect.?.request_id,
+        .status = .deferred,
+        .result_schema_id = parent.pending_effect.?.result_schema_id,
+        .attempt = 1,
+    };
+    try deferred.seal(allocator, DeferredApp.Limits);
+    const parked = try DeferredApp.step(&arena, .{
+        .application_id = DeferredApp.Manifest.application_id,
+        .expected_parent_frame_id = parent.frame_id,
+        .prior_frame_bytes = parent_bytes,
+        .effect_result = deferred,
+        .fuel = 100,
+    });
+    const parked_bytes = try DeferredApp.encodeFrame(allocator, parked);
+
+    try std.testing.expectEqualSlices(u8, parent_bytes, parked_bytes);
+    try std.testing.expectEqualSlices(
+        u8,
+        &parent.pending_effect.?.request_id,
+        &parked.pending_effect.?.request_id,
+    );
+    try std.testing.expectEqualSlices(
+        u8,
+        &parent.pending_effect.?.idempotency_key,
+        &parked.pending_effect.?.idempotency_key,
+    );
 }
 
 test "World comptime application executes one external effect deterministically" {

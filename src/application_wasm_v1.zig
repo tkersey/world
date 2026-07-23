@@ -118,8 +118,11 @@ pub fn ApplicationAbi(comptime App: type, comptime options: Options) type {
 
         pub fn worldReset() u32 {
             scratch.reset();
+            @memset(&input_storage, 0);
+            @memset(&output_storage, 0);
+            @memset(&error_storage, 0);
             output_length = 0;
-            clearError();
+            error_length = 0;
             return @intFromEnum(Status.success);
         }
 

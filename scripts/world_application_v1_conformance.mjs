@@ -61,6 +61,17 @@ const parent = decodeFrame(parentBytes);
 if (parent.status !== 0 || parent.request === null) throw new Error("genesis did not park on one external effect");
 if (parent.sequence !== 0n) throw new Error("genesis Frame sequence is not zero");
 
+if (first.world_step(0) !== 1 || first.world_error_len() === 0) {
+  throw new Error("reset fixture could not establish populated ABI regions");
+}
+if (first.world_reset() !== 0) throw new Error("world_reset returned a nonzero result");
+if (first.world_output_len() !== 0 || first.world_error_len() !== 0) {
+  throw new Error("world_reset retained exported output or error length");
+}
+expectZeroed(first.memory, first.world_input_ptr(), first.world_input_capacity(), "input");
+expectZeroed(first.memory, first.world_output_ptr(), 1024 * 1024, "output");
+expectZeroed(first.memory, first.world_error_ptr(), 256, "error");
+
 const valueBytes = Buffer.alloc(8);
 valueBytes.writeBigInt64LE(41n);
 const result = encodeOkResult(parent.request, valueBytes);
@@ -99,6 +110,7 @@ console.log("dynamic_runtime_markers=0");
 console.log(`exports=${requiredExports.length}`);
 console.log(`initial_memory_bytes=${first.memory.buffer.byteLength}`);
 console.log("bounded_memory=true");
+console.log("reset_regions_zeroed=true");
 console.log("fresh_instance_continuation=true");
 console.log("byte_identical_retry=true");
 console.log("final_result=41");
@@ -121,6 +133,13 @@ function copyExported(exports, pointerName, lengthName) {
   const pointer = exports[pointerName]();
   const length = exports[lengthName]();
   return Buffer.from(new Uint8Array(exports.memory.buffer, pointer, length));
+}
+
+function expectZeroed(memory, pointer, length, label) {
+  const region = new Uint8Array(memory.buffer, pointer, length);
+  if (region.some((value) => value !== 0)) {
+    throw new Error(`world_reset retained bytes in the ${label} region`);
+  }
 }
 
 function abiFailure(exports, prefix) {

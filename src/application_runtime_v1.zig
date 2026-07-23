@@ -138,7 +138,10 @@ fn validateProviderCompatibility(comptime Binding: type) void {
     }
 }
 
-fn validateExternalCompatibility(comptime Binding: type) void {
+fn validateExternalCompatibility(
+    comptime Binding: type,
+    comptime limits: protocol.Limits,
+) void {
     switch (Binding.response_mode) {
         .@"resume" => if (!Binding.Site.may_resume) {
             @compileError("World external resume binding targets an operation that cannot resume");
@@ -148,6 +151,14 @@ fn validateExternalCompatibility(comptime Binding: type) void {
         },
     }
     if (Binding.maximum_attempts == 0) @compileError("World external maximum_attempts must be positive");
+    if (Binding.configured_maximum_result_bytes) |maximum| {
+        if (maximum == 0) {
+            @compileError("World external maximum_result_bytes must be positive");
+        }
+        if (maximum > limits.maximum_result_bytes) {
+            @compileError("World external maximum_result_bytes exceeds the application maximum_result_bytes");
+        }
+    }
     if (!Binding.allowed_statuses.ok and !Binding.allowed_statuses.rejected and
         !Binding.allowed_statuses.failed and !Binding.allowed_statuses.deferred and
         !Binding.allowed_statuses.cancelled)
@@ -189,11 +200,38 @@ fn validateApplicationSpec(
     }
     inline for (externals) |Binding| {
         if (Binding.binding_kind != .external_effect) @compileError("World external contains a non-external binding");
-        validateExternalCompatibility(Binding);
+        validateExternalCompatibility(Binding, limits);
         if (!siteReachable(Root, Binding.Site, handlers, limits, 0, .{})) {
             @compileError("World external binding targets a site unreachable from the root machine");
         }
     }
+    const maximum_runtime_state_bytes =
+        runtime_state_header_bytes + maximumMachineStackBytes(Root, handlers);
+    if (maximum_runtime_state_bytes > limits.maximum_state_bytes) {
+        @compileError("World application provider stack exceeds maximum_state_bytes");
+    }
+}
+
+const runtime_state_header_bytes: u128 = 8 + 4 + protocol.zero_digest.len + 4;
+const runtime_machine_frame_overhead: u128 = 4 + 4 + 4;
+
+fn maximumMachineStackBytes(
+    comptime Machine: type,
+    comptime handlers: anytype,
+) u128 {
+    comptime var maximum_child_bytes: u128 = 0;
+    inline for (Machine.EffectRow.operation_site_metadata) |metadata| {
+        const Site = Machine.EffectRow.siteByIndex(metadata.index);
+        inline for (handlers) |Binding| {
+            if (bindingTargets(Binding, Site)) {
+                const child_bytes = maximumMachineStackBytes(Binding.Provider, handlers);
+                maximum_child_bytes = @max(maximum_child_bytes, child_bytes);
+            }
+        }
+    }
+    return runtime_machine_frame_overhead +
+        @as(u128, Machine.Manifest.maximum_state_bytes) +
+        maximum_child_bytes;
 }
 
 fn validateMachine(
@@ -321,6 +359,7 @@ fn schemaHashType(hasher: *std.crypto.hash.sha2.Sha256, comptime T: type) void {
         .@"union" => |info| {
             if (info.tag_type == null) @compileError("World value codec requires tagged unions");
             hasher.update("sum");
+            schemaHashType(hasher, info.tag_type.?);
             inline for (info.fields) |field| {
                 hashLenBytes(hasher, field.name);
                 schemaHashType(hasher, field.type);
@@ -451,6 +490,9 @@ pub fn application(comptime spec: anytype) type {
     const externals = if (@hasField(@TypeOf(spec), "external")) spec.external else .{};
     const limits = normalizedLimits(spec);
     comptime validateApplicationSpec(Root, handlers, externals, limits);
+    const maximum_runtime_state_bytes: u32 = @intCast(
+        runtime_state_header_bytes + maximumMachineStackBytes(Root, handlers),
+    );
     const handler_ids = derivedHandlerIds(handlers);
     const residual_effects = derivedResidualEffects(externals, limits);
     const boundary_version: []const u8 = if (@hasField(@TypeOf(spec), "boundary_package_version"))
@@ -470,6 +512,7 @@ pub fn application(comptime spec: anytype) type {
         pub const internal_handler_ids = handler_ids;
         pub const residual_effect_row = residual_effects;
         pub const Limits = limits;
+        pub const maximum_encoded_runtime_state_bytes = maximum_runtime_state_bytes;
         pub const Manifest: protocol.ApplicationManifest = blk: {
             var manifest: protocol.ApplicationManifest = .{
                 .application_name = name,
@@ -571,6 +614,7 @@ pub fn application(comptime spec: anytype) type {
                     result,
                     &counters,
                 );
+                if (apply_result == .deferred) return prior;
                 accepted_result_id = result.result_id;
                 if (apply_result == .terminal_failure) {
                     return failureFrame(
@@ -616,7 +660,11 @@ pub fn application(comptime spec: anytype) type {
         ) protocol.Error![]u8 {
             const Binding = externalBindingForSite(Site, externals);
             if (@TypeOf(value) != Binding.Response) @compileError("World external result value has the wrong type for this binding");
-            return encodeValueBounded(allocator, value, limits.maximum_result_bytes);
+            return encodeValueBounded(
+                allocator,
+                value,
+                Binding.configured_maximum_result_bytes orelse limits.maximum_result_bytes,
+            );
         }
 
         pub fn decodeFinalResult(
