@@ -13,28 +13,6 @@ fn isZeroDigest(value: Digest) bool {
     return std.mem.eql(u8, &value, &zero_digest);
 }
 
-/// Decoder-owned storage for one otherwise borrowable semantic record.
-pub fn Decoded(comptime Record: type) type {
-    return struct {
-        value: Record,
-        owned: bool = true,
-
-        const Self = @This();
-
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            if (!self.owned) return;
-            self.value.deinitOwned(allocator);
-            self.owned = false;
-        }
-
-        fn take(self: *Self) Record {
-            std.debug.assert(self.owned);
-            self.owned = false;
-            return self.value;
-        }
-    };
-}
-
 pub const Error = error{
     ApplicationMismatch,
     DuplicateResultTarget,
@@ -209,7 +187,9 @@ pub const EffectRequest = struct {
         return encodeRequestSemantic(allocator, self, true);
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!Decoded(@This()) {
+    /// Decode a borrowed semantic value whose slice storage belongs to `arena`.
+    pub fn decode(arena: *std.heap.ArenaAllocator, bytes: []const u8, limits: Limits) Error!@This() {
+        const allocator = arena.allocator();
         if (bytes.len > try aggregateLimit(&.{limits.maximum_payload_bytes}, 512)) return error.LimitExceeded;
         var reader = Reader.init(bytes);
         try reader.expectMagic(request_magic);
@@ -236,12 +216,7 @@ pub const EffectRequest = struct {
         errdefer allocator.free(request.payload_bytes);
         try reader.finish();
         try request.validate(limits);
-        return .{ .value = request };
-    }
-
-    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.payload_bytes);
-        self.payload_bytes = &.{};
+        return request;
     }
 };
 
@@ -289,7 +264,9 @@ pub const EffectResult = struct {
         return encodeResultSemantic(allocator, self, true);
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!Decoded(@This()) {
+    /// Decode a borrowed semantic value whose slice storage belongs to `arena`.
+    pub fn decode(arena: *std.heap.ArenaAllocator, bytes: []const u8, limits: Limits) Error!@This() {
+        const allocator = arena.allocator();
         if (bytes.len > try aggregateLimit(&.{ limits.maximum_result_bytes, limits.maximum_host_claim_bytes }, 256)) {
             return error.LimitExceeded;
         }
@@ -316,14 +293,7 @@ pub const EffectResult = struct {
             .attempt = attempt,
         };
         try result.validate(limits);
-        return .{ .value = result };
-    }
-
-    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
-        if (self.result_bytes) |value| allocator.free(value);
-        allocator.free(self.host_claims);
-        self.result_bytes = null;
-        self.host_claims = &.{};
+        return result;
     }
 };
 
@@ -433,7 +403,9 @@ pub const Frame = struct {
         return encodeFrameSemantic(allocator, self, true);
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!Decoded(@This()) {
+    /// Decode a borrowed semantic value whose slice storage belongs to `arena`.
+    pub fn decode(arena: *std.heap.ArenaAllocator, bytes: []const u8, limits: Limits) Error!@This() {
+        const allocator = arena.allocator();
         if (bytes.len > try aggregateLimit(&.{ limits.maximum_state_bytes, limits.maximum_payload_bytes, limits.maximum_result_bytes, limits.maximum_failure_bytes }, 1024)) {
             return error.LimitExceeded;
         }
@@ -448,14 +420,8 @@ pub const Frame = struct {
         errdefer allocator.free(state_bytes);
         const pending_effect = if (try reader.readBool()) blk: {
             const request_bytes = try reader.readBytes(try aggregateLimitU32(&.{limits.maximum_payload_bytes}, 512));
-            var decoded = try EffectRequest.decode(allocator, request_bytes, limits);
-            errdefer decoded.deinit(allocator);
-            break :blk decoded.take();
+            break :blk try EffectRequest.decode(arena, request_bytes, limits);
         } else null;
-        errdefer if (pending_effect) |value| {
-            var owned = value;
-            owned.deinitOwned(allocator);
-        };
         const accepted_effect_result_id = try reader.readOptionalDigest();
         const status = try readFrameStatus(&reader);
         const final_result_schema_id = try reader.readOptionalDigest();
@@ -488,18 +454,7 @@ pub const Frame = struct {
             .semantic_warnings = semantic_warnings,
         };
         try frame.validate(limits);
-        return .{ .value = frame };
-    }
-
-    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.state_bytes);
-        if (self.pending_effect) |*request| request.deinitOwned(allocator);
-        if (self.final_result_bytes) |value| allocator.free(value);
-        if (self.failure) |value| allocator.free(value);
-        self.state_bytes = &.{};
-        self.pending_effect = null;
-        self.final_result_bytes = null;
-        self.failure = null;
+        return frame;
     }
 };
 
@@ -554,7 +509,9 @@ pub const StepInput = struct {
         return writer.toOwnedSlice();
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!Decoded(@This()) {
+    /// Decode a borrowed semantic value whose slice storage belongs to `arena`.
+    pub fn decode(arena: *std.heap.ArenaAllocator, bytes: []const u8, limits: Limits) Error!@This() {
+        const allocator = arena.allocator();
         if (bytes.len > try aggregateLimit(&.{
             limits.maximum_state_bytes,
             limits.maximum_payload_bytes,
@@ -577,14 +534,8 @@ pub const StepInput = struct {
         errdefer if (initial_args_bytes) |value| allocator.free(value);
         const effect_result = if (try reader.readBool()) blk: {
             const result_limit = try aggregateLimitU32(&.{ limits.maximum_result_bytes, limits.maximum_host_claim_bytes }, 256);
-            var decoded = try EffectResult.decode(allocator, try reader.readBytes(result_limit), limits);
-            errdefer decoded.deinit(allocator);
-            break :blk decoded.take();
+            break :blk try EffectResult.decode(arena, try reader.readBytes(result_limit), limits);
         } else null;
-        errdefer if (effect_result) |value| {
-            var owned = value;
-            owned.deinitOwned(allocator);
-        };
         const fuel = try reader.readU64();
         const host_metadata = try reader.readOwnedBytes(allocator, limits.maximum_host_metadata_bytes);
         errdefer allocator.free(host_metadata);
@@ -599,18 +550,7 @@ pub const StepInput = struct {
             .host_metadata = host_metadata,
         };
         try input.validate(limits);
-        return .{ .value = input };
-    }
-
-    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
-        if (self.prior_frame_bytes) |value| allocator.free(value);
-        if (self.initial_args_bytes) |value| allocator.free(value);
-        if (self.effect_result) |*value| value.deinitOwned(allocator);
-        allocator.free(self.host_metadata);
-        self.prior_frame_bytes = null;
-        self.initial_args_bytes = null;
-        self.effect_result = null;
-        self.host_metadata = &.{};
+        return input;
     }
 };
 
@@ -639,11 +579,10 @@ pub const ApplicationManifest = struct {
     required_host_capabilities: u64 = 0,
 
     pub fn seal(self: *@This(), allocator: std.mem.Allocator) Error!void {
+        _ = allocator;
         self.application_id = zero_digest;
         try self.validateShape(false);
-        const semantic_bytes = try encodeManifestSemantic(allocator, self.*, false);
-        defer allocator.free(semantic_bytes);
-        if (semantic_bytes.len > self.limits.maximum_manifest_bytes) return error.LimitExceeded;
+        if (try manifestEncodedLength(self.*) > self.limits.maximum_manifest_bytes) return error.LimitExceeded;
         self.application_id = try manifestSemanticDigest(self.*);
     }
 
@@ -691,7 +630,8 @@ pub const ApplicationManifest = struct {
     }
 
     pub fn validate(self: @This()) Error!void {
-        return self.validateShape(true);
+        try self.validateShape(true);
+        if (try manifestEncodedLength(self) > self.limits.maximum_manifest_bytes) return error.LimitExceeded;
     }
 
     pub fn encode(self: @This(), allocator: std.mem.Allocator) Error![]u8 {
@@ -704,7 +644,9 @@ pub const ApplicationManifest = struct {
         return bytes;
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, admission_limits: Limits) Error!Decoded(@This()) {
+    /// Decode a borrowed semantic value whose slice storage belongs to `arena`.
+    pub fn decode(arena: *std.heap.ArenaAllocator, bytes: []const u8, admission_limits: Limits) Error!@This() {
+        const allocator = arena.allocator();
         try admission_limits.validate();
         if (bytes.len > admission_limits.maximum_manifest_bytes) return error.LimitExceeded;
         var reader = Reader.init(bytes);
@@ -762,22 +704,7 @@ pub const ApplicationManifest = struct {
             .required_host_capabilities = required_host_capabilities,
         };
         try manifest.validate();
-        return .{ .value = manifest };
-    }
-
-    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
-        allocator.free(self.application_name);
-        allocator.free(self.application_version);
-        allocator.free(self.boundary_package_version);
-        allocator.free(self.world_package_version);
-        allocator.free(self.internal_handler_ids);
-        allocator.free(self.residual_effects);
-        self.application_name = &.{};
-        self.application_version = &.{};
-        self.boundary_package_version = &.{};
-        self.world_package_version = &.{};
-        self.internal_handler_ids = &.{};
-        self.residual_effects = &.{};
+        return manifest;
     }
 };
 
@@ -979,6 +906,35 @@ fn manifestSemanticDigest(manifest: ApplicationManifest) Error!Digest {
 fn requestEncodedLength(request: EffectRequest) Error!u32 {
     const fixed = request_magic.len + 4 + zero_digest.len * 7 + 8 + 4 + 8 + 1 + 4 + 8 + 4 + 4;
     const total = std.math.add(usize, fixed, request.payload_bytes.len) catch return error.LimitExceeded;
+    if (total > std.math.maxInt(u32)) return error.LimitExceeded;
+    return @intCast(total);
+}
+
+fn manifestEncodedLength(manifest: ApplicationManifest) Error!u32 {
+    const fixed = manifest_magic.len +
+        @sizeOf(u32) +
+        zero_digest.len +
+        4 * @sizeOf(u32) +
+        2 * @sizeOf(u32) +
+        zero_digest.len +
+        2 * @sizeOf(u32) +
+        limits_encoded_length +
+        @sizeOf(u64);
+    var total: usize = fixed;
+    for ([_][]const u8{
+        manifest.application_name,
+        manifest.application_version,
+        manifest.boundary_package_version,
+        manifest.world_package_version,
+    }) |value| {
+        total = std.math.add(usize, total, value.len) catch return error.LimitExceeded;
+    }
+    const handler_bytes = std.math.mul(usize, manifest.internal_handler_ids.len, zero_digest.len) catch
+        return error.LimitExceeded;
+    total = std.math.add(usize, total, handler_bytes) catch return error.LimitExceeded;
+    const residual_bytes = std.math.mul(usize, manifest.residual_effects.len, residual_effect_encoded_length) catch
+        return error.LimitExceeded;
+    total = std.math.add(usize, total, residual_bytes) catch return error.LimitExceeded;
     if (total > std.math.maxInt(u32)) return error.LimitExceeded;
     return @intCast(total);
 }
@@ -1253,6 +1209,8 @@ const Reader = struct {
 
 test "world application v1 records round trip canonically" {
     const allocator = std.testing.allocator;
+    var decode_arena = std.heap.ArenaAllocator.init(allocator);
+    defer decode_arena.deinit();
     const limits: Limits = .{};
     const application_id = digestLabel("test", "application");
     const parent_frame_id = digestLabel("test", "parent");
@@ -1273,9 +1231,8 @@ test "world application v1 records round trip canonically" {
     try request.seal(allocator, limits);
     const request_bytes = try request.encode(allocator, limits);
     defer allocator.free(request_bytes);
-    var decoded_request = try EffectRequest.decode(allocator, request_bytes, limits);
-    defer decoded_request.deinit(allocator);
-    const request_bytes_again = try decoded_request.value.encode(allocator, limits);
+    const decoded_request = try EffectRequest.decode(&decode_arena, request_bytes, limits);
+    const request_bytes_again = try decoded_request.encode(allocator, limits);
     defer allocator.free(request_bytes_again);
     try std.testing.expectEqualSlices(u8, request_bytes, request_bytes_again);
 
@@ -1290,9 +1247,8 @@ test "world application v1 records round trip canonically" {
     try result.seal(allocator, limits);
     const result_bytes = try result.encode(allocator, limits);
     defer allocator.free(result_bytes);
-    var decoded_result = try EffectResult.decode(allocator, result_bytes, limits);
-    defer decoded_result.deinit(allocator);
-    const result_bytes_again = try decoded_result.value.encode(allocator, limits);
+    const decoded_result = try EffectResult.decode(&decode_arena, result_bytes, limits);
+    const result_bytes_again = try decoded_result.encode(allocator, limits);
     defer allocator.free(result_bytes_again);
     try std.testing.expectEqualSlices(u8, result_bytes, result_bytes_again);
 
@@ -1309,20 +1265,41 @@ test "world application v1 records round trip canonically" {
     try frame.seal(allocator, limits);
     const frame_bytes = try frame.encode(allocator, limits);
     defer allocator.free(frame_bytes);
-    var decoded_frame = try Frame.decode(allocator, frame_bytes, limits);
-    defer decoded_frame.deinit(allocator);
-    const frame_bytes_again = try decoded_frame.value.encode(allocator, limits);
+    const decoded_frame = try Frame.decode(&decode_arena, frame_bytes, limits);
+    const frame_bytes_again = try decoded_frame.encode(allocator, limits);
     defer allocator.free(frame_bytes_again);
     try std.testing.expectEqualSlices(u8, frame_bytes, frame_bytes_again);
 }
 
-test "world application v1 borrowed records expose no owning deinitializer" {
+test "world application v1 decode lifetime belongs to the caller arena" {
+    const allocator = std.testing.allocator;
     try std.testing.expect(!@hasDecl(EffectRequest, "deinit"));
     try std.testing.expect(!@hasDecl(EffectResult, "deinit"));
     try std.testing.expect(!@hasDecl(Frame, "deinit"));
     try std.testing.expect(!@hasDecl(StepInput, "deinit"));
     try std.testing.expect(!@hasDecl(ApplicationManifest, "deinit"));
-    try std.testing.expect(@hasDecl(Decoded(EffectRequest), "deinit"));
+
+    var request: EffectRequest = .{
+        .application_id = digestLabel("test", "application"),
+        .parent_frame_id = digestLabel("test", "parent"),
+        .sequence = 1,
+        .site_id = 1,
+        .interface_id = digestLabel("test", "interface"),
+        .payload_schema_id = digestLabel("test", "payload"),
+        .result_schema_id = digestLabel("test", "result"),
+        .payload_bytes = "decoded allocation",
+        .limits = .{ .maximum_result_bytes = 32, .maximum_attempts = 1 },
+    };
+    try request.seal(allocator, .{});
+    const bytes = try request.encode(allocator, .{});
+    defer allocator.free(bytes);
+
+    var decode_arena = std.heap.ArenaAllocator.init(allocator);
+    defer decode_arena.deinit();
+    var decoded = try EffectRequest.decode(&decode_arena, bytes, .{});
+    const copied = decoded;
+    decoded.payload_bytes = "borrowed replacement";
+    try copied.validate(.{});
 }
 
 test "world application v1 seal rejects invalid shapes before stamping identity" {
@@ -1476,6 +1453,8 @@ test "world application v1 rejects a second pending effect by construction" {
 
 test "world application v1 admission limits bound declared manifest limits" {
     const allocator = std.testing.allocator;
+    var decode_arena = std.heap.ArenaAllocator.init(allocator);
+    defer decode_arena.deinit();
     const admission: Limits = .{};
     var declared = admission;
     declared.maximum_state_bytes += 1;
@@ -1493,12 +1472,14 @@ test "world application v1 admission limits bound declared manifest limits" {
     defer allocator.free(encoded);
     try std.testing.expectError(
         error.LimitExceeded,
-        ApplicationManifest.decode(allocator, encoded, admission),
+        ApplicationManifest.decode(&decode_arena, encoded, admission),
     );
 }
 
 test "world application v1 manifest enforces its own byte limit" {
     const allocator = std.testing.allocator;
+    var decode_arena = std.heap.ArenaAllocator.init(allocator);
+    defer decode_arena.deinit();
     var manifest: ApplicationManifest = .{
         .application_name = "self-limited",
         .application_version = "1.0.0",
@@ -1515,7 +1496,8 @@ test "world application v1 manifest enforces its own byte limit" {
     const encoded = try encodeManifestSemantic(allocator, manifest, true);
     defer allocator.free(encoded);
     try std.testing.expect(encoded.len > manifest.limits.maximum_manifest_bytes);
-    try std.testing.expectError(error.LimitExceeded, ApplicationManifest.decode(allocator, encoded, .{}));
+    try std.testing.expectError(error.LimitExceeded, manifest.validate());
+    try std.testing.expectError(error.LimitExceeded, ApplicationManifest.decode(&decode_arena, encoded, .{}));
 }
 
 test "world application v1 manifest proves collection bytes before allocation" {
@@ -1538,9 +1520,11 @@ test "world application v1 manifest proves collection bytes before allocation" {
     defer allocator.free(truncated_handlers);
 
     var failing_allocator = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 4 });
+    var failing_arena = std.heap.ArenaAllocator.init(failing_allocator.allocator());
+    defer failing_arena.deinit();
     try std.testing.expectError(
         error.InvalidEncoding,
-        ApplicationManifest.decode(failing_allocator.allocator(), truncated_handlers, .{}),
+        ApplicationManifest.decode(&failing_arena, truncated_handlers, .{}),
     );
     try std.testing.expect(!failing_allocator.has_induced_failure);
 
@@ -1568,9 +1552,11 @@ test "world application v1 manifest proves collection bytes before allocation" {
     defer allocator.free(truncated_residuals);
 
     var residual_failing_allocator = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 4 });
+    var residual_failing_arena = std.heap.ArenaAllocator.init(residual_failing_allocator.allocator());
+    defer residual_failing_arena.deinit();
     try std.testing.expectError(
         error.InvalidEncoding,
-        ApplicationManifest.decode(residual_failing_allocator.allocator(), truncated_residuals, .{}),
+        ApplicationManifest.decode(&residual_failing_arena, truncated_residuals, .{}),
     );
     try std.testing.expect(!residual_failing_allocator.has_induced_failure);
 }
@@ -1601,6 +1587,8 @@ test "world application v1 needs-effect Frame requires portable state" {
 
 test "world application v1 StepInput and manifest round trip" {
     const allocator = std.testing.allocator;
+    var decode_arena = std.heap.ArenaAllocator.init(allocator);
+    defer decode_arena.deinit();
     const limits: Limits = .{};
     const handler_ids = [_]Digest{
         digestLabel("test", "handler-a"),
@@ -1635,9 +1623,8 @@ test "world application v1 StepInput and manifest round trip" {
     try manifest.seal(allocator);
     const manifest_bytes = try manifest.encode(allocator);
     defer allocator.free(manifest_bytes);
-    var decoded_manifest = try ApplicationManifest.decode(allocator, manifest_bytes, limits);
-    defer decoded_manifest.deinit(allocator);
-    const manifest_bytes_again = try decoded_manifest.value.encode(allocator);
+    const decoded_manifest = try ApplicationManifest.decode(&decode_arena, manifest_bytes, limits);
+    const manifest_bytes_again = try decoded_manifest.encode(allocator);
     defer allocator.free(manifest_bytes_again);
     try std.testing.expectEqualSlices(u8, manifest_bytes, manifest_bytes_again);
 
@@ -1649,9 +1636,8 @@ test "world application v1 StepInput and manifest round trip" {
     };
     const input_bytes = try input.encode(allocator, limits);
     defer allocator.free(input_bytes);
-    var decoded_input = try StepInput.decode(allocator, input_bytes, limits);
-    defer decoded_input.deinit(allocator);
-    const input_bytes_again = try decoded_input.value.encode(allocator, limits);
+    const decoded_input = try StepInput.decode(&decode_arena, input_bytes, limits);
+    const input_bytes_again = try decoded_input.encode(allocator, limits);
     defer allocator.free(input_bytes_again);
     try std.testing.expectEqualSlices(u8, input_bytes, input_bytes_again);
 }
@@ -1688,6 +1674,8 @@ test "world application v1 manifest capabilities are derived exactly from residu
 
 test "world application v1 StepInput rejects aggregate over-limit bytes before decode" {
     const allocator = std.testing.allocator;
+    var decode_arena = std.heap.ArenaAllocator.init(allocator);
+    defer decode_arena.deinit();
     const limits: Limits = .{};
     const maximum = try aggregateLimit(&.{
         limits.maximum_state_bytes,
@@ -1702,11 +1690,13 @@ test "world application v1 StepInput rejects aggregate over-limit bytes before d
     const oversized = try allocator.alloc(u8, maximum + 1);
     defer allocator.free(oversized);
     @memset(oversized, 0);
-    try std.testing.expectError(error.LimitExceeded, StepInput.decode(allocator, oversized, limits));
+    try std.testing.expectError(error.LimitExceeded, StepInput.decode(&decode_arena, oversized, limits));
 }
 
 test "world application v1 malformed records fail closed" {
     const allocator = std.testing.allocator;
+    var decode_arena = std.heap.ArenaAllocator.init(allocator);
+    defer decode_arena.deinit();
     const limits: Limits = .{};
     var request: EffectRequest = .{
         .application_id = digestLabel("test", "application"),
@@ -1726,19 +1716,19 @@ test "world application v1 malformed records fail closed" {
     const identity_tamper = try allocator.dupe(u8, encoded);
     defer allocator.free(identity_tamper);
     identity_tamper[request_magic.len + 4] ^= 1;
-    try std.testing.expectError(error.InvalidIdentity, EffectRequest.decode(allocator, identity_tamper, limits));
+    try std.testing.expectError(error.InvalidIdentity, EffectRequest.decode(&decode_arena, identity_tamper, limits));
 
     const with_trailing = try allocator.alloc(u8, encoded.len + 1);
     defer allocator.free(with_trailing);
     @memcpy(with_trailing[0..encoded.len], encoded);
     with_trailing[encoded.len] = 0;
-    try std.testing.expectError(error.TrailingBytes, EffectRequest.decode(allocator, with_trailing, limits));
+    try std.testing.expectError(error.TrailingBytes, EffectRequest.decode(&decode_arena, with_trailing, limits));
 
     const length_tamper = try allocator.dupe(u8, encoded);
     defer allocator.free(length_tamper);
     const payload_length_offset = request_magic.len + 4 + zero_digest.len * 6 + 8 + 4 + 8 + 1;
     std.mem.writeInt(u32, length_tamper[payload_length_offset..][0..4], std.math.maxInt(u32), .little);
-    try std.testing.expectError(error.LimitExceeded, EffectRequest.decode(allocator, length_tamper, limits));
+    try std.testing.expectError(error.LimitExceeded, EffectRequest.decode(&decode_arena, length_tamper, limits));
 
     var wrong_result: EffectResult = .{
         .request_id = request.request_id,
