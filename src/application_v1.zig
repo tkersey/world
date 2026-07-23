@@ -1514,19 +1514,19 @@ test "world application v1 manifest proves collection bytes before allocation" {
     try writer.writeLenBytes("1.0.0-rc.1");
     try writer.writeU32(abi_version);
     try writer.writeDigest(digestLabel("test", "root"));
-    try writer.writeU32(1);
+    try writer.writeU32((Limits{}).maximum_internal_handlers);
     try writer.writeDigest(zero_digest);
     const truncated_handlers = try writer.toOwnedSlice();
     defer allocator.free(truncated_handlers);
 
-    var failing_allocator = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 4 });
-    var failing_arena = std.heap.ArenaAllocator.init(failing_allocator.allocator());
-    defer failing_arena.deinit();
+    var handler_arena = std.heap.ArenaAllocator.init(allocator);
+    defer handler_arena.deinit();
     try std.testing.expectError(
         error.InvalidEncoding,
-        ApplicationManifest.decode(&failing_arena, truncated_handlers, .{}),
+        ApplicationManifest.decode(&handler_arena, truncated_handlers, .{}),
     );
-    try std.testing.expect(!failing_allocator.has_induced_failure);
+    const handler_allocation_bytes = @sizeOf(Digest) * (Limits{}).maximum_internal_handlers;
+    try std.testing.expect(handler_arena.queryCapacity() < handler_allocation_bytes);
 
     var residual_writer = Writer.init(allocator);
     defer residual_writer.deinit();
@@ -1541,7 +1541,7 @@ test "world application v1 manifest proves collection bytes before allocation" {
     try residual_writer.writeU32(abi_version);
     try residual_writer.writeDigest(digestLabel("test", "root"));
     try residual_writer.writeU32(0);
-    try residual_writer.writeU32(1);
+    try residual_writer.writeU32((Limits{}).maximum_residual_effects);
     try residual_writer.writeDigest(digestLabel("test", "interface"));
     try residual_writer.writeU64(1);
     try residual_writer.writeDigest(digestLabel("test", "payload"));
@@ -1551,14 +1551,14 @@ test "world application v1 manifest proves collection bytes before allocation" {
     const truncated_residuals = try residual_writer.toOwnedSlice();
     defer allocator.free(truncated_residuals);
 
-    var residual_failing_allocator = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 4 });
-    var residual_failing_arena = std.heap.ArenaAllocator.init(residual_failing_allocator.allocator());
-    defer residual_failing_arena.deinit();
+    var residual_arena = std.heap.ArenaAllocator.init(allocator);
+    defer residual_arena.deinit();
     try std.testing.expectError(
         error.InvalidEncoding,
-        ApplicationManifest.decode(&residual_failing_arena, truncated_residuals, .{}),
+        ApplicationManifest.decode(&residual_arena, truncated_residuals, .{}),
     );
-    try std.testing.expect(!residual_failing_allocator.has_induced_failure);
+    const residual_allocation_bytes = @sizeOf(ResidualEffect) * (Limits{}).maximum_residual_effects;
+    try std.testing.expect(residual_arena.queryCapacity() < residual_allocation_bytes);
 }
 
 test "world application v1 needs-effect Frame requires portable state" {
