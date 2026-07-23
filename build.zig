@@ -424,6 +424,29 @@ pub fn build(b: *std.Build) void {
         .root_module = world_module_test_module,
         .filters = test_args.filters,
     });
+    const world_application_v1_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/world.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "boundary", .module = boundary },
+            },
+        }),
+        .filters = &.{"world application v1"},
+    });
+    const check_world_application_spec_step = b.step("check-world-application-spec", "Run World Comptime v1 protocol and canonical codec checks.");
+    dependOnNativeRunOrCompile(b, validation_target, check_world_application_spec_step, world_application_v1_tests, test_args.passthrough);
+    const world_application_v1_wasm_check = b.addLibrary(.{
+        .linkage = .static,
+        .name = "world-application-v1-protocol-wasm-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/application_v1.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    check_world_application_spec_step.dependOn(&world_application_v1_wasm_check.step);
     const world_protocol_manifest_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
@@ -1090,6 +1113,7 @@ pub fn build(b: *std.Build) void {
     compile_fail_step.dependOn(&appliance_zero_actuation_record_capacity_test.step);
 
     const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
+    check_step.dependOn(check_world_application_spec_step);
     check_step.dependOn(test_step);
     check_step.dependOn(compile_fail_step);
     check_step.dependOn(check_world_target_step);

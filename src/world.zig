@@ -1,6 +1,13 @@
 const std = @import("std");
 const protocol_mod = @import("protocol.zig");
 
+/// World Comptime application, Frame, and residual effect protocol v1.
+pub const v1 = @import("application_v1.zig");
+
+test {
+    _ = v1;
+}
+
 pub const Mode = enum {
     fresh,
     replay,
