@@ -34,7 +34,9 @@ A Frame contains at most one pending effect. This is a semantic v1 restriction, 
 - `yielded_fuel` has resumable state and no pending effect or terminal outcome.
 - `cancelled` has no pending effect or terminal result.
 
-Genesis has sequence `0` and no parent. Every later Frame has a parent and a nonzero sequence. An emitted request uses the child Frame sequence and binds the prior Frame identity as `parent_frame_id`; genesis uses the all-zero parent identity for its first request.
+Genesis has sequence `0`, no parent, and no accepted EffectResult. Every later Frame has a nonzero parent identity and a nonzero sequence. Every present accepted-result identity and final-result schema identity is nonzero. An emitted request uses the child Frame sequence and binds the prior Frame identity as `parent_frame_id`; genesis uses the all-zero parent identity for its first request.
+
+A deterministic application failure is committed only as a `failed` Frame. The application WASM ABI therefore returns normal Frame-producing success for that transition; non-Frame ABI failures do not substitute for or erase the causal failure record.
 
 ## Identity
 

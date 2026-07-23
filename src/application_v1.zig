@@ -9,6 +9,32 @@ pub const Digest = [std.crypto.hash.sha2.Sha256.digest_length]u8;
 /// All-zero digest used only while computing a self-identifying record.
 pub const zero_digest: Digest = [_]u8{0} ** std.crypto.hash.sha2.Sha256.digest_length;
 
+fn isZeroDigest(value: Digest) bool {
+    return std.mem.eql(u8, &value, &zero_digest);
+}
+
+/// Decoder-owned storage for one otherwise borrowable semantic record.
+pub fn Decoded(comptime Record: type) type {
+    return struct {
+        value: Record,
+        owned: bool = true,
+
+        const Self = @This();
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            if (!self.owned) return;
+            self.value.deinitOwned(allocator);
+            self.owned = false;
+        }
+
+        fn take(self: *Self) Record {
+            std.debug.assert(self.owned);
+            self.owned = false;
+            return self.value;
+        }
+    };
+}
+
 pub const Error = error{
     ApplicationMismatch,
     DuplicateResultTarget,
@@ -134,22 +160,36 @@ pub const EffectRequest = struct {
     authority_requirements: u64 = 0,
     limits: EffectLimits,
 
-    pub fn seal(self: *@This(), allocator: std.mem.Allocator) Error!void {
+    pub fn seal(self: *@This(), allocator: std.mem.Allocator, limits: Limits) Error!void {
         _ = allocator;
         self.request_id = zero_digest;
         self.idempotency_key = zero_digest;
+        try self.validateShape(limits, false);
         self.request_id = try requestSemanticDigest(self.*);
         self.idempotency_key = deriveIdempotencyKey(self.request_id, self.interface_id, self.application_id);
     }
 
-    pub fn validate(self: @This(), limits: Limits) Error!void {
+    fn validateShape(self: @This(), limits: Limits, check_identity: bool) Error!void {
         try self.allowed_statuses.validate();
+        if (isZeroDigest(self.application_id) or
+            isZeroDigest(self.interface_id) or
+            isZeroDigest(self.payload_schema_id) or
+            isZeroDigest(self.result_schema_id))
+        {
+            return error.InvalidRequest;
+        }
+        if ((self.sequence == 0 and !isZeroDigest(self.parent_frame_id)) or
+            (self.sequence != 0 and isZeroDigest(self.parent_frame_id)))
+        {
+            return error.InvalidRequest;
+        }
         if (self.ordinal != 0) return error.InvalidRequest;
         if (self.payload_bytes.len > limits.maximum_payload_bytes) return error.LimitExceeded;
         if (self.limits.maximum_result_bytes == 0 or self.limits.maximum_result_bytes > limits.maximum_result_bytes) {
             return error.InvalidRequest;
         }
         if (self.limits.maximum_attempts == 0) return error.InvalidRequest;
+        if (!check_identity) return;
         var candidate = self;
         const actual_request_id = candidate.request_id;
         const actual_idempotency_key = candidate.idempotency_key;
@@ -160,12 +200,16 @@ pub const EffectRequest = struct {
         if (!std.mem.eql(u8, &actual_idempotency_key, &expected_key)) return error.InvalidIdentity;
     }
 
+    pub fn validate(self: @This(), limits: Limits) Error!void {
+        return self.validateShape(limits, true);
+    }
+
     pub fn encode(self: @This(), allocator: std.mem.Allocator, limits: Limits) Error![]u8 {
         try self.validate(limits);
         return encodeRequestSemantic(allocator, self, true);
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!@This() {
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!Decoded(@This()) {
         if (bytes.len > try aggregateLimit(&.{limits.maximum_payload_bytes}, 512)) return error.LimitExceeded;
         var reader = Reader.init(bytes);
         try reader.expectMagic(request_magic);
@@ -192,10 +236,10 @@ pub const EffectRequest = struct {
         errdefer allocator.free(request.payload_bytes);
         try reader.finish();
         try request.validate(limits);
-        return request;
+        return .{ .value = request };
     }
 
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
         allocator.free(self.payload_bytes);
         self.payload_bytes = &.{};
     }
@@ -211,13 +255,17 @@ pub const EffectResult = struct {
     host_claims: []const u8 = &.{},
     attempt: u32,
 
-    pub fn seal(self: *@This(), allocator: std.mem.Allocator) Error!void {
+    pub fn seal(self: *@This(), allocator: std.mem.Allocator, limits: Limits) Error!void {
         _ = allocator;
         self.result_id = zero_digest;
+        try self.validateShape(limits, false);
         self.result_id = try resultSemanticDigest(self.*);
     }
 
-    pub fn validate(self: @This(), limits: Limits) Error!void {
+    fn validateShape(self: @This(), limits: Limits, check_identity: bool) Error!void {
+        if (isZeroDigest(self.request_id) or isZeroDigest(self.result_schema_id)) {
+            return error.InvalidResult;
+        }
         if (self.attempt == 0) return error.InvalidResult;
         if (self.result_bytes) |value| {
             if (value.len > limits.maximum_result_bytes) return error.LimitExceeded;
@@ -225,10 +273,15 @@ pub const EffectResult = struct {
         if (self.host_claims.len > limits.maximum_host_claim_bytes) return error.LimitExceeded;
         if (self.status == .ok and self.result_bytes == null) return error.InvalidResult;
         if (self.status == .deferred and self.result_bytes != null) return error.InvalidResult;
+        if (!check_identity) return;
         var candidate = self;
         const actual_id = candidate.result_id;
         candidate.result_id = zero_digest;
         if (!std.mem.eql(u8, &actual_id, &try resultSemanticDigest(candidate))) return error.InvalidIdentity;
+    }
+
+    pub fn validate(self: @This(), limits: Limits) Error!void {
+        return self.validateShape(limits, true);
     }
 
     pub fn encode(self: @This(), allocator: std.mem.Allocator, limits: Limits) Error![]u8 {
@@ -236,7 +289,7 @@ pub const EffectResult = struct {
         return encodeResultSemantic(allocator, self, true);
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!@This() {
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!Decoded(@This()) {
         if (bytes.len > try aggregateLimit(&.{ limits.maximum_result_bytes, limits.maximum_host_claim_bytes }, 256)) {
             return error.LimitExceeded;
         }
@@ -263,10 +316,10 @@ pub const EffectResult = struct {
             .attempt = attempt,
         };
         try result.validate(limits);
-        return result;
+        return .{ .value = result };
     }
 
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
         if (self.result_bytes) |value| allocator.free(value);
         allocator.free(self.host_claims);
         self.result_bytes = null;
@@ -314,6 +367,7 @@ pub const Frame = struct {
     }
 
     fn validateShape(self: @This(), limits: Limits, check_identity: bool) Error!void {
+        if (isZeroDigest(self.application_id)) return error.InvalidFrame;
         if (self.state_bytes.len > limits.maximum_state_bytes) return error.LimitExceeded;
         if (self.final_result_bytes) |value| {
             if (value.len > limits.maximum_result_bytes) return error.LimitExceeded;
@@ -321,8 +375,18 @@ pub const Frame = struct {
         if (self.failure) |value| {
             if (value.len > limits.maximum_failure_bytes) return error.LimitExceeded;
         }
-        if (self.sequence == 0 and self.parent_frame_id != null) return error.InvalidFrame;
-        if (self.sequence != 0 and self.parent_frame_id == null) return error.InvalidFrame;
+        if (self.sequence == 0) {
+            if (self.parent_frame_id != null or self.accepted_effect_result_id != null) return error.InvalidFrame;
+        } else {
+            const parent_id = self.parent_frame_id orelse return error.InvalidFrame;
+            if (isZeroDigest(parent_id)) return error.InvalidFrame;
+        }
+        if (self.accepted_effect_result_id) |result_id| {
+            if (isZeroDigest(result_id)) return error.InvalidFrame;
+        }
+        if (self.final_result_schema_id) |schema_id| {
+            if (isZeroDigest(schema_id)) return error.InvalidFrame;
+        }
         switch (self.status) {
             .needs_effect => {
                 const request = self.pending_effect orelse return error.InvalidFrame;
@@ -369,7 +433,7 @@ pub const Frame = struct {
         return encodeFrameSemantic(allocator, self, true);
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!@This() {
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!Decoded(@This()) {
         if (bytes.len > try aggregateLimit(&.{ limits.maximum_state_bytes, limits.maximum_payload_bytes, limits.maximum_result_bytes, limits.maximum_failure_bytes }, 1024)) {
             return error.LimitExceeded;
         }
@@ -384,11 +448,13 @@ pub const Frame = struct {
         errdefer allocator.free(state_bytes);
         const pending_effect = if (try reader.readBool()) blk: {
             const request_bytes = try reader.readBytes(try aggregateLimitU32(&.{limits.maximum_payload_bytes}, 512));
-            break :blk try EffectRequest.decode(allocator, request_bytes, limits);
+            var decoded = try EffectRequest.decode(allocator, request_bytes, limits);
+            errdefer decoded.deinit(allocator);
+            break :blk decoded.take();
         } else null;
         errdefer if (pending_effect) |value| {
             var owned = value;
-            owned.deinit(allocator);
+            owned.deinitOwned(allocator);
         };
         const accepted_effect_result_id = try reader.readOptionalDigest();
         const status = try readFrameStatus(&reader);
@@ -422,12 +488,12 @@ pub const Frame = struct {
             .semantic_warnings = semantic_warnings,
         };
         try frame.validate(limits);
-        return frame;
+        return .{ .value = frame };
     }
 
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
         allocator.free(self.state_bytes);
-        if (self.pending_effect) |*request| request.deinit(allocator);
+        if (self.pending_effect) |*request| request.deinitOwned(allocator);
         if (self.final_result_bytes) |value| allocator.free(value);
         if (self.failure) |value| allocator.free(value);
         self.state_bytes = &.{};
@@ -488,7 +554,7 @@ pub const StepInput = struct {
         return writer.toOwnedSlice();
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!@This() {
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, limits: Limits) Error!Decoded(@This()) {
         if (bytes.len > try aggregateLimit(&.{
             limits.maximum_state_bytes,
             limits.maximum_payload_bytes,
@@ -511,11 +577,13 @@ pub const StepInput = struct {
         errdefer if (initial_args_bytes) |value| allocator.free(value);
         const effect_result = if (try reader.readBool()) blk: {
             const result_limit = try aggregateLimitU32(&.{ limits.maximum_result_bytes, limits.maximum_host_claim_bytes }, 256);
-            break :blk try EffectResult.decode(allocator, try reader.readBytes(result_limit), limits);
+            var decoded = try EffectResult.decode(allocator, try reader.readBytes(result_limit), limits);
+            errdefer decoded.deinit(allocator);
+            break :blk decoded.take();
         } else null;
         errdefer if (effect_result) |value| {
             var owned = value;
-            owned.deinit(allocator);
+            owned.deinitOwned(allocator);
         };
         const fuel = try reader.readU64();
         const host_metadata = try reader.readOwnedBytes(allocator, limits.maximum_host_metadata_bytes);
@@ -531,13 +599,13 @@ pub const StepInput = struct {
             .host_metadata = host_metadata,
         };
         try input.validate(limits);
-        return input;
+        return .{ .value = input };
     }
 
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
         if (self.prior_frame_bytes) |value| allocator.free(value);
         if (self.initial_args_bytes) |value| allocator.free(value);
-        if (self.effect_result) |*value| value.deinit(allocator);
+        if (self.effect_result) |*value| value.deinitOwned(allocator);
         allocator.free(self.host_metadata);
         self.prior_frame_bytes = null;
         self.initial_args_bytes = null;
@@ -571,15 +639,18 @@ pub const ApplicationManifest = struct {
     required_host_capabilities: u64 = 0,
 
     pub fn seal(self: *@This(), allocator: std.mem.Allocator) Error!void {
-        _ = allocator;
         self.application_id = zero_digest;
         try self.validateShape(false);
+        const semantic_bytes = try encodeManifestSemantic(allocator, self.*, false);
+        defer allocator.free(semantic_bytes);
+        if (semantic_bytes.len > self.limits.maximum_manifest_bytes) return error.LimitExceeded;
         self.application_id = try manifestSemanticDigest(self.*);
     }
 
     fn validateShape(self: @This(), check_identity: bool) Error!void {
         try self.limits.validate();
         if (self.world_application_abi_version != abi_version or self.boundary_static_machine_abi_version == 0) return error.InvalidManifest;
+        if (isZeroDigest(self.root_program_id)) return error.InvalidManifest;
         if (self.application_name.len == 0 or self.application_name.len > self.limits.maximum_name_bytes or
             self.application_version.len == 0 or self.application_version.len > self.limits.maximum_name_bytes or
             self.boundary_package_version.len == 0 or self.boundary_package_version.len > self.limits.maximum_name_bytes or
@@ -591,12 +662,19 @@ pub const ApplicationManifest = struct {
             return error.LimitExceeded;
         }
         for (self.internal_handler_ids, 0..) |handler_id, index| {
+            if (isZeroDigest(handler_id)) return error.InvalidManifest;
             if (index != 0 and std.mem.order(u8, &self.internal_handler_ids[index - 1], &handler_id) != .lt) {
                 return error.InvalidManifest;
             }
         }
         var derived_host_capabilities: u64 = 0;
         for (self.residual_effects, 0..) |effect, index| {
+            if (isZeroDigest(effect.interface_id) or
+                isZeroDigest(effect.payload_schema_id) or
+                isZeroDigest(effect.result_schema_id))
+            {
+                return error.InvalidManifest;
+            }
             try effect.allowed_statuses.validate();
             derived_host_capabilities |= effect.authority_requirements;
             if (index != 0) {
@@ -626,7 +704,7 @@ pub const ApplicationManifest = struct {
         return bytes;
     }
 
-    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, admission_limits: Limits) Error!@This() {
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, admission_limits: Limits) Error!Decoded(@This()) {
         try admission_limits.validate();
         if (bytes.len > admission_limits.maximum_manifest_bytes) return error.LimitExceeded;
         var reader = Reader.init(bytes);
@@ -645,10 +723,12 @@ pub const ApplicationManifest = struct {
         const world_application_abi_version = try reader.readU32();
         const root_program_id = try reader.readDigest();
         const handler_count = try reader.readCount(admission_limits.maximum_internal_handlers);
+        try reader.requireItems(handler_count, zero_digest.len, manifest_tail_after_handlers);
         const internal_handler_ids = try allocator.alloc(Digest, handler_count);
         errdefer allocator.free(internal_handler_ids);
         for (internal_handler_ids) |*value| value.* = try reader.readDigest();
         const residual_count = try reader.readCount(admission_limits.maximum_residual_effects);
+        try reader.requireItems(residual_count, residual_effect_encoded_length, manifest_tail_after_residuals);
         const residual_effects = try allocator.alloc(ResidualEffect, residual_count);
         errdefer allocator.free(residual_effects);
         for (residual_effects) |*effect| {
@@ -663,6 +743,7 @@ pub const ApplicationManifest = struct {
         }
         const declared_limits = try readLimits(&reader);
         try declared_limits.validate();
+        if (bytes.len > declared_limits.maximum_manifest_bytes) return error.LimitExceeded;
         if (!admission_limits.admits(declared_limits)) return error.LimitExceeded;
         const required_host_capabilities = try reader.readU64();
         try reader.finish();
@@ -681,10 +762,10 @@ pub const ApplicationManifest = struct {
             .required_host_capabilities = required_host_capabilities,
         };
         try manifest.validate();
-        return manifest;
+        return .{ .value = manifest };
     }
 
-    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+    fn deinitOwned(self: *@This(), allocator: std.mem.Allocator) void {
         allocator.free(self.application_name);
         allocator.free(self.application_version);
         allocator.free(self.boundary_package_version);
@@ -754,6 +835,10 @@ const result_magic = "WRLDERS1";
 const frame_magic = "WRLDFRM1";
 const input_magic = "WRLDSTP1";
 const manifest_magic = "WRLDMNF1";
+const residual_effect_encoded_length = zero_digest.len * 3 + 8 + 1 + 8;
+const limits_encoded_length = 13 * @sizeOf(u32) + @sizeOf(u64);
+const manifest_tail_after_residuals = limits_encoded_length + @sizeOf(u64);
+const manifest_tail_after_handlers = @sizeOf(u32) + manifest_tail_after_residuals;
 
 fn encodeRequestSemantic(allocator: std.mem.Allocator, request: EffectRequest, include_id: bool) Error![]u8 {
     var writer = Writer.init(allocator);
@@ -1157,6 +1242,13 @@ const Reader = struct {
         if (count > maximum) return error.LimitExceeded;
         return count;
     }
+
+    fn requireItems(self: @This(), count: usize, encoded_length: usize, minimum_tail: usize) Error!void {
+        const item_bytes = std.math.mul(usize, count, encoded_length) catch return error.InvalidEncoding;
+        const required = std.math.add(usize, item_bytes, minimum_tail) catch return error.InvalidEncoding;
+        const remaining = self.bytes.len - self.cursor;
+        if (required > remaining) return error.InvalidEncoding;
+    }
 };
 
 test "world application v1 records round trip canonically" {
@@ -1178,12 +1270,12 @@ test "world application v1 records round trip canonically" {
         .authority_requirements = 4,
         .limits = .{ .maximum_result_bytes = 1024, .maximum_attempts = 3 },
     };
-    try request.seal(allocator);
+    try request.seal(allocator, limits);
     const request_bytes = try request.encode(allocator, limits);
     defer allocator.free(request_bytes);
     var decoded_request = try EffectRequest.decode(allocator, request_bytes, limits);
     defer decoded_request.deinit(allocator);
-    const request_bytes_again = try decoded_request.encode(allocator, limits);
+    const request_bytes_again = try decoded_request.value.encode(allocator, limits);
     defer allocator.free(request_bytes_again);
     try std.testing.expectEqualSlices(u8, request_bytes, request_bytes_again);
 
@@ -1195,12 +1287,12 @@ test "world application v1 records round trip canonically" {
         .host_claims = "fixture",
         .attempt = 1,
     };
-    try result.seal(allocator);
+    try result.seal(allocator, limits);
     const result_bytes = try result.encode(allocator, limits);
     defer allocator.free(result_bytes);
     var decoded_result = try EffectResult.decode(allocator, result_bytes, limits);
     defer decoded_result.deinit(allocator);
-    const result_bytes_again = try decoded_result.encode(allocator, limits);
+    const result_bytes_again = try decoded_result.value.encode(allocator, limits);
     defer allocator.free(result_bytes_again);
     try std.testing.expectEqualSlices(u8, result_bytes, result_bytes_again);
 
@@ -1219,9 +1311,106 @@ test "world application v1 records round trip canonically" {
     defer allocator.free(frame_bytes);
     var decoded_frame = try Frame.decode(allocator, frame_bytes, limits);
     defer decoded_frame.deinit(allocator);
-    const frame_bytes_again = try decoded_frame.encode(allocator, limits);
+    const frame_bytes_again = try decoded_frame.value.encode(allocator, limits);
     defer allocator.free(frame_bytes_again);
     try std.testing.expectEqualSlices(u8, frame_bytes, frame_bytes_again);
+}
+
+test "world application v1 borrowed records expose no owning deinitializer" {
+    try std.testing.expect(!@hasDecl(EffectRequest, "deinit"));
+    try std.testing.expect(!@hasDecl(EffectResult, "deinit"));
+    try std.testing.expect(!@hasDecl(Frame, "deinit"));
+    try std.testing.expect(!@hasDecl(StepInput, "deinit"));
+    try std.testing.expect(!@hasDecl(ApplicationManifest, "deinit"));
+    try std.testing.expect(@hasDecl(Decoded(EffectRequest), "deinit"));
+}
+
+test "world application v1 seal rejects invalid shapes before stamping identity" {
+    const allocator = std.testing.allocator;
+    var request: EffectRequest = .{
+        .application_id = digestLabel("test", "application"),
+        .parent_frame_id = digestLabel("test", "parent"),
+        .sequence = 1,
+        .ordinal = 1,
+        .site_id = 1,
+        .interface_id = digestLabel("test", "interface"),
+        .payload_schema_id = digestLabel("test", "payload"),
+        .result_schema_id = digestLabel("test", "result"),
+        .payload_bytes = "payload",
+        .limits = .{ .maximum_result_bytes = 32, .maximum_attempts = 1 },
+    };
+    try std.testing.expectError(error.InvalidRequest, request.seal(allocator, .{}));
+    try std.testing.expectEqualSlices(u8, &zero_digest, &request.request_id);
+    try std.testing.expectEqualSlices(u8, &zero_digest, &request.idempotency_key);
+
+    var result: EffectResult = .{
+        .request_id = digestLabel("test", "request"),
+        .status = .ok,
+        .result_schema_id = digestLabel("test", "result"),
+        .result_bytes = "result",
+        .attempt = 0,
+    };
+    try std.testing.expectError(error.InvalidResult, result.seal(allocator, .{}));
+    try std.testing.expectEqualSlices(u8, &zero_digest, &result.result_id);
+}
+
+test "world application v1 rejects reserved zero semantic references" {
+    const allocator = std.testing.allocator;
+    var request: EffectRequest = .{
+        .application_id = zero_digest,
+        .parent_frame_id = zero_digest,
+        .sequence = 0,
+        .site_id = 1,
+        .interface_id = digestLabel("test", "interface"),
+        .payload_schema_id = digestLabel("test", "payload"),
+        .result_schema_id = digestLabel("test", "result"),
+        .payload_bytes = "payload",
+        .limits = .{ .maximum_result_bytes = 32, .maximum_attempts = 1 },
+    };
+    try std.testing.expectError(error.InvalidRequest, request.seal(allocator, .{}));
+    request.application_id = digestLabel("test", "application");
+    request.sequence = 1;
+    try std.testing.expectError(error.InvalidRequest, request.seal(allocator, .{}));
+    request.sequence = 0;
+    request.parent_frame_id = digestLabel("test", "parent");
+    try std.testing.expectError(error.InvalidRequest, request.seal(allocator, .{}));
+
+    var result: EffectResult = .{
+        .request_id = zero_digest,
+        .status = .ok,
+        .result_schema_id = digestLabel("test", "result"),
+        .result_bytes = "result",
+        .attempt = 1,
+    };
+    try std.testing.expectError(error.InvalidResult, result.seal(allocator, .{}));
+    result.request_id = digestLabel("test", "request");
+    result.result_schema_id = zero_digest;
+    try std.testing.expectError(error.InvalidResult, result.seal(allocator, .{}));
+
+    var manifest: ApplicationManifest = .{
+        .application_name = "zero-reference",
+        .application_version = "1.0.0",
+        .boundary_package_version = "1.0.0-rc.1",
+        .boundary_static_machine_abi_version = 1,
+        .world_package_version = "1.0.0-rc.1",
+        .root_program_id = zero_digest,
+    };
+    try std.testing.expectError(error.InvalidManifest, manifest.seal(allocator));
+    const zero_handler = [_]Digest{zero_digest};
+    manifest.root_program_id = digestLabel("test", "root");
+    manifest.internal_handler_ids = &zero_handler;
+    try std.testing.expectError(error.InvalidManifest, manifest.seal(allocator));
+    const zero_residual = [_]ResidualEffect{.{
+        .interface_id = zero_digest,
+        .site_id = 1,
+        .payload_schema_id = digestLabel("test", "payload"),
+        .result_schema_id = digestLabel("test", "result"),
+        .allowed_statuses = .{},
+        .authority_requirements = 0,
+    }};
+    manifest.internal_handler_ids = &.{};
+    manifest.residual_effects = &zero_residual;
+    try std.testing.expectError(error.InvalidManifest, manifest.seal(allocator));
 }
 
 test "world application v1 frame identity ignores no hidden metadata" {
@@ -1237,6 +1426,29 @@ test "world application v1 frame identity ignores no hidden metadata" {
     try first.seal(allocator, .{});
     try second.seal(allocator, .{});
     try std.testing.expectEqualSlices(u8, &first.frame_id, &second.frame_id);
+}
+
+test "world application v1 rejects impossible Frame causal sentinels" {
+    const allocator = std.testing.allocator;
+    var genesis: Frame = .{
+        .application_id = digestLabel("test", "application"),
+        .sequence = 0,
+        .state_bytes = "state",
+        .accepted_effect_result_id = digestLabel("test", "result"),
+        .status = .yielded_fuel,
+    };
+    try std.testing.expectError(error.InvalidFrame, genesis.seal(allocator, .{}));
+    try std.testing.expectEqualSlices(u8, &zero_digest, &genesis.frame_id);
+
+    var later: Frame = .{
+        .application_id = digestLabel("test", "application"),
+        .parent_frame_id = zero_digest,
+        .sequence = 1,
+        .state_bytes = "state",
+        .status = .yielded_fuel,
+    };
+    try std.testing.expectError(error.InvalidFrame, later.seal(allocator, .{}));
+    try std.testing.expectEqualSlices(u8, &zero_digest, &later.frame_id);
 }
 
 test "world application v1 yielded Frame golden bytes are frozen" {
@@ -1285,6 +1497,84 @@ test "world application v1 admission limits bound declared manifest limits" {
     );
 }
 
+test "world application v1 manifest enforces its own byte limit" {
+    const allocator = std.testing.allocator;
+    var manifest: ApplicationManifest = .{
+        .application_name = "self-limited",
+        .application_version = "1.0.0",
+        .boundary_package_version = "1.0.0-rc.1",
+        .boundary_static_machine_abi_version = 1,
+        .world_package_version = "1.0.0-rc.1",
+        .root_program_id = digestLabel("test", "root"),
+        .limits = .{ .maximum_manifest_bytes = 128 },
+    };
+    try std.testing.expectError(error.LimitExceeded, manifest.seal(allocator));
+    try std.testing.expectEqualSlices(u8, &zero_digest, &manifest.application_id);
+
+    manifest.application_id = try manifestSemanticDigest(manifest);
+    const encoded = try encodeManifestSemantic(allocator, manifest, true);
+    defer allocator.free(encoded);
+    try std.testing.expect(encoded.len > manifest.limits.maximum_manifest_bytes);
+    try std.testing.expectError(error.LimitExceeded, ApplicationManifest.decode(allocator, encoded, .{}));
+}
+
+test "world application v1 manifest proves collection bytes before allocation" {
+    const allocator = std.testing.allocator;
+    var writer = Writer.init(allocator);
+    defer writer.deinit();
+    try writer.writeBytes(manifest_magic);
+    try writer.writeU32(format_version);
+    try writer.writeDigest(digestLabel("test", "manifest"));
+    try writer.writeLenBytes("manifest");
+    try writer.writeLenBytes("1.0.0");
+    try writer.writeLenBytes("1.0.0-rc.1");
+    try writer.writeU32(1);
+    try writer.writeLenBytes("1.0.0-rc.1");
+    try writer.writeU32(abi_version);
+    try writer.writeDigest(digestLabel("test", "root"));
+    try writer.writeU32(1);
+    try writer.writeDigest(zero_digest);
+    const truncated_handlers = try writer.toOwnedSlice();
+    defer allocator.free(truncated_handlers);
+
+    var failing_allocator = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 4 });
+    try std.testing.expectError(
+        error.InvalidEncoding,
+        ApplicationManifest.decode(failing_allocator.allocator(), truncated_handlers, .{}),
+    );
+    try std.testing.expect(!failing_allocator.has_induced_failure);
+
+    var residual_writer = Writer.init(allocator);
+    defer residual_writer.deinit();
+    try residual_writer.writeBytes(manifest_magic);
+    try residual_writer.writeU32(format_version);
+    try residual_writer.writeDigest(digestLabel("test", "manifest"));
+    try residual_writer.writeLenBytes("manifest");
+    try residual_writer.writeLenBytes("1.0.0");
+    try residual_writer.writeLenBytes("1.0.0-rc.1");
+    try residual_writer.writeU32(1);
+    try residual_writer.writeLenBytes("1.0.0-rc.1");
+    try residual_writer.writeU32(abi_version);
+    try residual_writer.writeDigest(digestLabel("test", "root"));
+    try residual_writer.writeU32(0);
+    try residual_writer.writeU32(1);
+    try residual_writer.writeDigest(digestLabel("test", "interface"));
+    try residual_writer.writeU64(1);
+    try residual_writer.writeDigest(digestLabel("test", "payload"));
+    try residual_writer.writeDigest(digestLabel("test", "result"));
+    try residual_writer.writeU8(@bitCast(AllowedStatuses{}));
+    try residual_writer.writeU64(0);
+    const truncated_residuals = try residual_writer.toOwnedSlice();
+    defer allocator.free(truncated_residuals);
+
+    var residual_failing_allocator = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 4 });
+    try std.testing.expectError(
+        error.InvalidEncoding,
+        ApplicationManifest.decode(residual_failing_allocator.allocator(), truncated_residuals, .{}),
+    );
+    try std.testing.expect(!residual_failing_allocator.has_induced_failure);
+}
+
 test "world application v1 needs-effect Frame requires portable state" {
     const allocator = std.testing.allocator;
     var request: EffectRequest = .{
@@ -1298,7 +1588,7 @@ test "world application v1 needs-effect Frame requires portable state" {
         .payload_bytes = "payload",
         .limits = .{ .maximum_result_bytes = 32, .maximum_attempts = 1 },
     };
-    try request.seal(allocator);
+    try request.seal(allocator, .{});
     var frame: Frame = .{
         .application_id = request.application_id,
         .sequence = 0,
@@ -1347,7 +1637,7 @@ test "world application v1 StepInput and manifest round trip" {
     defer allocator.free(manifest_bytes);
     var decoded_manifest = try ApplicationManifest.decode(allocator, manifest_bytes, limits);
     defer decoded_manifest.deinit(allocator);
-    const manifest_bytes_again = try decoded_manifest.encode(allocator);
+    const manifest_bytes_again = try decoded_manifest.value.encode(allocator);
     defer allocator.free(manifest_bytes_again);
     try std.testing.expectEqualSlices(u8, manifest_bytes, manifest_bytes_again);
 
@@ -1361,7 +1651,7 @@ test "world application v1 StepInput and manifest round trip" {
     defer allocator.free(input_bytes);
     var decoded_input = try StepInput.decode(allocator, input_bytes, limits);
     defer decoded_input.deinit(allocator);
-    const input_bytes_again = try decoded_input.encode(allocator, limits);
+    const input_bytes_again = try decoded_input.value.encode(allocator, limits);
     defer allocator.free(input_bytes_again);
     try std.testing.expectEqualSlices(u8, input_bytes, input_bytes_again);
 }
@@ -1429,7 +1719,7 @@ test "world application v1 malformed records fail closed" {
         .payload_bytes = "payload",
         .limits = .{ .maximum_result_bytes = 32, .maximum_attempts = 2 },
     };
-    try request.seal(allocator);
+    try request.seal(allocator, limits);
     const encoded = try request.encode(allocator, limits);
     defer allocator.free(encoded);
 
@@ -1457,6 +1747,6 @@ test "world application v1 malformed records fail closed" {
         .result_bytes = "response",
         .attempt = 1,
     };
-    try wrong_result.seal(allocator);
+    try wrong_result.seal(allocator, limits);
     try std.testing.expectError(error.EffectResultMismatch, validateResultForRequest(request, wrong_result, limits));
 }
