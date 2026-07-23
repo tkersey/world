@@ -36,7 +36,7 @@ deferred
 cancelled
 ```
 
-`ok` requires result bytes. `deferred` carries no result bytes. The result identity is SHA-256 over the domain `world.effect-result.v1`, a zero byte separator, and canonical result bytes with `result_id` zeroed.
+`ok` requires result bytes. `deferred` carries no result bytes. A valid deferred result makes no semantic progress: `world_step` returns the exact prior `Frame` bytes, including the same outstanding request id and idempotency key. The host may retain the deferred result as operational evidence, but it must not treat it as consuming the request or advancing the branch head. The result identity is SHA-256 over the domain `world.effect-result.v1`, a zero byte separator, and canonical result bytes with `result_id` zeroed.
 
 The referenced request and result-schema identities are nonzero.
 

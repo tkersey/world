@@ -4,8 +4,10 @@
     .fingerprint = 0x3a77114378d4745d,
     .dependencies = .{
         .boundary = .{
-            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v0.6.2.tar.gz",
-            .hash = "boundary-0.6.2-flclaA4FhQCQL_ODFaXPP7HtNOn21toNs6rc14-cQqYJ",
+            // World Comptime v1 consumes the immutable Boundary release that
+            // introduced the StaticMachine backend.
+            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz",
+            .hash = "boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_",
         },
     },
     .minimum_zig_version = "0.16.0",

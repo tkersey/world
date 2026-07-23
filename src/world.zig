@@ -2,7 +2,10 @@ const std = @import("std");
 const protocol_mod = @import("protocol.zig");
 
 /// World Comptime application, Frame, and residual effect protocol v1.
-pub const v1 = @import("application_v1.zig");
+pub const v1 = @import("world_v1.zig");
+
+/// Compile one Boundary StaticMachine graph into an application-specific World type.
+pub const application = v1.application;
 
 test {
     _ = v1;

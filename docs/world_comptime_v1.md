@@ -20,7 +20,7 @@ The governing rule is:
 
 Boundary owns typed effects, program construction, closure analysis, CPS/defunctionalization, static effect-site metadata, and portable continuation-state encoding.
 
-World owns comptime handler selection, provider composition, effect-row subtraction, schema compatibility, deterministic limits, application manifests, the generated step kernel, and the application WASM ABI.
+World owns comptime handler selection, provider composition, effect-row subtraction, schema compatibility, complete root-to-provider encoded-state bounds, deterministic limits, application manifests, the generated step kernel, and the application WASM ABI.
 
 world-host owns artifact admission, Frame and EffectResult retention, conditional branch-head advancement, policy, secrets, capability dispatch, and operator control.
 

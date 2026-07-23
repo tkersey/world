@@ -63,6 +63,8 @@ Codes `0` and `5` produce a valid Frame. A deterministic application failure is 
 
 The reference layout uses an immutable metadata region, a bounded input region, a bounded output region, and a resettable per-call arena. Linear memory may be reused as an optimization; Frame bytes remain authoritative.
 
+`world.v1.ApplicationAbi` checks at comptime that the input and output regions admit the application's declared record limits. Its scratch region must admit at least one maximum input plus one maximum output. Exhaustion fails with result code `6` and no Frame output.
+
 ## Manifest
 
 `world_manifest_ptr` and `world_manifest_len` expose the canonical `ApplicationManifest` encoding described by `src/application_v1.zig`. Optional custom sections may duplicate manifest and debug projections, but the ABI export is authoritative for host preflight.

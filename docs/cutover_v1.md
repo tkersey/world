@@ -46,4 +46,10 @@ World Comptime v1 becomes the default for new applications at `v1.0.0-rc.1` acce
 
 ## Review policy
 
-Implementation completes before final repository closeout. Final review covers one repository at a time in dependency order. Each repository uses five standard reviews plus four auxiliary reviews, with a 45-minute maximum wait and per-review completion reporting. If a finding is accepted, all already-active reviews may finish; accepted liabilities are repaired together, pushed once, and the full review tuple restarts on the new head.
+Implementation completes before final repository closeout. Final review covers
+one repository at a time in dependency order. Each repository uses five serial
+standard reviews plus four auxiliary reviews. Standard 1 may run concurrently
+with the auxiliary set; Standards 2–5 run serially without auxiliaries. Reviews
+have a 45-minute maximum wait and report completion individually. An accepted
+standard finding resets standard credit. Auxiliary findings may require repair,
+but never reset standard credit.
