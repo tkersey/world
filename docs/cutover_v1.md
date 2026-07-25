@@ -42,7 +42,7 @@ Cutover requires:
 
 v0 is feature-frozen except for correctness, release, and compatibility fixes. Existing v0 runs finish on v0 or restart from application-level input on v1. There is no TurnClosure/Capsule-to-Frame state translator.
 
-World Comptime v1 becomes the default for new applications at `v1.0.0-rc.1` acceptance. The universal runtime remains an explicit legacy/dynamic profile. The planned `v1.1.0` retirement removes v0 from default world-host commands and stops generating new v0 Agent Runtime packs while preserving tags, selected oracle fixtures, and bounded legacy access.
+World Comptime v1 becomes the default for new applications at `v1.0.0-rc.2` acceptance. The universal runtime remains an explicit legacy/dynamic profile. The planned `v1.1.0` retirement removes v0 from default world-host commands and stops generating new v0 Agent Runtime packs while preserving tags, selected oracle fixtures, and bounded legacy access.
 
 ## Review policy
 

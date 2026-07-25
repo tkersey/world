@@ -1,6 +1,6 @@
 # World Application v1
 
-Status: implementation draft.
+Status: v1.0 release candidate.
 
 `world.application` closes one Boundary `StaticMachine` graph at Zig comptime. The returned type contains the residual effect row, application manifest, composed portable state, and deterministic native step kernel used by the application WASM wrapper.
 
@@ -22,6 +22,43 @@ const App = world.application(.{
 ```
 
 The top-level `world.application` alias is the stable construction entry point. Binding constructors remain under `world.v1` while v0 declarations still occupy the primary namespace.
+
+## External build API
+
+A consumer imports World’s `build.zig` and calls the supported packaging
+helper:
+
+```zig
+const std = @import("std");
+const world = @import("world");
+
+pub fn build(b: *std.Build) void {
+    _ = world.addApplicationWasm(b, .{
+        .name = "lookup-agent",
+        .root_source_file = b.path("src/application.zig"),
+        .application_decl = "Application",
+        .memory = .{
+            .initial_pages = 512,
+            .maximum_pages = 512,
+        },
+        .install_human_readable_manifest = true,
+    });
+}
+```
+
+The application declaration remains the source of semantics. The helper owns
+only packaging: exact Boundary/World module wiring, the freestanding target,
+Application ABI exports, bounded reusable regions, canonical manifest
+emission, artifact inspection, and installation under `zig-out/world-apps/`.
+It rejects a missing or non-type application declaration at compile time and
+rejects an import-bearing, unbounded, incomplete, or manifest-divergent WASM
+before its install steps become reachable.
+
+The official
+[`application-v1` template](../templates/application-v1/README.md) uses only
+this public surface. `scripts/init_world_application.mjs` copies it into an
+empty directory and binds the exact reviewed World archive URL and package
+hash supplied by the release workflow.
 
 ## Compile-time closure
 

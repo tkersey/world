@@ -10,12 +10,14 @@ const source_package_root_files = [_][]const u8{
 };
 
 const source_package_dirs = [_][]const u8{
+    "build_support",
     "src",
     "examples",
     "scripts",
     "test",
     "docs",
     "conformance",
+    "templates",
 };
 
 const max_wasm_types = 256;
@@ -252,7 +254,7 @@ fn collectSourcePackagePaths(io: std.Io, allocator: std.mem.Allocator) !std.Arra
         var walker = try dir.walk(allocator);
         defer walker.deinit();
         while (try walker.next(io)) |entry| {
-            if (entry.kind != .file) continue;
+            if (entry.kind != .file or sourcePackagePathExcluded(entry.path)) continue;
             const owned = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ root, entry.path });
             errdefer allocator.free(owned);
             try paths.append(allocator, owned);
@@ -265,6 +267,20 @@ fn collectSourcePackagePaths(io: std.Io, allocator: std.mem.Allocator) !std.Arra
 
 fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
+}
+
+fn sourcePackagePathExcluded(path: []const u8) bool {
+    var components = std.mem.tokenizeAny(u8, path, "/\\");
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component, ".git") or
+            std.mem.eql(u8, component, ".zig-cache") or
+            std.mem.eql(u8, component, "zig-out") or
+            std.mem.eql(u8, component, "zig-pkg"))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn sourcePackagePathCovered(path: []const u8) bool {
@@ -709,6 +725,27 @@ test "source package checksum covers release-defining source paths" {
         "scripts/world_universal_appliance_host.mjs",
     }) |path| {
         try std.testing.expect(sourcePackagePathCovered(path));
+    }
+}
+
+test "source package checksum excludes generated dependency and build trees" {
+    for ([_][]const u8{
+        ".git/objects/pack",
+        ".zig-cache/o/generated",
+        "nested/.zig-cache/o/generated",
+        "zig-out/world-apps/application.world.wasm",
+        "nested/zig-out/application.world.wasm",
+        "zig-pkg/boundary/src/root.zig",
+        "nested/zig-pkg/world/src/root.zig",
+    }) |path| {
+        try std.testing.expect(sourcePackagePathExcluded(path));
+    }
+    for ([_][]const u8{
+        "external-build-helper/build.zig",
+        "external-build-helper/src/application.zig",
+        "application-v1/.gitignore",
+    }) |path| {
+        try std.testing.expect(!sourcePackagePathExcluded(path));
     }
 }
 
