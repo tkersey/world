@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
 } from "node:fs";
@@ -63,15 +64,13 @@ try {
   run("tar", ["-xzf", archivePath, "-C", materializedRoot]);
   const worldPackageRoot = locatePackageRoot(materializedRoot);
   const projectRoot = join(proofRoot, "consumer");
-  const globalCache = join(projectRoot, ".zig-global-cache");
-  const localCache = join(projectRoot, ".zig-cache");
-  const prefix = join(projectRoot, "zig-out");
+  const packageCache = join(proofRoot, "package-cache");
 
-  const worldHash = fetchPackage(options.zig, archivePath, globalCache);
+  const worldHash = fetchPackage(options.zig, archivePath, packageCache);
   const actualBoundaryHash = fetchPackage(
     options.zig,
     options.boundaryArchive ?? boundaryUrl,
-    globalCache,
+    packageCache,
   );
   if (actualBoundaryHash !== boundaryHash) {
     throw new Error(
@@ -88,6 +87,10 @@ try {
     "--world-hash",
     worldHash,
   ]);
+  const globalCache = join(projectRoot, ".zig-global-cache");
+  const localCache = join(projectRoot, ".zig-cache");
+  const prefix = join(projectRoot, "zig-out");
+  renameSync(packageCache, globalCache);
   verifyGeneratedProject(projectRoot);
   run(
     options.zig,

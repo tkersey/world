@@ -1,7 +1,7 @@
 .{
     .name = .research_digest_agent,
     .version = "0.1.0",
-    .fingerprint = 0x4586754b1e36189a,
+    .fingerprint = 0x3d19d12eb9e0b67b,
     .dependencies = .{
         .world = .{
             // scripts/init_world_application.mjs replaces both sentinels.
