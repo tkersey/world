@@ -1,71 +1,71 @@
 # World
 
-World is the first concrete interpreter for Boundary Certified Targets. Boundary does the algebra; World handles the ports.
+World Comptime v1 closes a Boundary `StaticMachine` graph into one portable,
+application-specific WebAssembly module:
 
-Boundary compiles a defunctionalized algebraic-effects program into a residual `Program.Session`, Boundary Normal Form, target-neutral `WorldSurface`, dense `WorldPortTable`, `WorldValueTable`, `WorldDispatchTable`, source/trace/evidence maps, and a `Target.Certificate`. World consumes that certified target and chooses a local Zig handler ABI for explicit residual `WorldPorts`.
+```text
+Boundary StaticMachine
+  -> world.application
+  -> <name>.world.wasm
+```
 
-## Boundary And World
+The module contains the root program, every statically selected provider, the
+World step kernel, and a canonical `ApplicationManifest`. It imports nothing,
+declares bounded memory, and resumes from a portable Frame in a fresh instance.
+External authority stays in Effect protocol v1 capability packs.
 
-Boundary owns normalization, closure, treaty resolution, provider reasoning, morphism reasoning, and target-neutral metadata. World validates the certified target surface, starts the residual `Program.Session`, steps it, dispatches residual requests by dense `world_port_id`, calls host-owned handlers in fresh mode, records deterministic transcripts, replays from transcripts, and reports audit metadata.
+## Application authoring
 
-World does not choose for Boundary. Boundary does not choose the concrete ABI for World.
+Use the checked template under
+[`templates/application-v1`](templates/application-v1/README.md), or call the
+public build helper directly:
 
-## Public API
+```text
+zig build init-world-application -- \
+  --output ./research-digest-agent \
+  --world-url WORLD_RELEASE_ARCHIVE_URL \
+  --world-hash WORLD_RELEASE_PACKAGE_HASH
+```
 
-The public root is intentionally small:
+```zig
+const std = @import("std");
+const world = @import("world");
 
-- `world.Machine`
-- `world.port`
-- `world.portWithOptions`
-- `world.PortRequest`
-- `world.PortResponse`
-- `world.Mode`
-- `world.Transcript`
-- `world.Frame`
-- `world.ValuePolicy`
-- `world.TranscriptImage`
-- `world.Timeline`
-- `world.TargetRef`
-- `world.ImportRequirement`
-- `world.ImportSet`
-- `world.Environment`
-- `world.Binding`
-- `world.PortAuthority`
-- `world.AdapterDescriptor`
-- `world.BindingPlan`
-- `world.AcceptanceReport`
-- `world.EnvironmentCertificate`
-- `world.Supervision`
-- `world.Supervisor`
-- `world.RunPermit`
-- `world.SupervisionPolicy`
-- `world.RunReceipt`
-- `world.RunState`
-- `world.RunImage`
-- `world.Handoff`
-- `world.Admission`
-- `world.Runspace`
-- `world.RunHandle`
-- `world.Guest`
-- `world.Fabric`
-- `world.Linker`
-- `world.Assembly`
-- `world.Executable`
-- `world.Capsule`
-- `world.AssemblyCapsule`
-- `world.Actuation`
-- `world.Appliance`
-- `world.Continuity`
-- `world.Archive`
-- `world.MemoryVault`
-- `world.ActuatorRef`
-- `world.ConduitPlan`
-- `world.ConduitRoute`
-- `world.AuditImage`
-- `world.AuditReport`
-- `world.Error`
+pub fn build(b: *std.Build) void {
+    _ = world.addApplicationWasm(b, .{
+        .name = "lookup-agent",
+        .root_source_file = b.path("src/application.zig"),
+        .application_decl = "Application",
+        .memory = .{
+            .initial_pages = 512,
+            .maximum_pages = 512,
+        },
+    });
+}
+```
 
-Typical usage:
+The helper supplies Boundary and World modules to the application source,
+targets `wasm32-freestanding`, owns the ABI wrapper and scratch layout, emits
+the canonical binary manifest, optionally emits a readable projection, and
+checks zero imports, memory bounds, required exports, and native/WASM manifest
+identity before installation.
+
+Application ABI v1 permits at most one pending external effect in each Frame.
+Providers selected statically are compiled into the application. Independently
+deployed subagents cross `agent.invoke.v1`; they are not recursively discovered
+or loaded. See [the application guide](docs/application_v1.md) and
+[the normative ABI](docs/application_abi_v1.md).
+
+## Legacy v0 compatibility
+
+The original World runtime consumes Boundary Certified Targets through
+`world.Machine`, explicit ports, environments, transcripts, runspaces,
+handoffs, fabrics, linkers, capsules, and the universal appliance. It remains
+available for bounded compatibility, but it is not the primary surface for new
+applications. Its complete API and deployment model are documented in
+[`docs/world_v0.md`](docs/world_v0.md).
+
+Typical v0 usage:
 
 ```zig
 const ToolPort = world.port(Target, TargetProgram.protocol.operationSite("tool", "call", 0), handleTool);
@@ -77,7 +77,7 @@ const Machine = world.Machine(Target, .{
 
 The legacy `.ports` form remains available. It is sugar over the same import-binding shape used by `world.Environment`.
 
-`world.Executable` builds a sealed World Seed from explicit Boundary full-module bytes, provider modules, residual Actuation descriptors, Linker witnesses, dense dispatch tables, and memory bounds. It is the generic path for runtimes that do not possess a locally generated Boundary Target type. `world_universal_appliance.wasm` is an ABI v4 conformance artifact that loads canonical `world.Executable.Image` bytes, consumes untrusted `Appliance.Wire.TurnInput`, and emits canonical `Appliance.TurnClosure` bytes through actual Boundary loaded sessions plus World Appliance/Runspace/Fabric/Actuation/Capsule/Archive owners. World pins the reviewed Boundary v0.6.2 release for this path. See [docs/executable.md](docs/executable.md), [docs/appliance.md](docs/appliance.md), [docs/runtime_closure.md](docs/runtime_closure.md), [docs/turn_closure.md](docs/turn_closure.md), and [docs/world_v0.md](docs/world_v0.md).
+`world.Executable` builds a sealed World Seed from explicit Boundary full-module bytes, provider modules, residual Actuation descriptors, Linker witnesses, dense dispatch tables, and memory bounds. It is the generic path for runtimes that do not possess a locally generated Boundary Target type. `world_universal_appliance.wasm` is an ABI v4 conformance artifact that loads canonical `world.Executable.Image` bytes, consumes untrusted `Appliance.Wire.TurnInput`, and emits canonical `Appliance.TurnClosure` bytes through actual Boundary loaded sessions plus World Appliance/Runspace/Fabric/Actuation/Capsule/Archive owners. World pins the reviewed Boundary v0.6.2 release for this compatibility path. See [docs/executable.md](docs/executable.md), [docs/appliance.md](docs/appliance.md), [docs/runtime_closure.md](docs/runtime_closure.md), [docs/turn_closure.md](docs/turn_closure.md), and [docs/world_v0.md](docs/world_v0.md).
 
 ## Certified Targets
 

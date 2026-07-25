@@ -1,6 +1,6 @@
 .{
     .name = .world,
-    .version = "0.1.0",
+    .version = "1.0.0-rc.2",
     .fingerprint = 0x3a77114378d4745d,
     .dependencies = .{
         .boundary = .{
@@ -15,11 +15,13 @@
         "README.md",
         "build.zig",
         "build.zig.zon",
+        "build_support",
         "conformance",
         "docs",
         "examples",
         "scripts",
         "src",
         "test",
+        "templates",
     },
 }

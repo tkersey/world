@@ -1,4 +1,18 @@
 const std = @import("std");
+const application_build = @import("build_support/application.zig");
+
+pub const ApplicationWasmMemory = application_build.Memory;
+pub const ApplicationWasmOptions = application_build.Options;
+pub const ApplicationWasm = application_build.ApplicationWasm;
+
+/// Package one `world.application` declaration as a checked, import-free
+/// Application ABI v1 WebAssembly artifact and canonical manifest.
+pub fn addApplicationWasm(
+    b: *std.Build,
+    options: ApplicationWasmOptions,
+) ApplicationWasm {
+    return application_build.add(b, @This(), options);
+}
 
 const TestArgs = struct {
     filters: []const []const u8,
@@ -61,12 +75,14 @@ const world_source_package_root_files = [_][]const u8{
 };
 
 const world_source_package_dirs = [_][]const u8{
+    "build_support",
     "src",
     "examples",
     "scripts",
     "test",
     "docs",
     "conformance",
+    "templates",
 };
 
 fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
@@ -77,7 +93,7 @@ fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
     }
 
     for (world_source_package_dirs) |root| {
-        var dir = std.Io.Dir.cwd().openDir(b.graph.io, root, .{ .iterate = true }) catch |err| {
+        var dir = b.build_root.handle.openDir(b.graph.io, root, .{ .iterate = true }) catch |err| {
             std.debug.panic("failed to open source package directory '{s}': {s}", .{ root, @errorName(err) });
         };
         defer dir.close(b.graph.io);
@@ -87,7 +103,7 @@ fn addWorldSourcePackageInputs(b: *std.Build, run: *std.Build.Step.Run) void {
         while (walker.next(b.graph.io) catch |err| {
             std.debug.panic("failed to walk source package directory '{s}': {s}", .{ root, @errorName(err) });
         }) |entry| {
-            if (entry.kind != .file) continue;
+            if (entry.kind != .file or sourcePackagePathExcluded(entry.path)) continue;
             paths.append(b.allocator, b.fmt("{s}/{s}", .{ root, entry.path })) catch @panic("oom");
         }
     }
@@ -100,11 +116,35 @@ fn sourcePathLessThan(_: void, lhs: []const u8, rhs: []const u8) bool {
     return std.mem.lessThan(u8, lhs, rhs);
 }
 
+fn sourcePackagePathExcluded(path: []const u8) bool {
+    var components = std.mem.tokenizeAny(u8, path, "/\\");
+    while (components.next()) |component| {
+        if (std.mem.eql(u8, component, ".git") or
+            std.mem.eql(u8, component, ".zig-cache") or
+            std.mem.eql(u8, component, "zig-out") or
+            std.mem.eql(u8, component, "zig-pkg"))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const validation_target = if (target.result.os.tag == .freestanding) b.graph.host else target;
     const optimize = b.standardOptimizeOption(.{});
     const test_args = parseTestArgs(b);
+    const init_world_application = b.addSystemCommand(&.{"node"});
+    init_world_application.addFileArg(b.path(
+        "scripts/init_world_application.mjs",
+    ));
+    if (b.args) |args| init_world_application.addArgs(args);
+    const init_world_application_step = b.step(
+        "init-world-application",
+        "Copy the Application v1 template with an exact World release identity.",
+    );
+    init_world_application_step.dependOn(&init_world_application.step);
     const exported_boundary_dep = b.dependency("boundary", .{
         .target = target,
         .optimize = optimize,
@@ -472,12 +512,47 @@ pub fn build(b: *std.Build) void {
         .filters = test_args.filters,
     });
     const run_world_comptime_agent_tests = addRunArtifactWithArgs(b, world_comptime_agent_tests, test_args.passthrough);
+    const research_digest_application = b.createModule(.{
+        .root_source_file = b.path(
+            "templates/application-v1/src/application.zig",
+        ),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "world", .module = world },
+            .{ .name = "boundary", .module = boundary },
+        },
+    });
+    const research_digest_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(
+                "test/application_v1_research_digest_test.zig",
+            ),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{
+                    .name = "research_digest_application",
+                    .module = research_digest_application,
+                },
+            },
+        }),
+        .filters = test_args.filters,
+    });
+    const run_research_digest_tests = addRunArtifactWithArgs(
+        b,
+        research_digest_tests,
+        test_args.passthrough,
+    );
     const check_world_comptime_closure_step = b.step("check-world-comptime-closure", "Run World compile-time handler closure and residual-row checks.");
     check_world_comptime_closure_step.dependOn(&run_world_comptime_application_tests.step);
     check_world_comptime_closure_step.dependOn(&run_world_comptime_agent_tests.step);
+    check_world_comptime_closure_step.dependOn(&run_research_digest_tests.step);
     const check_world_application_native_step = b.step("check-world-application-native", "Run World native application step and provider parking checks.");
     check_world_application_native_step.dependOn(&run_world_comptime_application_tests.step);
     check_world_application_native_step.dependOn(&run_world_comptime_agent_tests.step);
+    check_world_application_native_step.dependOn(&run_research_digest_tests.step);
     const wasm_application_v1_fixtures = b.createModule(.{
         .root_source_file = b.path("test/application_v1_test.zig"),
         .target = wasm_target,
@@ -510,6 +585,33 @@ pub fn build(b: *std.Build) void {
     const world_one_effect_application_wasm_step = b.step("world-one-effect-application-wasm", "Build the standalone one-effect World application WASM.");
     world_one_effect_application_wasm_step.dependOn(&install_one_effect_application_wasm.step);
     const check_world_application_wasm_step = b.step("check-world-application-wasm", "Build and inspect the standalone World application WASM.");
+    const run_external_build_helper = b.addSystemCommand(&.{
+        b.graph.zig_exe,
+        "build",
+        "--summary",
+        "all",
+    });
+    run_external_build_helper.setCwd(b.path("conformance/external-build-helper"));
+    const check_world_external_build_helper_step = b.step(
+        "check-world-external-build-helper",
+        "Build a World application through the public helper from a dependent package.",
+    );
+    check_world_external_build_helper_step.dependOn(&run_external_build_helper.step);
+    const check_world_external_consumer = b.addSystemCommand(&.{"node"});
+    check_world_external_consumer.addFileArg(b.path(
+        "scripts/check_world_external_consumer.mjs",
+    ));
+    check_world_external_consumer.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+    });
+    const check_world_external_consumer_step = b.step(
+        "check-world-external-consumer",
+        "Build the application template from isolated release archives and caches.",
+    );
+    check_world_external_consumer_step.dependOn(
+        &check_world_external_consumer.step,
+    );
     const run_one_effect_application_wasm = b.addSystemCommand(&.{
         "node",
         "scripts/world_application_v1_conformance.mjs",
@@ -672,6 +774,7 @@ pub fn build(b: *std.Build) void {
     run_fixture_application_wasm.addFileArg(fixture_manifest);
     check_world_application_wasm_step.dependOn(&run_skeleton_application_wasm.step);
     check_world_application_wasm_step.dependOn(&run_fixture_application_wasm.step);
+    check_world_application_wasm_step.dependOn(check_world_external_build_helper_step);
     const world_application_v1_wasm_check = b.addLibrary(.{
         .linkage = .static,
         .name = "world-application-v1-protocol-wasm-check",
@@ -1358,6 +1461,92 @@ pub fn build(b: *std.Build) void {
     application_v1_provider_state_capacity_test.expect_errors = .{
         .contains = "World application provider stack exceeds maximum_state_bytes",
     };
+    const application_v1_build_decl_options = b.addOptions();
+    application_v1_build_decl_options.addOption(
+        []const u8,
+        "application_decl",
+        "Application",
+    );
+    const application_v1_build_decl_missing_source = b.createModule(.{
+        .root_source_file = b.path(
+            "test/compile_fail/application_v1_build_decl_missing_source.zig",
+        ),
+        .target = validation_target,
+        .optimize = optimize,
+    });
+    const application_v1_build_decl_missing_selector = b.createModule(.{
+        .root_source_file = b.path("src/application_selector_v1.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{
+                .name = "world_application_source",
+                .module = application_v1_build_decl_missing_source,
+            },
+            .{
+                .name = "world_application_build_options",
+                .module = application_v1_build_decl_options.createModule(),
+            },
+        },
+    });
+    const application_v1_build_decl_missing_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(
+                "test/compile_fail/application_v1_build_decl_selector.zig",
+            ),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "world_application",
+                    .module = application_v1_build_decl_missing_selector,
+                },
+            },
+        }),
+    });
+    application_v1_build_decl_missing_test.expect_errors = .{
+        .contains = "World application source is missing public declaration 'Application'",
+    };
+    const application_v1_build_decl_value_source = b.createModule(.{
+        .root_source_file = b.path(
+            "test/compile_fail/application_v1_build_decl_value_source.zig",
+        ),
+        .target = validation_target,
+        .optimize = optimize,
+    });
+    const application_v1_build_decl_value_selector = b.createModule(.{
+        .root_source_file = b.path("src/application_selector_v1.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{
+                .name = "world_application_source",
+                .module = application_v1_build_decl_value_source,
+            },
+            .{
+                .name = "world_application_build_options",
+                .module = application_v1_build_decl_options.createModule(),
+            },
+        },
+    });
+    const application_v1_build_decl_value_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(
+                "test/compile_fail/application_v1_build_decl_selector.zig",
+            ),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "world_application",
+                    .module = application_v1_build_decl_value_selector,
+                },
+            },
+        }),
+    });
+    application_v1_build_decl_value_test.expect_errors = .{
+        .contains = "World application declaration 'Application' must be a type returned by world.application",
+    };
     const application_v1_wasm_region_too_small_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/application_v1_wasm_region_too_small.zig"),
@@ -1480,6 +1669,8 @@ pub fn build(b: *std.Build) void {
     compile_fail_step.dependOn(&application_v1_external_zero_result_limit_test.step);
     compile_fail_step.dependOn(&application_v1_external_oversized_result_limit_test.step);
     compile_fail_step.dependOn(&application_v1_provider_state_capacity_test.step);
+    compile_fail_step.dependOn(&application_v1_build_decl_missing_test.step);
+    compile_fail_step.dependOn(&application_v1_build_decl_value_test.step);
     compile_fail_step.dependOn(&application_v1_wasm_region_too_small_test.step);
     compile_fail_step.dependOn(&appliance_missing_binding_test.step);
     compile_fail_step.dependOn(&appliance_covered_port_bound_test.step);
