@@ -90,8 +90,8 @@ try {
   const globalCache = join(projectRoot, ".zig-global-cache");
   const localCache = join(projectRoot, ".zig-cache");
   const prefix = join(projectRoot, "zig-out");
-  renameSync(packageCache, globalCache);
   verifyGeneratedProject(projectRoot);
+  renameSync(packageCache, globalCache);
   run(
     options.zig,
     [
@@ -118,6 +118,14 @@ try {
       throw new Error(`clean-room build did not emit ${relative}`);
     }
   }
+  run("node", [
+    join(
+      worldPackageRoot,
+      "scripts/world_application_v1_research_digest_conformance.mjs",
+    ),
+    join(prefix, "world-apps/research-digest-agent.world.wasm"),
+    join(prefix, "world-apps/research-digest-agent.manifest.bin"),
+  ]);
 
   console.log(`world_archive=${archivePath}`);
   console.log(`world_release_url=${worldUrl}`);
