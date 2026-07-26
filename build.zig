@@ -612,6 +612,22 @@ pub fn build(b: *std.Build) void {
     check_world_external_consumer_step.dependOn(
         &check_world_external_consumer.step,
     );
+    const check_world_1_0_externality = b.addSystemCommand(&.{"node"});
+    check_world_1_0_externality.addFileArg(b.path(
+        "scripts/check_world_1_0_externality.mjs",
+    ));
+    check_world_1_0_externality.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+    });
+    if (b.args) |args| check_world_1_0_externality.addArgs(args);
+    const check_world_1_0_externality_step = b.step(
+        "check-world-1.0-externality",
+        "Prove a clean-room application through released World, host, and capability artifacts.",
+    );
+    check_world_1_0_externality_step.dependOn(
+        &check_world_1_0_externality.step,
+    );
     const run_one_effect_application_wasm = b.addSystemCommand(&.{
         "node",
         "scripts/world_application_v1_conformance.mjs",
