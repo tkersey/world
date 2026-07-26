@@ -548,9 +548,9 @@ bun world-host/distribution/conformance/run.mjs
 node conformance/external-consumer/run.mjs
 \`\`\`
 
-The static SDK check and host lifecycle need Node.js and Bun. The final
-empty-directory authoring proof additionally needs Zig 0.16.0. Running the
-finished host does not require Zig or any source checkout.
+The static SDK check needs Node.js and \`tar\`; the host lifecycle needs Bun.
+The final empty-directory authoring proof needs all three plus Zig 0.16.0.
+Running the finished host does not require Zig or any source checkout.
 
 See \`world/docs/zero_to_world_application.md\` for the complete walkthrough.
 `;

@@ -69,8 +69,9 @@ checksum-bound release bundle, not a package registry.
 
 After extracting it, run `node conformance/check-sdk.mjs` for the static
 identity check or `node conformance/external-consumer/run.mjs` for the full
-empty-directory proof. The second command needs Zig 0.16.0; the finished host
-does not.
+empty-directory proof. The static check needs Node.js and `tar`; the full proof
+additionally needs Bun and Zig 0.16.0. The finished host needs Bun, but not Zig
+or a source checkout.
 
 ## Legacy v0 compatibility
 

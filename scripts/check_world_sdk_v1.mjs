@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
   lstatSync,
+  mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -62,9 +68,7 @@ for (const [path, expected] of checksums) {
   assert.equal(sha256File(join(root, path)), expected, `SDK checksum mismatch: ${path}`);
 }
 
-for (const [path, expected] of Object.entries(ARCHIVES)) {
-  assert.equal(sha256File(join(root, path)), expected, `release identity mismatch: ${path}`);
-}
+assertReleaseProjections();
 for (const [path, expected] of Object.entries(VERIFIER_SHA256)) {
   assert.equal(
     sha256File(join(root, path)),
@@ -154,6 +158,7 @@ assertTreesEqual(
   join(root, "world/application-template"),
   join(root, "examples/research-digest-agent"),
   new Set(["build.zig.zon"]),
+  "generated example",
 );
 const exampleZon = readFileSync(
   join(root, "examples/research-digest-agent/build.zig.zon"),
@@ -214,21 +219,115 @@ process.stdout.write(
   )}\n`,
 );
 
-function assertTreesEqual(left, right, ignored) {
+function assertReleaseProjections() {
+  const proofRoot = mkdtempSync(join(tmpdir(), "world-sdk-release-projections-"));
+  try {
+    const releaseRoots = {};
+    for (const [path, expected] of Object.entries(ARCHIVES)) {
+      const archiveBytes = readFileSync(join(root, path));
+      assert.equal(
+        createHash("sha256").update(archiveBytes).digest("hex"),
+        expected,
+        `release identity mismatch: ${path}`,
+      );
+      const name = path.split("/")[0];
+      const snapshot = join(proofRoot, `${name}.tar.gz`);
+      writeFileSync(snapshot, archiveBytes, {
+        flag: "wx",
+        mode: 0o400,
+      });
+      const extracted = join(proofRoot, name);
+      mkdirSync(extracted, { mode: 0o700 });
+      run("tar", ["-xzf", snapshot, "-C", extracted]);
+      releaseRoots[name] = singleDirectoryRoot(extracted, path);
+    }
+
+    assertTreesEqual(
+      releaseRoots["world-host"],
+      join(root, "world-host/distribution"),
+    );
+    assertTreesEqual(
+      releaseRoots["world-capabilities"],
+      join(root, "world-capabilities/distribution"),
+    );
+    assertTreesEqual(
+      join(releaseRoots.world, "templates/application-v1"),
+      join(root, "world/application-template"),
+    );
+
+    for (const name of [
+      "compatibility.md",
+      "static_machine.md",
+      "static_machine_parity.md",
+      "static_machine_state.md",
+    ]) {
+      assertFilesEqual(
+        join(releaseRoots.boundary, "docs", name),
+        join(root, "boundary/docs", name),
+      );
+    }
+    assertFilesEqual(
+      join(releaseRoots.boundary, "LICENSE"),
+      join(root, "LICENSES/boundary-MIT.txt"),
+    );
+    for (const name of [
+      "application_v1.md",
+      "application_abi_v1.md",
+      "effect_protocol_v1.md",
+      "frame_v1.md",
+    ]) {
+      assertFilesEqual(
+        join(releaseRoots.world, "docs", name),
+        join(root, "world/docs", name),
+      );
+    }
+  } finally {
+    rmSync(proofRoot, { recursive: true, force: true });
+  }
+}
+
+function assertTreesEqual(
+  left,
+  right,
+  ignored = new Set(),
+  label = "release projection",
+) {
   const leftFiles = listFiles(left)
     .filter((path) => !ignored.has(path))
     .sort();
   const rightFiles = listFiles(right)
     .filter((path) => !ignored.has(path))
     .sort();
-  assert.deepEqual(rightFiles, leftFiles, "generated example differs from template");
+  assert.deepEqual(rightFiles, leftFiles, `${label} file set differs`);
   for (const path of leftFiles) {
     assert.equal(
       sha256File(join(right, path)),
       sha256File(join(left, path)),
-      `generated example file differs from template: ${path}`,
+      `${label} differs from reviewed source: ${path}`,
     );
   }
+}
+
+function assertFilesEqual(left, right) {
+  assert.equal(
+    sha256File(right),
+    sha256File(left),
+    `release projection differs from archive: ${relative(root, right)}`,
+  );
+}
+
+function singleDirectoryRoot(extracted, archivePath) {
+  const entries = readdirSync(extracted, { withFileTypes: true });
+  assert.equal(
+    entries.length,
+    1,
+    `release archive must contain one root: ${archivePath}`,
+  );
+  assert(
+    entries[0].isDirectory(),
+    `release archive root must be a directory: ${archivePath}`,
+  );
+  return join(extracted, entries[0].name);
 }
 
 function listFiles(root, current = root, result = []) {
@@ -272,6 +371,20 @@ function readJson(root, path) {
 function sha256File(path) {
   assert(existsSync(path), `missing SDK path: ${path}`);
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function run(command, args) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `${command} ${args.join(" ")} failed with status ${result.status}\n` +
+        `${result.stdout}${result.stderr}`,
+    );
+  }
 }
 
 function commandOptions() {
