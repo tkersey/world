@@ -58,6 +58,20 @@ or loaded. Start with
 [the application guide](docs/application_v1.md) and
 [the normative ABI](docs/application_abi_v1.md).
 
+## SDK distribution
+
+The
+[`world-sdk-v1.0.0.tar.gz`](https://github.com/tkersey/world/releases/download/v1.0.0/world-sdk-v1.0.0.tar.gz)
+release asset composes the four reviewed archives, application and capability
+templates, the Research Digest example, the source-independent host, and
+external-consumer, lifecycle, and negative conformance receipts. It is a
+checksum-bound release bundle, not a package registry.
+
+After extracting it, run `node conformance/check-sdk.mjs` for the static
+identity check or `node conformance/external-consumer/run.mjs` for the full
+empty-directory proof. The second command needs Zig 0.16.0; the finished host
+does not.
+
 ## Legacy v0 compatibility
 
 The original World runtime consumes Boundary Certified Targets through

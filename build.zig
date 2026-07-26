@@ -628,6 +628,30 @@ pub fn build(b: *std.Build) void {
     check_world_1_0_externality_step.dependOn(
         &check_world_1_0_externality.step,
     );
+    const build_world_sdk_v1 = b.addSystemCommand(&.{"node"});
+    build_world_sdk_v1.addFileArg(b.path(
+        "scripts/build_world_sdk_v1.mjs",
+    ));
+    build_world_sdk_v1.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+    });
+    if (b.args) |args| build_world_sdk_v1.addArgs(args);
+    const build_world_sdk_v1_step = b.step(
+        "build-world-sdk-v1",
+        "Assemble the checksum-bound World SDK v1.0.0 release bundle.",
+    );
+    build_world_sdk_v1_step.dependOn(&build_world_sdk_v1.step);
+    const check_world_sdk_v1 = b.addSystemCommand(&.{"node"});
+    check_world_sdk_v1.addFileArg(b.path(
+        "scripts/check_world_sdk_v1.mjs",
+    ));
+    if (b.args) |args| check_world_sdk_v1.addArgs(args);
+    const check_world_sdk_v1_step = b.step(
+        "check-world-sdk-v1",
+        "Validate one assembled World SDK v1.0.0 bundle.",
+    );
+    check_world_sdk_v1_step.dependOn(&check_world_sdk_v1.step);
     const run_one_effect_application_wasm = b.addSystemCommand(&.{
         "node",
         "scripts/world_application_v1_conformance.mjs",
