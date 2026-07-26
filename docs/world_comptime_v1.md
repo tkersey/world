@@ -1,6 +1,6 @@
 # World Comptime v1
 
-Status: normative for the v1 release-candidate line.
+Status: normative for the stable v1 release line.
 
 World Comptime v1 replaces the proposed runtime-loaded World Image v1 architecture as the primary implementation plan. The production artifact is an application-specific, import-free WebAssembly module:
 

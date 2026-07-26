@@ -1,6 +1,6 @@
 .{
     .name = .world,
-    .version = "1.0.0-rc.2",
+    .version = "1.0.0",
     .fingerprint = 0x3a77114378d4745d,
     .dependencies = .{
         .boundary = .{

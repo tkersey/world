@@ -1,6 +1,6 @@
 # World Application v1
 
-Status: v1.0 release candidate.
+Status: stable v1.0 surface.
 
 `world.application` closes one Boundary `StaticMachine` graph at Zig comptime. The returned type contains the residual effect row, application manifest, composed portable state, and deterministic native step kernel used by the application WASM wrapper.
 
@@ -22,6 +22,11 @@ const App = world.application(.{
 ```
 
 The top-level `world.application` alias is the stable construction entry point. Binding constructors remain under `world.v1` while v0 declarations still occupy the primary namespace.
+
+World `v1.0.0` embeds `world_package_version=1.0.0` in each application
+manifest. This reviewed release-identity transition intentionally changes
+manifest and application WASM bytes from `v1.0.0-rc.2`; Application ABI v1,
+Frame v1, and Effect protocol v1 remain unchanged.
 
 ## External build API
 
