@@ -150,9 +150,11 @@ try {
 
   runCapture("bun", ["run", "proof"], capabilitiesRoot);
   const bun = executablePath("bun");
+  const runtimePath = join(runtimeRoot, "runtime-path");
+  mkdirSync(runtimePath);
   const runtimeEnvironment = {
     ...process.env,
-    PATH: "/usr/bin:/bin",
+    PATH: runtimePath,
   };
   const zigProbe = spawnSync("zig", ["version"], {
     cwd: runtimeRoot,
