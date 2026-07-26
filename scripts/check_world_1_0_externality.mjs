@@ -11,10 +11,25 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const WORLD_RELEASE_URL =
+  "https://github.com/tkersey/world/archive/refs/tags/v1.0.0.tar.gz";
+const REVIEWED_ARCHIVE_SHA256 = Object.freeze({
+  boundary:
+    "25e5bd5ed45aac023ef99beee93f675ea4efb3f6eb1e98d2a13040d7451f0e9a",
+  world:
+    "9976802090738d61beb49522207c086cf1f529f2f39002de7b54d1c10808b944",
+  worldHost:
+    "f881aaf3ada062ca3d80fc46d10cb001f38504d816ecd4995faf34bcd14ecc70",
+  worldCapabilities:
+    "1d9011faf1932de66ca4f7f24dcfaea41671175999bf278683bda4702854e0ca",
+});
 
 const options = parseArgs(process.argv.slice(2));
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -23,17 +38,54 @@ let consumerProofRoot = null;
 let passed = false;
 
 try {
+  assert.equal(
+    options.worldUrl,
+    WORLD_RELEASE_URL,
+    "World release URL differs from the reviewed v1.0.0 identity",
+  );
+  const reviewedArchiveRoot = join(proofRoot, "reviewed-archives");
+  mkdirSync(reviewedArchiveRoot);
+  const reviewedArchives = Object.freeze({
+    boundary: snapshotReviewedArchive(
+      options.boundaryArchive,
+      join(reviewedArchiveRoot, "boundary-v0.7.0.tar.gz"),
+      REVIEWED_ARCHIVE_SHA256.boundary,
+      "Boundary",
+    ),
+    world: snapshotReviewedArchive(
+      options.worldArchive,
+      join(reviewedArchiveRoot, "world-v1.0.0.tar.gz"),
+      REVIEWED_ARCHIVE_SHA256.world,
+      "World",
+    ),
+    worldHost: snapshotReviewedArchive(
+      options.worldHostArchive,
+      join(reviewedArchiveRoot, "world-host-v1.0.0.tar.gz"),
+      REVIEWED_ARCHIVE_SHA256.worldHost,
+      "world-host",
+    ),
+    worldCapabilities: snapshotReviewedArchive(
+      options.worldCapabilitiesRuntimeArchive,
+      join(
+        reviewedArchiveRoot,
+        "world-capabilities-v1-runtime-v1.0.0.tar.gz",
+      ),
+      REVIEWED_ARCHIVE_SHA256.worldCapabilities,
+      "world-capabilities",
+    ),
+  });
+  const zig = executablePath(options.zig);
   const consumer = runCapture("node", [
     join(sourceRoot, "scripts/check_world_external_consumer.mjs"),
     "--keep",
     "--world-archive",
-    options.worldArchive,
+    reviewedArchives.world,
     "--world-url",
     options.worldUrl,
     "--boundary-archive",
-    options.boundaryArchive,
+    reviewedArchives.boundary,
     "--zig",
-    options.zig,
+    zig,
   ]);
   consumerProofRoot = proofPath(
     consumer.stderr,
@@ -76,16 +128,16 @@ try {
     applicationRoot,
     "research-digest-agent.manifest.bin",
   );
-  const hostArchive = join(archiveRoot, basename(options.worldHostArchive));
+  const hostArchive = join(archiveRoot, "world-host-v1.0.0.tar.gz");
   const capabilitiesArchive = join(
     archiveRoot,
-    basename(options.worldCapabilitiesRuntimeArchive),
+    "world-capabilities-v1-runtime-v1.0.0.tar.gz",
   );
   copyFileSync(builtWasm, runtimeWasm);
   copyFileSync(builtManifest, runtimeManifest);
-  copyFileSync(options.worldHostArchive, hostArchive);
+  copyFileSync(reviewedArchives.worldHost, hostArchive);
   copyFileSync(
-    options.worldCapabilitiesRuntimeArchive,
+    reviewedArchives.worldCapabilities,
     capabilitiesArchive,
   );
 
@@ -148,10 +200,10 @@ try {
     join(hostRoot, "capabilities"),
   );
 
-  runCapture("bun", ["run", "proof"], capabilitiesRoot);
   const bun = executablePath("bun");
   const runtimePath = join(runtimeRoot, "runtime-path");
   mkdirSync(runtimePath);
+  symlinkSync(bun, join(runtimePath, "bun"));
   const runtimeEnvironment = {
     ...process.env,
     PATH: runtimePath,
@@ -165,6 +217,12 @@ try {
   assert(
     zigProbe.error?.code === "ENOENT" || zigProbe.status !== 0,
     "runtime proof unexpectedly exposes a Zig compiler",
+  );
+  runCapture(
+    bun,
+    ["run", "proof"],
+    capabilitiesRoot,
+    runtimeEnvironment,
   );
 
   const packCheck = JSON.parse(
@@ -320,6 +378,27 @@ function requireFile(path) {
   );
 }
 
+function snapshotReviewedArchive(
+  source,
+  destination,
+  expectedSha256,
+  label,
+) {
+  requireFile(source);
+  assert(
+    !lstatSync(source).isSymbolicLink(),
+    `${label} release archive must not be a symbolic link`,
+  );
+  const bytes = readFileSync(source);
+  assert.equal(
+    createHash("sha256").update(bytes).digest("hex"),
+    expectedSha256,
+    `${label} release archive differs from the reviewed identity`,
+  );
+  writeFileSync(destination, bytes, { flag: "wx" });
+  return destination;
+}
+
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -403,7 +482,7 @@ function parseArgs(args) {
         options.worldUrl = value;
         break;
       case "--zig":
-        options.zig = resolve(value);
+        options.zig = value.includes("/") ? resolve(value) : value;
         break;
       default:
         throw new Error(`unknown option: ${key}`);

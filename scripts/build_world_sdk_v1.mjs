@@ -46,7 +46,7 @@ const RELEASES = Object.freeze({
       "world-host-v1.0.0.tar.gz",
     archiveName: "world-host-v1.0.0.tar.gz",
     archiveSha256:
-      "7cb70e44cc22f6823015fd932666a082f2dc486d7ba98ca502892c0583903726",
+      "f881aaf3ada062ca3d80fc46d10cb001f38504d816ecd4995faf34bcd14ecc70",
     executableSourceCommit: "b66324515577323325deccf532efd85e370f51b3",
   }),
   worldCapabilities: Object.freeze({
@@ -290,6 +290,17 @@ function materializeConformance(root, zig) {
     join(sourceRoot, "scripts/run_world_sdk_externality.mjs"),
     join(externalConsumer, "run.mjs"),
   );
+  const verifierScripts = join(externalConsumer, "verifier/scripts");
+  mkdirSync(verifierScripts, { recursive: true });
+  for (const name of [
+    "check_world_1_0_externality.mjs",
+    "check_world_external_consumer.mjs",
+  ]) {
+    copyFileSync(
+      join(sourceRoot, "scripts", name),
+      join(verifierScripts, name),
+    );
+  }
 
   const lifecycleReceipt = JSON.parse(
     run(
@@ -562,9 +573,9 @@ identity are documented in \`docs/application_v1.md\`.
 function externalConsumerReadme() {
   return `# External consumer conformance
 
-\`run.mjs\` extracts the bundled World release into a temporary directory and
-invokes World’s owning \`check-world-1.0-externality\` proof with the four
-bundled release archives. It uses isolated Zig caches and requires no sibling
+\`run.mjs\` invokes the bundled, reviewed World externality verifier with the
+four exact release archives. The verifier authenticates every archive before
+extracting or executing it, uses isolated Zig caches, and requires no sibling
 checkout.
 `;
 }

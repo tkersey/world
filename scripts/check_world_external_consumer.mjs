@@ -66,11 +66,17 @@ try {
   const projectRoot = join(proofRoot, "consumer");
   const packageCache = join(proofRoot, "package-cache");
 
-  const worldHash = fetchPackage(options.zig, archivePath, packageCache);
+  const worldHash = fetchPackage(
+    options.zig,
+    archivePath,
+    packageCache,
+    worldPackageRoot,
+  );
   const actualBoundaryHash = fetchPackage(
     options.zig,
     options.boundaryArchive ?? boundaryUrl,
     packageCache,
+    worldPackageRoot,
   );
   if (actualBoundaryHash !== boundaryHash) {
     throw new Error(
@@ -150,13 +156,17 @@ try {
   }
 }
 
-function fetchPackage(zig, source, globalCache) {
-  return run(zig, [
-    "fetch",
-    "--global-cache-dir",
-    globalCache,
-    source,
-  ]).stdout.trim();
+function fetchPackage(zig, source, globalCache, cwd) {
+  return run(
+    zig,
+    [
+      "fetch",
+      "--global-cache-dir",
+      globalCache,
+      source,
+    ],
+    cwd,
+  ).stdout.trim();
 }
 
 function locatePackageRoot(materializedRoot) {
@@ -252,7 +262,7 @@ function parseArgs(args) {
         options.worldUrl = value;
         break;
       case "--zig":
-        options.zig = resolve(value);
+        options.zig = value.includes("/") ? resolve(value) : value;
         break;
       default:
         throw new Error(`unknown option: ${key}`);
