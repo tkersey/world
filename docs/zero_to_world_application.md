@@ -1,9 +1,7 @@
 # Zero to a World Application
 
 This guide starts in an empty directory and ends with a completed,
-source-independent hosted run. It uses reviewed release-candidate artifacts;
-the stable `v1.0.0` release process replaces only the pinned tags, package
-hashes, and archive checksums after this gate passes.
+source-independent hosted run using the reviewed stable `v1.0.0` artifacts.
 
 Required tools:
 
@@ -25,30 +23,30 @@ curl -L \
   https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz \
   -o boundary-v0.7.0.tar.gz
 curl -L \
-  https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz \
-  -o world-v1.0.0-rc.2.tar.gz
+  https://github.com/tkersey/world/archive/refs/tags/v1.0.0.tar.gz \
+  -o world-v1.0.0.tar.gz
 curl -L \
-  https://github.com/tkersey/world-host/releases/download/v1.0.0-rc.2/world-host-v1.0.0-rc.2.tar.gz \
-  -o world-host-v1.0.0-rc.2.tar.gz
+  https://github.com/tkersey/world-host/releases/download/v1.0.0/world-host-v1.0.0.tar.gz \
+  -o world-host-v1.0.0.tar.gz
 curl -L \
-  https://github.com/tkersey/world-capabilities/releases/download/v1.0.0-rc.4/world-capabilities-v1-runtime-v1.0.0-rc.4.tar.gz \
-  -o world-capabilities-v1-runtime-v1.0.0-rc.4.tar.gz
+  https://github.com/tkersey/world-capabilities/releases/download/v1.0.0/world-capabilities-v1-runtime-v1.0.0.tar.gz \
+  -o world-capabilities-v1-runtime-v1.0.0.tar.gz
 ```
 
 Verify the downloaded bytes before extracting or executing them:
 
 ```text
 25e5bd5ed45aac023ef99beee93f675ea4efb3f6eb1e98d2a13040d7451f0e9a  boundary-v0.7.0.tar.gz
-56eb9471b83e97d60c6fb0da5725fdeac77cf5b82151e8f5137a356e94ec32b4  world-v1.0.0-rc.2.tar.gz
-6ca3580cdd1e594aae650ebafc9add660d3c131816900f144bc4ee3b93d27def  world-host-v1.0.0-rc.2.tar.gz
-b6b87dc78e90d5ba626f20489016bab4c0f3ff39ae1e9ce77c2ab76ed1150cfc  world-capabilities-v1-runtime-v1.0.0-rc.4.tar.gz
+9976802090738d61beb49522207c086cf1f529f2f39002de7b54d1c10808b944  world-v1.0.0.tar.gz
+7cb70e44cc22f6823015fd932666a082f2dc486d7ba98ca502892c0583903726  world-host-v1.0.0.tar.gz
+1d9011faf1932de66ca4f7f24dcfaea41671175999bf278683bda4702854e0ca  world-capabilities-v1-runtime-v1.0.0.tar.gz
 ```
 
 The corresponding Zig package identities are:
 
 ```text
 boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_
-world-1.0.0-rc.2-XXTUeOXYhwC1anDePj7Lr4SfwDCxG-ofPw92_-PGGyKv
+world-1.0.0-XXTUeF0tiAC_5jqj2oVDvgGmmh8c7CRCnuaG8p2i9Zk_
 ```
 
 ## 2. Create the application
@@ -58,12 +56,12 @@ source checkout:
 
 ```sh
 mkdir world-release
-tar -xzf world-v1.0.0-rc.2.tar.gz -C world-release --strip-components=1
+tar -xzf world-v1.0.0.tar.gz -C world-release --strip-components=1
 
 node world-release/scripts/init_world_application.mjs \
   --output research-digest-agent \
-  --world-url https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz \
-  --world-hash world-1.0.0-rc.2-XXTUeOXYhwC1anDePj7Lr4SfwDCxG-ofPw92_-PGGyKv
+  --world-url https://github.com/tkersey/world/archive/refs/tags/v1.0.0.tar.gz \
+  --world-hash world-1.0.0-XXTUeF0tiAC_5jqj2oVDvgGmmh8c7CRCnuaG8p2i9Zk_
 ```
 
 The generated project uses only public APIs:
@@ -98,7 +96,7 @@ zig fetch \
   ../boundary-v0.7.0.tar.gz
 zig fetch \
   --global-cache-dir .zig-global-cache \
-  ../world-v1.0.0-rc.2.tar.gz
+  ../world-v1.0.0.tar.gz
 
 zig build \
   --cache-dir .zig-cache \
@@ -126,11 +124,11 @@ checkout:
 
 ```sh
 mkdir runtime
-tar -xzf world-host-v1.0.0-rc.2.tar.gz -C runtime
-tar -xzf world-capabilities-v1-runtime-v1.0.0-rc.4.tar.gz -C runtime
+tar -xzf world-host-v1.0.0.tar.gz -C runtime
+tar -xzf world-capabilities-v1-runtime-v1.0.0.tar.gz -C runtime
 
-HOST=runtime/world-host-v1.0.0-rc.2
-CAP=runtime/world-capabilities-v1-runtime-v1.0.0-rc.4
+HOST=runtime/world-host-v1.0.0
+CAP=runtime/world-capabilities-v1-runtime-v1.0.0
 APP=research-digest-agent/zig-out/world-apps/research-digest-agent.world.wasm
 
 (cd "$CAP" && bun run proof)
@@ -195,11 +193,11 @@ network and no sibling checkout:
 ```sh
 cd world-release
 zig build check-world-1.0-externality -- \
-  --world-archive ../world-v1.0.0-rc.2.tar.gz \
-  --world-url https://github.com/tkersey/world/archive/refs/tags/v1.0.0-rc.2.tar.gz \
+  --world-archive ../world-v1.0.0.tar.gz \
+  --world-url https://github.com/tkersey/world/archive/refs/tags/v1.0.0.tar.gz \
   --boundary-archive ../boundary-v0.7.0.tar.gz \
-  --world-host-archive ../world-host-v1.0.0-rc.2.tar.gz \
-  --world-capabilities-runtime-archive ../world-capabilities-v1-runtime-v1.0.0-rc.4.tar.gz
+  --world-host-archive ../world-host-v1.0.0.tar.gz \
+  --world-capabilities-runtime-archive ../world-capabilities-v1-runtime-v1.0.0.tar.gz
 ```
 
 The gate rebuilds the application in a fresh directory with isolated Zig
