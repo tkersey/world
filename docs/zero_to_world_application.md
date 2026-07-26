@@ -38,7 +38,7 @@ Verify the downloaded bytes before extracting or executing them:
 ```text
 25e5bd5ed45aac023ef99beee93f675ea4efb3f6eb1e98d2a13040d7451f0e9a  boundary-v0.7.0.tar.gz
 9976802090738d61beb49522207c086cf1f529f2f39002de7b54d1c10808b944  world-v1.0.0.tar.gz
-7cb70e44cc22f6823015fd932666a082f2dc486d7ba98ca502892c0583903726  world-host-v1.0.0.tar.gz
+f881aaf3ada062ca3d80fc46d10cb001f38504d816ecd4995faf34bcd14ecc70  world-host-v1.0.0.tar.gz
 1d9011faf1932de66ca4f7f24dcfaea41671175999bf278683bda4702854e0ca  world-capabilities-v1-runtime-v1.0.0.tar.gz
 ```
 

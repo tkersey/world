@@ -15,9 +15,16 @@ const ARCHIVES = Object.freeze({
   "world/world-v1.0.0.tar.gz":
     "9976802090738d61beb49522207c086cf1f529f2f39002de7b54d1c10808b944",
   "world-host/world-host-v1.0.0.tar.gz":
-    "7cb70e44cc22f6823015fd932666a082f2dc486d7ba98ca502892c0583903726",
+    "f881aaf3ada062ca3d80fc46d10cb001f38504d816ecd4995faf34bcd14ecc70",
   "world-capabilities/world-capabilities-v1-runtime-v1.0.0.tar.gz":
     "1d9011faf1932de66ca4f7f24dcfaea41671175999bf278683bda4702854e0ca",
+});
+
+const VERIFIER_SHA256 = Object.freeze({
+  "conformance/external-consumer/verifier/scripts/check_world_1_0_externality.mjs":
+    "1e4ad89c93c7337b0e30608a81e783b586a29bd1353d85aeafe9e7502cdee043",
+  "conformance/external-consumer/verifier/scripts/check_world_external_consumer.mjs":
+    "8e91544440b442bdca20d1feb8ee3b1e47661a725a3b53d2c87c8f5889c63a82",
 });
 
 const COMPLETION_RECEIPT = Object.freeze({
@@ -58,6 +65,13 @@ for (const [path, expected] of checksums) {
 for (const [path, expected] of Object.entries(ARCHIVES)) {
   assert.equal(sha256File(join(root, path)), expected, `release identity mismatch: ${path}`);
 }
+for (const [path, expected] of Object.entries(VERIFIER_SHA256)) {
+  assert.equal(
+    sha256File(join(root, path)),
+    expected,
+    `externality verifier identity mismatch: ${path}`,
+  );
+}
 
 for (const path of [
   "README.md",
@@ -78,6 +92,8 @@ for (const path of [
   "world-capabilities/distribution/harness/check-pack.mjs",
   "examples/research-digest-agent/src/effects.zig",
   "conformance/external-consumer/run.mjs",
+  "conformance/external-consumer/verifier/scripts/check_world_1_0_externality.mjs",
+  "conformance/external-consumer/verifier/scripts/check_world_external_consumer.mjs",
   "conformance/external-consumer/receipt.txt",
   "conformance/lifecycle/receipt.json",
   "conformance/negative/receipt.json",

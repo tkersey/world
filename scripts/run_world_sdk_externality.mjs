@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const WORLD_URL =
-  "https://github.com/tkersey/world/archive/refs/tags/v1.0.0.tar.gz";
+const VERIFIER_SHA256 = Object.freeze({
+  "check_world_1_0_externality.mjs":
+    "1e4ad89c93c7337b0e30608a81e783b586a29bd1353d85aeafe9e7502cdee043",
+  "check_world_external_consumer.mjs":
+    "8e91544440b442bdca20d1feb8ee3b1e47661a725a3b53d2c87c8f5889c63a82",
+});
+
 const options = parseArgs(process.argv.slice(2));
 const current = resolve(fileURLToPath(import.meta.url));
 const embedded = basename(dirname(current)) === "external-consumer";
@@ -21,65 +20,39 @@ const sdkRoot = embedded
   : options.sdk;
 assert(sdkRoot, "--sdk is required outside the packaged SDK");
 
-const proofRoot = mkdtempSync(join(tmpdir(), "world-sdk-externality-"));
-try {
-  const worldMaterialized = join(proofRoot, "world");
-  mkdirSync(worldMaterialized, { recursive: true });
-  run("tar", [
-    "-xzf",
-    join(sdkRoot, "world/world-v1.0.0.tar.gz"),
-    "-C",
-    worldMaterialized,
-  ]);
-  const worldRoot = locateWorldRoot(worldMaterialized);
-  const result = run(
-    options.zig,
-    [
-      "build",
-      "check-world-1.0-externality",
-      "--",
-      "--world-archive",
-      join(sdkRoot, "world/world-v1.0.0.tar.gz"),
-      "--world-url",
-      WORLD_URL,
-      "--boundary-archive",
-      join(sdkRoot, "boundary/boundary-v0.7.0.tar.gz"),
-      "--world-host-archive",
-      join(sdkRoot, "world-host/world-host-v1.0.0.tar.gz"),
-      "--world-capabilities-runtime-archive",
-      join(
-        sdkRoot,
-        "world-capabilities/world-capabilities-v1-runtime-v1.0.0.tar.gz",
-      ),
-    ],
-    worldRoot,
+const verifierRoot = join(
+  sdkRoot,
+  "conformance/external-consumer/verifier/scripts",
+);
+for (const [name, expectedSha256] of Object.entries(VERIFIER_SHA256)) {
+  const actualSha256 = createHash("sha256")
+    .update(readFileSync(join(verifierRoot, name)))
+    .digest("hex");
+  assert.equal(
+    actualSha256,
+    expectedSha256,
+    `packaged externality verifier identity mismatch: ${name}`,
   );
-  process.stdout.write(result.stdout);
-} finally {
-  rmSync(proofRoot, { recursive: true, force: true });
 }
-
-function locateWorldRoot(root) {
-  const matches = [];
-  walk(root, (candidate) => {
-    if (
-      existsSync(join(candidate, "build.zig")) &&
-      existsSync(join(candidate, "build.zig.zon")) &&
-      existsSync(join(candidate, "scripts/check_world_1_0_externality.mjs"))
-    ) {
-      matches.push(candidate);
-    }
-  });
-  assert.equal(matches.length, 1, "World release package root is ambiguous");
-  return matches[0];
-}
-
-function walk(root, visit) {
-  visit(root);
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (entry.isDirectory()) walk(join(root, entry.name), visit);
-  }
-}
+const verifierArgs = [
+  join(verifierRoot, "check_world_1_0_externality.mjs"),
+  "--world-archive",
+  join(sdkRoot, "world/world-v1.0.0.tar.gz"),
+  "--world-url",
+  "https://github.com/tkersey/world/archive/refs/tags/v1.0.0.tar.gz",
+  "--boundary-archive",
+  join(sdkRoot, "boundary/boundary-v0.7.0.tar.gz"),
+  "--world-host-archive",
+  join(sdkRoot, "world-host/world-host-v1.0.0.tar.gz"),
+  "--world-capabilities-runtime-archive",
+  join(
+    sdkRoot,
+    "world-capabilities/world-capabilities-v1-runtime-v1.0.0.tar.gz",
+  ),
+];
+if (options.zig !== "zig") verifierArgs.push("--zig", options.zig);
+const result = run("node", verifierArgs, sdkRoot);
+process.stdout.write(result.stdout);
 
 function run(command, args, cwd = undefined) {
   const result = spawnSync(command, args, {
