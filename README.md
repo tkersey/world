@@ -53,7 +53,9 @@ identity before installation.
 Application ABI v1 permits at most one pending external effect in each Frame.
 Providers selected statically are compiled into the application. Independently
 deployed subagents cross `agent.invoke.v1`; they are not recursively discovered
-or loaded. See [the application guide](docs/application_v1.md) and
+or loaded. Start with
+[the empty-directory walkthrough](docs/zero_to_world_application.md), then see
+[the application guide](docs/application_v1.md) and
 [the normative ABI](docs/application_abi_v1.md).
 
 ## Legacy v0 compatibility
