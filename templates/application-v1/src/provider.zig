@@ -39,12 +39,19 @@ const value_types = [_]cir.ValueType{
     .{ .schema = 7 }, // v25 result digest
     .{ .scalar = .u32 }, // v26 result count
     .{ .schema = 9 }, // v27 result
+    .{ .scalar = .u32 }, // v28 request maximum items
+    .{ .scalar = .boolean }, // v29 response length is below request maximum
+    .{ .scalar = .u32 }, // v30 bounded item count
+    .{ .scalar = .u32 }, // v31 resumed request maximum items
 };
 
-const lookup_continuation_arguments = [_]cir.EdgeArgument{.@"resume"};
+const lookup_continuation_arguments = [_]cir.EdgeArgument{
+    .@"resume",
+    .{ .value = 28 },
+};
 const initial_loop_arguments = [_]cir.EdgeArgument{
     .{ .value = 2 },
-    .{ .value = 3 },
+    .{ .value = 30 },
     .{ .value = 4 },
     .{ .value = 5 },
 };
@@ -65,6 +72,13 @@ const loop_back_arguments = [_]cir.EdgeArgument{
     .{ .value = 22 },
 };
 
+const entry_instructions = [_]cir.Instruction{.{
+    .kind = .pure,
+    .result = 28,
+    .operands = &.{0},
+    .operation = .{ .product_extract = 1 },
+}};
+
 const response_instructions = [_]cir.Instruction{
     .{
         .kind = .pure,
@@ -77,6 +91,18 @@ const response_instructions = [_]cir.Instruction{
         .result = 3,
         .operands = &.{2},
         .operation = .vector_length,
+    },
+    .{
+        .kind = .pure,
+        .result = 29,
+        .operands = &.{ 3, 31 },
+        .operation = .integer_less_than,
+    },
+    .{
+        .kind = .pure,
+        .result = 30,
+        .operands = &.{ 29, 3, 31 },
+        .operation = .select,
     },
     .{
         .kind = .constant,
@@ -169,6 +195,7 @@ const blocks = [_]cir.Block{
     .{
         .id = 0,
         .parameters = &.{0},
+        .instructions = &entry_instructions,
         .terminator = .{ .@"suspend" = .{
             .kind = .effect,
             .site_id = 0,
@@ -182,7 +209,7 @@ const blocks = [_]cir.Block{
     },
     .{
         .id = 1,
-        .parameters = &.{1},
+        .parameters = &.{ 1, 31 },
         .instructions = &response_instructions,
         .terminator = .{ .jump = .{
             .target = 2,

@@ -20,7 +20,7 @@ const module = await WebAssembly.compile(wasmBytes);
 const applicationId = manifest.subarray(12, 44);
 const request = {
   query: "portable algebraic effects",
-  maximumItems: 2,
+  maximumItems: 1,
 };
 const initialArgs = encodeResearchRequest(request);
 const genesis = encodeStepInput({
@@ -63,8 +63,8 @@ const expected = {
 };
 const expectedResult = {
   digest:
-    "Effect rows as application boundaries\nStatic closure leaves authority outside the guest.\nPortable continuations\nCanonical Frames resume in fresh WASM instances.\n",
-  itemCount: 2,
+    "Effect rows as application boundaries\nStatic closure leaves authority outside the guest.\n",
+  itemCount: 1,
 };
 const firstResult = encodeOkResult(
   parent.request,
@@ -97,8 +97,8 @@ const alternate = {
 };
 const alternateResultValue = {
   digest:
-    "A different research corpus\nThe same parent may accept another valid result.\nBranch isolation\nThe parent Frame remains immutable.\n",
-  itemCount: 2,
+    "A different research corpus\nThe same parent may accept another valid result.\n",
+  itemCount: 1,
 };
 const alternateResult = encodeOkResult(
   parent.request,

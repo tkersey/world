@@ -20,7 +20,7 @@ test "Research Digest v2 formats bounded research items inside compiled Machines
 
     const request: Effects.ResearchRequest = .{
         .query = try Effects.Query.fromSlice("portable algebraic effects"),
-        .maximum_items = 2,
+        .maximum_items = 1,
     };
     const initial_args = try App.encodeInitialArgs(allocator, request);
     const parent = try App.initialFrame(&arena, initial_args, 10_000);
@@ -89,12 +89,10 @@ test "Research Digest v2 formats bounded research items inside compiled Machines
     defer result.deinit();
     try std.testing.expectEqualStrings(
         "Effect rows as application boundaries\n" ++
-            "Static closure leaves authority outside the guest.\n" ++
-            "Portable continuations\n" ++
-            "Canonical Frames resume in fresh WASM instances.\n",
+            "Static closure leaves authority outside the guest.\n",
         try result.value.digest.slice(),
     );
-    try std.testing.expectEqual(@as(u32, 2), result.value.item_count);
+    try std.testing.expectEqual(@as(u32, 1), result.value.item_count);
 
     const completed_bytes = try App.encodeFrame(allocator, completed);
     const retried_bytes = try App.encodeFrame(allocator, retried);
