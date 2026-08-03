@@ -45,11 +45,13 @@ try {
     BOUNDARY_MACHINE_URL,
     join(archivesRoot, "boundary-v1.0.0-rc.1.tar.gz"),
   );
-  const worldHost = materializeArchive(
-    options.worldHostArchive,
-    WORLD_HOST_URL,
-    join(archivesRoot, "world-host-v1.0.0.tar.gz"),
+  const worldHost = options.worldHostArchive ?? downloadReleaseAsset(
+    "tkersey/world-host",
+    "v1.0.0",
+    "world-host-v1.0.0.tar.gz",
+    archivesRoot,
   );
+  requireFile(worldHost);
   assert.equal(
     sha256File(worldHost),
     WORLD_HOST_SHA256,
@@ -422,6 +424,21 @@ function materializeArchive(input, url, destination) {
   assert.equal(response.status, 0);
   requireFile(destination);
   return destination;
+}
+
+function downloadReleaseAsset(repository, tag, asset, destination) {
+  runCapture("gh", [
+    "release",
+    "download",
+    tag,
+    "--repo",
+    repository,
+    "--pattern",
+    asset,
+    "--dir",
+    destination,
+  ]);
+  return join(destination, asset);
 }
 
 function requireCleanCheckout(repository, label) {
