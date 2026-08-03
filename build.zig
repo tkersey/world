@@ -537,12 +537,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
-                .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary", .module = boundary_machine },
             },
         }),
         .filters = test_args.filters,
     });
     const run_world_comptime_agent_tests = addRunArtifactWithArgs(b, world_comptime_agent_tests, test_args.passthrough);
+    check_world_machine_v2_step.dependOn(&run_world_comptime_agent_tests.step);
     const research_digest_application = b.createModule(.{
         .root_source_file = b.path(
             "templates/application-v1/src/application.zig",
@@ -695,7 +696,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
         .imports = &.{
             .{ .name = "world", .module = wasm_world },
-            .{ .name = "boundary", .module = wasm_boundary },
+            .{ .name = "boundary", .module = wasm_boundary_machine },
         },
     });
     const host_application_v1_agent_fixtures = b.createModule(.{
@@ -704,7 +705,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "world", .module = host_world },
-            .{ .name = "boundary", .module = host_boundary },
+            .{ .name = "boundary", .module = host_boundary_machine },
         },
     });
     const host_skeleton_application_selector = b.createModule(.{
