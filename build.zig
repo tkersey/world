@@ -537,6 +537,20 @@ pub fn build(b: *std.Build) void {
     check_world_machine_v2_step.dependOn(
         &check_world_machine_v2_surface.step,
     );
+    const check_world_machine_no_interpreter = b.addSystemCommand(&.{"node"});
+    check_world_machine_no_interpreter.addFileArg(b.path(
+        "scripts/check_world_machine_no_interpreter.mjs",
+    ));
+    const check_world_machine_no_interpreter_step = b.step(
+        "check-world-machine-no-interpreter",
+        "Prove the World Machine path delegates to Boundary without a generic interpreter.",
+    );
+    check_world_machine_no_interpreter_step.dependOn(
+        &check_world_machine_no_interpreter.step,
+    );
+    check_world_machine_v2_step.dependOn(
+        check_world_machine_no_interpreter_step,
+    );
     const world_application_build_support = b.createModule(.{
         .root_source_file = b.path("build_support/application.zig"),
         .target = validation_target,
