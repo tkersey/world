@@ -4,6 +4,7 @@ const effects = @import("effects.zig");
 const provider = @import("provider.zig");
 
 pub const Effects = effects;
+pub const ResearchLookupMachine = provider.Machine;
 pub const ResearchLookupSite = provider.LookupSite;
 
 /// Closed Research Digest application with one residual external effect.

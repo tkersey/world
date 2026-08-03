@@ -6,9 +6,10 @@ pub fn build(b: *std.Build) void {
         .name = "research-digest-agent",
         .root_source_file = b.path("../../templates/application-v1/src/application.zig"),
         .application_decl = "Application",
+        .stack_size_bytes = 4 * 1024 * 1024,
         .memory = .{
-            .initial_pages = 512,
-            .maximum_pages = 512,
+            .initial_pages = 576,
+            .maximum_pages = 576,
         },
         .install_human_readable_manifest = true,
     });

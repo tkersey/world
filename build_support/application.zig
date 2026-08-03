@@ -14,6 +14,7 @@ pub const Options = struct {
     root_source_file: std.Build.LazyPath,
     application_decl: []const u8 = "Application",
     optimize: std.builtin.OptimizeMode = .ReleaseSmall,
+    stack_size_bytes: u64 = 1024 * 1024,
     memory: Memory = .{},
     install_human_readable_manifest: bool = false,
 };
@@ -94,7 +95,7 @@ pub fn add(
     wasm.entry = .disabled;
     wasm.rdynamic = true;
     wasm.export_memory = true;
-    wasm.stack_size = 1024 * 1024;
+    wasm.stack_size = options.stack_size_bytes;
     wasm.initial_memory = pagesToBytes(options.memory.initial_pages);
     wasm.max_memory = pagesToBytes(options.memory.maximum_pages);
 
@@ -203,6 +204,14 @@ fn validateOptions(options: Options) void {
     }
     if (options.application_decl.len == 0) {
         std.debug.panic("World application declaration name must not be empty", .{});
+    }
+    if (options.stack_size_bytes == 0 or
+        options.stack_size_bytes > wasm_maximum_pages * wasm_page_bytes)
+    {
+        std.debug.panic(
+            "World application stack size ({d} bytes) must fit a non-empty wasm32 memory",
+            .{options.stack_size_bytes},
+        );
     }
     if (options.memory.initial_pages < minimum_initial_pages) {
         std.debug.panic(

@@ -26,7 +26,7 @@ const initialArgs = encodeResearchRequest(request);
 const genesis = encodeStepInput({
   applicationId,
   initialArgs,
-  fuel: 100n,
+  fuel: 10_000n,
 });
 
 const parentInstance = await instantiate(module);
@@ -75,7 +75,7 @@ const continuation = encodeStepInput({
   expectedParentFrameId: parent.frameId,
   priorFrame: parentBytes,
   effectResult: firstResult.bytes,
-  fuel: 100n,
+  fuel: 10_000n,
 });
 const firstChildBytes = await complete(module, continuation, expectedResult);
 const retryChildBytes = await complete(module, continuation, expectedResult);
@@ -109,7 +109,7 @@ const alternateInput = encodeStepInput({
   expectedParentFrameId: parent.frameId,
   priorFrame: parentBytes,
   effectResult: alternateResult.bytes,
-  fuel: 100n,
+  fuel: 10_000n,
 });
 const alternateChildBytes = await complete(
   module,

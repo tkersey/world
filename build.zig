@@ -552,7 +552,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "world", .module = world },
-            .{ .name = "boundary", .module = boundary },
+            .{ .name = "boundary", .module = boundary_machine },
         },
     });
     const research_digest_tests = b.addTest(.{
@@ -629,6 +629,16 @@ pub fn build(b: *std.Build) void {
         "Build a World application through the public helper from a dependent package.",
     );
     check_world_external_build_helper_step.dependOn(&run_external_build_helper.step);
+    const check_world_research_digest_v2_step = b.step(
+        "check-world-research-digest-v2",
+        "Prove native and import-free wasm32 Research Digest v2 Machine-owned formatting.",
+    );
+    check_world_research_digest_v2_step.dependOn(
+        &run_research_digest_tests.step,
+    );
+    check_world_research_digest_v2_step.dependOn(
+        check_world_external_build_helper_step,
+    );
     const check_world_external_consumer = b.addSystemCommand(&.{"node"});
     check_world_external_consumer.addFileArg(b.path(
         "scripts/check_world_external_consumer.mjs",
