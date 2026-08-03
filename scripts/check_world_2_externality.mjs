@@ -96,7 +96,12 @@ try {
     consumerProofRoot,
     "consumer/zig-out/world-apps/research-digest-agent.world.wasm",
   );
+  const manifestPath = join(
+    consumerProofRoot,
+    "consumer/zig-out/world-apps/research-digest-agent.manifest.bin",
+  );
   requireFile(wasmPath);
+  requireFile(manifestPath);
   const wasmBytes = readFileSync(wasmPath);
 
   const materializedRoot = join(proofRoot, "materialized");
@@ -112,6 +117,17 @@ try {
     capabilitiesMaterialized,
     "package.json",
   );
+  const capabilityCorpus = JSON.parse(readFileSync(join(
+    capabilitiesRoot,
+    "packages/research-lookup-fixture/corpus.json",
+  ), "utf8"));
+  assert.deepEqual(capabilityCorpus.worldRelease, {
+    applicationManifestSha256: sha256File(manifestPath),
+    applicationWasmSha256: sha256File(wasmPath),
+    archiveSha256: sha256File(world.archive),
+    packageHash: consumerReceipt.world_release_hash,
+    tag: `v${WORLD_VERSION}`,
+  }, "capability pack and clean-room build use different World release tuples");
 
   runCapture(
     executablePath("bun"),
