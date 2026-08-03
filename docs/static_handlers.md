@@ -7,12 +7,18 @@ World handler ownership is decided at comptime. Runtime state records only the s
 ## Internal machine handler
 
 ```zig
-world.v1.handle(ParentSite, ProviderMachine)
+world.v1.handle(
+    ParentMachine,
+    site_ordinal,
+    expected_site_identity,
+    ProviderMachine,
+)
 ```
 
 The provider must be a Boundary Machine ABI v2 type whose `InitialArgs` is
-exactly `tuple{ParentSite.Payload}` and whose `Result` exactly equals
-`ParentSite.Resume`. The parent site must be resumable.
+exactly the handled site's `Payload` and whose `Result` exactly equals that
+site's `Resume`. The parent site must be resumable. The owner Machine, ordinal,
+and expected site identity jointly select the exact source occurrence.
 
 World compiles provider invocation into:
 
@@ -27,7 +33,8 @@ The host never observes the handled parent site.
 ## External effect handler
 
 ```zig
-world.v1.external(Site, .{
+world.v1.external(OwnerMachine, site_ordinal, .{
+    .site_identity = "file.read.v1",
     .interface = "host.file.read.v1",
     .authority = .file_read,
     .response_mode = .resume,

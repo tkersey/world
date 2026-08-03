@@ -13,10 +13,16 @@ const App = world.application(.{
     .version = "1.0.0",
     .root = RootMachine,
     .handlers = .{
-        world.v1.handle(RootSite, ProviderMachine),
+        world.v1.handle(
+            RootMachine,
+            0,
+            "example.lookup.v1",
+            ProviderMachine,
+        ),
     },
     .external = .{
-        world.v1.external(ProviderSite, .{
+        world.v1.external(ProviderMachine, 0, .{
+            .site_identity = "host.example.request.v1",
             .interface = "host.example.v1",
             .authority = .file_read,
         }),
@@ -79,6 +85,12 @@ Construction rejects:
 - an external response mode unsupported by its site;
 - a static provider cycle or provider-depth overflow;
 - a Boundary state or frame bound larger than the World application limit.
+
+An internal provider's `InitialArgs` must exactly equal the handled site's
+`Payload`, and its `Result` must exactly equal that site's `Resume` type.
+Bindings name the owning Machine, the site ordinal within that Machine, and the
+expected source-authored site identity, so source reordering cannot silently
+retarget a binding.
 
 Boundary-local `after` continuations are compiled into the Machine. A Machine
 admitted by World exposes `EffectRow.after_site_count == 0`.
