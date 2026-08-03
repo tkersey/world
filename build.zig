@@ -530,6 +530,37 @@ pub fn build(b: *std.Build) void {
         "Run focused Boundary Machine ABI v2 admission and provider checks.",
     );
     check_world_machine_v2_step.dependOn(&run_world_comptime_application_tests.step);
+    const world_application_build_support = b.createModule(.{
+        .root_source_file = b.path("build_support/application.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+    });
+    const application_build_options_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/application_build_options_test.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{.{
+                .name = "world_application_build_support",
+                .module = world_application_build_support,
+            }},
+        }),
+    });
+    const run_application_build_options_tests = addRunArtifactWithArgs(
+        b,
+        application_build_options_tests,
+        test_args.passthrough,
+    );
+    const check_world_application_build_options_step = b.step(
+        "check-world-application-build-options",
+        "Reject invalid World application stack and memory envelopes.",
+    );
+    check_world_application_build_options_step.dependOn(
+        &run_application_build_options_tests.step,
+    );
+    check_world_machine_v2_step.dependOn(
+        check_world_application_build_options_step,
+    );
     const world_comptime_agent_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/application_v1_agent_fixtures.zig"),

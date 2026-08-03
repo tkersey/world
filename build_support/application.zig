@@ -4,6 +4,10 @@ const wasm_page_bytes: u64 = 64 * 1024;
 const wasm_maximum_pages: u32 = 65_536;
 const minimum_initial_pages: u32 = 512;
 
+pub const OptionValidationError = error{
+    StackExceedsInitialMemory,
+};
+
 pub const Memory = struct {
     initial_pages: u32 = 512,
     maximum_pages: u32 = 512,
@@ -219,6 +223,18 @@ fn validateOptions(options: Options) void {
             .{ options.memory.initial_pages, minimum_initial_pages },
         );
     }
+    validateStackMemoryEnvelope(
+        options.stack_size_bytes,
+        options.memory.initial_pages,
+    ) catch {
+        std.debug.panic(
+            "World application stack size ({d} bytes) exceeds initial memory ({d} bytes)",
+            .{
+                options.stack_size_bytes,
+                pagesToBytes(options.memory.initial_pages),
+            },
+        );
+    };
     if (options.memory.maximum_pages < options.memory.initial_pages) {
         std.debug.panic(
             "World application maximum memory ({d} pages) is smaller than initial memory ({d} pages)",
@@ -230,6 +246,15 @@ fn validateOptions(options: Options) void {
             "World application maximum memory ({d} pages) exceeds the wasm32 limit ({d} pages)",
             .{ options.memory.maximum_pages, wasm_maximum_pages },
         );
+    }
+}
+
+pub fn validateStackMemoryEnvelope(
+    stack_size_bytes: u64,
+    initial_pages: u32,
+) OptionValidationError!void {
+    if (stack_size_bytes > pagesToBytes(initial_pages)) {
+        return error.StackExceedsInitialMemory;
     }
 }
 
