@@ -122,24 +122,51 @@ if (firstChildBytes.equals(alternateChildBytes)) {
 
 const maximumTitle = "T".repeat(256);
 const maximumSummary = "S".repeat(1024);
+const maximumRequest = {
+  query: request.query,
+  maximumItems: 8,
+};
+const maximumInitialArgs = encodeResearchRequest(maximumRequest);
+const maximumGenesis = encodeStepInput({
+  applicationId,
+  initialArgs: maximumInitialArgs,
+  fuel: 10_000n,
+});
+const maximumParentInstance = await instantiate(module);
+if (callStep(maximumParentInstance, maximumGenesis) !== 0) {
+  throw new Error("maximum Research Digest genesis failed");
+}
+const maximumParentBytes = copyExported(
+  maximumParentInstance,
+  "world_output_ptr",
+  "world_output_len",
+);
+const maximumParent = decodeFrame(maximumParentBytes);
+if (maximumParent.status !== 0 || maximumParent.request === null) {
+  throw new Error("maximum Research Digest genesis did not park");
+}
+if (!maximumParent.request.payload.equals(maximumInitialArgs)) {
+  throw new Error("maximum research.lookup.v2 payload differs from the request");
+}
 const maximumResponse = {
   items: Array.from({ length: 8 }, () => ({
     title: maximumTitle,
     summary: maximumSummary,
   })),
 };
+const maximumItemDigest = `${maximumTitle}\n${maximumSummary}\n`;
 const maximumExpectedResult = {
-  digest: `${maximumTitle}\n${maximumSummary}\n`,
-  itemCount: 1,
+  digest: maximumItemDigest.repeat(8),
+  itemCount: 8,
 };
 const maximumResult = encodeOkResult(
-  parent.request,
+  maximumParent.request,
   encodeResearchResponse(maximumResponse),
 );
 const maximumInput = encodeStepInput({
   applicationId,
-  expectedParentFrameId: parent.frameId,
-  priorFrame: parentBytes,
+  expectedParentFrameId: maximumParent.frameId,
+  priorFrame: maximumParentBytes,
   effectResult: maximumResult.bytes,
   fuel: 10_000n,
 });
@@ -155,23 +182,44 @@ console.log(`digest=${expectedResult.digest}`);
 console.log(`item_count=${expectedResult.itemCount}`);
 
 async function complete(compiled, input, expectedResult) {
-  const instance = await instantiate(compiled);
-  if (callStep(instance, input) !== 0) {
-    throw new Error("Research Digest continuation failed");
+  let nextInput = input;
+  for (let turn = 0; turn < 32; turn += 1) {
+    const instance = await instantiate(compiled);
+    const stepCode = callStep(instance, nextInput);
+    if (stepCode !== 0 && stepCode !== 5) {
+      const detail = copyExported(
+        instance,
+        "world_error_ptr",
+        "world_error_len",
+      ).toString("utf8");
+      throw new Error(
+        `Research Digest continuation failed (${stepCode}): ${detail}`,
+      );
+    }
+    const bytes = copyExported(instance, "world_output_ptr", "world_output_len");
+    const frame = decodeFrame(bytes);
+    if (frame.status === 3) {
+      nextInput = encodeStepInput({
+        applicationId,
+        expectedParentFrameId: frame.frameId,
+        priorFrame: bytes,
+        fuel: 10_000n,
+      });
+      continue;
+    }
+    if (frame.status !== 1 || frame.finalResult === null) {
+      throw new Error("Research Digest application did not complete");
+    }
+    const result = decodeDigestResult(frame.finalResult);
+    if (
+      result.digest !== expectedResult.digest ||
+      result.itemCount !== expectedResult.itemCount
+    ) {
+      throw new Error("Research Digest application returned the wrong result");
+    }
+    return bytes;
   }
-  const bytes = copyExported(instance, "world_output_ptr", "world_output_len");
-  const frame = decodeFrame(bytes);
-  if (frame.status !== 1 || frame.finalResult === null) {
-    throw new Error("Research Digest application did not complete");
-  }
-  const result = decodeDigestResult(frame.finalResult);
-  if (
-    result.digest !== expectedResult.digest ||
-    result.itemCount !== expectedResult.itemCount
-  ) {
-    throw new Error("Research Digest application returned the wrong result");
-  }
-  return bytes;
+  throw new Error("Research Digest application exceeded the continuation bound");
 }
 
 function encodeResearchRequest(value) {
