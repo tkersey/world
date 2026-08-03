@@ -561,10 +561,17 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("test/application_build_options_test.zig"),
             .target = validation_target,
             .optimize = optimize,
-            .imports = &.{.{
+            .imports = &.{ .{
                 .name = "world_application_build_support",
                 .module = world_application_build_support,
-            }},
+            }, .{
+                .name = "world_application_wasm_v1",
+                .module = b.createModule(.{
+                    .root_source_file = b.path("src/application_wasm_v1.zig"),
+                    .target = validation_target,
+                    .optimize = optimize,
+                }),
+            } },
         }),
     });
     const run_application_build_options_tests = addRunArtifactWithArgs(

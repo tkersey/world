@@ -4,6 +4,16 @@ const wasm_page_bytes: u64 = 64 * 1024;
 const wasm_maximum_pages: u32 = 65_536;
 const minimum_initial_pages: u32 = 512;
 
+/// Conservative total of the default Application ABI v1 input, output,
+/// scratch, manifest, and error regions that share linear memory with the
+/// application stack.
+pub const default_application_abi_fixed_region_bytes: u64 =
+    (8 * 1024 * 1024) +
+    (4 * 1024 * 1024) +
+    (16 * 1024 * 1024) +
+    (64 * 1024) +
+    256;
+
 pub const OptionValidationError = error{
     StackExceedsInitialMemory,
 };
@@ -228,9 +238,10 @@ fn validateOptions(options: Options) void {
         options.memory.initial_pages,
     ) catch {
         std.debug.panic(
-            "World application stack size ({d} bytes) exceeds initial memory ({d} bytes)",
+            "World application stack ({d} bytes) plus fixed ABI regions ({d} bytes) exceed initial memory ({d} bytes)",
             .{
                 options.stack_size_bytes,
+                default_application_abi_fixed_region_bytes,
                 pagesToBytes(options.memory.initial_pages),
             },
         );
@@ -253,7 +264,12 @@ pub fn validateStackMemoryEnvelope(
     stack_size_bytes: u64,
     initial_pages: u32,
 ) OptionValidationError!void {
-    if (stack_size_bytes > pagesToBytes(initial_pages)) {
+    const required_bytes = std.math.add(
+        u64,
+        stack_size_bytes,
+        default_application_abi_fixed_region_bytes,
+    ) catch return error.StackExceedsInitialMemory;
+    if (required_bytes > pagesToBytes(initial_pages)) {
         return error.StackExceedsInitialMemory;
     }
 }
