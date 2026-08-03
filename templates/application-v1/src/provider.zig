@@ -280,6 +280,6 @@ pub const Program = boundary.program("research-digest-provider-v2", Body);
 pub const Machine = Program.compile(.{
     .maximum_frames = 8,
     .maximum_state_bytes = 128 * 1024,
-    .maximum_machine_fuel = 4096,
+    .maximum_machine_fuel = 1_000_000,
 });
 pub const LookupSite = Machine.EffectRow.site(0);

@@ -120,11 +120,37 @@ if (firstChildBytes.equals(alternateChildBytes)) {
   throw new Error("two valid Research Digest results produced one child Frame");
 }
 
+const maximumTitle = "T".repeat(256);
+const maximumSummary = "S".repeat(1024);
+const maximumResponse = {
+  items: Array.from({ length: 8 }, () => ({
+    title: maximumTitle,
+    summary: maximumSummary,
+  })),
+};
+const maximumExpectedResult = {
+  digest: `${maximumTitle}\n${maximumSummary}\n`,
+  itemCount: 1,
+};
+const maximumResult = encodeOkResult(
+  parent.request,
+  encodeResearchResponse(maximumResponse),
+);
+const maximumInput = encodeStepInput({
+  applicationId,
+  expectedParentFrameId: parent.frameId,
+  priorFrame: parentBytes,
+  effectResult: maximumResult.bytes,
+  fuel: 10_000n,
+});
+await complete(module, maximumInput, maximumExpectedResult);
+
 console.log("custom_effect=true");
 console.log("internal_provider=true");
 console.log("fresh_instance_resume=true");
 console.log("deterministic_retry=true");
 console.log("branching=true");
+console.log("maximum_response_budget=true");
 console.log(`digest=${expectedResult.digest}`);
 console.log(`item_count=${expectedResult.itemCount}`);
 
