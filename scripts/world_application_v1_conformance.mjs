@@ -49,8 +49,7 @@ expectMagic(manifest, "WRLDMNF1");
 if (manifest.readUInt32LE(8) !== 1) throw new Error("unexpected manifest format version");
 const applicationId = manifest.subarray(12, 44);
 
-const initialArgs = Buffer.alloc(4);
-initialArgs.writeUInt32LE(7);
+const initialArgs = u32(7);
 const genesisInput = encodeStepInput({
   applicationId,
   initialArgs,
@@ -74,8 +73,7 @@ expectZeroed(first.memory, first.world_input_ptr(), first.world_input_capacity()
 expectZeroed(first.memory, first.world_output_ptr(), 1024 * 1024, "output");
 expectZeroed(first.memory, first.world_error_ptr(), 256, "error");
 
-const valueBytes = Buffer.alloc(8);
-valueBytes.writeBigInt64LE(41n);
+const valueBytes = u32(41);
 const result = encodeOkResult(parent.request, valueBytes);
 const continuationInput = encodeStepInput({
   applicationId,
@@ -93,7 +91,7 @@ const child = decodeFrame(childBytes);
 if (child.status !== 1 || child.sequence !== 1n) throw new Error("continued Frame did not complete at sequence one");
 if (!child.parentFrameId?.equals(parent.frameId)) throw new Error("child Frame does not bind its exact parent");
 if (!child.acceptedResultId?.equals(result.resultId)) throw new Error("child Frame does not bind its accepted EffectResult");
-if (child.finalResult === null || child.finalResult.readBigInt64LE() !== 41n) throw new Error("unexpected completed result");
+if (child.finalResult === null || child.finalResult.readUInt32LE() !== 41) throw new Error("unexpected completed result");
 
 const retry = await instantiate(module);
 const retryCode = callStep(retry, continuationInput);
