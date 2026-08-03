@@ -1,6 +1,6 @@
-# World Static Handlers
+# World Machine Handlers
 
-Status: implementation draft.
+Status: World 2.0 implementation surface.
 
 World handler ownership is decided at comptime. Runtime state records only the selected dense handler tag and continuation bytes; it contains no route labels, provider catalogs, or live handler objects.
 
@@ -10,7 +10,9 @@ World handler ownership is decided at comptime. Runtime state records only the s
 world.v1.handle(ParentSite, ProviderMachine)
 ```
 
-The provider must be a Boundary `StaticMachine` whose `InitialArgs` is exactly `tuple{ParentSite.Payload}` and whose `Result` exactly equals `ParentSite.Resume`. The parent site must be resumable.
+The provider must be a Boundary Machine ABI v2 type whose `InitialArgs` is
+exactly `tuple{ParentSite.Payload}` and whose `Result` exactly equals
+`ParentSite.Resume`. The parent site must be resumable.
 
 World compiles provider invocation into:
 

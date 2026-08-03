@@ -1,8 +1,8 @@
 # World Application v1 template
 
 This project defines a new typed Boundary effect protocol, compiles two
-Boundary `StaticMachine` programs, closes `digest.format` with a static
-provider, and leaves only `research.lookup.v1` for the host.
+Boundary Machine ABI v2 programs, closes `digest.format` with a statically
+selected provider, and leaves only `research.lookup.v2` for the host.
 
 Build the checked artifacts with Zig 0.16.0 and Node.js:
 
@@ -24,7 +24,7 @@ complete Application ABI v1 surface, declares the configured initial and
 maximum memory, and embeds the same canonical manifest produced by the native
 application type.
 
-`src/effects.zig` is the schema authority. StaticMachine v1 represents
-portable word fields as canonical `u64` values and this template uses two
-named research items rather than a dynamic product collection. Those are
-deliberate v1 restrictions, not host-side adaptations.
+`src/effects.zig` is the schema authority. The capability returns a bounded
+`Vector` of `ResearchItem` products. The provider Machine iterates those items,
+constructs bounded `Text`, and returns `DigestResult`; the capability never
+formats the application result.

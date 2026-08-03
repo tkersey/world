@@ -530,6 +530,13 @@ pub fn build(b: *std.Build) void {
         "Run focused Boundary Machine ABI v2 admission and provider checks.",
     );
     check_world_machine_v2_step.dependOn(&run_world_comptime_application_tests.step);
+    const check_world_machine_v2_surface = b.addSystemCommand(&.{"node"});
+    check_world_machine_v2_surface.addFileArg(b.path(
+        "scripts/check_world_machine_v2_surface.mjs",
+    ));
+    check_world_machine_v2_step.dependOn(
+        &check_world_machine_v2_surface.step,
+    );
     const world_application_build_support = b.createModule(.{
         .root_source_file = b.path("build_support/application.zig"),
         .target = validation_target,
