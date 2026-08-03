@@ -670,6 +670,22 @@ pub fn build(b: *std.Build) void {
     check_world_1_0_externality_step.dependOn(
         &check_world_1_0_externality.step,
     );
+    const check_world_2_externality = b.addSystemCommand(&.{"node"});
+    check_world_2_externality.addFileArg(b.path(
+        "scripts/check_world_2_externality.mjs",
+    ));
+    check_world_2_externality.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+    });
+    if (b.args) |args| check_world_2_externality.addArgs(args);
+    const check_world_2_externality_step = b.step(
+        "check-world-2-externality",
+        "Prove World 2 through checksum-bound Boundary, host, and capability artifacts.",
+    );
+    check_world_2_externality_step.dependOn(
+        &check_world_2_externality.step,
+    );
     const build_world_sdk_v1 = b.addSystemCommand(&.{"node"});
     build_world_sdk_v1.addFileArg(b.path(
         "scripts/build_world_sdk_v1.mjs",

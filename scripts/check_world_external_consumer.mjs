@@ -17,6 +17,10 @@ const boundaryUrl =
   "https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz";
 const boundaryHash =
   "boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_";
+const boundaryMachineUrl =
+  "https://github.com/tkersey/boundary/archive/refs/tags/v1.0.0-rc.1.tar.gz";
+const boundaryMachineHash =
+  "boundary-1.0.0-rc.1-flclaP0FEQApv6S-kj0cKVzgh8KgaV2afbb26rSJHF3O";
 const options = parseArgs(process.argv.slice(2));
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const proofRoot = mkdtempSync(join(tmpdir(), "world-external-consumer-"));
@@ -83,6 +87,24 @@ try {
       `Boundary package hash mismatch: expected ${boundaryHash}, found ${actualBoundaryHash}`,
     );
   }
+  const usesBoundaryMachine = readFileSync(
+    join(worldPackageRoot, "build.zig.zon"),
+    "utf8",
+  ).includes(".boundary_machine");
+  let actualBoundaryMachineHash = null;
+  if (usesBoundaryMachine) {
+    actualBoundaryMachineHash = fetchPackage(
+      options.zig,
+      options.boundaryMachineArchive ?? boundaryMachineUrl,
+      packageCache,
+      worldPackageRoot,
+    );
+    if (actualBoundaryMachineHash !== boundaryMachineHash) {
+      throw new Error(
+        `Boundary Machine package hash mismatch: expected ${boundaryMachineHash}, found ${actualBoundaryMachineHash}`,
+      );
+    }
+  }
 
   run("node", [
     join(worldPackageRoot, "scripts/init_world_application.mjs"),
@@ -138,6 +160,10 @@ try {
   console.log(`world_release_hash=${worldHash}`);
   console.log(`boundary_release_url=${boundaryUrl}`);
   console.log(`boundary_release_hash=${boundaryHash}`);
+  if (actualBoundaryMachineHash !== null) {
+    console.log(`boundary_machine_release_url=${boundaryMachineUrl}`);
+    console.log(`boundary_machine_release_hash=${actualBoundaryMachineHash}`);
+  }
   console.log("clean_room_build=true");
   console.log("sibling_checkout_required=false");
   console.log("internal_import_count=0");
@@ -238,6 +264,7 @@ function run(command, args, cwd = undefined) {
 function parseArgs(args) {
   const options = {
     boundaryArchive: null,
+    boundaryMachineArchive: null,
     keep: false,
     worldArchive: null,
     worldUrl: null,
@@ -254,6 +281,9 @@ function parseArgs(args) {
     switch (key) {
       case "--boundary-archive":
         options.boundaryArchive = resolve(value);
+        break;
+      case "--boundary-machine-archive":
+        options.boundaryMachineArchive = resolve(value);
         break;
       case "--world-archive":
         options.worldArchive = resolve(value);
