@@ -26,6 +26,12 @@ const WORLD_VERSION = "2.0.0-rc.1";
 const BOUNDARY_VERSION = "1.0.0-rc.1";
 
 const options = parseArgs(process.argv.slice(2));
+if (options.negative) {
+  proveCallerArchiveChecksumAdmission();
+  console.log("caller_archive_checksum_admission=true");
+  console.log("caller_archive_checksum_negative=true");
+  process.exit(0);
+}
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const proofRoot = mkdtempSync(join(tmpdir(), "world-2-externality-"));
 let consumerProofRoot = null;
@@ -566,6 +572,7 @@ function parseArgs(args) {
     boundaryArchive: null,
     boundaryMachineArchive: null,
     keep: false,
+    negative: false,
     worldArchive: null,
     worldArchiveSha256: null,
     worldCapabilitiesArchive: null,
@@ -577,8 +584,8 @@ function parseArgs(args) {
   };
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index];
-    if (key === "--keep") {
-      result.keep = true;
+    if (key === "--keep" || key === "--negative") {
+      result[key.slice(2)] = true;
       continue;
     }
     const value = args[++index];
@@ -618,7 +625,57 @@ function parseArgs(args) {
         throw new Error(`unknown option: ${key}`);
     }
   }
+  requireArchiveDigestPair(
+    "--world-archive",
+    result.worldArchive,
+    "--world-archive-sha256",
+    result.worldArchiveSha256,
+  );
+  requireArchiveDigestPair(
+    "--world-capabilities-archive",
+    result.worldCapabilitiesArchive,
+    "--world-capabilities-archive-sha256",
+    result.worldCapabilitiesArchiveSha256,
+  );
   return result;
+}
+
+function requireArchiveDigestPair(archiveLabel, archive, digestLabel, sha256) {
+  if ((archive === null) !== (sha256 === null)) {
+    throw new Error(`${archiveLabel} and ${digestLabel} must be supplied together`);
+  }
+}
+
+function proveCallerArchiveChecksumAdmission() {
+  const sha256 = "0".repeat(64);
+  assert.throws(
+    () => parseArgs(["--world-archive", "world.tar.gz"]),
+    /--world-archive and --world-archive-sha256 must be supplied together/,
+  );
+  assert.throws(
+    () => parseArgs(["--world-archive-sha256", sha256]),
+    /--world-archive and --world-archive-sha256 must be supplied together/,
+  );
+  assert.throws(
+    () => parseArgs(["--world-capabilities-archive", "capabilities.tar.gz"]),
+    /--world-capabilities-archive and --world-capabilities-archive-sha256 must be supplied together/,
+  );
+  assert.throws(
+    () => parseArgs(["--world-capabilities-archive-sha256", sha256]),
+    /--world-capabilities-archive and --world-capabilities-archive-sha256 must be supplied together/,
+  );
+  assert.equal(parseArgs([
+    "--world-archive",
+    "world.tar.gz",
+    "--world-archive-sha256",
+    sha256,
+  ]).worldArchiveSha256, sha256);
+  assert.equal(parseArgs([
+    "--world-capabilities-archive",
+    "capabilities.tar.gz",
+    "--world-capabilities-archive-sha256",
+    sha256,
+  ]).worldCapabilitiesArchiveSha256, sha256);
 }
 
 function digest(value, label) {
