@@ -737,7 +737,16 @@ pub fn build(b: *std.Build) void {
         "--zig",
         b.graph.zig_exe,
     });
-    if (b.args) |args| check_world_2_externality.addArgs(args);
+    if (b.args) |args| {
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--negative")) {
+                @panic(
+                    "use check-world-externality-v2-negative for the negative World 2 externality proof",
+                );
+            }
+        }
+        check_world_2_externality.addArgs(args);
+    }
     const check_world_2_externality_step = b.step(
         "check-world-2-externality",
         "Prove World 2 through checksum-bound Boundary, host, and capability artifacts.",
