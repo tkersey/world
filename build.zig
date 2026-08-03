@@ -1471,12 +1471,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary_machine },
                 .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
             },
         }),
     });
     application_v1_incompatible_provider_test.expect_errors = .{
-        .contains = "World StaticMachine provider InitialArgs must be exactly one parent payload value",
+        .contains = "World Machine provider InitialArgs must exactly match the parent payload type",
     };
     const application_v1_provider_cycle_test = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1499,7 +1500,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
-                .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary", .module = boundary_machine },
                 .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
             },
         }),
@@ -1548,6 +1549,20 @@ pub fn build(b: *std.Build) void {
     });
     application_v1_provider_state_capacity_test.expect_errors = .{
         .contains = "World application provider stack exceeds maximum_state_bytes",
+    };
+    const application_v1_site_identity_mismatch_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/application_v1_site_identity_mismatch.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
+            },
+        }),
+    });
+    application_v1_site_identity_mismatch_test.expect_errors = .{
+        .contains = "World Machine site_identity does not match the selected effect-site ordinal",
     };
     const application_v1_build_decl_options = b.addOptions();
     application_v1_build_decl_options.addOption(
@@ -1757,6 +1772,7 @@ pub fn build(b: *std.Build) void {
     compile_fail_step.dependOn(&application_v1_external_zero_result_limit_test.step);
     compile_fail_step.dependOn(&application_v1_external_oversized_result_limit_test.step);
     compile_fail_step.dependOn(&application_v1_provider_state_capacity_test.step);
+    compile_fail_step.dependOn(&application_v1_site_identity_mismatch_test.step);
     compile_fail_step.dependOn(&application_v1_build_decl_missing_test.step);
     compile_fail_step.dependOn(&application_v1_build_decl_value_test.step);
     compile_fail_step.dependOn(&application_v1_wasm_region_too_small_test.step);

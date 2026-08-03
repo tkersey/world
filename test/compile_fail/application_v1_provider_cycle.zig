@@ -6,8 +6,18 @@ const App = world.v1.application(.{
     .version = "1.0.0",
     .root = fixtures.RootMachine,
     .handlers = .{
-        world.v1.handle(fixtures.RootSite, fixtures.ProviderMachine),
-        world.v1.handle(fixtures.ProviderSite, fixtures.ProviderMachine),
+        world.v1.handle(
+            fixtures.RootMachine,
+            0,
+            "world.test.root.v2",
+            fixtures.ProviderMachine,
+        ),
+        world.v1.handle(
+            fixtures.ProviderMachine,
+            0,
+            "world.test.provider.v2",
+            fixtures.ProviderMachine,
+        ),
     },
 });
 
