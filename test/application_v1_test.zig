@@ -126,6 +126,39 @@ const DuplicateRootMachine = boundary.program(
     IncrementingEffectBody,
 ).compile(machine_options);
 
+fn FailingBody(comptime failure_tag: u16) type {
+    return struct {
+        const blocks = [_]boundary.ir.Block{.{
+            .id = 0,
+            .parameters = &.{0},
+            .terminator = .{ .fail = failure_tag },
+        }};
+
+        pub const InitialArgs = u32;
+        pub const Result = u32;
+        pub const Failure = enum { rejected, invalid_input };
+        pub const effect_sites = .{};
+        pub const schema_types = .{};
+        pub const control_ir: boundary.ir.Program = .{
+            .label = "world-v2-authored-failure",
+            .value_types = &.{u32_type},
+            .blocks = &blocks,
+            .entry = 0,
+            .result_type = u32_type,
+        };
+    };
+}
+
+const RejectedMachine = boundary.program(
+    "world-v2-rejected",
+    FailingBody(0),
+).compile(machine_options);
+
+const InvalidInputMachine = boundary.program(
+    "world-v2-invalid-input",
+    FailingBody(1),
+).compile(machine_options);
+
 pub const ProviderMachine = boundary.program(
     "world-v2-provider",
     EffectBody("world-v2-provider", ProviderEffect),
@@ -196,6 +229,20 @@ pub const TightResultApp = world.v1.application(.{
     })},
 });
 
+const RejectedApp = world.v1.application(.{
+    .name = "authored-rejected",
+    .version = "2.0.0",
+    .root = RejectedMachine,
+    .limits = application_limits,
+});
+
+const InvalidInputApp = world.v1.application(.{
+    .name = "authored-invalid-input",
+    .version = "2.0.0",
+    .root = InvalidInputMachine,
+    .limits = application_limits,
+});
+
 const SumTagA = enum(u8) { left = 0, right = 1 };
 const SumA = union(SumTagA) { left: i32, right: bool };
 const SumTagB = enum(u8) { left = 1, right = 2 };
@@ -231,6 +278,29 @@ test "site ids bind the owning Machine occurrence" {
         world.v1.siteId(RootMachine, 0) !=
             world.v1.siteId(DuplicateRootMachine, 0),
     );
+}
+
+test "World Frame preserves distinct authored Machine failure tags" {
+    var rejected_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer rejected_arena.deinit();
+    const rejected_args = try RejectedApp.encodeInitialArgs(
+        rejected_arena.allocator(),
+        @as(u32, 0),
+    );
+    const rejected = try RejectedApp.initialFrame(&rejected_arena, rejected_args, 100);
+
+    var invalid_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer invalid_arena.deinit();
+    const invalid_args = try InvalidInputApp.encodeInitialArgs(
+        invalid_arena.allocator(),
+        @as(u32, 0),
+    );
+    const invalid = try InvalidInputApp.initialFrame(&invalid_arena, invalid_args, 100);
+
+    try std.testing.expectEqual(world.v1.FrameStatus.failed, rejected.status);
+    try std.testing.expectEqual(world.v1.FrameStatus.failed, invalid.status);
+    try std.testing.expectEqualStrings("rejected", rejected.failure.?);
+    try std.testing.expectEqualStrings("invalid_input", invalid.failure.?);
 }
 
 test "World closes one Boundary Machine ABI v2 residual effect" {

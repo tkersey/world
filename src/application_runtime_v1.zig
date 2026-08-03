@@ -812,7 +812,7 @@ pub fn application(comptime spec: anytype) type {
 
         fn machineFailureLabel(failure: anytype) []const u8 {
             return switch (failure) {
-                .authored => "Boundary Machine authored failure",
+                .authored => |authored| @tagName(authored),
                 .execution_budget_exceeded => "Boundary Machine execution budget exceeded",
                 .frame_depth_exceeded => "Boundary Machine frame depth exceeded",
             };
