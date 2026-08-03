@@ -1929,6 +1929,7 @@ pub fn build(b: *std.Build) void {
     check_world_machine_native_wasm_negative_step.dependOn(compile_fail_step);
 
     const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
+    check_step.dependOn(check_world_machine_v2_step);
     check_step.dependOn(check_world_application_spec_step);
     check_step.dependOn(check_world_comptime_closure_step);
     check_step.dependOn(check_world_application_native_step);
