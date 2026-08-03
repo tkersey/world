@@ -3290,6 +3290,7 @@ pub fn build(b: *std.Build) void {
             ,
         },
     };
+    var previous_serial_example_step: ?*std.Build.Step = null;
     inline for (examples) |example| {
         const exe_mod = b.createModule(.{
             .root_source_file = b.path(example.path),
@@ -3304,7 +3305,13 @@ pub fn build(b: *std.Build) void {
         if (validation_target.query.isNative()) {
             const run = addRunArtifactWithArgs(b, exe, if (b.args) |args| args else &.{});
             run.expectStdOutEqual(example.expected_stdout);
-            if (example.serial_after_tests) run.step.dependOn(test_step);
+            if (example.serial_after_tests) {
+                run.step.dependOn(test_step);
+                if (previous_serial_example_step) |previous| {
+                    run.step.dependOn(previous);
+                }
+                previous_serial_example_step = &run.step;
+            }
             run_step.dependOn(&run.step);
         } else {
             run_step.dependOn(&exe.step);
