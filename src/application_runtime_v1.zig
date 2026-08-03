@@ -278,6 +278,16 @@ fn validateMachine(
         @compileError("World Application v1 requires Boundary-local after continuations to be closed before World application closure");
     }
 
+    inline for (0..Machine.EffectRow.operation_site_count) |left_ordinal| {
+        const Left = Machine.EffectRow.site(left_ordinal);
+        inline for (left_ordinal + 1..Machine.EffectRow.operation_site_count) |right_ordinal| {
+            const Right = Machine.EffectRow.site(right_ordinal);
+            if (std.mem.eql(u8, Left.semantic_identity, Right.semantic_identity)) {
+                @compileError("World application requires unique semantic_identity values for every reachable Machine effect site");
+            }
+        }
+    }
+
     const next_path = path ++ .{Machine};
     inline for (0..Machine.EffectRow.operation_site_count) |site_ordinal| {
         comptime var internal_count: usize = 0;

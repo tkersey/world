@@ -35,9 +35,9 @@ fn TextEffect(
     };
 }
 
-const SkeletonModel0 = TextEffect(0, "agent.model.decide.v1");
+const SkeletonModel0 = TextEffect(0, "agent.model.decide.first.v1");
 const SkeletonToolbox = TextEffect(1, "agent.toolbox.call.v1");
-const SkeletonModel1 = TextEffect(2, "agent.model.decide.v1");
+const SkeletonModel1 = TextEffect(2, "agent.model.decide.second.v1");
 
 const skeleton_blocks = [_]boundary.ir.Block{
     .{
@@ -141,12 +141,12 @@ pub const SkeletonApp = world.application(.{
     )},
     .external = .{
         world.v1.external(SkeletonRootMachine, 0, .{
-            .site_identity = "agent.model.decide.v1",
+            .site_identity = "agent.model.decide.first.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
         world.v1.external(SkeletonRootMachine, 2, .{
-            .site_identity = "agent.model.decide.v1",
+            .site_identity = "agent.model.decide.second.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
@@ -154,11 +154,11 @@ pub const SkeletonApp = world.application(.{
     .limits = application_limits,
 });
 
-const FixtureModel0 = TextEffect(0, "agent.model.decide.v1");
+const FixtureModel0 = TextEffect(0, "agent.model.decide.first.v1");
 const FixtureRead = TextEffect(1, "agent.toolbox.read.v1");
-const FixtureModel1 = TextEffect(2, "agent.model.decide.v1");
+const FixtureModel1 = TextEffect(2, "agent.model.decide.second.v1");
 const FixtureWrite = TextEffect(3, "agent.toolbox.write.v1");
-const FixtureModel2 = TextEffect(4, "agent.model.decide.v1");
+const FixtureModel2 = TextEffect(4, "agent.model.decide.third.v1");
 
 const fixture_blocks = [_]boundary.ir.Block{
     .{
@@ -322,17 +322,17 @@ pub const FixtureApp = world.application(.{
     },
     .external = .{
         world.v1.external(FixtureRootMachine, 0, .{
-            .site_identity = "agent.model.decide.v1",
+            .site_identity = "agent.model.decide.first.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
         world.v1.external(FixtureRootMachine, 2, .{
-            .site_identity = "agent.model.decide.v1",
+            .site_identity = "agent.model.decide.second.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
         world.v1.external(FixtureRootMachine, 4, .{
-            .site_identity = "agent.model.decide.v1",
+            .site_identity = "agent.model.decide.third.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
