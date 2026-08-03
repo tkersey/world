@@ -789,6 +789,7 @@ pub fn application(comptime spec: anytype) type {
             accepted_result_id: ?protocol.Digest,
             counters: *protocol.ResourceCounters,
         ) protocol.Error!DriveOutcome {
+            if (comptime Machine.RequestValue == void) return error.InvalidFrame;
             switch (request.value) {
                 inline else => |_, tag| {
                     const site_ordinal = comptime @intFromEnum(tag);
@@ -1036,6 +1037,7 @@ pub fn application(comptime spec: anytype) type {
             const machine_state = Machine.decodeState(allocator, top.state_bytes) catch |err| return mapMachineStateError(err);
             defer Machine.deinitState(machine_state);
             const request = (Machine.current(machine_state) catch return error.InvalidFrame) orelse return error.InvalidFrame;
+            if (comptime Machine.RequestValue == void) return error.InvalidFrame;
             switch (request.value) {
                 inline else => |_, tag| {
                     const site_ordinal = comptime @intFromEnum(tag);
