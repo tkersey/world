@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const BOUNDARY_LEGACY_URL =
   "https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz";
@@ -23,7 +23,6 @@ const WORLD_HOST_URL =
 const WORLD_HOST_SHA256 =
   "f881aaf3ada062ca3d80fc46d10cb001f38504d816ecd4995faf34bcd14ecc70";
 const WORLD_VERSION = "2.0.0-rc.1";
-const BOUNDARY_VERSION = "1.0.0-rc.1";
 
 const options = parseArgs(process.argv.slice(2));
 if (options.negative) {
@@ -108,7 +107,6 @@ try {
   );
   requireFile(wasmPath);
   requireFile(manifestPath);
-  const wasmBytes = readFileSync(wasmPath);
 
   const materializedRoot = join(proofRoot, "materialized");
   const hostMaterialized = join(materializedRoot, "world-host");
@@ -140,26 +138,30 @@ try {
     ["run", "proof:research-v2"],
     capabilitiesRoot,
   );
-  const host = await import(
-    pathToFileURL(join(hostRoot, "host/src/v1/index.mjs")).href
-  );
-  const capability = await import(
-    pathToFileURL(join(capabilitiesRoot, "src/v1/index.mjs")).href
-  );
-  const proof = await proveRuntime(host, capability, wasmBytes);
-
   const runtimePath = join(proofRoot, "runtime-path");
   mkdirSync(runtimePath);
-  const zigProbe = spawnSync("zig", ["version"], {
-    cwd: proofRoot,
-    encoding: "utf8",
-    env: { ...process.env, PATH: runtimePath },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  assert(
-    zigProbe.error?.code === "ENOENT" || zigProbe.status !== 0,
-    "runtime proof unexpectedly exposes a Zig compiler",
+  const runtime = runCapture(
+    process.execPath,
+    [
+      join(sourceRoot, "scripts/check_world_2_runtime.mjs"),
+      "--host-root",
+      hostRoot,
+      "--capabilities-root",
+      capabilitiesRoot,
+      "--wasm",
+      wasmPath,
+    ],
+    proofRoot,
+    { ...process.env, PATH: runtimePath },
   );
+  const runtimeReceipt = keyValueReceipt(runtime.stdout);
+  assert.equal(runtimeReceipt.runtime_compiler_isolated, "true");
+  assert.equal(runtimeReceipt.fresh_instance_resume, "true");
+  assert.equal(runtimeReceipt.deterministic_retry, "true");
+  assert.equal(runtimeReceipt.replay_fresh_effect_count, "0");
+  assert.equal(runtimeReceipt.branching, "true");
+  assert.equal(runtimeReceipt.migration, "true");
+  assert.equal(runtimeReceipt.capability_authored_frame, "false");
 
   console.log(`world_release_url=${world.url}`);
   console.log(`world_archive_sha256=${sha256File(world.archive)}`);
@@ -185,12 +187,13 @@ try {
   console.log("world_host_runtime_changed=false");
   console.log("application_wasm_import_count=0");
   console.log("source_checkout_required=false");
-  console.log("fresh_instance_resume=true");
-  console.log("deterministic_retry=true");
-  console.log(`replay_fresh_effect_count=${proof.replayFreshEffectCount}`);
-  console.log("branching=true");
-  console.log("migration=true");
-  console.log("capability_authored_frame=false");
+  console.log(`runtime_compiler_isolated=${runtimeReceipt.runtime_compiler_isolated}`);
+  console.log(`fresh_instance_resume=${runtimeReceipt.fresh_instance_resume}`);
+  console.log(`deterministic_retry=${runtimeReceipt.deterministic_retry}`);
+  console.log(`replay_fresh_effect_count=${runtimeReceipt.replay_fresh_effect_count}`);
+  console.log(`branching=${runtimeReceipt.branching}`);
+  console.log(`migration=${runtimeReceipt.migration}`);
+  console.log(`capability_authored_frame=${runtimeReceipt.capability_authored_frame}`);
   passed = true;
 } finally {
   if (options.keep || !passed) {
@@ -206,166 +209,6 @@ try {
     }
     rmSync(proofRoot, { recursive: true, force: true });
   }
-}
-
-async function proveRuntime(host, capability, wasmBytes) {
-  const blockStore = new host.MemoryBlockStore();
-  const headStore = new host.MemoryBranchHeadStore();
-  const effectJournal = new host.MemoryEffectJournalV1({ blockStore });
-  const controller = await host.RunControllerV1.create({
-    wasmBytes,
-    blockStore,
-    headStore,
-    effectJournal,
-  });
-  const manifest = controller.manifest;
-  assert.equal(manifest.worldApplicationAbiVersion, 1);
-  assert.equal(manifest.worldPackageVersion, WORLD_VERSION);
-  assert.equal(manifest.boundaryPackageVersion, BOUNDARY_VERSION);
-  assert.equal(
-    Buffer.from(manifest.applicationId).toString("hex"),
-    capability.RESEARCH_DIGEST_APPLICATION_ID,
-    "capability application allowlist differs from the built World application",
-  );
-
-  const started = await controller.initialize("world-2", "main", {
-    initialArgsBytes: encodeResearchRequest({
-      query: "portable algebraic effects",
-      maximumItems: 2,
-    }),
-    fuel: 10_000n,
-  });
-  assert.equal(started.status, "advanced");
-  assert.equal(started.frame.status, host.FrameStatus.needsEffect);
-  await controller.forkBranch("world-2", "main", "retry");
-  await controller.forkBranch("world-2", "main", "migration");
-
-  const router = new capability.CapabilityRouterV1({
-    bindings: [capability.researchLookupFixtureBinding()],
-  });
-  const effectContext = {
-    attempt: 1,
-    effectAttempted: 0,
-    policy: { researchLookup: true },
-  };
-  const resolution = await router.resolve(
-    effectContext,
-    started.frame.pendingEffect.encodedBytes,
-  );
-  assert.equal(effectContext.effectAttempted, 1);
-  const effectMetadata = {
-    handlerId: resolution.handlerIdentity,
-    handlerConfigurationId: resolution.handlerConfigurationIdentity,
-    recoveryClass: resolution.recoveryClass,
-  };
-
-  const crashingMain = await crashingController(
-    host,
-    wasmBytes,
-    blockStore,
-    headStore,
-    effectJournal,
-  );
-  await assert.rejects(
-    () => crashingMain.advance("world-2", "main", {
-      effectResult: resolution.result,
-      effectMetadata,
-      fuel: 10_000n,
-    }),
-    /injected process loss after result persistence/,
-  );
-  const completed = await controller.advance("world-2", "main");
-  assert.equal(completed.frame.status, host.FrameStatus.completed);
-
-  const retried = await controller.advance("world-2", "retry", {
-    effectResult: resolution.result,
-    effectMetadata,
-    fuel: 10_000n,
-  });
-  assert.equal(retried.frame.status, host.FrameStatus.completed);
-  assert.deepEqual(retried.frameBytes, completed.frameBytes);
-
-  const crashingMigration = await crashingController(
-    host,
-    wasmBytes,
-    blockStore,
-    headStore,
-    effectJournal,
-  );
-  await assert.rejects(
-    () => crashingMigration.advance("world-2", "migration", {
-      effectResult: resolution.result,
-      effectMetadata,
-      fuel: 10_000n,
-    }),
-    /injected process loss after result persistence/,
-  );
-  const bundle = await controller.exportBranch("world-2", "migration");
-  assert(bundle.retainedEffectResultBytes !== null);
-  const receiverBlockStore = new host.MemoryBlockStore();
-  const receiverHeadStore = new host.MemoryBranchHeadStore();
-  const imported = await host.RunControllerV1.importBranch({
-    bundle,
-    runId: "world-2-imported",
-    branchId: "main",
-    blockStore: receiverBlockStore,
-    headStore: receiverHeadStore,
-  });
-  const migrated = await imported.controller.advance(
-    "world-2-imported",
-    "main",
-  );
-  assert.equal(migrated.frame.status, host.FrameStatus.completed);
-  assert.deepEqual(migrated.frameBytes, completed.frameBytes);
-  assert.equal(effectContext.effectAttempted, 1);
-
-  const hostileBinding = capability.researchLookupFixtureBinding({
-    adapter: {
-      preflight: async (_context, request) => ({
-        requestId: request.requestId,
-        status: "ok",
-        payload: { admitted: true },
-      }),
-      resolve: async (_context, request) => ({
-        requestId: request.requestId,
-        status: "ok",
-        payload: { items: [] },
-        frameBytes: Buffer.from("forbidden"),
-      }),
-    },
-  });
-  await assert.rejects(
-    () => new capability.CapabilityRouterV1({ bindings: [hostileBinding] })
-      .resolve(
-        { policy: { researchLookup: true } },
-        started.frame.pendingEffect.encodedBytes,
-      ),
-    { code: "ERR_CAPABILITY_V1_WORLD_EVIDENCE" },
-  );
-
-  return { replayFreshEffectCount: effectContext.effectAttempted - 1 };
-}
-
-async function crashingController(
-  host,
-  wasmBytes,
-  blockStore,
-  headStore,
-  effectJournal,
-) {
-  let interrupted = false;
-  return await host.RunControllerV1.create({
-    wasmBytes,
-    blockStore,
-    headStore,
-    effectJournal,
-    faultInjector: async (stage) => {
-      if (stage === "after-result-persistence" && !interrupted) {
-        interrupted = true;
-        throw new Error("injected process loss after result persistence");
-      }
-    },
-  });
 }
 
 function materializeWorldArchive(root) {
@@ -508,15 +351,6 @@ function locatePackageRoot(root, marker) {
   assert.equal(directories.length, 1, `archive must contain one ${marker}`);
   assert(existsSync(join(directories[0], marker)), `archive is missing ${marker}`);
   return directories[0];
-}
-
-function encodeResearchRequest(value) {
-  const query = Buffer.from(value.query, "utf8");
-  const queryLength = Buffer.alloc(4);
-  queryLength.writeUInt32LE(query.length);
-  const maximumItems = Buffer.alloc(4);
-  maximumItems.writeUInt32LE(value.maximumItems);
-  return Buffer.concat([queryLength, query, maximumItems]);
 }
 
 function proofPath(stderr, key) {
