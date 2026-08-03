@@ -4,6 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const packageSource = readFileSync(join(root, "build.zig.zon"), "utf8");
+const packageVersion = packageSource.match(/\.version = "([^"]+)"/)?.[1];
+assert(packageVersion, "build.zig.zon is missing the World package version");
 const surfaces = new Map([
   ["README.md", ["Boundary Machine ABI v2", "world.application"]],
   [
@@ -45,6 +48,16 @@ for (const [path, required] of surfaces) {
   }
 }
 
+const applicationDocs = readFileSync(
+  join(root, "docs/application_v1.md"),
+  "utf8",
+);
+assert(
+  applicationDocs.includes(`World \`v${packageVersion}\` embeds`),
+  "docs/application_v1.md release identity differs from build.zig.zon",
+);
+
 console.log("boundary_machine_abi=2");
+console.log(`world_release_version=${packageVersion}`);
 console.log("static_machine_primary_docs=false");
 console.log("program_session_primary_docs=false");
