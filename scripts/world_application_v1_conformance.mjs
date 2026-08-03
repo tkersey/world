@@ -49,9 +49,11 @@ expectMagic(manifest, "WRLDMNF1");
 if (manifest.readUInt32LE(8) !== 1) throw new Error("unexpected manifest format version");
 const applicationId = manifest.subarray(12, 44);
 
+const initialArgs = Buffer.alloc(4);
+initialArgs.writeUInt32LE(7);
 const genesisInput = encodeStepInput({
   applicationId,
-  initialArgs: Buffer.alloc(0),
+  initialArgs,
   fuel: 100n,
 });
 const firstCode = callStep(first, genesisInput);
