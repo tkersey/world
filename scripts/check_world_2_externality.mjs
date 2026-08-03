@@ -24,6 +24,11 @@ const WORLD_HOST_URL =
 const WORLD_HOST_SHA256 =
   "f881aaf3ada062ca3d80fc46d10cb001f38504d816ecd4995faf34bcd14ecc70";
 const WORLD_VERSION = "2.0.0-rc.1";
+const WORLD_RELEASE_URL =
+  `https://github.com/tkersey/world/archive/refs/tags/v${WORLD_VERSION}.tar.gz`;
+const WORLD_CAPABILITIES_VERSION = "2.0.0";
+const WORLD_CAPABILITIES_URL =
+  `https://github.com/tkersey/world-capabilities/archive/refs/tags/v${WORLD_CAPABILITIES_VERSION}.tar.gz`;
 
 const options = parseArgs(process.argv.slice(2));
 if (options.negative) {
@@ -213,64 +218,47 @@ try {
 }
 
 function materializeWorldArchive(root) {
-  if (options.worldArchive !== null) {
-    requireFile(options.worldArchive);
-    if (options.worldUrl === null) {
-      throw new Error("--world-url is required with --world-archive");
-    }
-    return { archive: options.worldArchive, url: options.worldUrl };
-  }
-  requireCleanCheckout(sourceRoot, "World");
-  const commit = runCapture(
-    "git",
-    ["-C", sourceRoot, "rev-parse", "HEAD"],
-  ).stdout.trim();
-  const archive = join(root, "world-v2.0.0-rc.1.tar.gz");
-  runCapture("git", [
-    "-C",
-    sourceRoot,
-    "archive",
-    "--format=tar.gz",
-    "--prefix=world/",
-    `--output=${archive}`,
-    commit,
-  ]);
-  return {
-    archive,
-    url: options.worldUrl ??
-      `https://github.com/tkersey/world/archive/${commit}.tar.gz`,
-  };
+  return materializeReviewedArchive(
+    "World",
+    options.worldArchive,
+    options.worldArchiveSha256,
+    WORLD_RELEASE_URL,
+    join(root, `world-v${WORLD_VERSION}.tar.gz`),
+  );
 }
 
 function materializeCapabilitiesArchive(root) {
-  if (options.worldCapabilitiesArchive !== null) {
-    requireFile(options.worldCapabilitiesArchive);
+  return materializeReviewedArchive(
+    "world-capabilities",
+    options.worldCapabilitiesArchive,
+    options.worldCapabilitiesArchiveSha256,
+    WORLD_CAPABILITIES_URL,
+    join(root, `world-capabilities-v${WORLD_CAPABILITIES_VERSION}.tar.gz`),
+  );
+}
+
+function materializeReviewedArchive(
+  label,
+  input,
+  expectedSha256,
+  releaseUrl,
+  destination,
+) {
+  if (input === null) {
     return {
-      archive: options.worldCapabilitiesArchive,
-      url: options.worldCapabilitiesUrl ?? "caller-supplied",
+      archive: materializeArchive(null, releaseUrl, destination),
+      url: releaseUrl,
     };
   }
-  const repository = resolve(sourceRoot, "../world-capabilities");
-  requireCleanCheckout(repository, "world-capabilities");
-  const commit = runCapture(
-    "git",
-    ["-C", repository, "rev-parse", "HEAD"],
-  ).stdout.trim();
-  const archive = join(root, "world-capabilities-v2.0.0.tar.gz");
-  runCapture("git", [
-    "-C",
-    repository,
-    "archive",
-    "--format=tar.gz",
-    "--prefix=world-capabilities/",
-    `--output=${archive}`,
-    commit,
-  ]);
-  return {
-    archive,
-    url: options.worldCapabilitiesUrl ??
-      `https://github.com/tkersey/world-capabilities/archive/${commit}.tar.gz`,
-  };
+
+  requireFile(input);
+  const reviewedArchive = materializeArchive(
+    null,
+    releaseUrl,
+    `${destination}.reviewed`,
+  );
+  assertReviewedArchiveCopy(label, input, expectedSha256, reviewedArchive);
+  return { archive: input, url: releaseUrl };
 }
 
 function materializeArchive(input, url, destination) {
@@ -307,20 +295,6 @@ function downloadReleaseAsset(repository, tag, asset, destination) {
   return join(destination, asset);
 }
 
-function requireCleanCheckout(repository, label) {
-  const status = runCapture("git", [
-    "-C",
-    repository,
-    "status",
-    "--porcelain=v2",
-    "--untracked-files=all",
-    "--ignore-submodules=none",
-  ]).stdout.trim();
-  if (status.length !== 0) {
-    throw new Error(`${label} checkout must be clean or supplied as an archive`);
-  }
-}
-
 function assertExpectedSha(label, archive, expected) {
   if (expected !== null) {
     assert.equal(
@@ -329,6 +303,15 @@ function assertExpectedSha(label, archive, expected) {
       `${label} archive SHA-256 mismatch`,
     );
   }
+}
+
+function assertReviewedArchiveCopy(label, archive, expected, reviewedArchive) {
+  assertExpectedSha(label, archive, expected);
+  assert.equal(
+    sha256File(reviewedArchive),
+    expected,
+    `${label} archive differs from the fixed release URL`,
+  );
 }
 
 function extractArchive(archive, destination) {
@@ -412,9 +395,7 @@ function parseArgs(args) {
     worldArchiveSha256: null,
     worldCapabilitiesArchive: null,
     worldCapabilitiesArchiveSha256: null,
-    worldCapabilitiesUrl: null,
     worldHostArchive: null,
-    worldUrl: null,
     zig: "zig",
   };
   for (let index = 0; index < args.length; index += 1) {
@@ -444,14 +425,8 @@ function parseArgs(args) {
       case "--world-capabilities-archive-sha256":
         result.worldCapabilitiesArchiveSha256 = digest(value, key);
         break;
-      case "--world-capabilities-url":
-        result.worldCapabilitiesUrl = value;
-        break;
       case "--world-host-archive":
         result.worldHostArchive = resolve(value);
-        break;
-      case "--world-url":
-        result.worldUrl = value;
         break;
       case "--zig":
         result.zig = value.includes("/") ? resolve(value) : value;
@@ -511,11 +486,24 @@ function proveCallerArchiveChecksumAdmission() {
     "--world-capabilities-archive-sha256",
     sha256,
   ]).worldCapabilitiesArchiveSha256, sha256);
+  assert.throws(
+    () => parseArgs(["--world-url", "https://example.invalid/world.tar.gz"]),
+    /unknown option: --world-url/,
+  );
+  assert.throws(
+    () => parseArgs([
+      "--world-capabilities-url",
+      "https://example.invalid/capabilities.tar.gz",
+    ]),
+    /unknown option: --world-capabilities-url/,
+  );
 
   const proofRoot = mkdtempSync(join(tmpdir(), "world-2-checksum-negative-"));
   try {
     const archive = join(proofRoot, "world.tar.gz");
+    const reviewedArchive = join(proofRoot, "reviewed-world.tar.gz");
     writeFileSync(archive, "checksum admission witness");
+    writeFileSync(reviewedArchive, "different reviewed release bytes");
     const actual = sha256File(archive);
     assert.notEqual(actual, sha256);
     assert.throws(
@@ -523,6 +511,15 @@ function proveCallerArchiveChecksumAdmission() {
       /World archive SHA-256 mismatch/,
     );
     assert.doesNotThrow(() => assertExpectedSha("World", archive, actual));
+    assert.throws(
+      () => assertReviewedArchiveCopy(
+        "World",
+        archive,
+        actual,
+        reviewedArchive,
+      ),
+      /World archive differs from the fixed release URL/,
+    );
   } finally {
     rmSync(proofRoot, { recursive: true, force: true });
   }
