@@ -133,13 +133,20 @@ pub const SkeletonApp = world.application(.{
     .name = "skeleton-agent",
     .version = "2.0.0",
     .root = SkeletonRootMachine,
-    .handlers = .{world.v1.handle(SkeletonRootMachine, 1, PureToolboxMachine)},
+    .handlers = .{world.v1.handle(
+        SkeletonRootMachine,
+        1,
+        "agent.toolbox.call.v1",
+        PureToolboxMachine,
+    )},
     .external = .{
         world.v1.external(SkeletonRootMachine, 0, .{
+            .site_identity = "agent.model.decide.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
         world.v1.external(SkeletonRootMachine, 2, .{
+            .site_identity = "agent.model.decide.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
@@ -300,27 +307,42 @@ pub const FixtureApp = world.application(.{
     .version = "2.0.0",
     .root = FixtureRootMachine,
     .handlers = .{
-        world.v1.handle(FixtureRootMachine, 1, ReadProviderMachine),
-        world.v1.handle(FixtureRootMachine, 3, WriteProviderMachine),
+        world.v1.handle(
+            FixtureRootMachine,
+            1,
+            "agent.toolbox.read.v1",
+            ReadProviderMachine,
+        ),
+        world.v1.handle(
+            FixtureRootMachine,
+            3,
+            "agent.toolbox.write.v1",
+            WriteProviderMachine,
+        ),
     },
     .external = .{
         world.v1.external(FixtureRootMachine, 0, .{
+            .site_identity = "agent.model.decide.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
         world.v1.external(FixtureRootMachine, 2, .{
+            .site_identity = "agent.model.decide.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
         world.v1.external(FixtureRootMachine, 4, .{
+            .site_identity = "agent.model.decide.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
         world.v1.external(ReadProviderMachine, 0, .{
+            .site_identity = "host.file.read.v1",
             .interface = "host.file.read.v1",
             .authority = world.v1.Authority.file_read,
         }),
         world.v1.external(WriteProviderMachine, 0, .{
+            .site_identity = "host.file.write.v1",
             .interface = "host.file.write.v1",
             .authority = world.v1.Authority.file_write,
         }),

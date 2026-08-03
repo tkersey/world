@@ -26,15 +26,19 @@ const BindingKind = enum {
 pub fn handle(
     comptime ParentMachine: type,
     comptime site_ordinal: usize,
+    comptime expected_site_identity: []const u8,
     comptime ProviderType: type,
 ) type {
     requireBoundaryMachine(ParentMachine);
     requireBoundaryMachine(ProviderType);
     const SiteType = ParentMachine.EffectRow.site(site_ordinal);
+    requireSiteIdentity(SiteType, expected_site_identity);
     return struct {
         pub const binding_kind = BindingKind.internal_machine;
         pub const Owner = ParentMachine;
         pub const site_index: usize = site_ordinal;
+        pub const site_identity = expected_site_identity;
+        pub const site_occurrence_digest = siteOccurrenceDigest(ParentMachine, site_ordinal);
         pub const Site = SiteType;
         pub const Provider = ProviderType;
     };
@@ -48,6 +52,11 @@ pub fn external(
     @setEvalBranchQuota(1_000_000);
     requireBoundaryMachine(OwnerMachine);
     const SiteType = OwnerMachine.EffectRow.site(site_ordinal);
+    if (!@hasField(@TypeOf(config), "site_identity")) {
+        @compileError("world.external requires the expected Machine site_identity");
+    }
+    const expected_site_identity: []const u8 = config.site_identity;
+    requireSiteIdentity(SiteType, expected_site_identity);
     if (!@hasField(@TypeOf(config), "interface")) {
         @compileError("world.external requires an interface label");
     }
@@ -71,6 +80,8 @@ pub fn external(
         pub const binding_kind = BindingKind.external_effect;
         pub const Owner = OwnerMachine;
         pub const site_index: usize = site_ordinal;
+        pub const site_identity = expected_site_identity;
+        pub const site_occurrence_digest = siteOccurrenceDigest(OwnerMachine, site_ordinal);
         pub const Site = SiteType;
         pub const interface = interface_label;
         pub const interface_id = blk: {
@@ -88,6 +99,18 @@ pub fn external(
 
 fn authorityMask(authority: Authority) u64 {
     return @as(u64, 1) << @intFromEnum(authority);
+}
+
+fn requireSiteIdentity(
+    comptime Site: type,
+    comptime expected_site_identity: []const u8,
+) void {
+    if (expected_site_identity.len == 0) {
+        @compileError("World Machine site_identity must be non-empty");
+    }
+    if (!std.mem.eql(u8, expected_site_identity, Site.semantic_identity)) {
+        @compileError("World Machine site_identity does not match the selected effect-site ordinal");
+    }
 }
 
 fn requireBoundaryMachine(comptime Machine: type) void {
@@ -314,9 +337,26 @@ fn machineId(comptime Machine: type) protocol.Digest {
 }
 
 pub fn siteId(comptime Machine: type, comptime site_ordinal: usize) u64 {
+    const digest = siteOccurrenceDigest(Machine, site_ordinal);
+    return std.mem.readInt(u64, digest[0..8], .little);
+}
+
+fn siteOccurrenceDigest(comptime Machine: type, comptime site_ordinal: usize) protocol.Digest {
+    @setEvalBranchQuota(1_000_000);
     requireBoundaryMachine(Machine);
     const Site = Machine.EffectRow.site(site_ordinal);
-    return std.mem.readInt(u64, Site.contract_digest[0..8], .little);
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update("world.machine-site-occurrence.v2");
+    hasher.update(&.{0});
+    const machine_digest = machineId(Machine);
+    hasher.update(&machine_digest);
+    var ordinal: [4]u8 = undefined;
+    std.mem.writeInt(u32, &ordinal, @intCast(site_ordinal), .little);
+    hasher.update(&ordinal);
+    hasher.update(&Site.contract_digest);
+    var digest: protocol.Digest = undefined;
+    hasher.final(&digest);
+    return digest;
 }
 
 fn internalHandlerId(comptime Binding: type) protocol.Digest {

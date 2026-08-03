@@ -13,10 +13,16 @@ pub const Application = world.application(.{
     .version = "2.0.0",
     .root = agent.Machine,
     .handlers = .{
-        world.v1.handle(agent.Machine, 0, provider.Machine),
+        world.v1.handle(
+            agent.Machine,
+            0,
+            "research.digest.format.v2",
+            provider.Machine,
+        ),
     },
     .external = .{
         world.v1.external(provider.Machine, 0, .{
+            .site_identity = "research.lookup.v2",
             .interface = "research.lookup.v2",
             .authority = world.v1.Authority.database,
             .maximum_payload_bytes = 64 * 1024,

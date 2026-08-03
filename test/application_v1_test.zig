@@ -57,6 +57,58 @@ fn EffectBody(comptime label: []const u8, comptime Site: type) type {
     };
 }
 
+const IncrementingEffectBody = struct {
+    const increment_instructions = [_]boundary.ir.Instruction{
+        .{
+            .kind = .constant,
+            .result = 2,
+            .operation = .{ .constant = 0 },
+        },
+        .{
+            .kind = .pure,
+            .result = 3,
+            .operands = &.{ 1, 2 },
+            .operation = .integer_add,
+        },
+    };
+    const blocks = [_]boundary.ir.Block{
+        .{
+            .id = 0,
+            .parameters = &.{0},
+            .terminator = .{ .@"suspend" = .{
+                .kind = .effect,
+                .site_id = 0,
+                .request_values = &.{0},
+                .continuation = .{
+                    .target = 1,
+                    .arguments = &continuation_arguments,
+                },
+                .resume_type = u32_type,
+            } },
+        },
+        .{
+            .id = 1,
+            .parameters = &.{1},
+            .instructions = &increment_instructions,
+            .terminator = .{ .return_value = 3 },
+        },
+    };
+
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = enum { rejected, arithmetic_overflow };
+    pub const constants = .{@as(u32, 1)};
+    pub const effect_sites = .{RootEffect};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "world-v2-root-duplicate",
+        .value_types = &.{ u32_type, u32_type, u32_type, u32_type },
+        .blocks = &blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+
 const machine_options: boundary.MachineOptions = .{
     .maximum_frames = 8,
     .maximum_state_bytes = 16 * 1024,
@@ -68,6 +120,11 @@ pub const RootMachine = boundary.program(
     EffectBody("world-v2-root", RootEffect),
 ).compile(machine_options);
 pub const RootSite = RootMachine.EffectRow.site(0);
+
+const DuplicateRootMachine = boundary.program(
+    "world-v2-root-duplicate",
+    IncrementingEffectBody,
+).compile(machine_options);
 
 pub const ProviderMachine = boundary.program(
     "world-v2-provider",
@@ -91,6 +148,7 @@ pub const OneEffectApp = world.v1.application(.{
     .root = RootMachine,
     .limits = application_limits,
     .external = .{world.v1.external(RootMachine, 0, .{
+        .site_identity = "world.test.root.v2",
         .interface = "test.one-effect.v1",
         .authority = world.v1.Authority.model,
     })},
@@ -101,8 +159,14 @@ pub const ProviderApp = world.v1.application(.{
     .version = "2.0.0",
     .root = RootMachine,
     .limits = application_limits,
-    .handlers = .{world.v1.handle(RootMachine, 0, ProviderMachine)},
+    .handlers = .{world.v1.handle(
+        RootMachine,
+        0,
+        "world.test.root.v2",
+        ProviderMachine,
+    )},
     .external = .{world.v1.external(ProviderMachine, 0, .{
+        .site_identity = "world.test.provider.v2",
         .interface = "test.provider-external.v1",
         .authority_requirements = @as(u64, 1) << @intFromEnum(world.v1.Authority.file_read),
     })},
@@ -114,6 +178,7 @@ pub const DeferredApp = world.v1.application(.{
     .root = RootMachine,
     .limits = application_limits,
     .external = .{world.v1.external(RootMachine, 0, .{
+        .site_identity = "world.test.root.v2",
         .interface = "test.deferred-effect.v1",
         .allowed_statuses = world.v1.AllowedStatuses{ .deferred = true },
     })},
@@ -125,6 +190,7 @@ pub const TightResultApp = world.v1.application(.{
     .root = RootMachine,
     .limits = application_limits,
     .external = .{world.v1.external(RootMachine, 0, .{
+        .site_identity = "world.test.root.v2",
         .interface = "test.tight-result.v1",
         .maximum_result_bytes = 3,
     })},
@@ -153,6 +219,18 @@ fn okResult(
     };
     try result.seal(allocator, App.Limits);
     return result;
+}
+
+test "site ids bind the owning Machine occurrence" {
+    try std.testing.expectEqualSlices(
+        u8,
+        &RootMachine.EffectRow.site(0).contract_digest,
+        &DuplicateRootMachine.EffectRow.site(0).contract_digest,
+    );
+    try std.testing.expect(
+        world.v1.siteId(RootMachine, 0) !=
+            world.v1.siteId(DuplicateRootMachine, 0),
+    );
 }
 
 test "World closes one Boundary Machine ABI v2 residual effect" {
