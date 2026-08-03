@@ -717,6 +717,29 @@ pub fn build(b: *std.Build) void {
     check_world_2_externality_step.dependOn(
         &check_world_2_externality.step,
     );
+    const check_world_externality_v2_step = b.step(
+        "check-world-externality-v2",
+        "Run the canonical World 2 released-artifact externality proof.",
+    );
+    check_world_externality_v2_step.dependOn(
+        check_world_2_externality_step,
+    );
+    const check_world_externality_v2_negative = b.addSystemCommand(&.{"node"});
+    check_world_externality_v2_negative.addFileArg(b.path(
+        "scripts/check_world_2_externality.mjs",
+    ));
+    check_world_externality_v2_negative.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+        "--negative",
+    });
+    const check_world_externality_v2_negative_step = b.step(
+        "check-world-externality-v2-negative",
+        "Reject malformed World 2 caller archive and checksum pairs.",
+    );
+    check_world_externality_v2_negative_step.dependOn(
+        &check_world_externality_v2_negative.step,
+    );
     const build_world_sdk_v1 = b.addSystemCommand(&.{"node"});
     build_world_sdk_v1.addFileArg(b.path(
         "scripts/build_world_sdk_v1.mjs",
@@ -904,6 +927,27 @@ pub fn build(b: *std.Build) void {
     check_world_application_wasm_step.dependOn(&run_skeleton_application_wasm.step);
     check_world_application_wasm_step.dependOn(&run_fixture_application_wasm.step);
     check_world_application_wasm_step.dependOn(check_world_external_build_helper_step);
+    const check_world_machine_native_wasm_step = b.step(
+        "check-world-machine-native-wasm",
+        "Prove native and wasm32 Boundary Machine application parity.",
+    );
+    check_world_machine_native_wasm_step.dependOn(
+        check_world_application_native_step,
+    );
+    check_world_machine_native_wasm_step.dependOn(
+        check_world_application_wasm_step,
+    );
+    check_world_machine_native_wasm_step.dependOn(
+        check_world_research_digest_v2_step,
+    );
+    const check_world_application_v1_step = b.step(
+        "check-world-application-v1",
+        "Prove the preserved World Application ABI v1 surface.",
+    );
+    check_world_application_v1_step.dependOn(check_world_application_spec_step);
+    check_world_application_v1_step.dependOn(
+        check_world_machine_native_wasm_step,
+    );
     const world_application_v1_wasm_check = b.addLibrary(.{
         .linkage = .static,
         .name = "world-application-v1-protocol-wasm-check",
@@ -1830,6 +1874,16 @@ pub fn build(b: *std.Build) void {
     compile_fail_step.dependOn(&appliance_zero_host_request_capacity_test.step);
     compile_fail_step.dependOn(&appliance_zero_host_reply_capacity_test.step);
     compile_fail_step.dependOn(&appliance_zero_actuation_record_capacity_test.step);
+    const check_world_application_v1_negative_step = b.step(
+        "check-world-application-v1-negative",
+        "Run malformed and compile-fail Application ABI v1 witnesses.",
+    );
+    check_world_application_v1_negative_step.dependOn(compile_fail_step);
+    const check_world_machine_native_wasm_negative_step = b.step(
+        "check-world-machine-native-wasm-negative",
+        "Run target-neutral Machine application compile-fail witnesses.",
+    );
+    check_world_machine_native_wasm_negative_step.dependOn(compile_fail_step);
 
     const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
     check_step.dependOn(check_world_application_spec_step);
