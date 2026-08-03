@@ -1,62 +1,62 @@
 const boundary = @import("boundary");
 const effects = @import("effects.zig");
 
-const semantic = boundary.ir.builder.semantic;
-const DigestRows = effects.Digest.Rows(struct {}, .{
-    .requirement_index = 0,
-    .first_op = 0,
-    .schema_refs = effects.Schemas.schema_refs,
-});
-const Format = DigestRows.op("format");
-const compiled = semantic.finish(.{
-    .label = "research-digest-root",
-    .ir_hash = 0x5245534541524348,
-    .entry = "run",
-    .schemas = effects.Schemas,
-    .requirements = &.{DigestRows.requirement},
-    .ops = &DigestRows.ops,
-    .functions = .{.{
-        .symbol_name = "run",
-        .requirements = semantic.span(0, 1),
-        .params = .{
-            semantic.param("request", effects.ResearchRequest),
-        },
-        .locals = .{
-            semantic.local("digest", effects.DigestResult),
-        },
-        .result = effects.DigestResult,
-        .blocks = .{.{
-            .name = "entry",
-            .instructions = .{
-                semantic.call(Format, .{
-                    .dst = "digest",
-                    .payload = "request",
-                    .label = "digest.format",
-                }),
-            },
-            .terminator = semantic.returnValue("digest"),
-        }},
-    }},
-}) catch |err| @compileError(
-    "invalid Research Digest root ProgramPlan: " ++ @errorName(err),
-);
+const cir = boundary.ir;
 
-const Body = struct {
-    pub const value_schema_types = effects.Schemas.value_schema_types;
-    pub const site_metadata = compiled.site_metadata;
-    pub const compiled_plan = compiled.plan;
+const DigestFormat = struct {
+    pub const id: u32 = 0;
+    pub const semantic_identity = "research.digest.format.v2";
+    pub const Payload = effects.ResearchRequest;
+    pub const Resume = effects.DigestResult;
 };
 
-pub const Program = boundary.program(
-    "research-digest-root",
-    struct {},
-    Body,
-);
-pub const Machine = boundary.staticMachine(Program, .{
+const continuation_arguments = [_]cir.EdgeArgument{.@"resume"};
+const value_types = [_]cir.ValueType{
+    .{ .schema = 0 },
+    .{ .schema = 9 },
+};
+const blocks = [_]cir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{
+                .target = 1,
+                .arguments = &continuation_arguments,
+            },
+            .resume_type = .{ .schema = 9 },
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .return_value = 1 },
+    },
+};
+
+const Body = struct {
+    pub const InitialArgs = effects.ResearchRequest;
+    pub const Result = effects.DigestResult;
+    pub const Failure = enum { rejected };
+    pub const contract_bytes = "research-digest-root-v2\x00machine-provider";
+    pub const effect_sites = .{DigestFormat};
+    pub const schema_types = effects.schema_types;
+    pub const control_ir: cir.Program = .{
+        .label = "research-digest-root-v2",
+        .value_types = &value_types,
+        .blocks = &blocks,
+        .entry = 0,
+        .result_type = .{ .schema = 9 },
+    };
+};
+
+pub const Program = boundary.program("research-digest-root-v2", Body);
+pub const Machine = Program.compile(.{
+    .maximum_frames = 8,
     .maximum_state_bytes = 128 * 1024,
+    .maximum_machine_fuel = 4096,
 });
-pub const FormatSite = Machine.EffectRow.operationSite(
-    "digest",
-    "format",
-    0,
-);
+pub const FormatSite = Machine.EffectRow.site(0);

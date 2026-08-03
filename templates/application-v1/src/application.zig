@@ -9,14 +9,14 @@ pub const ResearchLookupSite = provider.LookupSite;
 /// Closed Research Digest application with one residual external effect.
 pub const Application = world.application(.{
     .name = "research-digest-agent",
-    .version = "1.0.0",
+    .version = "2.0.0",
     .root = agent.Machine,
     .handlers = .{
-        world.v1.handle(agent.FormatSite, provider.Machine),
+        world.v1.handle(agent.Machine, 0, provider.Machine),
     },
     .external = .{
-        world.v1.external(provider.LookupSite, .{
-            .interface = "research.lookup.v1",
+        world.v1.external(provider.Machine, 0, .{
+            .interface = "research.lookup.v2",
             .authority = world.v1.Authority.database,
             .maximum_payload_bytes = 64 * 1024,
             .maximum_result_bytes = 256 * 1024,

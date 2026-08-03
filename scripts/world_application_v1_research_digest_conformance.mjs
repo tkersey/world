@@ -20,7 +20,7 @@ const module = await WebAssembly.compile(wasmBytes);
 const applicationId = manifest.subarray(12, 44);
 const request = {
   query: "portable algebraic effects",
-  maximumItems: 2n,
+  maximumItems: 2,
 };
 const initialArgs = encodeResearchRequest(request);
 const genesis = encodeStepInput({
@@ -40,27 +40,31 @@ const parentBytes = copyExported(
 );
 const parent = decodeFrame(parentBytes);
 if (parent.status !== 0 || parent.request === null) {
-  throw new Error("Research Digest genesis did not park on research.lookup.v1");
+  throw new Error("Research Digest genesis did not park on research.lookup.v2");
 }
 if (!parent.request.payload.equals(initialArgs)) {
-  throw new Error("research.lookup.v1 payload differs from the typed initial request");
+  throw new Error("research.lookup.v2 payload differs from the typed initial request");
 }
 if (parent.resourceCounters.internalHandlerCalls !== 1n) {
   throw new Error("Digest Formatter was not entered exactly once");
 }
 
 const expected = {
-  first: {
-    title: "Effect rows as application boundaries",
-    summary: "Static closure leaves authority outside the guest.",
-  },
-  second: {
-    title: "Portable continuations",
-    summary: "Canonical Frames resume in fresh WASM instances.",
-  },
+  items: [
+    {
+      title: "Effect rows as application boundaries",
+      summary: "Static closure leaves authority outside the guest.",
+    },
+    {
+      title: "Portable continuations",
+      summary: "Canonical Frames resume in fresh WASM instances.",
+    },
+  ],
+};
+const expectedResult = {
   digest:
-    "Static closure keeps authority external; canonical Frames keep continuation portable.",
-  itemCount: 2n,
+    "Effect rows as application boundaries\nStatic closure leaves authority outside the guest.\nPortable continuations\nCanonical Frames resume in fresh WASM instances.\n",
+  itemCount: 2,
 };
 const firstResult = encodeOkResult(
   parent.request,
@@ -73,23 +77,28 @@ const continuation = encodeStepInput({
   effectResult: firstResult.bytes,
   fuel: 100n,
 });
-const firstChildBytes = await complete(module, continuation, expected);
-const retryChildBytes = await complete(module, continuation, expected);
+const firstChildBytes = await complete(module, continuation, expectedResult);
+const retryChildBytes = await complete(module, continuation, expectedResult);
 if (!firstChildBytes.equals(retryChildBytes)) {
   throw new Error("Research Digest retry produced different child Frame bytes");
 }
 
 const alternate = {
-  first: {
-    title: "A different research corpus",
-    summary: "The same parent may accept another valid result.",
-  },
-  second: {
-    title: "Branch isolation",
-    summary: "The parent Frame remains immutable.",
-  },
-  digest: "Alternate valid research creates a distinct deterministic branch.",
-  itemCount: 2n,
+  items: [
+    {
+      title: "A different research corpus",
+      summary: "The same parent may accept another valid result.",
+    },
+    {
+      title: "Branch isolation",
+      summary: "The parent Frame remains immutable.",
+    },
+  ],
+};
+const alternateResultValue = {
+  digest:
+    "A different research corpus\nThe same parent may accept another valid result.\nBranch isolation\nThe parent Frame remains immutable.\n",
+  itemCount: 2,
 };
 const alternateResult = encodeOkResult(
   parent.request,
@@ -102,7 +111,11 @@ const alternateInput = encodeStepInput({
   effectResult: alternateResult.bytes,
   fuel: 100n,
 });
-const alternateChildBytes = await complete(module, alternateInput, alternate);
+const alternateChildBytes = await complete(
+  module,
+  alternateInput,
+  alternateResultValue,
+);
 if (firstChildBytes.equals(alternateChildBytes)) {
   throw new Error("two valid Research Digest results produced one child Frame");
 }
@@ -112,8 +125,8 @@ console.log("internal_provider=true");
 console.log("fresh_instance_resume=true");
 console.log("deterministic_retry=true");
 console.log("branching=true");
-console.log(`digest=${expected.digest}`);
-console.log(`item_count=${expected.itemCount}`);
+console.log(`digest=${expectedResult.digest}`);
+console.log(`item_count=${expectedResult.itemCount}`);
 
 async function complete(compiled, input, expectedResult) {
   const instance = await instantiate(compiled);
@@ -136,29 +149,28 @@ async function complete(compiled, input, expectedResult) {
 }
 
 function encodeResearchRequest(value) {
-  return Buffer.concat([encodeString(value.query), u64(value.maximumItems)]);
+  return Buffer.concat([encodeString(value.query), u32(value.maximumItems)]);
 }
 
 function encodeResearchResponse(value) {
   return Buffer.concat([
-    encodeString(value.first.title),
-    encodeString(value.first.summary),
-    encodeString(value.second.title),
-    encodeString(value.second.summary),
-    encodeString(value.digest),
-    u64(value.itemCount),
+    u32(value.items.length),
+    ...value.items.flatMap((item) => [
+      encodeString(item.title),
+      encodeString(item.summary),
+    ]),
   ]);
 }
 
 function decodeDigestResult(bytes) {
   const digestLength = bytes.readUInt32LE(0);
   const digestEnd = 4 + digestLength;
-  if (digestEnd + 8 !== bytes.length) {
+  if (digestEnd + 4 !== bytes.length) {
     throw new Error("invalid DigestResult encoding");
   }
   return {
     digest: bytes.subarray(4, digestEnd).toString("utf8"),
-    itemCount: bytes.readBigUInt64LE(digestEnd),
+    itemCount: bytes.readUInt32LE(digestEnd),
   };
 }
 
@@ -169,8 +181,8 @@ function encodeString(value) {
   return Buffer.concat([length, bytes]);
 }
 
-function u64(value) {
-  const bytes = Buffer.alloc(8);
-  bytes.writeBigUInt64LE(value);
+function u32(value) {
+  const bytes = Buffer.alloc(4);
+  bytes.writeUInt32LE(value);
   return bytes;
 }

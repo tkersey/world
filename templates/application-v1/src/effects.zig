@@ -1,65 +1,42 @@
 const boundary = @import("boundary");
 
-/// One bounded clean-room research request.
-///
-/// Boundary StaticMachine v1 represents portable word fields canonically as
-/// u64. Narrower integer carriers are intentionally post-v1 work.
+pub const Query = boundary.Text(512);
+pub const Title = boundary.Text(256);
+pub const Summary = boundary.Text(1024);
+pub const Separator = boundary.Text(1);
+pub const Digest = boundary.Text(8192);
+
 pub const ResearchRequest = struct {
-    query: []const u8,
-    maximum_items: u64,
+    query: Query,
+    maximum_items: u32,
 };
 
-/// One deterministic research item returned by the fixture capability.
 pub const ResearchItem = struct {
-    title: []const u8,
-    summary: []const u8,
+    title: Title,
+    summary: Summary,
 };
 
-/// Terminal application value.
-pub const DigestResult = struct {
-    digest: []const u8,
-    item_count: u64,
-};
+pub const ResearchItems = boundary.Vector(ResearchItem, 8);
 
-/// Bounded lookup response for the v1 template.
-///
-/// Two named items keep the schema inside StaticMachine v1’s closed,
-/// source-independent carrier set. Dynamic product collections remain
-/// post-v1 work.
 pub const ResearchResponse = struct {
-    first: ResearchItem,
-    second: ResearchItem,
-    digest_result: DigestResult,
+    items: ResearchItems,
 };
 
-/// Canonical schema registry shared by both Boundary programs.
-pub const Schemas = boundary.ir.schema.Registry(.{
+pub const DigestResult = struct {
+    digest: Digest,
+    item_count: u32,
+};
+
+/// Canonical schema order shared by the root and provider Machines.
+pub const schema_types = .{
     ResearchRequest,
+    Query,
     ResearchItem,
-    DigestResult,
+    Title,
+    Summary,
+    ResearchItems,
     ResearchResponse,
-});
-
-/// Application-internal formatting protocol.
-pub const Digest = boundary.ir.schema.Protocol(.{
-    .label = "digest",
-    .ops = .{
-        boundary.ir.schema.transform(
-            "format",
-            ResearchRequest,
-            DigestResult,
-        ),
-    },
-});
-
-/// Residual protocol implemented by the independently authored capability.
-pub const Research = boundary.ir.schema.Protocol(.{
-    .label = "research",
-    .ops = .{
-        boundary.ir.schema.transform(
-            "lookup",
-            ResearchRequest,
-            ResearchResponse,
-        ),
-    },
-});
+    Digest,
+    Separator,
+    DigestResult,
+};
