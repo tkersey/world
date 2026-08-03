@@ -150,6 +150,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const exported_boundary = exported_boundary_dep.module("boundary");
+    const exported_boundary_machine_dep = b.dependency("boundary_machine", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const exported_boundary_machine = exported_boundary_machine_dep.module("boundary");
 
     const exported_world = b.addModule("world", .{
         .root_source_file = b.path("src/world.zig"),
@@ -157,12 +162,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exported_world.addImport("boundary", exported_boundary);
+    exported_world.addImport("boundary_machine", exported_boundary_machine);
 
     const boundary_dep = b.dependency("boundary", .{
         .target = validation_target,
         .optimize = optimize,
     });
     const boundary = boundary_dep.module("boundary");
+    const boundary_machine_dep = b.dependency("boundary_machine", .{
+        .target = validation_target,
+        .optimize = optimize,
+    });
+    const boundary_machine = boundary_machine_dep.module("boundary");
     const world = if (target.result.os.tag == .freestanding) blk: {
         const validation_world = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
@@ -170,6 +181,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         validation_world.addImport("boundary", boundary);
+        validation_world.addImport("boundary_machine", boundary_machine);
         break :blk validation_world;
     } else exported_world;
     const world_target_check = b.addLibrary(.{
@@ -208,12 +220,18 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
     });
     const wasm_boundary = wasm_boundary_dep.module("boundary");
+    const wasm_boundary_machine_dep = b.dependency("boundary_machine", .{
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    const wasm_boundary_machine = wasm_boundary_machine_dep.module("boundary");
     const wasm_world = b.createModule(.{
         .root_source_file = b.path("src/world.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
     });
     wasm_world.addImport("boundary", wasm_boundary);
+    wasm_world.addImport("boundary_machine", wasm_boundary_machine);
     const archive_wasm_probe = b.addExecutable(.{
         .name = "world_archive_wasm_probe",
         .root_module = b.createModule(.{
@@ -247,12 +265,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const host_boundary = host_boundary_dep.module("boundary");
+    const host_boundary_machine_dep = b.dependency("boundary_machine", .{
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    const host_boundary_machine = host_boundary_machine_dep.module("boundary");
     const host_world = b.createModule(.{
         .root_source_file = b.path("src/world.zig"),
         .target = b.graph.host,
         .optimize = optimize,
     });
     host_world.addImport("boundary", host_boundary);
+    host_world.addImport("boundary_machine", host_boundary_machine);
     const host_fixtures = b.createModule(.{
         .root_source_file = b.path("test/fixtures.zig"),
         .target = b.graph.host,
@@ -458,6 +482,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "boundary", .module = boundary },
+            .{ .name = "boundary_machine", .module = boundary_machine },
         },
     });
     const world_module_tests = b.addTest(.{
@@ -471,6 +496,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world application v1"},
@@ -484,7 +510,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
-                .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary", .module = boundary_machine },
             },
         }),
         .filters = test_args.filters,
@@ -495,10 +521,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "world", .module = world },
-            .{ .name = "boundary", .module = boundary },
+            .{ .name = "boundary", .module = boundary_machine },
         },
     });
     const run_world_comptime_application_tests = addRunArtifactWithArgs(b, world_comptime_application_tests, test_args.passthrough);
+    const check_world_machine_v2_step = b.step(
+        "check-world-machine-v2",
+        "Run focused Boundary Machine ABI v2 admission and provider checks.",
+    );
+    check_world_machine_v2_step.dependOn(&run_world_comptime_application_tests.step);
     const world_comptime_agent_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/application_v1_agent_fixtures.zig"),
@@ -559,7 +590,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
         .imports = &.{
             .{ .name = "world", .module = wasm_world },
-            .{ .name = "boundary", .module = wasm_boundary },
+            .{ .name = "boundary", .module = wasm_boundary_machine },
         },
     });
     const one_effect_application_wasm_module = b.createModule(.{
@@ -832,6 +863,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world protocol manifest"},
@@ -846,6 +878,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"boundary world protocol compatibility"},
@@ -859,6 +892,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world conformance corpus"},
@@ -913,6 +947,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world adversarial codecs"},
@@ -942,6 +977,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = host_boundary },
+                .{ .name = "boundary_machine", .module = host_boundary_machine },
             },
         }),
         .filters = &.{"world protocol release receipt"},
@@ -1043,6 +1079,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world v0 budgets"},
