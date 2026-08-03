@@ -9,6 +9,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -510,6 +511,21 @@ function proveCallerArchiveChecksumAdmission() {
     "--world-capabilities-archive-sha256",
     sha256,
   ]).worldCapabilitiesArchiveSha256, sha256);
+
+  const proofRoot = mkdtempSync(join(tmpdir(), "world-2-checksum-negative-"));
+  try {
+    const archive = join(proofRoot, "world.tar.gz");
+    writeFileSync(archive, "checksum admission witness");
+    const actual = sha256File(archive);
+    assert.notEqual(actual, sha256);
+    assert.throws(
+      () => assertExpectedSha("World", archive, sha256),
+      /World archive SHA-256 mismatch/,
+    );
+    assert.doesNotThrow(() => assertExpectedSha("World", archive, actual));
+  } finally {
+    rmSync(proofRoot, { recursive: true, force: true });
+  }
 }
 
 function digest(value, label) {
