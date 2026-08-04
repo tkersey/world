@@ -116,6 +116,10 @@ try {
       worldExtracted,
     ]);
     const worldRoot = singleDirectoryRoot(worldExtracted);
+    assertMaterializedTemplate(
+      join(worldRoot, "templates/application-v1"),
+      join(options.sdk, "application-template"),
+    );
     const shimRoot = join(proofRoot, "release-tools");
     const capabilityArchive = join(options.sdk, "releases", EXPECTED_RELEASES.worldCapabilities.name);
     writeReleaseDownloadShim(shimRoot);
@@ -218,6 +222,25 @@ function singleDirectoryRoot(root) {
   assert.equal(entries.length, 1, "release archive must contain one root");
   assert(entries[0].isDirectory(), "release archive root must be a directory");
   return join(root, entries[0].name);
+}
+
+function assertMaterializedTemplate(releasedRoot, bundledRoot) {
+  const releasedFiles = listFiles(releasedRoot).sort();
+  const bundledFiles = listFiles(bundledRoot).sort();
+  assert.deepEqual(bundledFiles, releasedFiles, "application template file set mismatch");
+  for (const path of releasedFiles) {
+    const released = readFileSync(join(releasedRoot, path));
+    const expected = path === "build.zig.zon"
+      ? Buffer.from(released.toString("utf8")
+        .replaceAll("__WORLD_RELEASE_URL__", EXPECTED_RELEASES.world.url)
+        .replaceAll("__WORLD_RELEASE_HASH__", EXPECTED_RELEASES.world.packageHash))
+      : released;
+    assert.deepEqual(
+      readFileSync(join(bundledRoot, path)),
+      expected,
+      `application template mismatch: ${path}`,
+    );
+  }
 }
 
 function writeReleaseDownloadShim(root) {
