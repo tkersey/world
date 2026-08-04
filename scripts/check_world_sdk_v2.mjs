@@ -57,20 +57,28 @@ const EXPECTED_ARCHIVES = Object.freeze(Object.fromEntries(
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const options = parseArgs(process.argv.slice(2));
 let generatedRoot = null;
-if (options.sdk === null) {
-  generatedRoot = mkdtempSync(join(tmpdir(), "world-sdk-v2-check-"));
-  options.sdk = join(generatedRoot, "world-sdk-v2.0.0");
-  run(process.execPath, [
-    join(sourceRoot, "scripts/build_world_sdk_v2.mjs"),
-    "--out",
-    options.sdk,
-    "--zig",
-    options.zig,
-    "--skip-check",
-  ]);
-}
-
 try {
+  if (options.sdk === null) {
+    generatedRoot = mkdtempSync(join(tmpdir(), "world-sdk-v2-check-"));
+    options.sdk = join(generatedRoot, "world-sdk-v2.0.0");
+    const buildReceipt = JSON.parse(runCapture(process.execPath, [
+      join(sourceRoot, "scripts/build_world_sdk_v2.mjs"),
+      "--out",
+      options.sdk,
+      "--zig",
+      options.zig,
+      "--skip-check",
+    ]).stdout);
+    assert.deepEqual(buildReceipt, {
+      command: "build-world-sdk-v2",
+      output: options.sdk,
+      sdkVersion: "2.0.0",
+      sourceCheckoutRequired: false,
+      validated: false,
+      complete: false,
+    });
+  }
+
   assert.equal(basename(options.sdk), "world-sdk-v2.0.0");
   assert(lstatSync(options.sdk).isDirectory(), "SDK root must be a directory");
   const files = listFiles(options.sdk).sort();
@@ -118,7 +126,7 @@ try {
     );
     const templateRoot = join(proofRoot, "application-template");
     cpSync(join(options.sdk, "application-template"), templateRoot, { recursive: true });
-    run(options.zig, ["build", "--summary", "all"], templateRoot);
+    runCapture(options.zig, ["build", "--summary", "all"], templateRoot);
 
     const shimRoot = join(proofRoot, "release-tools");
     const capabilityArchive = join(options.sdk, "releases", EXPECTED_RELEASES.worldCapabilities.name);

@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import {
   copyFileSync,
   cpSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -64,11 +63,13 @@ assert.equal(
   "world-sdk-v2.0.0",
   "SDK output directory must be named world-sdk-v2.0.0",
 );
-assert(!existsSync(options.out), `SDK output already exists: ${options.out}`);
 
 const temporaryRoot = mkdtempSync(join(tmpdir(), "world-sdk-v2-build-"));
+let outputClaimed = false;
 let complete = false;
 try {
+  mkdirSync(options.out);
+  outputClaimed = true;
   const releasesRoot = join(options.out, "releases");
   mkdirSync(releasesRoot, { recursive: true });
   for (const release of RELEASES) {
@@ -105,13 +106,15 @@ try {
   writeChecksums(options.out);
 
   if (!options.skipCheck) {
-    run(process.execPath, [
+    const receipt = JSON.parse(runCapture(process.execPath, [
       join(options.out, "conformance/check-sdk.mjs"),
       "--sdk",
       options.out,
       "--zig",
       options.zig,
-    ]);
+    ]).stdout);
+    assert.equal(receipt.receiptVersion, "world-sdk-v2-check/v1");
+    assert.equal(receipt.complete, true);
   }
   complete = true;
   process.stdout.write(`${JSON.stringify({
@@ -124,7 +127,7 @@ try {
   }, null, 2)}\n`);
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });
-  if (!complete) rmSync(options.out, { recursive: true, force: true });
+  if (outputClaimed && !complete) rmSync(options.out, { recursive: true, force: true });
 }
 
 function parseArgs(args) {
@@ -215,6 +218,21 @@ function run(command, args, cwd = undefined) {
   const result = spawnSync(command, args, { cwd, encoding: "utf8", stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} failed with status ${result.status}`);
+}
+
+function runCapture(command, args, cwd = undefined) {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `${command} ${args.join(" ")} failed with status ${result.status}\n${result.stdout}${result.stderr}`,
+    );
+  }
+  return result;
 }
 
 function readme() {
