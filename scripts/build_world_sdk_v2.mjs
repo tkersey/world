@@ -22,6 +22,7 @@ const RELEASES = Object.freeze([
     url: "https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz",
     sha256: "25e5bd5ed45aac023ef99beee93f675ea4efb3f6eb1e98d2a13040d7451f0e9a",
     tag: "v0.7.0",
+    packageHash: "boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_",
   }),
   Object.freeze({
     key: "boundaryMachine",
@@ -29,6 +30,7 @@ const RELEASES = Object.freeze([
     url: "https://github.com/tkersey/boundary/archive/refs/tags/v1.0.0.tar.gz",
     sha256: "bf1ba841febf2b24b2bdafd75819a557ca8ad4bde4c463199e393c0ab7db52ab",
     tag: "v1.0.0",
+    packageHash: "boundary-1.0.0-flclaPgFEQBhYvlC3eqNVK3X67InkTuaX-pHFvRLzWJ8",
   }),
   Object.freeze({
     key: "world",
@@ -37,6 +39,14 @@ const RELEASES = Object.freeze([
     sha256: "a1c734eea799b33ea5d9638d3738ca399e94a6d9b9413d6440e41a6bcb6210cf",
     tag: "v2.0.0",
     packageHash: "world-2.0.0-XXTUeJujiQBizko3J_bHMwFB8hQk2cUDXnAlHVKZherB",
+  }),
+  Object.freeze({
+    key: "zlinter",
+    name: "zlinter-9b4d67b9725e7137ac876cc628fe5dd2ca5a2681.tar.gz",
+    url: "https://github.com/KurtWagner/zlinter/archive/9b4d67b9725e7137ac876cc628fe5dd2ca5a2681.tar.gz",
+    sha256: "246d941aa706fb353f4cd87c2dc83cad3f2a39a9cdfbb0357a1dcf0d461094df",
+    commit: "9b4d67b9725e7137ac876cc628fe5dd2ca5a2681",
+    packageHash: "zlinter-0.0.1-OjQ08c7oCwDIwhlde7eDKMACNTsqAhGXy5vB7GdfGobG",
   }),
   Object.freeze({
     key: "worldHost",
