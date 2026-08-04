@@ -1930,6 +1930,7 @@ pub fn build(b: *std.Build) void {
         "check-world-application-v1-negative",
         "Run malformed and compile-fail Application ABI v1 witnesses.",
     );
+    check_world_application_v1_negative_step.dependOn(check_world_application_spec_step);
     check_world_application_v1_negative_step.dependOn(compile_fail_step);
     const check_world_machine_native_wasm_negative_step = b.step(
         "check-world-machine-native-wasm-negative",
