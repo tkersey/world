@@ -64,6 +64,10 @@ or loaded. Start with
 
 The
 [`world-sdk-v1.0.0.tar.gz`](https://github.com/tkersey/world/releases/download/v1.0.0/world-sdk-v1.0.0.tar.gz)
+
+World 2 applications can use the checksum-bound
+[`world-sdk-v2.0.0.tar.gz`](https://github.com/tkersey/world/releases/download/v2.0.0/world-sdk-v2.0.0.tar.gz),
+which reuses the exact released world-host v1.0.0 runtime.
 release asset composes the four reviewed archives, application and capability
 templates, the Research Digest example, the source-independent host, and
 external-consumer, lifecycle, and negative conformance receipts. It is a
