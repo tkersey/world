@@ -245,10 +245,7 @@ function materializeReviewedArchive(
   destination,
 ) {
   if (input === null) {
-    return {
-      archive: materializeArchive(null, releaseUrl, destination),
-      url: releaseUrl,
-    };
+    throw new Error(`${label} reviewed archive and SHA-256 are required`);
   }
 
   requireFile(input);
@@ -458,6 +455,26 @@ function requireArchiveDigestPair(archiveLabel, archive, digestLabel, sha256) {
 
 function proveCallerArchiveChecksumAdmission() {
   const sha256 = "0".repeat(64);
+  assert.throws(
+    () => materializeReviewedArchive(
+      "World",
+      null,
+      null,
+      WORLD_RELEASE_URL,
+      "unused-world.tar.gz",
+    ),
+    /World reviewed archive and SHA-256 are required/,
+  );
+  assert.throws(
+    () => materializeReviewedArchive(
+      "world-capabilities",
+      null,
+      null,
+      WORLD_CAPABILITIES_URL,
+      "unused-world-capabilities.tar.gz",
+    ),
+    /world-capabilities reviewed archive and SHA-256 are required/,
+  );
   assert.throws(
     () => parseArgs(["--world-archive", "world.tar.gz"]),
     /--world-archive and --world-archive-sha256 must be supplied together/,
