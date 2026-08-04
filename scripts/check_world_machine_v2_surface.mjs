@@ -52,6 +52,25 @@ const applicationDocs = readFileSync(
   join(root, "docs/application_v1.md"),
   "utf8",
 );
+const applicationRuntime = readFileSync(
+  join(root, "src/application_runtime_v1.zig"),
+  "utf8",
+);
+const externalResultSignature = applicationRuntime.match(
+  /pub fn encodeExternalResult\([\s\S]*?\) protocol\.Error!\[\]u8 \{/,
+)?.[0];
+assert(externalResultSignature, "World is missing App.encodeExternalResult");
+assert(
+  !externalResultSignature.includes("expected_site_identity"),
+  "App.encodeExternalResult retains redundant caller site-identity authority",
+);
+const buildSource = readFileSync(join(root, "build.zig"), "utf8");
+assert(
+  !buildSource.includes(
+    "application_v1_external_result_site_identity_mismatch",
+  ),
+  "World retains the wound-specific external-result identity fixture",
+);
 assert(
   applicationDocs.includes(`World \`v${packageVersion}\` embeds`),
   "docs/application_v1.md release identity differs from build.zig.zon",

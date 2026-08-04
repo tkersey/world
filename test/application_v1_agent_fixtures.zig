@@ -369,7 +369,6 @@ fn continueWithText(
         allocator,
         Machine,
         site_ordinal,
-        Machine.EffectRow.site(site_ordinal).semantic_identity,
         value,
     );
     var result: world.v1.EffectResult = .{

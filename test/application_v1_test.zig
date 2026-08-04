@@ -260,7 +260,6 @@ fn okResult(
         allocator,
         Machine,
         site_ordinal,
-        Machine.EffectRow.site(site_ordinal).semantic_identity,
         value,
     );
     var result: world.v1.EffectResult = .{
@@ -344,7 +343,6 @@ test "World external value encoder enforces its binding result limit" {
             std.testing.allocator,
             RootMachine,
             0,
-            RootMachine.EffectRow.site(0).semantic_identity,
             @as(u32, 41),
         ),
     );

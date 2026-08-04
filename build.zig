@@ -1692,20 +1692,6 @@ pub fn build(b: *std.Build) void {
     application_v1_site_identity_mismatch_test.expect_errors = .{
         .contains = "World Machine site_identity does not match the selected effect-site ordinal",
     };
-    const application_v1_external_result_site_identity_mismatch_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test/compile_fail/application_v1_external_result_site_identity_mismatch.zig"),
-            .target = validation_target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "world", .module = world },
-                .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
-            },
-        }),
-    });
-    application_v1_external_result_site_identity_mismatch_test.expect_errors = .{
-        .contains = "World Machine site_identity does not match the selected effect-site ordinal",
-    };
     const application_v1_duplicate_site_identity_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/compile_fail/application_v1_duplicate_site_identity.zig"),
@@ -1929,7 +1915,6 @@ pub fn build(b: *std.Build) void {
     compile_fail_step.dependOn(&application_v1_external_oversized_result_limit_test.step);
     compile_fail_step.dependOn(&application_v1_provider_state_capacity_test.step);
     compile_fail_step.dependOn(&application_v1_site_identity_mismatch_test.step);
-    compile_fail_step.dependOn(&application_v1_external_result_site_identity_mismatch_test.step);
     compile_fail_step.dependOn(&application_v1_duplicate_site_identity_test.step);
     compile_fail_step.dependOn(&application_v1_build_decl_missing_test.step);
     compile_fail_step.dependOn(&application_v1_build_decl_value_test.step);
