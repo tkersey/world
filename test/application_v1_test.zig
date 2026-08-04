@@ -317,8 +317,8 @@ test "World closes one Boundary Machine ABI v2 residual effect" {
         @as(u64, 1) << @intFromEnum(world.v1.Authority.model),
         OneEffectApp.Manifest.required_host_capabilities,
     );
-    try std.testing.expectEqualStrings("1.0.0-rc.1", OneEffectApp.Manifest.boundary_package_version);
-    try std.testing.expectEqualStrings("2.0.0-rc.1", OneEffectApp.Manifest.world_package_version);
+    try std.testing.expectEqualStrings("1.0.0", OneEffectApp.Manifest.boundary_package_version);
+    try std.testing.expectEqualStrings("2.0.0", OneEffectApp.Manifest.world_package_version);
     try OneEffectApp.Manifest.validate();
     try std.testing.expect(ProviderApp.maximum_encoded_runtime_state_bytes <= ProviderApp.Limits.maximum_state_bytes);
 }

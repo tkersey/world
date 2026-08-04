@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const WORLD_VERSION = "2.0.0-rc.1";
-const BOUNDARY_VERSION = "1.0.0-rc.1";
+const WORLD_VERSION = "2.0.0";
+const BOUNDARY_VERSION = "1.0.0";
 
 const options = parseArgs(process.argv.slice(2));
 const host = await import(

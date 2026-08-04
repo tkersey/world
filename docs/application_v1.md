@@ -32,7 +32,7 @@ const App = world.application(.{
 
 The top-level `world.application` alias is the stable construction entry point. Binding constructors remain under `world.v1` while v0 declarations still occupy the primary namespace.
 
-World `v2.0.0-rc.1` embeds its World 2 release identity and Boundary Machine ABI v2
+World `v2.0.0` embeds its World 2 release identity and Boundary Machine ABI v2
 dependency in each application manifest. This source-incompatible compiler
 cutover intentionally changes manifest, Machine state, and application WASM
 bytes. Application ABI v1, Frame v1, and Effect protocol v1 remain unchanged.

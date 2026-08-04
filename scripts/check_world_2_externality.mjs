@@ -18,12 +18,12 @@ import { fileURLToPath } from "node:url";
 const BOUNDARY_LEGACY_URL =
   "https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz";
 const BOUNDARY_MACHINE_URL =
-  "https://github.com/tkersey/boundary/archive/refs/tags/v1.0.0-rc.1.tar.gz";
+  "https://github.com/tkersey/boundary/archive/refs/tags/v1.0.0.tar.gz";
 const WORLD_HOST_URL =
   "https://github.com/tkersey/world-host/releases/download/v1.0.0/world-host-v1.0.0.tar.gz";
 const WORLD_HOST_SHA256 =
   "f881aaf3ada062ca3d80fc46d10cb001f38504d816ecd4995faf34bcd14ecc70";
-const WORLD_VERSION = "2.0.0-rc.1";
+const WORLD_VERSION = "2.0.0";
 const WORLD_RELEASE_URL =
   `https://github.com/tkersey/world/archive/refs/tags/v${WORLD_VERSION}.tar.gz`;
 const WORLD_CAPABILITIES_VERSION = "2.0.0";
@@ -58,7 +58,7 @@ try {
   const boundaryMachine = materializeArchive(
     options.boundaryMachineArchive,
     BOUNDARY_MACHINE_URL,
-    join(archivesRoot, "boundary-v1.0.0-rc.1.tar.gz"),
+    join(archivesRoot, "boundary-v1.0.0.tar.gz"),
   );
   const worldHost = options.worldHostArchive ?? downloadReleaseAsset(
     "tkersey/world-host",
@@ -104,7 +104,7 @@ try {
   assert.equal(consumerReceipt.application_wasm_import_count, "0");
   assert.equal(
     consumerReceipt.boundary_machine_release_hash,
-    "boundary-1.0.0-rc.1-flclaP0FEQApv6S-kj0cKVzgh8KgaV2afbb26rSJHF3O",
+    "boundary-1.0.0-flclaPgFEQBhYvlC3eqNVK3X67InkTuaX-pHFvRLzWJ8",
   );
 
   const wasmPath = join(

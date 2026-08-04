@@ -18,9 +18,9 @@ const boundaryUrl =
 const boundaryHash =
   "boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_";
 const boundaryMachineUrl =
-  "https://github.com/tkersey/boundary/archive/refs/tags/v1.0.0-rc.1.tar.gz";
+  "https://github.com/tkersey/boundary/archive/refs/tags/v1.0.0.tar.gz";
 const boundaryMachineHash =
-  "boundary-1.0.0-rc.1-flclaP0FEQApv6S-kj0cKVzgh8KgaV2afbb26rSJHF3O";
+  "boundary-1.0.0-flclaPgFEQBhYvlC3eqNVK3X67InkTuaX-pHFvRLzWJ8";
 const options = parseArgs(process.argv.slice(2));
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const proofRoot = mkdtempSync(join(tmpdir(), "world-external-consumer-"));
