@@ -103,10 +103,6 @@ try {
 
   const proofRoot = mkdtempSync(join(tmpdir(), "world-sdk-v2-externality-"));
   try {
-    const templateRoot = join(proofRoot, "application-template");
-    cpSync(join(options.sdk, "application-template"), templateRoot, { recursive: true });
-    run(options.zig, ["build", "--summary", "all"], templateRoot);
-
     const worldExtracted = join(proofRoot, "world");
     mkdirSync(worldExtracted);
     run("tar", [
@@ -120,6 +116,10 @@ try {
       join(worldRoot, "templates/application-v1"),
       join(options.sdk, "application-template"),
     );
+    const templateRoot = join(proofRoot, "application-template");
+    cpSync(join(options.sdk, "application-template"), templateRoot, { recursive: true });
+    run(options.zig, ["build", "--summary", "all"], templateRoot);
+
     const shimRoot = join(proofRoot, "release-tools");
     const capabilityArchive = join(options.sdk, "releases", EXPECTED_RELEASES.worldCapabilities.name);
     writeReleaseDownloadShim(shimRoot);
