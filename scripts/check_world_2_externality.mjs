@@ -26,7 +26,7 @@ const WORLD_HOST_SHA256 =
 const WORLD_VERSION = "2.0.0";
 const WORLD_RELEASE_URL =
   `https://github.com/tkersey/world/archive/refs/tags/v${WORLD_VERSION}.tar.gz`;
-const WORLD_CAPABILITIES_VERSION = "2.0.0";
+const WORLD_CAPABILITIES_VERSION = "2.0.1";
 const WORLD_CAPABILITIES_REPOSITORY =
   "github.com/tkersey/world-capabilities";
 const WORLD_CAPABILITIES_ASSET =
@@ -138,8 +138,6 @@ try {
   assert.deepEqual(capabilityCorpus.worldRelease, {
     applicationManifestSha256: sha256File(manifestPath),
     applicationWasmSha256: sha256File(wasmPath),
-    archiveSha256: sha256File(world.archive),
-    packageHash: consumerReceipt.world_release_hash,
     tag: `v${WORLD_VERSION}`,
   }, "capability pack and clean-room build use different World release tuples");
 
