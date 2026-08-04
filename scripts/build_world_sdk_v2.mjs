@@ -68,6 +68,7 @@ const temporaryRoot = mkdtempSync(join(tmpdir(), "world-sdk-v2-build-"));
 let outputClaimed = false;
 let complete = false;
 try {
+  mkdirSync(dirname(options.out), { recursive: true });
   mkdirSync(options.out);
   outputClaimed = true;
   const releasesRoot = join(options.out, "releases");

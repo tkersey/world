@@ -60,7 +60,7 @@ let generatedRoot = null;
 try {
   if (options.sdk === null) {
     generatedRoot = mkdtempSync(join(tmpdir(), "world-sdk-v2-check-"));
-    options.sdk = join(generatedRoot, "world-sdk-v2.0.0");
+    options.sdk = join(generatedRoot, "nested", "world-sdk-v2.0.0");
     const buildReceipt = JSON.parse(runCapture(process.execPath, [
       join(sourceRoot, "scripts/build_world_sdk_v2.mjs"),
       "--out",
