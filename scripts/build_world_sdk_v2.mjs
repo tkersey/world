@@ -161,7 +161,7 @@ try {
       join(options.out, "conformance/check-sdk.mjs"),
       "--zig",
       options.zig,
-    ], options.out).stdout);
+    ]).stdout);
     assert.equal(receipt.receiptVersion, "world-sdk-v2-check/v1");
     assert.equal(receipt.complete, true);
   }
