@@ -627,9 +627,11 @@ pub fn application(comptime spec: anytype) type {
             allocator: std.mem.Allocator,
             comptime Machine: type,
             comptime site_ordinal: usize,
+            comptime expected_site_identity: []const u8,
             value: anytype,
         ) protocol.Error![]u8 {
             const Binding = externalBindingForSite(Machine, site_ordinal, externals);
+            comptime requireSiteIdentity(Binding.Site, expected_site_identity);
             if (@TypeOf(value) != Binding.Response) @compileError("World external result value has the wrong type for this binding");
             return encodeValueBounded(
                 allocator,

@@ -365,7 +365,13 @@ fn continueWithText(
     value: TextValue,
 ) !world.v1.Frame {
     const allocator = arena.allocator();
-    const result_bytes = try App.encodeExternalResult(allocator, Machine, site_ordinal, value);
+    const result_bytes = try App.encodeExternalResult(
+        allocator,
+        Machine,
+        site_ordinal,
+        Machine.EffectRow.site(site_ordinal).semantic_identity,
+        value,
+    );
     var result: world.v1.EffectResult = .{
         .request_id = parent.pending_effect.?.request_id,
         .status = .ok,

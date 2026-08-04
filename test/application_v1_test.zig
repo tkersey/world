@@ -256,7 +256,13 @@ fn okResult(
     request: world.v1.EffectRequest,
     value: anytype,
 ) !world.v1.EffectResult {
-    const bytes = try App.encodeExternalResult(allocator, Machine, site_ordinal, value);
+    const bytes = try App.encodeExternalResult(
+        allocator,
+        Machine,
+        site_ordinal,
+        Machine.EffectRow.site(site_ordinal).semantic_identity,
+        value,
+    );
     var result: world.v1.EffectResult = .{
         .request_id = request.request_id,
         .status = .ok,
@@ -334,7 +340,13 @@ test "World delegates portable schema identity to Boundary" {
 test "World external value encoder enforces its binding result limit" {
     try std.testing.expectError(
         error.LimitExceeded,
-        TightResultApp.encodeExternalResult(std.testing.allocator, RootMachine, 0, @as(u32, 41)),
+        TightResultApp.encodeExternalResult(
+            std.testing.allocator,
+            RootMachine,
+            0,
+            RootMachine.EffectRow.site(0).semantic_identity,
+            @as(u32, 41),
+        ),
     );
 }
 

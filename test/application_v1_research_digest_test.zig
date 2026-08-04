@@ -59,6 +59,7 @@ test "Research Digest v2 formats bounded research items inside compiled Machines
         allocator,
         ResearchLookupMachine,
         0,
+        ResearchLookupMachine.EffectRow.site(0).semantic_identity,
         response,
     );
     var effect_result: world.v1.EffectResult = .{
@@ -129,6 +130,7 @@ test "Research Digest v2 budget admits the maximum bounded response" {
         allocator,
         ResearchLookupMachine,
         0,
+        ResearchLookupMachine.EffectRow.site(0).semantic_identity,
         response,
     );
     var effect_result: world.v1.EffectResult = .{
