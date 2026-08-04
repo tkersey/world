@@ -10,7 +10,6 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -87,6 +86,7 @@ try {
     join(options.out, "application-template"),
     { recursive: true },
   );
+  materializeApplicationTemplate(join(options.out, "application-template"));
 
   mkdirSync(join(options.out, "conformance"), { recursive: true });
   copyFileSync(
@@ -99,7 +99,7 @@ try {
     applicationAbiVersion: 1,
     frameVersion: 1,
     effectProtocolVersion: 1,
-    releases: Object.fromEntries(RELEASES.map((release) => [release.key, release])),
+    releases: Object.fromEntries(RELEASES.map(({ key, ...release }) => [key, release])),
   });
   writeFileSync(join(options.out, "README.md"), readme());
   writeChecksums(options.out);
@@ -119,7 +119,8 @@ try {
     output: options.out,
     sdkVersion: "2.0.0",
     sourceCheckoutRequired: false,
-    complete: true,
+    validated: !options.skipCheck,
+    complete: !options.skipCheck,
   }, null, 2)}\n`);
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });
@@ -167,6 +168,19 @@ function singleDirectoryRoot(root) {
   assert.equal(entries.length, 1, "release archive must contain one root");
   assert(entries[0].isDirectory(), "release archive root must be a directory");
   return join(root, entries[0].name);
+}
+
+function materializeApplicationTemplate(root) {
+  const world = RELEASES.find((release) => release.key === "world");
+  assert(world !== undefined);
+  const zonPath = join(root, "build.zig.zon");
+  const source = readFileSync(zonPath, "utf8");
+  const materialized = source
+    .replaceAll("__WORLD_RELEASE_URL__", world.url)
+    .replaceAll("__WORLD_RELEASE_HASH__", world.packageHash);
+  assert.notEqual(materialized, source, "application template has no World release sentinels");
+  assert(!materialized.includes("__WORLD_RELEASE_"), "application template retains a World release sentinel");
+  writeFileSync(zonPath, materialized);
 }
 
 function writeChecksums(root) {
