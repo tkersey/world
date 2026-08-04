@@ -100,6 +100,7 @@ const EXPECTED_ARCHIVES = Object.freeze(Object.fromEntries(
 ));
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const options = parseArgs(process.argv.slice(2));
+options.zig = executablePath(options.zig);
 let generatedRoot = null;
 try {
   if (options.sdk === null) {
@@ -175,7 +176,7 @@ try {
       join(options.sdk, "releases", EXPECTED_RELEASES.world.name),
     );
     const packageCache = join(proofRoot, "package-cache");
-    seedPackageCache(packageCache);
+    seedPackageCache(packageCache, templateRoot);
     runCapture(options.zig, [
       "build",
       "--cache-dir",
@@ -323,7 +324,7 @@ function localizeWorldDependency(root, archive) {
   );
 }
 
-function seedPackageCache(cache) {
+function seedPackageCache(cache, cwd) {
   for (const release of Object.values(EXPECTED_RELEASES)) {
     if (release.packageHash === undefined) continue;
     const archive = join(options.sdk, "releases", release.name);
@@ -332,7 +333,7 @@ function seedPackageCache(cache) {
       "--global-cache-dir",
       cache,
       archive,
-    ]).stdout.trim();
+    ], cwd).stdout.trim();
     assert.equal(actual, release.packageHash, `${release.name} package hash mismatch`);
   }
 }
@@ -415,6 +416,13 @@ function keyValueReceipt(text) {
     assert(index > 0, `invalid receipt row: ${line}`);
     return [line.slice(0, index), line.slice(index + 1)];
   }));
+}
+
+function executablePath(command) {
+  if (command.includes("/")) return resolve(command);
+  const path = runCapture("which", [command]).stdout.trim();
+  assert(path.length > 0 && !path.includes("\n"), `cannot resolve executable: ${command}`);
+  return resolve(path);
 }
 
 function run(command, args, cwd = undefined) {
