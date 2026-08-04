@@ -150,6 +150,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const exported_boundary = exported_boundary_dep.module("boundary");
+    const exported_boundary_machine_dep = b.dependency("boundary_machine", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const exported_boundary_machine = exported_boundary_machine_dep.module("boundary");
 
     const exported_world = b.addModule("world", .{
         .root_source_file = b.path("src/world.zig"),
@@ -157,12 +162,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exported_world.addImport("boundary", exported_boundary);
+    exported_world.addImport("boundary_machine", exported_boundary_machine);
 
     const boundary_dep = b.dependency("boundary", .{
         .target = validation_target,
         .optimize = optimize,
     });
     const boundary = boundary_dep.module("boundary");
+    const boundary_machine_dep = b.dependency("boundary_machine", .{
+        .target = validation_target,
+        .optimize = optimize,
+    });
+    const boundary_machine = boundary_machine_dep.module("boundary");
     const world = if (target.result.os.tag == .freestanding) blk: {
         const validation_world = b.createModule(.{
             .root_source_file = b.path("src/world.zig"),
@@ -170,6 +181,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         });
         validation_world.addImport("boundary", boundary);
+        validation_world.addImport("boundary_machine", boundary_machine);
         break :blk validation_world;
     } else exported_world;
     const world_target_check = b.addLibrary(.{
@@ -208,12 +220,18 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
     });
     const wasm_boundary = wasm_boundary_dep.module("boundary");
+    const wasm_boundary_machine_dep = b.dependency("boundary_machine", .{
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    const wasm_boundary_machine = wasm_boundary_machine_dep.module("boundary");
     const wasm_world = b.createModule(.{
         .root_source_file = b.path("src/world.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
     });
     wasm_world.addImport("boundary", wasm_boundary);
+    wasm_world.addImport("boundary_machine", wasm_boundary_machine);
     const archive_wasm_probe = b.addExecutable(.{
         .name = "world_archive_wasm_probe",
         .root_module = b.createModule(.{
@@ -247,12 +265,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const host_boundary = host_boundary_dep.module("boundary");
+    const host_boundary_machine_dep = b.dependency("boundary_machine", .{
+        .target = b.graph.host,
+        .optimize = optimize,
+    });
+    const host_boundary_machine = host_boundary_machine_dep.module("boundary");
     const host_world = b.createModule(.{
         .root_source_file = b.path("src/world.zig"),
         .target = b.graph.host,
         .optimize = optimize,
     });
     host_world.addImport("boundary", host_boundary);
+    host_world.addImport("boundary_machine", host_boundary_machine);
     const host_fixtures = b.createModule(.{
         .root_source_file = b.path("test/fixtures.zig"),
         .target = b.graph.host,
@@ -458,6 +482,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "boundary", .module = boundary },
+            .{ .name = "boundary_machine", .module = boundary_machine },
         },
     });
     const world_module_tests = b.addTest(.{
@@ -471,6 +496,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world application v1"},
@@ -484,7 +510,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
-                .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary", .module = boundary_machine },
             },
         }),
         .filters = test_args.filters,
@@ -495,10 +521,74 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "world", .module = world },
-            .{ .name = "boundary", .module = boundary },
+            .{ .name = "boundary", .module = boundary_machine },
         },
     });
     const run_world_comptime_application_tests = addRunArtifactWithArgs(b, world_comptime_application_tests, test_args.passthrough);
+    const check_world_machine_v2_step = b.step(
+        "check-world-machine-v2",
+        "Run focused Boundary Machine ABI v2 admission and provider checks.",
+    );
+    check_world_machine_v2_step.dependOn(&run_world_comptime_application_tests.step);
+    const check_world_machine_v2_surface = b.addSystemCommand(&.{"node"});
+    check_world_machine_v2_surface.addFileArg(b.path(
+        "scripts/check_world_machine_v2_surface.mjs",
+    ));
+    check_world_machine_v2_step.dependOn(
+        &check_world_machine_v2_surface.step,
+    );
+    const check_world_machine_no_interpreter = b.addSystemCommand(&.{"node"});
+    check_world_machine_no_interpreter.addFileArg(b.path(
+        "scripts/check_world_machine_no_interpreter.mjs",
+    ));
+    const check_world_machine_no_interpreter_step = b.step(
+        "check-world-machine-no-interpreter",
+        "Prove the World Machine path delegates to Boundary without a generic interpreter.",
+    );
+    check_world_machine_no_interpreter_step.dependOn(
+        &check_world_machine_no_interpreter.step,
+    );
+    check_world_machine_v2_step.dependOn(
+        check_world_machine_no_interpreter_step,
+    );
+    const world_application_build_support = b.createModule(.{
+        .root_source_file = b.path("build_support/application.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+    });
+    const application_build_options_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/application_build_options_test.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{ .{
+                .name = "world_application_build_support",
+                .module = world_application_build_support,
+            }, .{
+                .name = "world_application_wasm_v1",
+                .module = b.createModule(.{
+                    .root_source_file = b.path("src/application_wasm_v1.zig"),
+                    .target = validation_target,
+                    .optimize = optimize,
+                }),
+            } },
+        }),
+    });
+    const run_application_build_options_tests = addRunArtifactWithArgs(
+        b,
+        application_build_options_tests,
+        test_args.passthrough,
+    );
+    const check_world_application_build_options_step = b.step(
+        "check-world-application-build-options",
+        "Reject invalid World application stack and memory envelopes.",
+    );
+    check_world_application_build_options_step.dependOn(
+        &run_application_build_options_tests.step,
+    );
+    check_world_machine_v2_step.dependOn(
+        check_world_application_build_options_step,
+    );
     const world_comptime_agent_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/application_v1_agent_fixtures.zig"),
@@ -506,12 +596,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
-                .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary", .module = boundary_machine },
             },
         }),
         .filters = test_args.filters,
     });
     const run_world_comptime_agent_tests = addRunArtifactWithArgs(b, world_comptime_agent_tests, test_args.passthrough);
+    check_world_machine_v2_step.dependOn(&run_world_comptime_agent_tests.step);
     const research_digest_application = b.createModule(.{
         .root_source_file = b.path(
             "templates/application-v1/src/application.zig",
@@ -520,7 +611,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "world", .module = world },
-            .{ .name = "boundary", .module = boundary },
+            .{ .name = "boundary", .module = boundary_machine },
         },
     });
     const research_digest_tests = b.addTest(.{
@@ -559,7 +650,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
         .imports = &.{
             .{ .name = "world", .module = wasm_world },
-            .{ .name = "boundary", .module = wasm_boundary },
+            .{ .name = "boundary", .module = wasm_boundary_machine },
         },
     });
     const one_effect_application_wasm_module = b.createModule(.{
@@ -597,6 +688,16 @@ pub fn build(b: *std.Build) void {
         "Build a World application through the public helper from a dependent package.",
     );
     check_world_external_build_helper_step.dependOn(&run_external_build_helper.step);
+    const check_world_research_digest_v2_step = b.step(
+        "check-world-research-digest-v2",
+        "Prove native and import-free wasm32 Research Digest v2 Machine-owned formatting.",
+    );
+    check_world_research_digest_v2_step.dependOn(
+        &run_research_digest_tests.step,
+    );
+    check_world_research_digest_v2_step.dependOn(
+        check_world_external_build_helper_step,
+    );
     const check_world_external_consumer = b.addSystemCommand(&.{"node"});
     check_world_external_consumer.addFileArg(b.path(
         "scripts/check_world_external_consumer.mjs",
@@ -627,6 +728,54 @@ pub fn build(b: *std.Build) void {
     );
     check_world_1_0_externality_step.dependOn(
         &check_world_1_0_externality.step,
+    );
+    const check_world_2_externality = b.addSystemCommand(&.{"node"});
+    check_world_2_externality.addFileArg(b.path(
+        "scripts/check_world_2_externality.mjs",
+    ));
+    check_world_2_externality.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+    });
+    if (b.args) |args| {
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--negative")) {
+                @panic(
+                    "use check-world-externality-v2-negative for the negative World 2 externality proof",
+                );
+            }
+        }
+        check_world_2_externality.addArgs(args);
+    }
+    const check_world_2_externality_step = b.step(
+        "check-world-2-externality",
+        "Prove World 2 through checksum-bound Boundary, host, and capability artifacts.",
+    );
+    check_world_2_externality_step.dependOn(
+        &check_world_2_externality.step,
+    );
+    const check_world_externality_v2_step = b.step(
+        "check-world-externality-v2",
+        "Run the canonical World 2 released-artifact externality proof.",
+    );
+    check_world_externality_v2_step.dependOn(
+        check_world_2_externality_step,
+    );
+    const check_world_externality_v2_negative = b.addSystemCommand(&.{"node"});
+    check_world_externality_v2_negative.addFileArg(b.path(
+        "scripts/check_world_2_externality.mjs",
+    ));
+    check_world_externality_v2_negative.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+        "--negative",
+    });
+    const check_world_externality_v2_negative_step = b.step(
+        "check-world-externality-v2-negative",
+        "Reject malformed World 2 caller archive and checksum pairs.",
+    );
+    check_world_externality_v2_negative_step.dependOn(
+        &check_world_externality_v2_negative.step,
     );
     const build_world_sdk_v1 = b.addSystemCommand(&.{"node"});
     build_world_sdk_v1.addFileArg(b.path(
@@ -664,7 +813,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
         .imports = &.{
             .{ .name = "world", .module = wasm_world },
-            .{ .name = "boundary", .module = wasm_boundary },
+            .{ .name = "boundary", .module = wasm_boundary_machine },
         },
     });
     const host_application_v1_agent_fixtures = b.createModule(.{
@@ -673,7 +822,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "world", .module = host_world },
-            .{ .name = "boundary", .module = host_boundary },
+            .{ .name = "boundary", .module = host_boundary_machine },
         },
     });
     const host_skeleton_application_selector = b.createModule(.{
@@ -815,6 +964,27 @@ pub fn build(b: *std.Build) void {
     check_world_application_wasm_step.dependOn(&run_skeleton_application_wasm.step);
     check_world_application_wasm_step.dependOn(&run_fixture_application_wasm.step);
     check_world_application_wasm_step.dependOn(check_world_external_build_helper_step);
+    const check_world_machine_native_wasm_step = b.step(
+        "check-world-machine-native-wasm",
+        "Prove native and wasm32 Boundary Machine application parity.",
+    );
+    check_world_machine_native_wasm_step.dependOn(
+        check_world_application_native_step,
+    );
+    check_world_machine_native_wasm_step.dependOn(
+        check_world_application_wasm_step,
+    );
+    check_world_machine_native_wasm_step.dependOn(
+        check_world_research_digest_v2_step,
+    );
+    const check_world_application_v1_step = b.step(
+        "check-world-application-v1",
+        "Prove the preserved World Application ABI v1 surface.",
+    );
+    check_world_application_v1_step.dependOn(check_world_application_spec_step);
+    check_world_application_v1_step.dependOn(
+        check_world_machine_native_wasm_step,
+    );
     const world_application_v1_wasm_check = b.addLibrary(.{
         .linkage = .static,
         .name = "world-application-v1-protocol-wasm-check",
@@ -832,6 +1002,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world protocol manifest"},
@@ -846,6 +1017,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"boundary world protocol compatibility"},
@@ -859,6 +1031,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world conformance corpus"},
@@ -913,6 +1086,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world adversarial codecs"},
@@ -942,6 +1116,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = host_boundary },
+                .{ .name = "boundary_machine", .module = host_boundary_machine },
             },
         }),
         .filters = &.{"world protocol release receipt"},
@@ -1043,6 +1218,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary_machine", .module = boundary_machine },
             },
         }),
         .filters = &.{"world v0 budgets"},
@@ -1423,12 +1599,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary_machine },
                 .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
             },
         }),
     });
     application_v1_incompatible_provider_test.expect_errors = .{
-        .contains = "World StaticMachine provider InitialArgs must be exactly one parent payload value",
+        .contains = "World Machine provider InitialArgs must exactly match the parent payload type",
     };
     const application_v1_provider_cycle_test = b.addTest(.{
         .root_module = b.createModule(.{
@@ -1451,7 +1628,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "world", .module = world },
-                .{ .name = "boundary", .module = boundary },
+                .{ .name = "boundary", .module = boundary_machine },
                 .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
             },
         }),
@@ -1500,6 +1677,34 @@ pub fn build(b: *std.Build) void {
     });
     application_v1_provider_state_capacity_test.expect_errors = .{
         .contains = "World application provider stack exceeds maximum_state_bytes",
+    };
+    const application_v1_site_identity_mismatch_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/application_v1_site_identity_mismatch.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "application_v1_fixtures", .module = application_v1_fixtures },
+            },
+        }),
+    });
+    application_v1_site_identity_mismatch_test.expect_errors = .{
+        .contains = "World Machine site_identity does not match the selected effect-site ordinal",
+    };
+    const application_v1_duplicate_site_identity_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/compile_fail/application_v1_duplicate_site_identity.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary_machine },
+            },
+        }),
+    });
+    application_v1_duplicate_site_identity_test.expect_errors = .{
+        .contains = "World application requires unique semantic_identity values for every reachable Machine effect site",
     };
     const application_v1_build_decl_options = b.addOptions();
     application_v1_build_decl_options.addOption(
@@ -1709,6 +1914,8 @@ pub fn build(b: *std.Build) void {
     compile_fail_step.dependOn(&application_v1_external_zero_result_limit_test.step);
     compile_fail_step.dependOn(&application_v1_external_oversized_result_limit_test.step);
     compile_fail_step.dependOn(&application_v1_provider_state_capacity_test.step);
+    compile_fail_step.dependOn(&application_v1_site_identity_mismatch_test.step);
+    compile_fail_step.dependOn(&application_v1_duplicate_site_identity_test.step);
     compile_fail_step.dependOn(&application_v1_build_decl_missing_test.step);
     compile_fail_step.dependOn(&application_v1_build_decl_value_test.step);
     compile_fail_step.dependOn(&application_v1_wasm_region_too_small_test.step);
@@ -1719,8 +1926,20 @@ pub fn build(b: *std.Build) void {
     compile_fail_step.dependOn(&appliance_zero_host_request_capacity_test.step);
     compile_fail_step.dependOn(&appliance_zero_host_reply_capacity_test.step);
     compile_fail_step.dependOn(&appliance_zero_actuation_record_capacity_test.step);
+    const check_world_application_v1_negative_step = b.step(
+        "check-world-application-v1-negative",
+        "Run malformed and compile-fail Application ABI v1 witnesses.",
+    );
+    check_world_application_v1_negative_step.dependOn(check_world_application_spec_step);
+    check_world_application_v1_negative_step.dependOn(compile_fail_step);
+    const check_world_machine_native_wasm_negative_step = b.step(
+        "check-world-machine-native-wasm-negative",
+        "Run target-neutral Machine application compile-fail witnesses.",
+    );
+    check_world_machine_native_wasm_negative_step.dependOn(compile_fail_step);
 
     const check_step = b.step("check", "Run tests, compile-fail tests, examples, and lint.");
+    check_step.dependOn(check_world_machine_v2_step);
     check_step.dependOn(check_world_application_spec_step);
     check_step.dependOn(check_world_comptime_closure_step);
     check_step.dependOn(check_world_application_native_step);
@@ -3081,6 +3300,7 @@ pub fn build(b: *std.Build) void {
             ,
         },
     };
+    var previous_serial_example_step: ?*std.Build.Step = null;
     inline for (examples) |example| {
         const exe_mod = b.createModule(.{
             .root_source_file = b.path(example.path),
@@ -3095,7 +3315,13 @@ pub fn build(b: *std.Build) void {
         if (validation_target.query.isNative()) {
             const run = addRunArtifactWithArgs(b, exe, if (b.args) |args| args else &.{});
             run.expectStdOutEqual(example.expected_stdout);
-            if (example.serial_after_tests) run.step.dependOn(test_step);
+            if (example.serial_after_tests) {
+                run.step.dependOn(test_step);
+                if (previous_serial_example_step) |previous| {
+                    run.step.dependOn(previous);
+                }
+                previous_serial_example_step = &run.step;
+            }
             run_step.dependOn(&run.step);
         } else {
             run_step.dependOn(&exe.step);

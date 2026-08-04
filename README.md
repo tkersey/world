@@ -1,18 +1,20 @@
 # World
 
-World Comptime v1 closes a Boundary `StaticMachine` graph into one portable,
-application-specific WebAssembly module:
+World 2.0 closes a comptime-known graph of Boundary Machine ABI v2 programs
+into one portable, application-specific WebAssembly module:
 
 ```text
-Boundary StaticMachine
+Boundary Machine ABI v2
   -> world.application
   -> <name>.world.wasm
 ```
 
-The module contains the root program, every statically selected provider, the
+Each Boundary program is compiled with `Program.compile`. The module contains
+the resulting root Machine, every statically selected provider Machine, the
 World step kernel, and a canonical `ApplicationManifest`. It imports nothing,
 declares bounded memory, and resumes from a portable Frame in a fresh instance.
-External authority stays in Effect protocol v1 capability packs.
+Application ABI v1 and Frame v1 remain stable; external authority stays in
+Effect protocol v1 capability packs.
 
 ## Application authoring
 

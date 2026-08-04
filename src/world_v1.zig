@@ -28,6 +28,7 @@ pub const handle = application_runtime.handle;
 pub const external = application_runtime.external;
 pub const application = application_runtime.application;
 pub const valueSchemaId = application_runtime.valueSchemaId;
+pub const siteId = application_runtime.siteId;
 pub const encodeValue = application_runtime.encodeValue;
 
 pub const WasmOptions = application_wasm.Options;

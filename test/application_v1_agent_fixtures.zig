@@ -3,6 +3,10 @@ const std = @import("std");
 const boundary = @import("boundary");
 const world = @import("world");
 
+pub const TextValue = boundary.Text(2048);
+const text_type: boundary.ir.ValueType = .{ .schema = 0 };
+const continuation_arguments = [_]boundary.ir.EdgeArgument{.@"resume"};
+
 const application_limits: world.v1.Limits = .{
     .maximum_initial_args_bytes = 64 * 1024,
     .maximum_state_bytes = 256 * 1024,
@@ -12,185 +16,137 @@ const application_limits: world.v1.Limits = .{
     .maximum_host_metadata_bytes = 8 * 1024,
     .maximum_failure_bytes = 8 * 1024,
 };
-const machine_state_limit = 64 * 1024;
 
-fn skeletonRootPlan() boundary.ir.ProgramPlan {
-    const root = boundary.ir.builder.function(0);
-    const goal = boundary.ir.builder.local(root, 0);
-    const first_decision = boundary.ir.builder.local(root, 1);
-    const tool_result = boundary.ir.builder.local(root, 2);
-    const final_decision = boundary.ir.builder.local(root, 3);
-    const instructions = [_]boundary.ir.plan.Instruction{
-        boundary.ir.builder.callOp(root, first_decision, boundary.ir.builder.op(root, 0), goal) catch unreachable,
-        boundary.ir.builder.callOp(root, tool_result, boundary.ir.builder.op(root, 1), first_decision) catch unreachable,
-        boundary.ir.builder.callOp(root, final_decision, boundary.ir.builder.op(root, 0), tool_result) catch unreachable,
-        boundary.ir.builder.returnValue(root, final_decision) catch unreachable,
-    };
-    return stringProgramPlan(
-        "world-v1-skeleton-agent",
-        0x5101,
-        1,
-        &.{
-            .{ .label = "agent", .first_op = 0, .op_count = 1 },
-            .{ .label = "toolbox", .first_op = 1, .op_count = 1 },
-        },
-        &.{
-            stringTransformOp(0, "decide"),
-            stringTransformOp(1, "call"),
-        },
-        4,
-        &instructions,
-    );
-}
+const machine_options: boundary.MachineOptions = .{
+    .maximum_frames = 16,
+    .maximum_state_bytes = 64 * 1024,
+    .maximum_machine_fuel = 4096,
+};
 
-fn fixtureRootPlan() boundary.ir.ProgramPlan {
-    const root = boundary.ir.builder.function(0);
-    const goal = boundary.ir.builder.local(root, 0);
-    const first_decision = boundary.ir.builder.local(root, 1);
-    const read_result = boundary.ir.builder.local(root, 2);
-    const second_decision = boundary.ir.builder.local(root, 3);
-    const write_result = boundary.ir.builder.local(root, 4);
-    const final_decision = boundary.ir.builder.local(root, 5);
-    const instructions = [_]boundary.ir.plan.Instruction{
-        boundary.ir.builder.callOp(root, first_decision, boundary.ir.builder.op(root, 0), goal) catch unreachable,
-        boundary.ir.builder.callOp(root, read_result, boundary.ir.builder.op(root, 1), first_decision) catch unreachable,
-        boundary.ir.builder.callOp(root, second_decision, boundary.ir.builder.op(root, 0), read_result) catch unreachable,
-        boundary.ir.builder.callOp(root, write_result, boundary.ir.builder.op(root, 2), second_decision) catch unreachable,
-        boundary.ir.builder.callOp(root, final_decision, boundary.ir.builder.op(root, 0), write_result) catch unreachable,
-        boundary.ir.builder.returnValue(root, final_decision) catch unreachable,
-    };
-    return stringProgramPlan(
-        "world-v1-fixture-agent",
-        0x5102,
-        1,
-        &.{
-            .{ .label = "agent", .first_op = 0, .op_count = 1 },
-            .{ .label = "toolbox", .first_op = 1, .op_count = 2 },
-        },
-        &.{
-            stringTransformOp(0, "decide"),
-            stringTransformOp(1, "read"),
-            stringTransformOp(1, "write"),
-        },
-        6,
-        &instructions,
-    );
-}
-
-fn pureToolboxPlan() boundary.ir.ProgramPlan {
-    const root = boundary.ir.builder.function(0);
-    const result = boundary.ir.builder.local(root, 1);
-    const instructions = [_]boundary.ir.plan.Instruction{
-        .{ .kind = .const_string, .dst = result.index, .string_literal = "actuate" },
-        boundary.ir.builder.returnValue(root, result) catch unreachable,
-    };
-    return stringProgramPlan("world-v1-skeleton-toolbox", 0x5201, 1, &.{}, &.{}, 2, &instructions);
-}
-
-fn fileProviderPlan(comptime label: []const u8, comptime ir_hash: u64, comptime requirement: []const u8, comptime operation: []const u8) boundary.ir.ProgramPlan {
-    const root = boundary.ir.builder.function(0);
-    const payload = boundary.ir.builder.local(root, 0);
-    const result = boundary.ir.builder.local(root, 1);
-    const instructions = [_]boundary.ir.plan.Instruction{
-        boundary.ir.builder.callOp(root, result, boundary.ir.builder.op(root, 0), payload) catch unreachable,
-        boundary.ir.builder.returnValue(root, result) catch unreachable,
-    };
-    return stringProgramPlan(
-        label,
-        ir_hash,
-        1,
-        &.{.{ .label = requirement, .first_op = 0, .op_count = 1 }},
-        &.{stringTransformOp(0, operation)},
-        2,
-        &instructions,
-    );
-}
-
-fn stringTransformOp(requirement_index: u32, comptime name: []const u8) boundary.ir.plan.Op {
-    return .{
-        .requirement_index = requirement_index,
-        .op_name = name,
-        .mode = .transform,
-        .payload_codec = .string,
-        .resume_codec = .string,
+fn TextEffect(
+    comptime source_id: u32,
+    comptime identity: []const u8,
+) type {
+    return struct {
+        pub const id = source_id;
+        pub const semantic_identity = identity;
+        pub const Payload = TextValue;
+        pub const Resume = TextValue;
     };
 }
 
-fn stringProgramPlan(
-    comptime label: []const u8,
-    ir_hash: u64,
-    parameter_count: u32,
-    requirements: []const boundary.ir.plan.Requirement,
-    ops: []const boundary.ir.plan.Op,
-    local_count: u32,
-    instructions: []const boundary.ir.plan.Instruction,
-) boundary.ir.ProgramPlan {
-    const root = boundary.ir.builder.function(0);
-    const functions = [_]boundary.ir.plan.Function{.{
-        .symbol_name = "run",
-        .value_codec = .string,
-        .result_codec = .string,
-        .parameter_count = parameter_count,
-        .first_requirement = 0,
-        .requirement_count = @intCast(requirements.len),
-        .first_output = 0,
-        .output_count = 0,
-        .first_local = 0,
-        .local_count = local_count,
-        .first_block = 0,
-        .entry_block = 0,
-        .block_count = 1,
-        .first_instruction = 0,
-        .instruction_count = @intCast(instructions.len),
+const SkeletonModel0 = TextEffect(0, "agent.model.decide.first.v1");
+const SkeletonToolbox = TextEffect(1, "agent.toolbox.call.v1");
+const SkeletonModel1 = TextEffect(2, "agent.model.decide.second.v1");
+
+const skeleton_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{ .target = 1, .arguments = &continuation_arguments },
+            .resume_type = text_type,
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 1,
+            .request_values = &.{1},
+            .continuation = .{ .target = 2, .arguments = &continuation_arguments },
+            .resume_type = text_type,
+        } },
+    },
+    .{
+        .id = 2,
+        .parameters = &.{2},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 2,
+            .request_values = &.{2},
+            .continuation = .{ .target = 3, .arguments = &continuation_arguments },
+            .resume_type = text_type,
+        } },
+    },
+    .{
+        .id = 3,
+        .parameters = &.{3},
+        .terminator = .{ .return_value = 3 },
+    },
+};
+
+const SkeletonBody = struct {
+    pub const InitialArgs = TextValue;
+    pub const Result = TextValue;
+    pub const Failure = enum { rejected };
+    pub const effect_sites = .{ SkeletonModel0, SkeletonToolbox, SkeletonModel1 };
+    pub const schema_types = .{TextValue};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "world-v2-skeleton-agent",
+        .value_types = &.{ text_type, text_type, text_type, text_type },
+        .blocks = &skeleton_blocks,
+        .entry = 0,
+        .result_type = text_type,
+    };
+};
+
+const IdentityBody = struct {
+    const blocks = [_]boundary.ir.Block{.{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .return_value = 0 },
     }};
-    const blocks = [_]boundary.ir.plan.Block{.{
-        .first_instruction = 0,
-        .instruction_count = @intCast(instructions.len),
-        .terminator_index = 0,
-    }};
-    const terminators = [_]boundary.ir.plan.Terminator{.{ .kind = .return_value }};
-    const locals = [_]boundary.ir.plan.Local{.{ .codec = .string }} ** 8;
-    return boundary.ir.builder.finish(.{
-        .label = label,
-        .ir_hash = ir_hash,
-        .entry = root,
-        .functions = &functions,
-        .requirements = requirements,
-        .ops = ops,
-        .outputs = &.{},
-        .locals = locals[0..local_count],
+
+    pub const InitialArgs = TextValue;
+    pub const Result = TextValue;
+    pub const Failure = enum { rejected };
+    pub const effect_sites = .{};
+    pub const schema_types = .{TextValue};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "world-v2-identity-provider",
+        .value_types = &.{text_type},
         .blocks = &blocks,
-        .terminators = &terminators,
-        .instructions = instructions,
-    }) catch unreachable;
-}
-
-const SkeletonRootBody = struct {
-    pub const compiled_plan = skeletonRootPlan();
+        .entry = 0,
+        .result_type = text_type,
+    };
 };
-const SkeletonRootProgram = boundary.program("world-v1-skeleton-agent", struct {}, SkeletonRootBody);
-pub const SkeletonRootMachine = boundary.staticMachine(SkeletonRootProgram, .{ .maximum_state_bytes = machine_state_limit });
-pub const SkeletonModelSite0 = SkeletonRootMachine.EffectRow.operationSite("agent", "decide", 0);
-pub const SkeletonModelSite1 = SkeletonRootMachine.EffectRow.operationSite("agent", "decide", 1);
-pub const SkeletonToolboxSite = SkeletonRootMachine.EffectRow.operationSite("toolbox", "call", 0);
 
-const PureToolboxBody = struct {
-    pub const compiled_plan = pureToolboxPlan();
-};
-const PureToolboxProgram = boundary.program("world-v1-skeleton-toolbox", struct {}, PureToolboxBody);
-pub const PureToolboxMachine = boundary.staticMachine(PureToolboxProgram, .{ .maximum_state_bytes = machine_state_limit });
+pub const SkeletonRootMachine = boundary.program(
+    "world-v2-skeleton-agent",
+    SkeletonBody,
+).compile(machine_options);
+pub const SkeletonModelSite0 = SkeletonRootMachine.EffectRow.site(0);
+pub const SkeletonToolboxSite = SkeletonRootMachine.EffectRow.site(1);
+pub const SkeletonModelSite1 = SkeletonRootMachine.EffectRow.site(2);
+
+pub const PureToolboxMachine = boundary.program(
+    "world-v2-skeleton-toolbox",
+    IdentityBody,
+).compile(machine_options);
 
 pub const SkeletonApp = world.application(.{
     .name = "skeleton-agent",
-    .version = "1.0.0",
+    .version = "2.0.0",
     .root = SkeletonRootMachine,
-    .handlers = .{world.v1.handle(SkeletonToolboxSite, PureToolboxMachine)},
+    .handlers = .{world.v1.handle(
+        SkeletonRootMachine,
+        1,
+        "agent.toolbox.call.v1",
+        PureToolboxMachine,
+    )},
     .external = .{
-        world.v1.external(SkeletonModelSite0, .{
+        world.v1.external(SkeletonRootMachine, 0, .{
+            .site_identity = "agent.model.decide.first.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
-        world.v1.external(SkeletonModelSite1, .{
+        world.v1.external(SkeletonRootMachine, 2, .{
+            .site_identity = "agent.model.decide.second.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
@@ -198,57 +154,195 @@ pub const SkeletonApp = world.application(.{
     .limits = application_limits,
 });
 
-const FixtureRootBody = struct {
-    pub const compiled_plan = fixtureRootPlan();
-};
-const FixtureRootProgram = boundary.program("world-v1-fixture-agent", struct {}, FixtureRootBody);
-pub const FixtureRootMachine = boundary.staticMachine(FixtureRootProgram, .{ .maximum_state_bytes = machine_state_limit });
-pub const FixtureModelSite0 = FixtureRootMachine.EffectRow.operationSite("agent", "decide", 0);
-pub const FixtureModelSite1 = FixtureRootMachine.EffectRow.operationSite("agent", "decide", 1);
-pub const FixtureModelSite2 = FixtureRootMachine.EffectRow.operationSite("agent", "decide", 2);
-pub const FixtureReadSite = FixtureRootMachine.EffectRow.operationSite("toolbox", "read", 0);
-pub const FixtureWriteSite = FixtureRootMachine.EffectRow.operationSite("toolbox", "write", 0);
+const FixtureModel0 = TextEffect(0, "agent.model.decide.first.v1");
+const FixtureRead = TextEffect(1, "agent.toolbox.read.v1");
+const FixtureModel1 = TextEffect(2, "agent.model.decide.second.v1");
+const FixtureWrite = TextEffect(3, "agent.toolbox.write.v1");
+const FixtureModel2 = TextEffect(4, "agent.model.decide.third.v1");
 
-const ReadProviderBody = struct {
-    pub const compiled_plan = fileProviderPlan("world-v1-file-read-provider", 0x5202, "file", "read");
+const fixture_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{ .target = 1, .arguments = &continuation_arguments },
+            .resume_type = text_type,
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 1,
+            .request_values = &.{1},
+            .continuation = .{ .target = 2, .arguments = &continuation_arguments },
+            .resume_type = text_type,
+        } },
+    },
+    .{
+        .id = 2,
+        .parameters = &.{2},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 2,
+            .request_values = &.{2},
+            .continuation = .{ .target = 3, .arguments = &continuation_arguments },
+            .resume_type = text_type,
+        } },
+    },
+    .{
+        .id = 3,
+        .parameters = &.{3},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 3,
+            .request_values = &.{3},
+            .continuation = .{ .target = 4, .arguments = &continuation_arguments },
+            .resume_type = text_type,
+        } },
+    },
+    .{
+        .id = 4,
+        .parameters = &.{4},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 4,
+            .request_values = &.{4},
+            .continuation = .{ .target = 5, .arguments = &continuation_arguments },
+            .resume_type = text_type,
+        } },
+    },
+    .{
+        .id = 5,
+        .parameters = &.{5},
+        .terminator = .{ .return_value = 5 },
+    },
 };
-const ReadProviderProgram = boundary.program("world-v1-file-read-provider", struct {}, ReadProviderBody);
-pub const ReadProviderMachine = boundary.staticMachine(ReadProviderProgram, .{ .maximum_state_bytes = machine_state_limit });
-pub const FileReadSite = ReadProviderMachine.EffectRow.operationSite("file", "read", 0);
 
-const WriteProviderBody = struct {
-    pub const compiled_plan = fileProviderPlan("world-v1-file-write-provider", 0x5203, "file", "write");
+const FixtureBody = struct {
+    pub const InitialArgs = TextValue;
+    pub const Result = TextValue;
+    pub const Failure = enum { rejected };
+    pub const effect_sites = .{ FixtureModel0, FixtureRead, FixtureModel1, FixtureWrite, FixtureModel2 };
+    pub const schema_types = .{TextValue};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "world-v2-fixture-agent",
+        .value_types = &.{ text_type, text_type, text_type, text_type, text_type, text_type },
+        .blocks = &fixture_blocks,
+        .entry = 0,
+        .result_type = text_type,
+    };
 };
-const WriteProviderProgram = boundary.program("world-v1-file-write-provider", struct {}, WriteProviderBody);
-pub const WriteProviderMachine = boundary.staticMachine(WriteProviderProgram, .{ .maximum_state_bytes = machine_state_limit });
-pub const FileWriteSite = WriteProviderMachine.EffectRow.operationSite("file", "write", 0);
+
+fn ExternalTextProviderBody(
+    comptime label: []const u8,
+    comptime Site: type,
+) type {
+    return struct {
+        const blocks = [_]boundary.ir.Block{
+            .{
+                .id = 0,
+                .parameters = &.{0},
+                .terminator = .{ .@"suspend" = .{
+                    .kind = .effect,
+                    .site_id = 0,
+                    .request_values = &.{0},
+                    .continuation = .{ .target = 1, .arguments = &continuation_arguments },
+                    .resume_type = text_type,
+                } },
+            },
+            .{
+                .id = 1,
+                .parameters = &.{1},
+                .terminator = .{ .return_value = 1 },
+            },
+        };
+
+        pub const InitialArgs = TextValue;
+        pub const Result = TextValue;
+        pub const Failure = enum { rejected };
+        pub const effect_sites = .{Site};
+        pub const schema_types = .{TextValue};
+        pub const control_ir: boundary.ir.Program = .{
+            .label = label,
+            .value_types = &.{ text_type, text_type },
+            .blocks = &blocks,
+            .entry = 0,
+            .result_type = text_type,
+        };
+    };
+}
+
+const FileRead = TextEffect(0, "host.file.read.v1");
+const FileWrite = TextEffect(0, "host.file.write.v1");
+
+pub const FixtureRootMachine = boundary.program(
+    "world-v2-fixture-agent",
+    FixtureBody,
+).compile(machine_options);
+pub const FixtureModelSite0 = FixtureRootMachine.EffectRow.site(0);
+pub const FixtureReadSite = FixtureRootMachine.EffectRow.site(1);
+pub const FixtureModelSite1 = FixtureRootMachine.EffectRow.site(2);
+pub const FixtureWriteSite = FixtureRootMachine.EffectRow.site(3);
+pub const FixtureModelSite2 = FixtureRootMachine.EffectRow.site(4);
+
+pub const ReadProviderMachine = boundary.program(
+    "world-v2-file-read-provider",
+    ExternalTextProviderBody("world-v2-file-read-provider", FileRead),
+).compile(machine_options);
+pub const FileReadSite = ReadProviderMachine.EffectRow.site(0);
+
+pub const WriteProviderMachine = boundary.program(
+    "world-v2-file-write-provider",
+    ExternalTextProviderBody("world-v2-file-write-provider", FileWrite),
+).compile(machine_options);
+pub const FileWriteSite = WriteProviderMachine.EffectRow.site(0);
 
 pub const FixtureApp = world.application(.{
     .name = "fixture-agent",
-    .version = "1.0.0",
+    .version = "2.0.0",
     .root = FixtureRootMachine,
     .handlers = .{
-        world.v1.handle(FixtureReadSite, ReadProviderMachine),
-        world.v1.handle(FixtureWriteSite, WriteProviderMachine),
+        world.v1.handle(
+            FixtureRootMachine,
+            1,
+            "agent.toolbox.read.v1",
+            ReadProviderMachine,
+        ),
+        world.v1.handle(
+            FixtureRootMachine,
+            3,
+            "agent.toolbox.write.v1",
+            WriteProviderMachine,
+        ),
     },
     .external = .{
-        world.v1.external(FixtureModelSite0, .{
+        world.v1.external(FixtureRootMachine, 0, .{
+            .site_identity = "agent.model.decide.first.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
-        world.v1.external(FixtureModelSite1, .{
+        world.v1.external(FixtureRootMachine, 2, .{
+            .site_identity = "agent.model.decide.second.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
-        world.v1.external(FixtureModelSite2, .{
+        world.v1.external(FixtureRootMachine, 4, .{
+            .site_identity = "agent.model.decide.third.v1",
             .interface = "agent.model.decide.v1",
             .authority = world.v1.Authority.model,
         }),
-        world.v1.external(FileReadSite, .{
+        world.v1.external(ReadProviderMachine, 0, .{
+            .site_identity = "host.file.read.v1",
             .interface = "host.file.read.v1",
             .authority = world.v1.Authority.file_read,
         }),
-        world.v1.external(FileWriteSite, .{
+        world.v1.external(WriteProviderMachine, 0, .{
+            .site_identity = "host.file.write.v1",
             .interface = "host.file.write.v1",
             .authority = world.v1.Authority.file_write,
         }),
@@ -262,15 +356,21 @@ pub const WasmOptions: world.v1.WasmOptions = .{
     .scratch_capacity = 8 * 1024 * 1024,
 };
 
-fn continueWithString(
+fn continueWithText(
     comptime App: type,
-    comptime Site: type,
+    comptime Machine: type,
+    comptime site_ordinal: usize,
     arena: *std.heap.ArenaAllocator,
     parent: world.v1.Frame,
-    value: []const u8,
+    value: TextValue,
 ) !world.v1.Frame {
     const allocator = arena.allocator();
-    const result_bytes = try App.encodeExternalResult(allocator, Site, value);
+    const result_bytes = try App.encodeExternalResult(
+        allocator,
+        Machine,
+        site_ordinal,
+        value,
+    );
     var result: world.v1.EffectResult = .{
         .request_id = parent.pending_effect.?.request_id,
         .status = .ok,
@@ -289,10 +389,9 @@ fn continueWithString(
     });
 }
 
-fn expectStringPayload(allocator: std.mem.Allocator, frame: world.v1.Frame, expected: []const u8) !void {
-    const encoded = try world.v1.encodeValue(allocator, expected);
-    defer allocator.free(encoded);
-    try std.testing.expectEqualSlices(u8, encoded, frame.pending_effect.?.payload_bytes);
+fn expectTextPayload(frame: world.v1.Frame, expected: []const u8) !void {
+    const decoded = try boundary.schema.decodeExact(TextValue, frame.pending_effect.?.payload_bytes);
+    try std.testing.expectEqualStrings(expected, try decoded.slice());
 }
 
 test "skeleton application closes toolbox and completes through two model effects" {
@@ -302,61 +401,61 @@ test "skeleton application closes toolbox and completes through two model effect
     try std.testing.expectEqual(@as(usize, 1), SkeletonApp.internal_handler_ids.len);
     try std.testing.expectEqual(@as(usize, 2), SkeletonApp.residual_effect_row.len);
     for (SkeletonApp.residual_effect_row) |effect| {
-        try std.testing.expect(effect.site_id != SkeletonToolboxSite.canonical_fingerprint);
+        try std.testing.expect(effect.site_id != world.v1.siteId(SkeletonRootMachine, 1));
     }
-    const args = try SkeletonApp.encodeInitialArgs(allocator, .{@as([]const u8, "goal=invoke")});
+    const args = try SkeletonApp.encodeInitialArgs(allocator, try TextValue.fromSlice("goal=invoke"));
 
     const first = try SkeletonApp.initialFrame(&arena, args, 100);
-    try std.testing.expectEqual(SkeletonModelSite0.canonical_fingerprint, first.pending_effect.?.site_id);
-    try expectStringPayload(allocator, first, "goal=invoke");
+    try std.testing.expectEqual(world.v1.siteId(SkeletonRootMachine, 0), first.pending_effect.?.site_id);
+    try expectTextPayload(first, "goal=invoke");
 
-    const second = try continueWithString(SkeletonApp, SkeletonModelSite0, &arena, first, "actuate");
-    try std.testing.expectEqual(SkeletonModelSite1.canonical_fingerprint, second.pending_effect.?.site_id);
-    try expectStringPayload(allocator, second, "actuate");
+    const second = try continueWithText(SkeletonApp, SkeletonRootMachine, 0, &arena, first, try TextValue.fromSlice("actuate"));
+    try std.testing.expectEqual(world.v1.siteId(SkeletonRootMachine, 2), second.pending_effect.?.site_id);
+    try expectTextPayload(second, "actuate");
     try std.testing.expectEqual(@as(u64, 1), second.resource_counters.internal_handler_calls);
 
-    const completed = try continueWithString(SkeletonApp, SkeletonModelSite1, &arena, second, "final=actuate skeleton complete");
+    const completed = try continueWithText(SkeletonApp, SkeletonRootMachine, 2, &arena, second, try TextValue.fromSlice("final=actuate skeleton complete"));
     try std.testing.expectEqual(world.v1.FrameStatus.completed, completed.status);
     var result = try SkeletonApp.decodeFinalResult(allocator, completed);
     defer result.deinit();
-    try std.testing.expectEqualStrings("final=actuate skeleton complete", result.value);
+    try std.testing.expectEqualStrings("final=actuate skeleton complete", try result.value.slice());
 }
 
-test "fixture application exposes model read write model sequence through static providers" {
+test "fixture application exposes model read write model sequence through compiled providers" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
     try std.testing.expectEqual(@as(usize, 2), FixtureApp.internal_handler_ids.len);
     try std.testing.expectEqual(@as(usize, 5), FixtureApp.residual_effect_row.len);
     for (FixtureApp.residual_effect_row) |effect| {
-        try std.testing.expect(effect.site_id != FixtureReadSite.canonical_fingerprint);
-        try std.testing.expect(effect.site_id != FixtureWriteSite.canonical_fingerprint);
+        try std.testing.expect(effect.site_id != world.v1.siteId(FixtureRootMachine, 1));
+        try std.testing.expect(effect.site_id != world.v1.siteId(FixtureRootMachine, 3));
     }
-    const args = try FixtureApp.encodeInitialArgs(allocator, .{@as([]const u8, "goal=fixture")});
+    const args = try FixtureApp.encodeInitialArgs(allocator, try TextValue.fromSlice("goal=fixture"));
 
     const frame0 = try FixtureApp.initialFrame(&arena, args, 100);
-    try std.testing.expectEqual(FixtureModelSite0.canonical_fingerprint, frame0.pending_effect.?.site_id);
+    try std.testing.expectEqual(world.v1.siteId(FixtureRootMachine, 0), frame0.pending_effect.?.site_id);
 
-    const frame1 = try continueWithString(FixtureApp, FixtureModelSite0, &arena, frame0, "fixture-input.txt");
-    try std.testing.expectEqual(FileReadSite.canonical_fingerprint, frame1.pending_effect.?.site_id);
-    try expectStringPayload(allocator, frame1, "fixture-input.txt");
+    const frame1 = try continueWithText(FixtureApp, FixtureRootMachine, 0, &arena, frame0, try TextValue.fromSlice("fixture-input.txt"));
+    try std.testing.expectEqual(world.v1.siteId(ReadProviderMachine, 0), frame1.pending_effect.?.site_id);
+    try expectTextPayload(frame1, "fixture-input.txt");
 
-    const frame2 = try continueWithString(FixtureApp, FileReadSite, &arena, frame1, "rewrite this file through the agent loop\n");
-    try std.testing.expectEqual(FixtureModelSite1.canonical_fingerprint, frame2.pending_effect.?.site_id);
-    try expectStringPayload(allocator, frame2, "rewrite this file through the agent loop\n");
+    const frame2 = try continueWithText(FixtureApp, ReadProviderMachine, 0, &arena, frame1, try TextValue.fromSlice("rewrite this file through the agent loop\n"));
+    try std.testing.expectEqual(world.v1.siteId(FixtureRootMachine, 2), frame2.pending_effect.?.site_id);
+    try expectTextPayload(frame2, "rewrite this file through the agent loop\n");
 
-    const frame3 = try continueWithString(FixtureApp, FixtureModelSite1, &arena, frame2, "fixture-output.txt\nactuate updated the fixture");
-    try std.testing.expectEqual(FileWriteSite.canonical_fingerprint, frame3.pending_effect.?.site_id);
-    try expectStringPayload(allocator, frame3, "fixture-output.txt\nactuate updated the fixture");
+    const frame3 = try continueWithText(FixtureApp, FixtureRootMachine, 2, &arena, frame2, try TextValue.fromSlice("fixture-output.txt\nactuate updated the fixture"));
+    try std.testing.expectEqual(world.v1.siteId(WriteProviderMachine, 0), frame3.pending_effect.?.site_id);
+    try expectTextPayload(frame3, "fixture-output.txt\nactuate updated the fixture");
 
-    const frame4 = try continueWithString(FixtureApp, FileWriteSite, &arena, frame3, "write=ok");
-    try std.testing.expectEqual(FixtureModelSite2.canonical_fingerprint, frame4.pending_effect.?.site_id);
-    try expectStringPayload(allocator, frame4, "write=ok");
+    const frame4 = try continueWithText(FixtureApp, WriteProviderMachine, 0, &arena, frame3, try TextValue.fromSlice("write=ok"));
+    try std.testing.expectEqual(world.v1.siteId(FixtureRootMachine, 4), frame4.pending_effect.?.site_id);
+    try expectTextPayload(frame4, "write=ok");
 
-    const completed = try continueWithString(FixtureApp, FixtureModelSite2, &arena, frame4, "final=fixture updated");
+    const completed = try continueWithText(FixtureApp, FixtureRootMachine, 4, &arena, frame4, try TextValue.fromSlice("final=fixture updated"));
     try std.testing.expectEqual(world.v1.FrameStatus.completed, completed.status);
     var result = try FixtureApp.decodeFinalResult(allocator, completed);
     defer result.deinit();
-    try std.testing.expectEqualStrings("final=fixture updated", result.value);
+    try std.testing.expectEqualStrings("final=fixture updated", try result.value.slice());
     try std.testing.expectEqual(@as(u64, 2), completed.resource_counters.internal_handler_calls);
 }

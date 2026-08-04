@@ -1,5 +1,5 @@
 const std = @import("std");
-const boundary = @import("boundary");
+const boundary = @import("boundary_machine");
 const protocol = @import("application_v1.zig");
 
 pub const Authority = enum(u6) {
@@ -16,7 +16,6 @@ pub const Authority = enum(u6) {
 
 pub const ResponseMode = enum {
     @"resume",
-    return_now,
 };
 
 const BindingKind = enum {
@@ -24,25 +23,49 @@ const BindingKind = enum {
     external_effect,
 };
 
-pub fn handle(comptime SiteType: type, comptime ProviderType: type) type {
-    requireOperationSite(SiteType);
-    requireStaticMachine(ProviderType);
+pub fn handle(
+    comptime ParentMachine: type,
+    comptime site_ordinal: usize,
+    comptime expected_site_identity: []const u8,
+    comptime ProviderType: type,
+) type {
+    requireBoundaryMachine(ParentMachine);
+    requireBoundaryMachine(ProviderType);
+    const SiteType = ParentMachine.EffectRow.site(site_ordinal);
+    requireSiteIdentity(SiteType, expected_site_identity);
     return struct {
         pub const binding_kind = BindingKind.internal_machine;
+        pub const Owner = ParentMachine;
+        pub const site_index: usize = site_ordinal;
+        pub const site_identity = expected_site_identity;
+        pub const site_occurrence_digest = siteOccurrenceDigest(ParentMachine, site_ordinal);
         pub const Site = SiteType;
         pub const Provider = ProviderType;
     };
 }
 
-pub fn external(comptime SiteType: type, comptime config: anytype) type {
+pub fn external(
+    comptime OwnerMachine: type,
+    comptime site_ordinal: usize,
+    comptime config: anytype,
+) type {
     @setEvalBranchQuota(1_000_000);
-    requireOperationSite(SiteType);
+    requireBoundaryMachine(OwnerMachine);
+    const SiteType = OwnerMachine.EffectRow.site(site_ordinal);
+    if (!@hasField(@TypeOf(config), "site_identity")) {
+        @compileError("world.external requires the expected Machine site_identity");
+    }
+    const expected_site_identity: []const u8 = config.site_identity;
+    requireSiteIdentity(SiteType, expected_site_identity);
     if (!@hasField(@TypeOf(config), "interface")) {
         @compileError("world.external requires an interface label");
     }
     const interface_label: []const u8 = config.interface;
     if (interface_label.len == 0) @compileError("world.external interface labels must be non-empty");
-    const mode: ResponseMode = if (@hasField(@TypeOf(config), "response_mode")) config.response_mode else .@"resume";
+    const mode: ResponseMode = if (@hasField(@TypeOf(config), "response_mode"))
+        config.response_mode
+    else
+        .@"resume";
     const statuses: protocol.AllowedStatuses = if (@hasField(@TypeOf(config), "allowed_statuses")) config.allowed_statuses else .{};
     const requirements: u64 = if (@hasField(@TypeOf(config), "authority_requirements"))
         config.authority_requirements
@@ -55,6 +78,10 @@ pub fn external(comptime SiteType: type, comptime config: anytype) type {
 
     return struct {
         pub const binding_kind = BindingKind.external_effect;
+        pub const Owner = OwnerMachine;
+        pub const site_index: usize = site_ordinal;
+        pub const site_identity = expected_site_identity;
+        pub const site_occurrence_digest = siteOccurrenceDigest(OwnerMachine, site_ordinal);
         pub const Site = SiteType;
         pub const interface = interface_label;
         pub const interface_id = blk: {
@@ -66,7 +93,7 @@ pub fn external(comptime SiteType: type, comptime config: anytype) type {
         pub const authority_requirements = requirements;
         pub const maximum_attempts = maximum_attempt_count;
         pub const configured_maximum_result_bytes = maximum_result_bytes;
-        pub const Response = responseType(SiteType, mode);
+        pub const Response = SiteType.Resume;
     };
 }
 
@@ -74,67 +101,63 @@ fn authorityMask(authority: Authority) u64 {
     return @as(u64, 1) << @intFromEnum(authority);
 }
 
-fn responseType(comptime Site: type, comptime mode: ResponseMode) type {
-    return switch (mode) {
-        .@"resume" => Site.Resume,
-        .return_now => Site.Result,
-    };
-}
-
-fn requireOperationSite(comptime Site: type) void {
-    if (!@hasDecl(Site, "kind") or Site.kind != .operation or
-        !@hasDecl(Site, "Owner") or !@hasDecl(Site, "index") or
-        !@hasDecl(Site, "canonical_fingerprint") or !@hasDecl(Site, "Payload") or
-        !@hasDecl(Site, "Resume") or !@hasDecl(Site, "Result"))
-    {
-        @compileError("World application bindings require a Boundary StaticMachine operation site");
+fn requireSiteIdentity(
+    comptime Site: type,
+    comptime expected_site_identity: []const u8,
+) void {
+    if (expected_site_identity.len == 0) {
+        @compileError("World Machine site_identity must be non-empty");
+    }
+    if (!std.mem.eql(u8, expected_site_identity, Site.semantic_identity)) {
+        @compileError("World Machine site_identity does not match the selected effect-site ordinal");
     }
 }
 
-fn requireStaticMachine(comptime Machine: type) void {
-    if (!@hasDecl(Machine, "abi_version") or Machine.abi_version != 1 or
+fn requireBoundaryMachine(comptime Machine: type) void {
+    if (!@hasDecl(Machine, "abi_version") or Machine.abi_version != 2 or
         !@hasDecl(Machine, "State") or !@hasDecl(Machine, "InitialArgs") or
         !@hasDecl(Machine, "Result") or !@hasDecl(Machine, "EffectRow") or
         !@hasDecl(Machine, "Manifest") or !@hasDecl(Machine, "initialState") or
-        !@hasDecl(Machine, "reduce") or !@hasDecl(Machine, "encodeState") or
-        !@hasDecl(Machine, "decodeState"))
+        !@hasDecl(Machine, "step") or !@hasDecl(Machine, "current") or
+        !@hasDecl(Machine, "prepareResume") or !@hasDecl(Machine, "resume") or
+        !@hasDecl(Machine, "deinitPreparedResume") or
+        !@hasDecl(Machine, "encodeState") or !@hasDecl(Machine, "decodeState") or
+        !@hasDecl(Machine, "deinitState"))
     {
-        @compileError("world.application requires Boundary StaticMachine ABI v1 types");
+        @compileError("world.application requires Boundary Machine ABI v2 types");
     }
 }
 
-fn bindingTargets(comptime Binding: type, comptime Site: type) bool {
-    return Binding.Site.Owner == Site.Owner and
-        Binding.Site.index == Site.index and
-        Binding.Site.canonical_fingerprint == Site.canonical_fingerprint;
+fn bindingTargets(
+    comptime Binding: type,
+    comptime Machine: type,
+    comptime site_ordinal: usize,
+) bool {
+    return Binding.Owner == Machine and Binding.site_index == site_ordinal;
 }
 
-fn externalBindingForSite(comptime Site: type, comptime bindings: anytype) type {
+fn externalBindingForSite(
+    comptime Machine: type,
+    comptime site_ordinal: usize,
+    comptime bindings: anytype,
+) type {
     inline for (bindings) |Binding| {
-        if (bindingTargets(Binding, Site)) return Binding;
+        if (bindingTargets(Binding, Machine, site_ordinal)) return Binding;
     }
     @compileError("World application has no external binding for this site");
-}
-
-fn machineOwnsSite(comptime Machine: type, comptime Site: type) bool {
-    if (Machine.EffectRow.Owner != Site.Owner) return false;
-    if (Site.index >= Machine.EffectRow.operation_site_count) return false;
-    const owned = Machine.EffectRow.siteByIndex(Site.index);
-    return owned.canonical_fingerprint == Site.canonical_fingerprint;
 }
 
 fn validateProviderCompatibility(comptime Binding: type) void {
     const Site = Binding.Site;
     const Provider = Binding.Provider;
-    if (!Site.may_resume) {
-        @compileError("World StaticMachine providers require a resumable parent operation site");
+    if (Site.response_mode != .single_resume) {
+        @compileError("World Machine providers require a single-resume parent effect site");
     }
-    const args = @typeInfo(Provider.InitialArgs).@"struct";
-    if (!args.is_tuple or args.fields.len != 1 or args.fields[0].type != Site.Payload) {
-        @compileError("World StaticMachine provider InitialArgs must be exactly one parent payload value");
+    if (Provider.InitialArgs != Site.Payload) {
+        @compileError("World Machine provider InitialArgs must exactly match the parent payload type");
     }
     if (Provider.Result != Site.Resume) {
-        @compileError("World StaticMachine provider Result must exactly match the parent resume type");
+        @compileError("World Machine provider Result must exactly match the parent resume type");
     }
 }
 
@@ -142,13 +165,10 @@ fn validateExternalCompatibility(
     comptime Binding: type,
     comptime limits: protocol.Limits,
 ) void {
-    switch (Binding.response_mode) {
-        .@"resume" => if (!Binding.Site.may_resume) {
-            @compileError("World external resume binding targets an operation that cannot resume");
-        },
-        .return_now => if (!Binding.Site.may_return_now) {
-            @compileError("World external return_now binding targets an operation that cannot return immediately");
-        },
+    if (Binding.response_mode != .@"resume" or
+        Binding.Site.response_mode != .single_resume)
+    {
+        @compileError("World Machine external bindings require single-resume effect sites");
     }
     if (Binding.maximum_attempts == 0) @compileError("World external maximum_attempts must be positive");
     if (Binding.configured_maximum_result_bytes) |maximum| {
@@ -188,20 +208,20 @@ fn validateApplicationSpec(
     comptime externals: anytype,
     comptime limits: protocol.Limits,
 ) void {
-    requireStaticMachine(Root);
+    requireBoundaryMachine(Root);
     limits.validate() catch @compileError("World application limits are invalid");
     validateMachine(Root, handlers, externals, limits, 0, .{});
     inline for (handlers) |Binding| {
         if (Binding.binding_kind != .internal_machine) @compileError("World handlers contains a non-handler binding");
         validateProviderCompatibility(Binding);
-        if (!siteReachable(Root, Binding.Site, handlers, limits, 0, .{})) {
+        if (!siteReachable(Root, Binding.Owner, Binding.site_index, handlers, limits, 0, .{})) {
             @compileError("World handler binding targets a site unreachable from the root machine");
         }
     }
     inline for (externals) |Binding| {
         if (Binding.binding_kind != .external_effect) @compileError("World external contains a non-external binding");
         validateExternalCompatibility(Binding, limits);
-        if (!siteReachable(Root, Binding.Site, handlers, limits, 0, .{})) {
+        if (!siteReachable(Root, Binding.Owner, Binding.site_index, handlers, limits, 0, .{})) {
             @compileError("World external binding targets a site unreachable from the root machine");
         }
     }
@@ -220,10 +240,9 @@ fn maximumMachineStackBytes(
     comptime handlers: anytype,
 ) u128 {
     comptime var maximum_child_bytes: u128 = 0;
-    inline for (Machine.EffectRow.operation_site_metadata) |metadata| {
-        const Site = Machine.EffectRow.siteByIndex(metadata.index);
+    inline for (0..Machine.EffectRow.operation_site_count) |site_ordinal| {
         inline for (handlers) |Binding| {
-            if (bindingTargets(Binding, Site)) {
+            if (bindingTargets(Binding, Machine, site_ordinal)) {
                 const child_bytes = maximumMachineStackBytes(Binding.Provider, handlers);
                 maximum_child_bytes = @max(maximum_child_bytes, child_bytes);
             }
@@ -242,33 +261,42 @@ fn validateMachine(
     comptime depth: usize,
     comptime path: anytype,
 ) void {
-    requireStaticMachine(Machine);
+    requireBoundaryMachine(Machine);
     inline for (path) |Ancestor| {
         if (Ancestor == Machine) @compileError("World application internal provider graph contains a static cycle");
     }
     if (depth > limits.maximum_provider_depth) {
         @compileError("World application internal provider graph exceeds maximum_provider_depth");
     }
-    if (Machine.Manifest.maximum_frame_depth > limits.maximum_frame_depth) {
-        @compileError("Boundary StaticMachine frame depth exceeds World application maximum_frame_depth");
+    if (Machine.Manifest.maximum_frames > limits.maximum_frame_depth) {
+        @compileError("Boundary Machine frame depth exceeds World application maximum_frame_depth");
     }
     if (Machine.Manifest.maximum_state_bytes > limits.maximum_state_bytes) {
-        @compileError("Boundary StaticMachine state bound exceeds World application maximum_state_bytes");
+        @compileError("Boundary Machine state bound exceeds World application maximum_state_bytes");
     }
     if (Machine.EffectRow.after_site_count != 0) {
         @compileError("World Application v1 requires Boundary-local after continuations to be closed before World application closure");
     }
 
+    inline for (0..Machine.EffectRow.operation_site_count) |left_ordinal| {
+        const Left = Machine.EffectRow.site(left_ordinal);
+        inline for (left_ordinal + 1..Machine.EffectRow.operation_site_count) |right_ordinal| {
+            const Right = Machine.EffectRow.site(right_ordinal);
+            if (std.mem.eql(u8, Left.semantic_identity, Right.semantic_identity)) {
+                @compileError("World application requires unique semantic_identity values for every reachable Machine effect site");
+            }
+        }
+    }
+
     const next_path = path ++ .{Machine};
-    inline for (Machine.EffectRow.operation_site_metadata) |metadata| {
-        const Site = Machine.EffectRow.siteByIndex(metadata.index);
+    inline for (0..Machine.EffectRow.operation_site_count) |site_ordinal| {
         comptime var internal_count: usize = 0;
         comptime var external_count: usize = 0;
         inline for (handlers) |Binding| {
-            if (bindingTargets(Binding, Site)) internal_count += 1;
+            if (bindingTargets(Binding, Machine, site_ordinal)) internal_count += 1;
         }
         inline for (externals) |Binding| {
-            if (bindingTargets(Binding, Site)) external_count += 1;
+            if (bindingTargets(Binding, Machine, site_ordinal)) external_count += 1;
         }
         if (internal_count + external_count == 0) {
             @compileError("World application has an unhandled operation site; declare an internal handler or explicit external effect");
@@ -277,7 +305,7 @@ fn validateMachine(
             @compileError("World application operation site has ambiguous handler ownership");
         }
         inline for (handlers) |Binding| {
-            if (bindingTargets(Binding, Site)) {
+            if (bindingTargets(Binding, Machine, site_ordinal)) {
                 validateProviderCompatibility(Binding);
                 validateMachine(Binding.Provider, handlers, externals, limits, depth + 1, next_path);
             }
@@ -287,7 +315,8 @@ fn validateMachine(
 
 fn siteReachable(
     comptime Machine: type,
-    comptime target: type,
+    comptime TargetMachine: type,
+    comptime target_ordinal: usize,
     comptime handlers: anytype,
     comptime limits: protocol.Limits,
     comptime depth: usize,
@@ -295,13 +324,12 @@ fn siteReachable(
 ) bool {
     if (depth > limits.maximum_provider_depth) return false;
     inline for (path) |Ancestor| if (Ancestor == Machine) return false;
-    if (machineOwnsSite(Machine, target)) return true;
+    if (Machine == TargetMachine and target_ordinal < Machine.EffectRow.operation_site_count) return true;
     const next_path = path ++ .{Machine};
-    inline for (Machine.EffectRow.operation_site_metadata) |metadata| {
-        const Site = Machine.EffectRow.siteByIndex(metadata.index);
+    inline for (0..Machine.EffectRow.operation_site_count) |site_ordinal| {
         inline for (handlers) |Binding| {
-            if (bindingTargets(Binding, Site) and
-                siteReachable(Binding.Provider, target, handlers, limits, depth + 1, next_path))
+            if (bindingTargets(Binding, Machine, site_ordinal) and
+                siteReachable(Binding.Provider, TargetMachine, target_ordinal, handlers, limits, depth + 1, next_path))
             {
                 return true;
             }
@@ -310,94 +338,32 @@ fn siteReachable(
     return false;
 }
 
-fn schemaHashType(hasher: *std.crypto.hash.sha2.Sha256, comptime T: type) void {
-    if (T == usize) {
-        // Boundary canonical state represents usize through a target-neutral
-        // u64 word. Keep native and wasm32 application schema identities equal.
-        hasher.update("usize-u64");
-        return;
-    }
-    switch (@typeInfo(T)) {
-        .void => hasher.update("unit"),
-        .bool => hasher.update("bool"),
-        .int => |info| {
-            hasher.update(if (info.signedness == .signed) "signed-int" else "unsigned-int");
-            var bits: [2]u8 = undefined;
-            std.mem.writeInt(u16, &bits, info.bits, .little);
-            hasher.update(&bits);
-        },
-        .pointer => |info| {
-            if (T == []const u8) {
-                hasher.update("string");
-            } else if (T == []const []const u8) {
-                hasher.update("string-list");
-            } else {
-                _ = info;
-                @compileError("World value codec does not support this pointer type");
-            }
-        },
-        .optional => |info| {
-            hasher.update("optional");
-            schemaHashType(hasher, info.child);
-        },
-        .@"enum" => |info| {
-            hasher.update("enum");
-            inline for (info.fields) |field| {
-                hashLenBytes(hasher, field.name);
-                var value: [8]u8 = undefined;
-                std.mem.writeInt(u64, &value, field.value, .little);
-                hasher.update(&value);
-            }
-        },
-        .@"struct" => |info| {
-            hasher.update(if (info.is_tuple) "tuple" else "product");
-            inline for (info.fields) |field| {
-                hashLenBytes(hasher, field.name);
-                schemaHashType(hasher, field.type);
-            }
-        },
-        .@"union" => |info| {
-            if (info.tag_type == null) @compileError("World value codec requires tagged unions");
-            hasher.update("sum");
-            schemaHashType(hasher, info.tag_type.?);
-            inline for (info.fields) |field| {
-                hashLenBytes(hasher, field.name);
-                schemaHashType(hasher, field.type);
-            }
-        },
-        else => @compileError("World value codec does not support this Boundary value type"),
-    }
-}
-
-fn hashLenBytes(hasher: *std.crypto.hash.sha2.Sha256, bytes: []const u8) void {
-    var length: [4]u8 = undefined;
-    std.mem.writeInt(u32, &length, @intCast(bytes.len), .little);
-    hasher.update(&length);
-    hasher.update(bytes);
-}
-
 pub fn valueSchemaId(comptime T: type) protocol.Digest {
-    @setEvalBranchQuota(1_000_000);
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update("world.value-schema.v1");
-    hasher.update(&.{0});
-    schemaHashType(&hasher, T);
-    var digest: protocol.Digest = undefined;
-    hasher.final(&digest);
-    return digest;
+    return boundary.schema.schemaDigest(T);
 }
 
 fn machineId(comptime Machine: type) protocol.Digest {
+    return Machine.Manifest.machine_contract_digest;
+}
+
+pub fn siteId(comptime Machine: type, comptime site_ordinal: usize) u64 {
+    const digest = siteOccurrenceDigest(Machine, site_ordinal);
+    return std.mem.readInt(u64, digest[0..8], .little);
+}
+
+fn siteOccurrenceDigest(comptime Machine: type, comptime site_ordinal: usize) protocol.Digest {
     @setEvalBranchQuota(1_000_000);
+    requireBoundaryMachine(Machine);
+    const Site = Machine.EffectRow.site(site_ordinal);
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update("world.boundary-static-machine.v1");
+    hasher.update("world.machine-site-occurrence.v2");
     hasher.update(&.{0});
-    hashLenBytes(&hasher, Machine.Manifest.program_label);
-    var value: [8]u8 = undefined;
-    std.mem.writeInt(u64, &value, Machine.Manifest.canonical_plan_fingerprint, .little);
-    hasher.update(&value);
-    std.mem.writeInt(u64, &value, Machine.Manifest.machine_contract_fingerprint, .little);
-    hasher.update(&value);
+    const machine_digest = machineId(Machine);
+    hasher.update(&machine_digest);
+    var ordinal: [4]u8 = undefined;
+    std.mem.writeInt(u32, &ordinal, @intCast(site_ordinal), .little);
+    hasher.update(&ordinal);
+    hasher.update(&Site.contract_digest);
     var digest: protocol.Digest = undefined;
     hasher.final(&digest);
     return digest;
@@ -406,11 +372,14 @@ fn machineId(comptime Machine: type) protocol.Digest {
 fn internalHandlerId(comptime Binding: type) protocol.Digest {
     @setEvalBranchQuota(1_000_000);
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update("world.internal-handler.v1");
+    hasher.update("world.internal-machine-edge.v2");
     hasher.update(&.{0});
-    var site: [8]u8 = undefined;
-    std.mem.writeInt(u64, &site, Binding.Site.canonical_fingerprint, .little);
-    hasher.update(&site);
+    const owner_id = machineId(Binding.Owner);
+    hasher.update(&owner_id);
+    var ordinal: [4]u8 = undefined;
+    std.mem.writeInt(u32, &ordinal, @intCast(Binding.site_index), .little);
+    hasher.update(&ordinal);
+    hasher.update(&Binding.Site.contract_digest);
     const provider_id = machineId(Binding.Provider);
     hasher.update(&provider_id);
     var digest: protocol.Digest = undefined;
@@ -442,7 +411,7 @@ fn derivedResidualEffects(comptime externals: anytype, comptime limits: protocol
     inline for (externals, 0..) |Binding, index| {
         result[index] = .{
             .interface_id = Binding.interface_id,
-            .site_id = Binding.Site.canonical_fingerprint,
+            .site_id = siteId(Binding.Owner, Binding.site_index),
             .payload_schema_id = valueSchemaId(Binding.Site.Payload),
             .result_schema_id = valueSchemaId(Binding.Response),
             .allowed_statuses = Binding.allowed_statuses,
@@ -498,8 +467,8 @@ pub fn application(comptime spec: anytype) type {
     const boundary_version: []const u8 = if (@hasField(@TypeOf(spec), "boundary_package_version"))
         spec.boundary_package_version
     else
-        boundary.Protocol.Manifest.boundary_package_version;
-    const world_version: []const u8 = if (@hasField(@TypeOf(spec), "world_package_version")) spec.world_package_version else "1.0.0";
+        "1.0.0-rc.1";
+    const world_version: []const u8 = if (@hasField(@TypeOf(spec), "world_package_version")) spec.world_package_version else "2.0.0-rc.1";
 
     return struct {
         const Self = @This();
@@ -514,6 +483,7 @@ pub fn application(comptime spec: anytype) type {
         pub const Limits = limits;
         pub const maximum_encoded_runtime_state_bytes = maximum_runtime_state_bytes;
         pub const Manifest: protocol.ApplicationManifest = blk: {
+            @setEvalBranchQuota(10_000_000);
             var manifest: protocol.ApplicationManifest = .{
                 .application_name = name,
                 .application_version = version,
@@ -655,10 +625,11 @@ pub fn application(comptime spec: anytype) type {
 
         pub fn encodeExternalResult(
             allocator: std.mem.Allocator,
-            comptime Site: type,
+            comptime Machine: type,
+            comptime site_ordinal: usize,
             value: anytype,
         ) protocol.Error![]u8 {
-            const Binding = externalBindingForSite(Site, externals);
+            const Binding = externalBindingForSite(Machine, site_ordinal, externals);
             if (@TypeOf(value) != Binding.Response) @compileError("World external result value has the wrong type for this binding");
             return encodeValueBounded(
                 allocator,
@@ -785,7 +756,7 @@ pub fn application(comptime spec: anytype) type {
             const machine_state = Machine.decodeState(allocator, top.state_bytes) catch |err| return mapMachineStateError(err);
             defer Machine.deinitState(machine_state);
             const fuel_before = fuel.*;
-            const transition = Machine.reduce(machine_state, fuel) catch |err| {
+            const transition = Machine.step(machine_state, fuel) catch |err| {
                 if (err == error.OutOfMemory) return error.OutOfMemory;
                 if (err == error.ProgramContractViolation) return error.InvalidFrame;
                 return .{ .frame = try failureFrame(
@@ -801,7 +772,7 @@ pub fn application(comptime spec: anytype) type {
             try addCounter(&counters.instructions, fuel_before - fuel.*);
 
             return switch (transition) {
-                .yielded_fuel => .{ .frame = try yieldedFrame(
+                .yielded => .{ .frame = try yieldedFrame(
                     Machine,
                     allocator,
                     machine_state,
@@ -811,7 +782,6 @@ pub fn application(comptime spec: anytype) type {
                     accepted_result_id,
                     counters,
                 ) },
-                .after => error.InvalidFrame,
                 .request => |request| try handleMachineRequest(
                     Machine,
                     allocator,
@@ -833,12 +803,28 @@ pub fn application(comptime spec: anytype) type {
                             sequence,
                             accepted_result_id,
                             counters,
-                            done.value(),
+                            done.value().*,
                         ) };
                     }
-                    try finishProvider(Machine, allocator, state, done.value(), counters);
+                    try finishProvider(Machine, allocator, state, done.value().*, counters);
                     break :blk .continue_reduction;
                 },
+                .failed => |failure| .{ .frame = try failureFrame(
+                    allocator,
+                    parent_frame_id,
+                    sequence,
+                    accepted_result_id,
+                    counters,
+                    machineFailureLabel(failure),
+                ) },
+            };
+        }
+
+        fn machineFailureLabel(failure: anytype) []const u8 {
+            return switch (failure) {
+                .authored => |authored| @tagName(authored),
+                .execution_budget_exceeded => "Boundary Machine execution budget exceeded",
+                .frame_depth_exceeded => "Boundary Machine frame depth exceeded",
             };
         }
 
@@ -853,12 +839,13 @@ pub fn application(comptime spec: anytype) type {
             accepted_result_id: ?protocol.Digest,
             counters: *protocol.ResourceCounters,
         ) protocol.Error!DriveOutcome {
-            inline for (Machine.EffectRow.operation_site_metadata) |metadata| {
-                if (request.operation_site_index == metadata.index) {
-                    const Site = Machine.EffectRow.siteByIndex(metadata.index);
-                    request.expectSite(Site) catch return error.InvalidFrame;
+            if (comptime Machine.RequestValue == void) return error.InvalidFrame;
+            switch (request.value) {
+                inline else => |_, tag| {
+                    const site_ordinal = comptime @intFromEnum(tag);
+                    if (request.identity.site_ordinal != site_ordinal) return error.InvalidFrame;
                     inline for (handlers, 0..) |Binding, binding_index| {
-                        if (comptime bindingTargets(Binding, Site)) {
+                        if (comptime bindingTargets(Binding, Machine, site_ordinal)) {
                             try beginProvider(
                                 Binding,
                                 binding_index,
@@ -873,7 +860,7 @@ pub fn application(comptime spec: anytype) type {
                         }
                     }
                     inline for (externals) |Binding| {
-                        if (comptime bindingTargets(Binding, Site)) {
+                        if (comptime bindingTargets(Binding, Machine, site_ordinal)) {
                             return .{ .frame = try externalFrame(
                                 Binding,
                                 Machine,
@@ -889,9 +876,8 @@ pub fn application(comptime spec: anytype) type {
                         }
                     }
                     return error.InvalidFrame;
-                }
+                },
             }
-            return error.InvalidFrame;
         }
 
         fn replaceTopMachineState(
@@ -907,6 +893,22 @@ pub fn application(comptime spec: anytype) type {
             };
         }
 
+        fn requestPayload(
+            comptime Binding: type,
+            request: anytype,
+        ) protocol.Error!Binding.Site.Payload {
+            if (request.identity.site_ordinal != Binding.site_index) return error.InvalidFrame;
+            if (!std.mem.eql(u8, &request.identity.effect_site_digest, &Binding.Site.contract_digest)) {
+                return error.InvalidFrame;
+            }
+            switch (request.value) {
+                inline else => |payload, tag| {
+                    if (comptime @intFromEnum(tag) != Binding.site_index) return error.InvalidFrame;
+                    return payload;
+                },
+            }
+        }
+
         fn beginProvider(
             comptime Binding: type,
             comptime binding_index: usize,
@@ -920,8 +922,8 @@ pub fn application(comptime spec: anytype) type {
             const frame_count = std.math.cast(u64, state.frames.items.len) orelse return error.LimitExceeded;
             const maximum_frame_count = @as(u64, limits.maximum_provider_depth) + 1;
             if (frame_count >= maximum_frame_count) return error.LimitExceeded;
-            const payload = request.payload(Binding.Site.Payload) catch return error.InvalidFrame;
-            const provider_state = Binding.Provider.initialState(allocator, .{payload}) catch |err| return mapMachineStateError(err);
+            const payload = try requestPayload(Binding, request);
+            const provider_state = Binding.Provider.initialState(allocator, payload) catch |err| return mapMachineStateError(err);
             defer Binding.Provider.deinitState(provider_state);
             const provider_bytes = Binding.Provider.encodeState(allocator, provider_state) catch |err| return mapMachineStateError(err);
             errdefer allocator.free(provider_bytes);
@@ -981,17 +983,15 @@ pub fn application(comptime spec: anytype) type {
             state: *RuntimeState,
             value: Binding.Provider.Result,
         ) protocol.Error!void {
-            if (comptime !machineOwnsSite(ParentMachine, Binding.Site)) return error.InvalidFrame;
+            if (comptime Binding.Owner != ParentMachine) return error.InvalidFrame;
             const parent_frame = &state.frames.items[state.frames.items.len - 1];
             const parent_state = ParentMachine.decodeState(allocator, parent_frame.state_bytes) catch |err| return mapMachineStateError(err);
             defer ParentMachine.deinitState(parent_state);
-            const current = ParentMachine.current(parent_state) catch return error.InvalidFrame;
-            const request = switch (current) {
-                .request => |request| request,
-                else => return error.InvalidFrame,
-            };
-            request.expectSite(Binding.Site) catch return error.InvalidFrame;
-            ParentMachine.@"resume"(parent_state, request, value) catch |err| return mapMachineStateError(err);
+            const request = (ParentMachine.current(parent_state) catch return error.InvalidFrame) orelse return error.InvalidFrame;
+            _ = try requestPayload(Binding, request);
+            const prepared = ParentMachine.prepareResume(parent_state, request) catch |err| return mapMachineStateError(err);
+            defer ParentMachine.deinitPreparedResume(prepared);
+            ParentMachine.@"resume"(prepared, value) catch |err| return mapMachineStateError(err);
             try replaceTopMachineState(ParentMachine, allocator, parent_state, state);
         }
 
@@ -1034,14 +1034,14 @@ pub fn application(comptime spec: anytype) type {
             parent_frame_id: ?protocol.Digest,
             sequence: u64,
         ) protocol.Error!protocol.EffectRequest {
-            const payload = request.payload(Binding.Site.Payload) catch return error.InvalidFrame;
+            const payload = try requestPayload(Binding, request);
             const payload_bytes = try encodeValueBounded(allocator, payload, limits.maximum_payload_bytes);
             errdefer allocator.free(payload_bytes);
             var effect_request: protocol.EffectRequest = .{
                 .application_id = Manifest.application_id,
                 .parent_frame_id = parent_frame_id orelse protocol.zero_digest,
                 .sequence = sequence,
-                .site_id = Binding.Site.canonical_fingerprint,
+                .site_id = siteId(Binding.Owner, Binding.site_index),
                 .interface_id = Binding.interface_id,
                 .payload_schema_id = valueSchemaId(Binding.Site.Payload),
                 .result_schema_id = valueSchemaId(Binding.Response),
@@ -1086,17 +1086,13 @@ pub fn application(comptime spec: anytype) type {
             const top = &state.frames.items[state.frames.items.len - 1];
             const machine_state = Machine.decodeState(allocator, top.state_bytes) catch |err| return mapMachineStateError(err);
             defer Machine.deinitState(machine_state);
-            const current = Machine.current(machine_state) catch return error.InvalidFrame;
-            const request = switch (current) {
-                .request => |request| request,
-                else => return error.InvalidFrame,
-            };
-            inline for (Machine.EffectRow.operation_site_metadata) |metadata| {
-                if (request.operation_site_index == metadata.index) {
-                    const Site = Machine.EffectRow.siteByIndex(metadata.index);
-                    request.expectSite(Site) catch return error.InvalidFrame;
+            const request = (Machine.current(machine_state) catch return error.InvalidFrame) orelse return error.InvalidFrame;
+            if (comptime Machine.RequestValue == void) return error.InvalidFrame;
+            switch (request.value) {
+                inline else => |_, tag| {
+                    const site_ordinal = comptime @intFromEnum(tag);
                     inline for (externals) |Binding| {
-                        if (comptime bindingTargets(Binding, Site)) {
+                        if (comptime bindingTargets(Binding, Machine, site_ordinal)) {
                             const expected = try makeEffectRequest(
                                 Binding,
                                 allocator,
@@ -1114,10 +1110,9 @@ pub fn application(comptime spec: anytype) type {
                                 expected.limits.maximum_result_bytes,
                             );
                             defer decoded.deinit();
-                            switch (Binding.response_mode) {
-                                .@"resume" => Machine.@"resume"(machine_state, request, decoded.value) catch |err| return mapMachineStateError(err),
-                                .return_now => Machine.returnNow(machine_state, request, decoded.value) catch |err| return mapMachineStateError(err),
-                            }
+                            const prepared = Machine.prepareResume(machine_state, request) catch |err| return mapMachineStateError(err);
+                            defer Machine.deinitPreparedResume(prepared);
+                            Machine.@"resume"(prepared, decoded.value) catch |err| return mapMachineStateError(err);
                             try replaceTopMachineState(Machine, allocator, machine_state, state);
                             try addCounter(&counters.continuation_operations, 1);
                             try addCounter(&counters.value_bytes, @intCast(result.result_bytes.?.len));
@@ -1125,9 +1120,8 @@ pub fn application(comptime spec: anytype) type {
                         }
                     }
                     return error.InvalidFrame;
-                }
+                },
             }
-            return error.InvalidFrame;
         }
 
         fn yieldedFrame(
@@ -1215,7 +1209,54 @@ pub fn application(comptime spec: anytype) type {
     };
 }
 
-const ValueWriter = struct {
+fn encodeValueBounded(allocator: std.mem.Allocator, value: anytype, maximum: u32) protocol.Error![]u8 {
+    const size = boundary.schema.encodedSize(@TypeOf(value), value) catch return error.InvalidEncoding;
+    if (size > maximum) return error.LimitExceeded;
+    const bytes = allocator.alloc(u8, size) catch return error.OutOfMemory;
+    errdefer allocator.free(bytes);
+    const written = boundary.schema.encode(@TypeOf(value), value, bytes) catch return error.InvalidEncoding;
+    if (written != size) return error.InvalidEncoding;
+    return bytes;
+}
+
+pub fn encodeValue(allocator: std.mem.Allocator, value: anytype) protocol.Error![]u8 {
+    return encodeValueBounded(allocator, value, std.math.maxInt(u32));
+}
+
+fn DecodedValue(comptime T: type) type {
+    return struct {
+        value: T,
+
+        pub fn deinit(self: *@This()) void {
+            self.* = undefined;
+        }
+    };
+}
+
+fn decodeValueBounded(
+    allocator: std.mem.Allocator,
+    comptime T: type,
+    bytes: []const u8,
+    maximum: u32,
+) protocol.Error!DecodedValue(T) {
+    _ = allocator;
+    if (bytes.len > maximum) return error.LimitExceeded;
+    return .{
+        .value = boundary.schema.decodeExact(T, bytes) catch return error.InvalidEncoding,
+    };
+}
+
+const application_state_magic = "WRLDAPP1";
+const application_state_version: u32 = 1;
+const root_binding_index = std.math.maxInt(u32);
+
+const RuntimeMachineFrame = struct {
+    machine_id: u32,
+    parent_binding_index: u32,
+    state_bytes: []u8,
+};
+
+const RuntimeStateWriter = struct {
     allocator: std.mem.Allocator,
     bytes: std.ArrayList(u8) = .empty,
 
@@ -1227,16 +1268,8 @@ const ValueWriter = struct {
         self.bytes.deinit(self.allocator);
     }
 
-    fn toOwnedSlice(self: *@This()) protocol.Error![]u8 {
-        return self.bytes.toOwnedSlice(self.allocator) catch error.OutOfMemory;
-    }
-
     fn write(self: *@This(), value: []const u8) protocol.Error!void {
         self.bytes.appendSlice(self.allocator, value) catch return error.OutOfMemory;
-    }
-
-    fn writeU8(self: *@This(), value: u8) protocol.Error!void {
-        self.bytes.append(self.allocator, value) catch return error.OutOfMemory;
     }
 
     fn writeU32(self: *@This(), value: u32) protocol.Error!void {
@@ -1245,79 +1278,18 @@ const ValueWriter = struct {
         try self.write(&bytes);
     }
 
-    fn writeU64(self: *@This(), value: u64) protocol.Error!void {
-        var bytes: [8]u8 = undefined;
-        std.mem.writeInt(u64, &bytes, value, .little);
-        try self.write(&bytes);
-    }
-
     fn writeLenBytes(self: *@This(), value: []const u8) protocol.Error!void {
         if (value.len > std.math.maxInt(u32)) return error.LimitExceeded;
         try self.writeU32(@intCast(value.len));
         try self.write(value);
     }
+
+    fn toOwnedSlice(self: *@This()) protocol.Error![]u8 {
+        return self.bytes.toOwnedSlice(self.allocator) catch error.OutOfMemory;
+    }
 };
 
-fn encodeTyped(writer: *ValueWriter, comptime T: type, value: T) protocol.Error!void {
-    switch (@typeInfo(T)) {
-        .void => {},
-        .bool => try writer.writeU8(@intFromBool(value)),
-        .int => |info| {
-            if (info.bits > 64) @compileError("World value codec supports integers up to 64 bits");
-            if (info.signedness == .signed) {
-                try writer.writeU64(@bitCast(@as(i64, @intCast(value))));
-            } else {
-                try writer.writeU64(@intCast(value));
-            }
-        },
-        .pointer => {
-            if (T == []const u8) {
-                try writer.writeLenBytes(value);
-            } else if (T == []const []const u8) {
-                if (value.len > std.math.maxInt(u32)) return error.LimitExceeded;
-                try writer.writeU32(@intCast(value.len));
-                for (value) |item| try writer.writeLenBytes(item);
-            } else {
-                @compileError("World value codec does not support this pointer type");
-            }
-        },
-        .optional => |info| {
-            try writer.writeU8(@intFromBool(value != null));
-            if (value) |payload| try encodeTyped(writer, info.child, payload);
-        },
-        .@"enum" => try writer.writeU64(@intCast(@intFromEnum(value))),
-        .@"struct" => |info| inline for (info.fields) |field| {
-            try encodeTyped(writer, field.type, @field(value, field.name));
-        },
-        .@"union" => |info| {
-            const Tag = info.tag_type orelse @compileError("World value codec requires tagged unions");
-            const tag = std.meta.activeTag(value);
-            try writer.writeU64(@intCast(@intFromEnum(tag)));
-            inline for (info.fields) |field| {
-                if (tag == @field(Tag, field.name)) {
-                    try encodeTyped(writer, field.type, @field(value, field.name));
-                    return;
-                }
-            }
-            return error.InvalidEncoding;
-        },
-        else => @compileError("World value codec does not support this type"),
-    }
-}
-
-fn encodeValueBounded(allocator: std.mem.Allocator, value: anytype, maximum: u32) protocol.Error![]u8 {
-    var writer = ValueWriter.init(allocator);
-    errdefer writer.deinit();
-    try encodeTyped(&writer, @TypeOf(value), value);
-    if (writer.bytes.items.len > maximum) return error.LimitExceeded;
-    return writer.toOwnedSlice();
-}
-
-pub fn encodeValue(allocator: std.mem.Allocator, value: anytype) protocol.Error![]u8 {
-    return encodeValueBounded(allocator, value, std.math.maxInt(u32));
-}
-
-const ValueReader = struct {
+const RuntimeStateReader = struct {
     bytes: []const u8,
     cursor: usize = 0,
 
@@ -1325,36 +1297,15 @@ const ValueReader = struct {
         return .{ .bytes = bytes };
     }
 
-    fn finish(self: @This()) protocol.Error!void {
-        if (self.cursor != self.bytes.len) return error.TrailingBytes;
-    }
-
     fn read(self: *@This(), length: usize) protocol.Error![]const u8 {
         const end = std.math.add(usize, self.cursor, length) catch return error.InvalidEncoding;
         if (end > self.bytes.len) return error.InvalidEncoding;
-        const value = self.bytes[self.cursor..end];
-        self.cursor = end;
-        return value;
-    }
-
-    fn readU8(self: *@This()) protocol.Error!u8 {
-        return (try self.read(1))[0];
-    }
-
-    fn readBool(self: *@This()) protocol.Error!bool {
-        return switch (try self.readU8()) {
-            0 => false,
-            1 => true,
-            else => error.InvalidEncoding,
-        };
+        defer self.cursor = end;
+        return self.bytes[self.cursor..end];
     }
 
     fn readU32(self: *@This()) protocol.Error!u32 {
         return std.mem.readInt(u32, (try self.read(4))[0..4], .little);
-    }
-
-    fn readU64(self: *@This()) protocol.Error!u64 {
-        return std.mem.readInt(u64, (try self.read(8))[0..8], .little);
     }
 
     fn readDigest(self: *@This()) protocol.Error!protocol.Digest {
@@ -1366,113 +1317,10 @@ const ValueReader = struct {
         if (length > maximum) return error.LimitExceeded;
         return self.read(length);
     }
-};
 
-fn DecodedValue(comptime T: type) type {
-    return struct {
-        arena: std.heap.ArenaAllocator,
-        value: T,
-
-        pub fn deinit(self: *@This()) void {
-            self.arena.deinit();
-        }
-    };
-}
-
-fn decodeTyped(
-    reader: *ValueReader,
-    arena: std.mem.Allocator,
-    comptime T: type,
-    maximum_collection: u32,
-) protocol.Error!T {
-    return switch (@typeInfo(T)) {
-        .void => {},
-        .bool => try reader.readBool(),
-        .int => |info| blk: {
-            if (info.bits > 64) @compileError("World value codec supports integers up to 64 bits");
-            const encoded = try reader.readU64();
-            if (info.signedness == .signed) {
-                const signed: i64 = @bitCast(encoded);
-                break :blk std.math.cast(T, signed) orelse return error.InvalidEncoding;
-            }
-            break :blk std.math.cast(T, encoded) orelse return error.InvalidEncoding;
-        },
-        .pointer => blk: {
-            if (T == []const u8) {
-                const value = try reader.readLenBytes(maximum_collection);
-                break :blk arena.dupe(u8, value) catch return error.OutOfMemory;
-            }
-            if (T == []const []const u8) {
-                const count = try reader.readU32();
-                if (count > maximum_collection) return error.LimitExceeded;
-                const values = arena.alloc([]const u8, count) catch return error.OutOfMemory;
-                for (values) |*value| {
-                    value.* = arena.dupe(u8, try reader.readLenBytes(maximum_collection)) catch return error.OutOfMemory;
-                }
-                break :blk values;
-            }
-            @compileError("World value codec does not support this pointer type");
-        },
-        .optional => |info| if (try reader.readBool())
-            try decodeTyped(reader, arena, info.child, maximum_collection)
-        else
-            null,
-        .@"enum" => |info| blk: {
-            const raw = try reader.readU64();
-            const tag_value = std.math.cast(info.tag_type, raw) orelse return error.InvalidEncoding;
-            break :blk std.meta.intToEnum(T, tag_value) catch return error.InvalidEncoding;
-        },
-        .@"struct" => |info| blk: {
-            var value: T = undefined;
-            inline for (info.fields) |field| {
-                @field(value, field.name) = try decodeTyped(reader, arena, field.type, maximum_collection);
-            }
-            break :blk value;
-        },
-        .@"union" => |info| blk: {
-            const Tag = info.tag_type orelse @compileError("World value codec requires tagged unions");
-            const TagInfo = @typeInfo(Tag).@"enum";
-            const raw = try reader.readU64();
-            const tag_value = std.math.cast(TagInfo.tag_type, raw) orelse return error.InvalidEncoding;
-            const tag = std.meta.intToEnum(Tag, tag_value) catch return error.InvalidEncoding;
-            inline for (info.fields) |field| {
-                if (tag == @field(Tag, field.name)) {
-                    const payload = try decodeTyped(reader, arena, field.type, maximum_collection);
-                    break :blk @unionInit(T, field.name, payload);
-                }
-            }
-            return error.InvalidEncoding;
-        },
-        else => @compileError("World value codec does not support this type"),
-    };
-}
-
-fn decodeValueBounded(
-    allocator: std.mem.Allocator,
-    comptime T: type,
-    bytes: []const u8,
-    maximum: u32,
-) protocol.Error!DecodedValue(T) {
-    if (bytes.len > maximum) return error.LimitExceeded;
-    var owned = DecodedValue(T){
-        .arena = std.heap.ArenaAllocator.init(allocator),
-        .value = undefined,
-    };
-    errdefer owned.arena.deinit();
-    var reader = ValueReader.init(bytes);
-    owned.value = try decodeTyped(&reader, owned.arena.allocator(), T, maximum);
-    try reader.finish();
-    return owned;
-}
-
-const application_state_magic = "WRLDAPP1";
-const application_state_version: u32 = 1;
-const root_binding_index = std.math.maxInt(u32);
-
-const RuntimeMachineFrame = struct {
-    machine_id: u32,
-    parent_binding_index: u32,
-    state_bytes: []u8,
+    fn finish(self: @This()) protocol.Error!void {
+        if (self.cursor != self.bytes.len) return error.TrailingBytes;
+    }
 };
 
 const RuntimeState = struct {
@@ -1513,7 +1361,7 @@ const RuntimeState = struct {
         if (frame_count == 0 or frame_count > maximum_frame_count) {
             return error.InvalidFrame;
         }
-        var writer = ValueWriter.init(self.allocator);
+        var writer = RuntimeStateWriter.init(self.allocator);
         errdefer writer.deinit();
         try writer.write(application_state_magic);
         try writer.writeU32(application_state_version);
@@ -1536,7 +1384,7 @@ const RuntimeState = struct {
         limits: protocol.Limits,
     ) protocol.Error!@This() {
         if (bytes.len == 0 or bytes.len > limits.maximum_state_bytes) return error.InvalidFrame;
-        var reader = ValueReader.init(bytes);
+        var reader = RuntimeStateReader.init(bytes);
         if (!std.mem.eql(u8, try reader.read(application_state_magic.len), application_state_magic)) return error.InvalidEncoding;
         if (try reader.readU32() != application_state_version) return error.UnsupportedVersion;
         const encoded_application_id = try reader.readDigest();

@@ -4,6 +4,20 @@ const wasm_page_bytes: u64 = 64 * 1024;
 const wasm_maximum_pages: u32 = 65_536;
 const minimum_initial_pages: u32 = 512;
 
+/// Conservative total of the default Application ABI v1 input, output,
+/// scratch, manifest, and error regions that share linear memory with the
+/// application stack.
+pub const default_application_abi_fixed_region_bytes: u64 =
+    (8 * 1024 * 1024) +
+    (4 * 1024 * 1024) +
+    (16 * 1024 * 1024) +
+    (64 * 1024) +
+    256;
+
+pub const OptionValidationError = error{
+    StackExceedsInitialMemory,
+};
+
 pub const Memory = struct {
     initial_pages: u32 = 512,
     maximum_pages: u32 = 512,
@@ -14,6 +28,7 @@ pub const Options = struct {
     root_source_file: std.Build.LazyPath,
     application_decl: []const u8 = "Application",
     optimize: std.builtin.OptimizeMode = .ReleaseSmall,
+    stack_size_bytes: u64 = 1024 * 1024,
     memory: Memory = .{},
     install_human_readable_manifest: bool = false,
 };
@@ -43,7 +58,7 @@ pub fn add(
         .optimize = options.optimize,
     });
     const wasm_world = wasm_world_dependency.module("world");
-    const wasm_boundary = wasm_world_dependency.builder.dependency("boundary", .{
+    const wasm_boundary = wasm_world_dependency.builder.dependency("boundary_machine", .{
         .target = wasm_target,
         .optimize = options.optimize,
     }).module("boundary");
@@ -53,7 +68,7 @@ pub fn add(
         .optimize = options.optimize,
     });
     const host_world = host_world_dependency.module("world");
-    const host_boundary = host_world_dependency.builder.dependency("boundary", .{
+    const host_boundary = host_world_dependency.builder.dependency("boundary_machine", .{
         .target = b.graph.host,
         .optimize = options.optimize,
     }).module("boundary");
@@ -94,7 +109,7 @@ pub fn add(
     wasm.entry = .disabled;
     wasm.rdynamic = true;
     wasm.export_memory = true;
-    wasm.stack_size = 1024 * 1024;
+    wasm.stack_size = options.stack_size_bytes;
     wasm.initial_memory = pagesToBytes(options.memory.initial_pages);
     wasm.max_memory = pagesToBytes(options.memory.maximum_pages);
 
@@ -204,12 +219,33 @@ fn validateOptions(options: Options) void {
     if (options.application_decl.len == 0) {
         std.debug.panic("World application declaration name must not be empty", .{});
     }
+    if (options.stack_size_bytes == 0 or
+        options.stack_size_bytes > wasm_maximum_pages * wasm_page_bytes)
+    {
+        std.debug.panic(
+            "World application stack size ({d} bytes) must fit a non-empty wasm32 memory",
+            .{options.stack_size_bytes},
+        );
+    }
     if (options.memory.initial_pages < minimum_initial_pages) {
         std.debug.panic(
             "World application initial memory ({d} pages) is smaller than the supported ABI layout ({d} pages)",
             .{ options.memory.initial_pages, minimum_initial_pages },
         );
     }
+    validateStackMemoryEnvelope(
+        options.stack_size_bytes,
+        options.memory.initial_pages,
+    ) catch {
+        std.debug.panic(
+            "World application stack ({d} bytes) plus fixed ABI regions ({d} bytes) exceed initial memory ({d} bytes)",
+            .{
+                options.stack_size_bytes,
+                default_application_abi_fixed_region_bytes,
+                pagesToBytes(options.memory.initial_pages),
+            },
+        );
+    };
     if (options.memory.maximum_pages < options.memory.initial_pages) {
         std.debug.panic(
             "World application maximum memory ({d} pages) is smaller than initial memory ({d} pages)",
@@ -221,6 +257,20 @@ fn validateOptions(options: Options) void {
             "World application maximum memory ({d} pages) exceeds the wasm32 limit ({d} pages)",
             .{ options.memory.maximum_pages, wasm_maximum_pages },
         );
+    }
+}
+
+pub fn validateStackMemoryEnvelope(
+    stack_size_bytes: u64,
+    initial_pages: u32,
+) OptionValidationError!void {
+    const required_bytes = std.math.add(
+        u64,
+        stack_size_bytes,
+        default_application_abi_fixed_region_bytes,
+    ) catch return error.StackExceedsInitialMemory;
+    if (required_bytes > pagesToBytes(initial_pages)) {
+        return error.StackExceedsInitialMemory;
     }
 }
 
