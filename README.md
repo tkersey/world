@@ -64,10 +64,6 @@ or loaded. Start with
 
 The
 [`world-sdk-v1.0.0.tar.gz`](https://github.com/tkersey/world/releases/download/v1.0.0/world-sdk-v1.0.0.tar.gz)
-
-World 2 applications can use the checksum-bound
-[`world-sdk-v2.0.0.tar.gz`](https://github.com/tkersey/world/releases/download/v2.0.0/world-sdk-v2.0.0.tar.gz),
-which reuses the exact released world-host v1.0.0 runtime.
 release asset composes the four reviewed archives, application and capability
 templates, the Research Digest example, the source-independent host, and
 external-consumer, lifecycle, and negative conformance receipts. It is a
@@ -78,6 +74,12 @@ identity check or `node conformance/external-consumer/run.mjs` for the full
 empty-directory proof. The static check needs Node.js and `tar`; the full proof
 additionally needs Bun and Zig 0.16.0. The finished host needs Bun, but not Zig
 or a source checkout.
+
+World 2 applications can use the checksum-bound
+[`world-sdk-v2.0.0.tar.gz`](https://github.com/tkersey/world/releases/download/v2.0.0/world-sdk-v2.0.0.tar.gz),
+which reuses the exact released world-host v1.0.0 runtime. After extracting it,
+run `node conformance/check-sdk.mjs --sdk . --zig zig` for the complete
+released-artifact proof.
 
 ## Legacy v0 compatibility
 
