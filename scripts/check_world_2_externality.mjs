@@ -27,8 +27,10 @@ const WORLD_VERSION = "2.0.0-rc.1";
 const WORLD_RELEASE_URL =
   `https://github.com/tkersey/world/archive/refs/tags/v${WORLD_VERSION}.tar.gz`;
 const WORLD_CAPABILITIES_VERSION = "2.0.0";
+const WORLD_CAPABILITIES_ASSET =
+  `world-capabilities-v${WORLD_CAPABILITIES_VERSION}.tar.gz`;
 const WORLD_CAPABILITIES_URL =
-  `https://github.com/tkersey/world-capabilities/archive/refs/tags/v${WORLD_CAPABILITIES_VERSION}.tar.gz`;
+  `https://github.com/tkersey/world-capabilities/releases/download/v${WORLD_CAPABILITIES_VERSION}/${WORLD_CAPABILITIES_ASSET}`;
 
 const options = parseArgs(process.argv.slice(2));
 if (options.negative) {
@@ -228,13 +230,42 @@ function materializeWorldArchive(root) {
 }
 
 function materializeCapabilitiesArchive(root) {
-  return materializeReviewedArchive(
+  return materializeReviewedReleaseAsset(
     "world-capabilities",
     options.worldCapabilitiesArchive,
     options.worldCapabilitiesArchiveSha256,
-    WORLD_CAPABILITIES_URL,
-    join(root, `world-capabilities-v${WORLD_CAPABILITIES_VERSION}.tar.gz`),
+    "tkersey/world-capabilities",
+    `v${WORLD_CAPABILITIES_VERSION}`,
+    WORLD_CAPABILITIES_ASSET,
+    root,
   );
+}
+
+function materializeReviewedReleaseAsset(
+  label,
+  input,
+  expectedSha256,
+  repository,
+  tag,
+  asset,
+  destination,
+) {
+  if (input === null) {
+    throw new Error(`${label} reviewed archive and SHA-256 are required`);
+  }
+
+  requireFile(input);
+  const reviewedArchive = downloadReleaseAsset(
+    repository,
+    tag,
+    asset,
+    destination,
+  );
+  assertReviewedArchiveCopy(label, input, expectedSha256, reviewedArchive);
+  return {
+    archive: input,
+    url: `https://github.com/${repository}/releases/download/${tag}/${asset}`,
+  };
 }
 
 function materializeReviewedArchive(
@@ -466,12 +497,14 @@ function proveCallerArchiveChecksumAdmission() {
     /World reviewed archive and SHA-256 are required/,
   );
   assert.throws(
-    () => materializeReviewedArchive(
+    () => materializeReviewedReleaseAsset(
       "world-capabilities",
       null,
       null,
-      WORLD_CAPABILITIES_URL,
-      "unused-world-capabilities.tar.gz",
+      "tkersey/world-capabilities",
+      `v${WORLD_CAPABILITIES_VERSION}`,
+      WORLD_CAPABILITIES_ASSET,
+      "unused-world-capabilities",
     ),
     /world-capabilities reviewed archive and SHA-256 are required/,
   );
