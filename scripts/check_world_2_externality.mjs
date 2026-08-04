@@ -27,10 +27,12 @@ const WORLD_VERSION = "2.0.0-rc.1";
 const WORLD_RELEASE_URL =
   `https://github.com/tkersey/world/archive/refs/tags/v${WORLD_VERSION}.tar.gz`;
 const WORLD_CAPABILITIES_VERSION = "2.0.0";
+const WORLD_CAPABILITIES_REPOSITORY =
+  "github.com/tkersey/world-capabilities";
 const WORLD_CAPABILITIES_ASSET =
   `world-capabilities-v${WORLD_CAPABILITIES_VERSION}.tar.gz`;
 const WORLD_CAPABILITIES_URL =
-  `https://github.com/tkersey/world-capabilities/releases/download/v${WORLD_CAPABILITIES_VERSION}/${WORLD_CAPABILITIES_ASSET}`;
+  `https://${WORLD_CAPABILITIES_REPOSITORY}/releases/download/v${WORLD_CAPABILITIES_VERSION}/${WORLD_CAPABILITIES_ASSET}`;
 
 const options = parseArgs(process.argv.slice(2));
 if (options.negative) {
@@ -225,47 +227,27 @@ function materializeWorldArchive(root) {
     options.worldArchive,
     options.worldArchiveSha256,
     WORLD_RELEASE_URL,
-    join(root, `world-v${WORLD_VERSION}.tar.gz`),
+    () => materializeArchive(
+      null,
+      WORLD_RELEASE_URL,
+      join(root, `world-v${WORLD_VERSION}.tar.gz.reviewed`),
+    ),
   );
 }
 
 function materializeCapabilitiesArchive(root) {
-  return materializeReviewedReleaseAsset(
+  return materializeReviewedArchive(
     "world-capabilities",
     options.worldCapabilitiesArchive,
     options.worldCapabilitiesArchiveSha256,
-    "tkersey/world-capabilities",
-    `v${WORLD_CAPABILITIES_VERSION}`,
-    WORLD_CAPABILITIES_ASSET,
-    root,
+    WORLD_CAPABILITIES_URL,
+    () => downloadReleaseAsset(
+      WORLD_CAPABILITIES_REPOSITORY,
+      `v${WORLD_CAPABILITIES_VERSION}`,
+      WORLD_CAPABILITIES_ASSET,
+      root,
+    ),
   );
-}
-
-function materializeReviewedReleaseAsset(
-  label,
-  input,
-  expectedSha256,
-  repository,
-  tag,
-  asset,
-  destination,
-) {
-  if (input === null) {
-    throw new Error(`${label} reviewed archive and SHA-256 are required`);
-  }
-
-  requireFile(input);
-  const reviewedArchive = downloadReleaseAsset(
-    repository,
-    tag,
-    asset,
-    destination,
-  );
-  assertReviewedArchiveCopy(label, input, expectedSha256, reviewedArchive);
-  return {
-    archive: input,
-    url: `https://github.com/${repository}/releases/download/${tag}/${asset}`,
-  };
 }
 
 function materializeReviewedArchive(
@@ -273,18 +255,14 @@ function materializeReviewedArchive(
   input,
   expectedSha256,
   releaseUrl,
-  destination,
+  materializeReviewed,
 ) {
   if (input === null) {
     throw new Error(`${label} reviewed archive and SHA-256 are required`);
   }
 
   requireFile(input);
-  const reviewedArchive = materializeArchive(
-    null,
-    releaseUrl,
-    `${destination}.reviewed`,
-  );
+  const reviewedArchive = materializeReviewed();
   assertReviewedArchiveCopy(label, input, expectedSha256, reviewedArchive);
   return { archive: input, url: releaseUrl };
 }
@@ -486,25 +464,28 @@ function requireArchiveDigestPair(archiveLabel, archive, digestLabel, sha256) {
 
 function proveCallerArchiveChecksumAdmission() {
   const sha256 = "0".repeat(64);
+  assert.equal(
+    WORLD_CAPABILITIES_REPOSITORY,
+    "github.com/tkersey/world-capabilities",
+    "world-capabilities release acquisition must remain pinned to github.com",
+  );
   assert.throws(
     () => materializeReviewedArchive(
       "World",
       null,
       null,
       WORLD_RELEASE_URL,
-      "unused-world.tar.gz",
+      () => "unused-world.tar.gz",
     ),
     /World reviewed archive and SHA-256 are required/,
   );
   assert.throws(
-    () => materializeReviewedReleaseAsset(
+    () => materializeReviewedArchive(
       "world-capabilities",
       null,
       null,
-      "tkersey/world-capabilities",
-      `v${WORLD_CAPABILITIES_VERSION}`,
-      WORLD_CAPABILITIES_ASSET,
-      "unused-world-capabilities",
+      WORLD_CAPABILITIES_URL,
+      () => "unused-world-capabilities",
     ),
     /world-capabilities reviewed archive and SHA-256 are required/,
   );
