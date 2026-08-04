@@ -247,6 +247,9 @@ Start from \`application-template/\`. Verify the complete bundle with:
 
 \`node conformance/check-sdk.mjs --sdk . --zig zig\`
 
+Verification requires Node.js, Zig 0.16.0, Bun, and a POSIX command environment
+with \`cp\`, \`sh\`, \`tar\`, and \`which\`.
+
 The runtime host is the unchanged released world-host v1.0.0 artifact.
 `;
 }

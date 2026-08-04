@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const EXPECTED_RELEASES = Object.freeze({
   boundaryLegacy: Object.freeze({
@@ -126,11 +126,16 @@ try {
     );
     const templateRoot = join(proofRoot, "application-template");
     cpSync(join(options.sdk, "application-template"), templateRoot, { recursive: true });
+    localizeWorldDependency(
+      templateRoot,
+      join(options.sdk, "releases", EXPECTED_RELEASES.world.name),
+    );
     runCapture(options.zig, ["build", "--summary", "all"], templateRoot);
 
     const shimRoot = join(proofRoot, "release-tools");
+    const worldArchive = join(options.sdk, "releases", EXPECTED_RELEASES.world.name);
     const capabilityArchive = join(options.sdk, "releases", EXPECTED_RELEASES.worldCapabilities.name);
-    writeReleaseDownloadShim(shimRoot);
+    writeReleaseToolShims(shimRoot);
     const result = runCapture(process.execPath, [
       join(worldRoot, "scripts/check_world_2_externality.mjs"),
       "--zig",
@@ -152,6 +157,7 @@ try {
     ], worldRoot, {
       ...process.env,
       PATH: `${shimRoot}:${process.env.PATH ?? ""}`,
+      WORLD_SDK_WORLD_ARCHIVE: worldArchive,
       WORLD_SDK_CAPABILITIES_ARCHIVE: capabilityArchive,
     });
     const receipt = keyValueReceipt(result.stdout);
@@ -251,10 +257,20 @@ function assertMaterializedTemplate(releasedRoot, bundledRoot) {
   }
 }
 
-function writeReleaseDownloadShim(root) {
+function localizeWorldDependency(root, archive) {
+  const zonPath = join(root, "build.zig.zon");
+  const source = readFileSync(zonPath, "utf8");
+  assert(source.includes(EXPECTED_RELEASES.world.url));
+  writeFileSync(
+    zonPath,
+    source.replaceAll(EXPECTED_RELEASES.world.url, pathToFileURL(archive).href),
+  );
+}
+
+function writeReleaseToolShims(root) {
   mkdirSync(root);
-  const path = join(root, "gh");
-  writeFileSync(path, `#!/bin/sh
+  const ghPath = join(root, "gh");
+  writeFileSync(ghPath, `#!/bin/sh
 set -eu
 destination=
 pattern=
@@ -268,7 +284,24 @@ done
 test "$pattern" = "world-capabilities-v2.0.1.tar.gz"
 cp "$WORLD_SDK_CAPABILITIES_ARCHIVE" "$destination/$pattern"
 `);
-  chmodSync(path, 0o755);
+  chmodSync(ghPath, 0o755);
+
+  const curlPath = join(root, "curl");
+  writeFileSync(curlPath, `#!/bin/sh
+set -eu
+destination=
+url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output) destination="$2"; shift 2 ;;
+    --fail|--location|--silent|--show-error) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+test "$url" = "https://github.com/tkersey/world/archive/refs/tags/v2.0.0.tar.gz"
+cp "$WORLD_SDK_WORLD_ARCHIVE" "$destination"
+`);
+  chmodSync(curlPath, 0o755);
 }
 
 function keyValueReceipt(text) {
