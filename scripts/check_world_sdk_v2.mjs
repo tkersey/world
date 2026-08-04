@@ -98,9 +98,13 @@ const EXPECTED_RELEASES = Object.freeze({
 const EXPECTED_ARCHIVES = Object.freeze(Object.fromEntries(
   Object.values(EXPECTED_RELEASES).map((release) => [release.name, release.sha256]),
 ));
-const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const sourceRoot = resolve(scriptDirectory, "..");
 const options = parseArgs(process.argv.slice(2));
 options.zig = executablePath(options.zig);
+if (options.sdk === null && basename(scriptDirectory) === "conformance") {
+  options.sdk = sourceRoot;
+}
 let generatedRoot = null;
 try {
   if (options.sdk === null) {

@@ -159,11 +159,9 @@ try {
   if (!options.skipCheck) {
     const receipt = JSON.parse(runCapture(process.execPath, [
       join(options.out, "conformance/check-sdk.mjs"),
-      "--sdk",
-      options.out,
       "--zig",
       options.zig,
-    ]).stdout);
+    ], options.out).stdout);
     assert.equal(receipt.receiptVersion, "world-sdk-v2-check/v1");
     assert.equal(receipt.complete, true);
   }
