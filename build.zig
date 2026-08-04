@@ -801,6 +801,34 @@ pub fn build(b: *std.Build) void {
         "Validate one assembled World SDK v1.0.0 bundle.",
     );
     check_world_sdk_v1_step.dependOn(&check_world_sdk_v1.step);
+    const build_world_sdk_v2 = b.addSystemCommand(&.{"node"});
+    build_world_sdk_v2.addFileArg(b.path(
+        "scripts/build_world_sdk_v2.mjs",
+    ));
+    build_world_sdk_v2.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+    });
+    if (b.args) |args| build_world_sdk_v2.addArgs(args);
+    const build_world_sdk_v2_step = b.step(
+        "build-world-sdk-v2",
+        "Assemble the checksum-bound World SDK v2.0.0 release bundle.",
+    );
+    build_world_sdk_v2_step.dependOn(&build_world_sdk_v2.step);
+    const check_world_sdk_v2 = b.addSystemCommand(&.{"node"});
+    check_world_sdk_v2.addFileArg(b.path(
+        "scripts/check_world_sdk_v2.mjs",
+    ));
+    check_world_sdk_v2.addArgs(&.{
+        "--zig",
+        b.graph.zig_exe,
+    });
+    if (b.args) |args| check_world_sdk_v2.addArgs(args);
+    const check_world_sdk_v2_step = b.step(
+        "check-world-sdk-v2",
+        "Validate the assembled World SDK v2.0.0 bundle and externality proof.",
+    );
+    check_world_sdk_v2_step.dependOn(&check_world_sdk_v2.step);
     const run_one_effect_application_wasm = b.addSystemCommand(&.{
         "node",
         "scripts/world_application_v1_conformance.mjs",
