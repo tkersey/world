@@ -62,25 +62,25 @@ const ProviderMachineB = boundary.program(
     ProviderBody("world.test.depth.b.v2"),
 ).compile(.{});
 
-const App = world.v1.application(.{
+const App = world.application(.{
     .name = "provider-depth",
     .version = "2.0.0",
     .root = fixtures.RootMachine,
     .handlers = .{
-        world.v1.handle(
+        world.handle(
             fixtures.RootMachine,
             0,
             "world.test.root.v2",
             ProviderMachineA,
         ),
-        world.v1.handle(
+        world.handle(
             ProviderMachineA,
             0,
             "world.test.depth.a.v2",
             ProviderMachineB,
         ),
     },
-    .external = .{world.v1.external(ProviderMachineB, 0, .{
+    .external = .{world.external(ProviderMachineB, 0, .{
         .site_identity = "world.test.depth.b.v2",
         .interface = "test.depth.v1",
     })},

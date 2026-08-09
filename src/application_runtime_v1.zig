@@ -1,5 +1,5 @@
 const std = @import("std");
-const boundary = @import("boundary_machine");
+const boundary = @import("boundary");
 const protocol = @import("application_v1.zig");
 
 pub const Authority = enum(u6) {
@@ -447,7 +447,28 @@ fn requiredCapabilities(effects: []const protocol.ResidualEffect) u64 {
     return result;
 }
 
+const PackageIdentity = struct {
+    boundary_version: []const u8,
+    world_version: []const u8,
+};
+
+const production_package_identity: PackageIdentity = .{
+    .boundary_version = "1.0.0",
+    .world_version = "3.0.0",
+};
+
 pub fn application(comptime spec: anytype) type {
+    if (@hasField(@TypeOf(spec), "boundary_package_version") or
+        @hasField(@TypeOf(spec), "world_package_version"))
+    {
+        @compileError("world.application owns the World 3.0.0 / Boundary 1.0.0 package identity");
+    }
+    return applicationWithIdentity(spec, production_package_identity);
+}
+
+/// Internal identity injection exists only so later parity conformance can
+/// construct an equivalent manifest. It is intentionally not public.
+fn applicationWithIdentity(comptime spec: anytype, comptime identity: PackageIdentity) type {
     @setEvalBranchQuota(10_000_000);
     if (!@hasField(@TypeOf(spec), "name") or !@hasField(@TypeOf(spec), "version") or !@hasField(@TypeOf(spec), "root")) {
         @compileError("world.application requires name, version, and root fields");
@@ -464,12 +485,6 @@ pub fn application(comptime spec: anytype) type {
     );
     const handler_ids = derivedHandlerIds(handlers);
     const residual_effects = derivedResidualEffects(externals, limits);
-    const boundary_version: []const u8 = if (@hasField(@TypeOf(spec), "boundary_package_version"))
-        spec.boundary_package_version
-    else
-        "1.0.0";
-    const world_version: []const u8 = if (@hasField(@TypeOf(spec), "world_package_version")) spec.world_package_version else "2.0.0";
-
     return struct {
         const Self = @This();
         pub const State = []const u8;
@@ -487,9 +502,9 @@ pub fn application(comptime spec: anytype) type {
             var manifest: protocol.ApplicationManifest = .{
                 .application_name = name,
                 .application_version = version,
-                .boundary_package_version = boundary_version,
+                .boundary_package_version = identity.boundary_version,
                 .boundary_static_machine_abi_version = Root.abi_version,
-                .world_package_version = world_version,
+                .world_package_version = identity.world_version,
                 .root_program_id = machineId(Root),
                 .internal_handler_ids = &handler_ids,
                 .residual_effects = &residual_effects,

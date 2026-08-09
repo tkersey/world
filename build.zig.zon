@@ -1,17 +1,9 @@
 .{
     .name = .world,
-    .version = "2.0.0",
+    .version = "3.0.0",
     .fingerprint = 0x3a77114378d4745d,
     .dependencies = .{
         .boundary = .{
-            // World Comptime v1 consumes the immutable Boundary release that
-            // introduced the StaticMachine backend.
-            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v0.7.0.tar.gz",
-            .hash = "boundary-0.7.0-flclaCnjkABOSWaiSkxMBDQZsBEeA-Niai-l1u0q3A7_",
-        },
-        .boundary_machine = .{
-            // World 2 application compilation consumes the singular RNF
-            // Machine API while the unrelated legacy runtime remains pinned.
             .url = "git+https://github.com/tkersey/boundary.git#v1.0.0",
             .hash = "boundary-1.0.0-flclaPgFEQBhYvlC3eqNVK3X67InkTuaX-pHFvRLzWJ8",
         },
@@ -22,12 +14,12 @@
         "build.zig",
         "build.zig.zon",
         "build_support",
-        "conformance",
         "docs",
         "examples",
         "scripts",
         "src",
         "test",
         "templates",
+        "conformance/external-build-helper",
     },
 }

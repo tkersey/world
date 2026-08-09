@@ -1,4 +1,0 @@
-zig fmt src/world.zig --check: pass
-zig build test --summary none -- --test-filter "bundle": pass
-zig build test --summary none -- --test-filter "ledger": pass
-zig build test --summary none -- --test-filter "continuity": pass

@@ -58,7 +58,7 @@ pub fn add(
         .optimize = options.optimize,
     });
     const wasm_world = wasm_world_dependency.module("world");
-    const wasm_boundary = wasm_world_dependency.builder.dependency("boundary_machine", .{
+    const wasm_boundary = wasm_world_dependency.builder.dependency("boundary", .{
         .target = wasm_target,
         .optimize = options.optimize,
     }).module("boundary");
@@ -68,7 +68,7 @@ pub fn add(
         .optimize = options.optimize,
     });
     const host_world = host_world_dependency.module("world");
-    const host_boundary = host_world_dependency.builder.dependency("boundary_machine", .{
+    const host_boundary = host_world_dependency.builder.dependency("boundary", .{
         .target = b.graph.host,
         .optimize = options.optimize,
     }).module("boundary");

@@ -1,7 +1,0 @@
-zig fmt --check src/world.zig: pass
-zig build test --summary none -- --test-filter "inbox": pass
-zig build test --summary none -- --test-filter "outbox": pass
-zig build test --summary none -- --test-filter "bundle": pass
-zig build test --summary none -- --test-filter "chronicle": pass
-zig build test --summary none -- --test-filter "continuity": pass
-zig build test --summary none -- --test-filter "memory vault": pass

@@ -14,7 +14,7 @@ test "Research Digest v2 formats bounded research items inside compiled Machines
     try std.testing.expectEqual(@as(usize, 1), App.internal_handler_ids.len);
     try std.testing.expectEqual(@as(usize, 1), App.residual_effect_row.len);
     try std.testing.expectEqual(
-        world.v1.siteId(ResearchLookupMachine, 0),
+        world.siteId(ResearchLookupMachine, 0),
         App.residual_effect_row[0].site_id,
     );
 
@@ -24,9 +24,9 @@ test "Research Digest v2 formats bounded research items inside compiled Machines
     };
     const initial_args = try App.encodeInitialArgs(allocator, request);
     const parent = try App.initialFrame(&arena, initial_args, 10_000);
-    try std.testing.expectEqual(world.v1.FrameStatus.needs_effect, parent.status);
+    try std.testing.expectEqual(world.protocol.v1.FrameStatus.needs_effect, parent.status);
     try std.testing.expectEqual(
-        world.v1.siteId(ResearchLookupMachine, 0),
+        world.siteId(ResearchLookupMachine, 0),
         parent.pending_effect.?.site_id,
     );
     try std.testing.expectEqual(
@@ -61,7 +61,7 @@ test "Research Digest v2 formats bounded research items inside compiled Machines
         0,
         response,
     );
-    var effect_result: world.v1.EffectResult = .{
+    var effect_result: world.protocol.v1.EffectResult = .{
         .request_id = parent.pending_effect.?.request_id,
         .status = .ok,
         .result_schema_id = parent.pending_effect.?.result_schema_id,
@@ -70,7 +70,7 @@ test "Research Digest v2 formats bounded research items inside compiled Machines
     };
     try effect_result.seal(allocator, App.Limits);
     const parent_bytes = try App.encodeFrame(allocator, parent);
-    const input: world.v1.StepInput = .{
+    const input: world.protocol.v1.StepInput = .{
         .application_id = App.Manifest.application_id,
         .expected_parent_frame_id = parent.frame_id,
         .prior_frame_bytes = parent_bytes,
@@ -79,7 +79,7 @@ test "Research Digest v2 formats bounded research items inside compiled Machines
     };
     const completed = try App.step(&arena, input);
     const retried = try App.step(&arena, input);
-    try std.testing.expectEqual(world.v1.FrameStatus.completed, completed.status);
+    try std.testing.expectEqual(world.protocol.v1.FrameStatus.completed, completed.status);
     try std.testing.expectEqual(
         @as(u64, 2),
         completed.resource_counters.continuation_operations,
@@ -114,7 +114,7 @@ test "Research Digest v2 budget admits the maximum bounded response" {
     };
     const initial_args = try App.encodeInitialArgs(allocator, request);
     const parent = try App.initialFrame(&arena, initial_args, 10_000);
-    try std.testing.expectEqual(world.v1.FrameStatus.needs_effect, parent.status);
+    try std.testing.expectEqual(world.protocol.v1.FrameStatus.needs_effect, parent.status);
 
     const title_bytes = [_]u8{'T'} ** 256;
     const summary_bytes = [_]u8{'S'} ** 1024;
@@ -131,7 +131,7 @@ test "Research Digest v2 budget admits the maximum bounded response" {
         0,
         response,
     );
-    var effect_result: world.v1.EffectResult = .{
+    var effect_result: world.protocol.v1.EffectResult = .{
         .request_id = parent.pending_effect.?.request_id,
         .status = .ok,
         .result_schema_id = parent.pending_effect.?.result_schema_id,
@@ -147,7 +147,7 @@ test "Research Digest v2 budget admits the maximum bounded response" {
         .effect_result = effect_result,
         .fuel = 10_000,
     });
-    try std.testing.expectEqual(world.v1.FrameStatus.completed, completed.status);
+    try std.testing.expectEqual(world.protocol.v1.FrameStatus.completed, completed.status);
 
     var result = try App.decodeFinalResult(allocator, completed);
     defer result.deinit();

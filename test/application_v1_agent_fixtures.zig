@@ -7,7 +7,7 @@ pub const TextValue = boundary.Text(2048);
 const text_type: boundary.ir.ValueType = .{ .schema = 0 };
 const continuation_arguments = [_]boundary.ir.EdgeArgument{.@"resume"};
 
-const application_limits: world.v1.Limits = .{
+const application_limits: world.protocol.v1.Limits = .{
     .maximum_initial_args_bytes = 64 * 1024,
     .maximum_state_bytes = 256 * 1024,
     .maximum_payload_bytes = 64 * 1024,
@@ -133,22 +133,22 @@ pub const SkeletonApp = world.application(.{
     .name = "skeleton-agent",
     .version = "2.0.0",
     .root = SkeletonRootMachine,
-    .handlers = .{world.v1.handle(
+    .handlers = .{world.handle(
         SkeletonRootMachine,
         1,
         "agent.toolbox.call.v1",
         PureToolboxMachine,
     )},
     .external = .{
-        world.v1.external(SkeletonRootMachine, 0, .{
+        world.external(SkeletonRootMachine, 0, .{
             .site_identity = "agent.model.decide.first.v1",
             .interface = "agent.model.decide.v1",
-            .authority = world.v1.Authority.model,
+            .authority = world.Authority.model,
         }),
-        world.v1.external(SkeletonRootMachine, 2, .{
+        world.external(SkeletonRootMachine, 2, .{
             .site_identity = "agent.model.decide.second.v1",
             .interface = "agent.model.decide.v1",
-            .authority = world.v1.Authority.model,
+            .authority = world.Authority.model,
         }),
     },
     .limits = application_limits,
@@ -307,13 +307,13 @@ pub const FixtureApp = world.application(.{
     .version = "2.0.0",
     .root = FixtureRootMachine,
     .handlers = .{
-        world.v1.handle(
+        world.handle(
             FixtureRootMachine,
             1,
             "agent.toolbox.read.v1",
             ReadProviderMachine,
         ),
-        world.v1.handle(
+        world.handle(
             FixtureRootMachine,
             3,
             "agent.toolbox.write.v1",
@@ -321,36 +321,36 @@ pub const FixtureApp = world.application(.{
         ),
     },
     .external = .{
-        world.v1.external(FixtureRootMachine, 0, .{
+        world.external(FixtureRootMachine, 0, .{
             .site_identity = "agent.model.decide.first.v1",
             .interface = "agent.model.decide.v1",
-            .authority = world.v1.Authority.model,
+            .authority = world.Authority.model,
         }),
-        world.v1.external(FixtureRootMachine, 2, .{
+        world.external(FixtureRootMachine, 2, .{
             .site_identity = "agent.model.decide.second.v1",
             .interface = "agent.model.decide.v1",
-            .authority = world.v1.Authority.model,
+            .authority = world.Authority.model,
         }),
-        world.v1.external(FixtureRootMachine, 4, .{
+        world.external(FixtureRootMachine, 4, .{
             .site_identity = "agent.model.decide.third.v1",
             .interface = "agent.model.decide.v1",
-            .authority = world.v1.Authority.model,
+            .authority = world.Authority.model,
         }),
-        world.v1.external(ReadProviderMachine, 0, .{
+        world.external(ReadProviderMachine, 0, .{
             .site_identity = "host.file.read.v1",
             .interface = "host.file.read.v1",
-            .authority = world.v1.Authority.file_read,
+            .authority = world.Authority.file_read,
         }),
-        world.v1.external(WriteProviderMachine, 0, .{
+        world.external(WriteProviderMachine, 0, .{
             .site_identity = "host.file.write.v1",
             .interface = "host.file.write.v1",
-            .authority = world.v1.Authority.file_write,
+            .authority = world.Authority.file_write,
         }),
     },
     .limits = application_limits,
 });
 
-pub const WasmOptions: world.v1.WasmOptions = .{
+pub const WasmOptions: world.WasmOptions = .{
     .input_capacity = 2 * 1024 * 1024,
     .output_capacity = 2 * 1024 * 1024,
     .scratch_capacity = 8 * 1024 * 1024,
@@ -361,9 +361,9 @@ fn continueWithText(
     comptime Machine: type,
     comptime site_ordinal: usize,
     arena: *std.heap.ArenaAllocator,
-    parent: world.v1.Frame,
+    parent: world.protocol.v1.Frame,
     value: TextValue,
-) !world.v1.Frame {
+) !world.protocol.v1.Frame {
     const allocator = arena.allocator();
     const result_bytes = try App.encodeExternalResult(
         allocator,
@@ -371,7 +371,7 @@ fn continueWithText(
         site_ordinal,
         value,
     );
-    var result: world.v1.EffectResult = .{
+    var result: world.protocol.v1.EffectResult = .{
         .request_id = parent.pending_effect.?.request_id,
         .status = .ok,
         .result_schema_id = parent.pending_effect.?.result_schema_id,
@@ -389,7 +389,7 @@ fn continueWithText(
     });
 }
 
-fn expectTextPayload(frame: world.v1.Frame, expected: []const u8) !void {
+fn expectTextPayload(frame: world.protocol.v1.Frame, expected: []const u8) !void {
     const decoded = try boundary.schema.decodeExact(TextValue, frame.pending_effect.?.payload_bytes);
     try std.testing.expectEqualStrings(expected, try decoded.slice());
 }
@@ -401,21 +401,21 @@ test "skeleton application closes toolbox and completes through two model effect
     try std.testing.expectEqual(@as(usize, 1), SkeletonApp.internal_handler_ids.len);
     try std.testing.expectEqual(@as(usize, 2), SkeletonApp.residual_effect_row.len);
     for (SkeletonApp.residual_effect_row) |effect| {
-        try std.testing.expect(effect.site_id != world.v1.siteId(SkeletonRootMachine, 1));
+        try std.testing.expect(effect.site_id != world.siteId(SkeletonRootMachine, 1));
     }
     const args = try SkeletonApp.encodeInitialArgs(allocator, try TextValue.fromSlice("goal=invoke"));
 
     const first = try SkeletonApp.initialFrame(&arena, args, 100);
-    try std.testing.expectEqual(world.v1.siteId(SkeletonRootMachine, 0), first.pending_effect.?.site_id);
+    try std.testing.expectEqual(world.siteId(SkeletonRootMachine, 0), first.pending_effect.?.site_id);
     try expectTextPayload(first, "goal=invoke");
 
     const second = try continueWithText(SkeletonApp, SkeletonRootMachine, 0, &arena, first, try TextValue.fromSlice("actuate"));
-    try std.testing.expectEqual(world.v1.siteId(SkeletonRootMachine, 2), second.pending_effect.?.site_id);
+    try std.testing.expectEqual(world.siteId(SkeletonRootMachine, 2), second.pending_effect.?.site_id);
     try expectTextPayload(second, "actuate");
     try std.testing.expectEqual(@as(u64, 1), second.resource_counters.internal_handler_calls);
 
     const completed = try continueWithText(SkeletonApp, SkeletonRootMachine, 2, &arena, second, try TextValue.fromSlice("final=actuate skeleton complete"));
-    try std.testing.expectEqual(world.v1.FrameStatus.completed, completed.status);
+    try std.testing.expectEqual(world.protocol.v1.FrameStatus.completed, completed.status);
     var result = try SkeletonApp.decodeFinalResult(allocator, completed);
     defer result.deinit();
     try std.testing.expectEqualStrings("final=actuate skeleton complete", try result.value.slice());
@@ -428,32 +428,32 @@ test "fixture application exposes model read write model sequence through compil
     try std.testing.expectEqual(@as(usize, 2), FixtureApp.internal_handler_ids.len);
     try std.testing.expectEqual(@as(usize, 5), FixtureApp.residual_effect_row.len);
     for (FixtureApp.residual_effect_row) |effect| {
-        try std.testing.expect(effect.site_id != world.v1.siteId(FixtureRootMachine, 1));
-        try std.testing.expect(effect.site_id != world.v1.siteId(FixtureRootMachine, 3));
+        try std.testing.expect(effect.site_id != world.siteId(FixtureRootMachine, 1));
+        try std.testing.expect(effect.site_id != world.siteId(FixtureRootMachine, 3));
     }
     const args = try FixtureApp.encodeInitialArgs(allocator, try TextValue.fromSlice("goal=fixture"));
 
     const frame0 = try FixtureApp.initialFrame(&arena, args, 100);
-    try std.testing.expectEqual(world.v1.siteId(FixtureRootMachine, 0), frame0.pending_effect.?.site_id);
+    try std.testing.expectEqual(world.siteId(FixtureRootMachine, 0), frame0.pending_effect.?.site_id);
 
     const frame1 = try continueWithText(FixtureApp, FixtureRootMachine, 0, &arena, frame0, try TextValue.fromSlice("fixture-input.txt"));
-    try std.testing.expectEqual(world.v1.siteId(ReadProviderMachine, 0), frame1.pending_effect.?.site_id);
+    try std.testing.expectEqual(world.siteId(ReadProviderMachine, 0), frame1.pending_effect.?.site_id);
     try expectTextPayload(frame1, "fixture-input.txt");
 
     const frame2 = try continueWithText(FixtureApp, ReadProviderMachine, 0, &arena, frame1, try TextValue.fromSlice("rewrite this file through the agent loop\n"));
-    try std.testing.expectEqual(world.v1.siteId(FixtureRootMachine, 2), frame2.pending_effect.?.site_id);
+    try std.testing.expectEqual(world.siteId(FixtureRootMachine, 2), frame2.pending_effect.?.site_id);
     try expectTextPayload(frame2, "rewrite this file through the agent loop\n");
 
     const frame3 = try continueWithText(FixtureApp, FixtureRootMachine, 2, &arena, frame2, try TextValue.fromSlice("fixture-output.txt\nactuate updated the fixture"));
-    try std.testing.expectEqual(world.v1.siteId(WriteProviderMachine, 0), frame3.pending_effect.?.site_id);
+    try std.testing.expectEqual(world.siteId(WriteProviderMachine, 0), frame3.pending_effect.?.site_id);
     try expectTextPayload(frame3, "fixture-output.txt\nactuate updated the fixture");
 
     const frame4 = try continueWithText(FixtureApp, WriteProviderMachine, 0, &arena, frame3, try TextValue.fromSlice("write=ok"));
-    try std.testing.expectEqual(world.v1.siteId(FixtureRootMachine, 4), frame4.pending_effect.?.site_id);
+    try std.testing.expectEqual(world.siteId(FixtureRootMachine, 4), frame4.pending_effect.?.site_id);
     try expectTextPayload(frame4, "write=ok");
 
     const completed = try continueWithText(FixtureApp, FixtureRootMachine, 4, &arena, frame4, try TextValue.fromSlice("final=fixture updated"));
-    try std.testing.expectEqual(world.v1.FrameStatus.completed, completed.status);
+    try std.testing.expectEqual(world.protocol.v1.FrameStatus.completed, completed.status);
     var result = try FixtureApp.decodeFinalResult(allocator, completed);
     defer result.deinit();
     try std.testing.expectEqualStrings("final=fixture updated", try result.value.slice());

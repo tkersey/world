@@ -15,7 +15,7 @@ pub const Options = struct {
 /// The returned namespace owns only reusable byte regions. A Frame remains the
 /// complete semantic state, so resetting or discarding the namespace cannot
 /// change application meaning.
-pub fn ApplicationAbi(comptime App: type, comptime options: Options) type {
+pub fn ApplicationAbiV1(comptime App: type, comptime options: Options) type {
     requireApplication(App);
     validateOptions(options);
     validateApplicationRegions(App, options);
@@ -238,5 +238,5 @@ fn stepStatus(err: protocol.Error) Status {
 }
 
 test {
-    _ = ApplicationAbi;
+    _ = ApplicationAbiV1;
 }

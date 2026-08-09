@@ -1,7 +1,7 @@
 const world = @import("world");
 const application = @import("world_application");
 
-const Abi = world.v1.ApplicationAbi(application.App, .{});
+const Abi = world.ApplicationAbiV1(application.App, .{});
 
 pub export fn world_abi_version() u32 {
     return Abi.worldAbiVersion();
