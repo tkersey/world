@@ -17,6 +17,7 @@
         "docs",
         "examples",
         "scripts",
+        "sdk",
         "src",
         "test",
         "templates",
