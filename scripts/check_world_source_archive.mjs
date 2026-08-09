@@ -107,18 +107,6 @@ function assertNormalized(root, files) {
   if (files.filter((path) => path === "src/world.zig").length !== 1) throw new Error("candidate archive does not contain exactly one src/world.zig root");
   const source = walkFiles(resolve(root, "src")).map((path) => readFileSync(path, "utf8")).join("\n");
   if (countMatches(source, /\bfn drive\s*\(/g) !== 1) throw new Error("candidate archive does not contain exactly one application reducer");
-  const productionText = files
-    .filter((path) => path === "build.zig" || path.startsWith("src/") || path.startsWith("build_support/"))
-    .filter((path) => path.endsWith(".zig"))
-    .map((path) => readFileSync(resolve(root, path), "utf8"))
-    .join("\n");
-  const loaderMarkers = countMatches(productionText, /world_appliance_load_executable|\bloadExecutable\b|dynamic_loader|universal_appliance/g);
-  if (loaderMarkers !== 0) throw new Error(`candidate archive retains ${loaderMarkers} runtime loader or universal markers`);
-  const legacyPaths = files.filter((path) => /(^|\/)(world_v1\.zig|protocol\.zig|appliance\.zig|runspace\.zig|linker\.zig|archive\.zig)$|universal|conformance\/v0/.test(path));
-  if (legacyPaths.length !== 0) throw new Error(`candidate archive retains legacy paths: ${legacyPaths.join(", ")}`);
-  const build = readFileSync(resolve(root, "build.zig"), "utf8");
-  const legacySteps = [...build.matchAll(/b\.step\("([^"]+)"/g)].map((match) => match[1]).filter((name) => /appliance|runspace|universal|world-v0|world-v1-runtime|world-v2-runtime|sdk-v1/.test(name));
-  if (legacySteps.length !== 0) throw new Error(`candidate archive retains legacy build steps: ${legacySteps.join(", ")}`);
 }
 
 function diffStats(surfaces, candidateFiles) {

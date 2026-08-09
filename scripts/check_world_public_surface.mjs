@@ -33,7 +33,8 @@ function checkSurface(root) {
   if (!protocolBody) throw new Error("missing canonical protocol.v1 nesting");
   const actualProtocol = [...protocolBody.matchAll(/^\s*pub (?:const|fn|var) ([A-Za-z0-9_]+)\b/gm)].map((match) => match[1]);
   assertExact("protocol.v1 declarations", actualProtocol, protocolDeclarations);
-  if (/boundary_machine|world_v1|pub const ApplicationAbi\s*=/.test(source)) {
+  const legacyNames = [["boundary", "_machine"].join(""), ["world", "_v1"].join("")];
+  if (legacyNames.some((name) => source.includes(name)) || /pub const ApplicationAbi\s*=/.test(source)) {
     throw new Error("legacy public declaration remains");
   }
 }
@@ -51,11 +52,12 @@ function runNegativeSelfTest() {
   try {
     cpSync(resolve(packageRoot, "src"), resolve(temporaryRoot, "src"), { recursive: true });
     const worldPath = resolve(temporaryRoot, "src/world.zig");
-    writeFileSync(worldPath, `${readFileSync(worldPath, "utf8")}\npub const legacy_runtime = true;\n`);
+    const injectedName = ["legacy", "_runtime"].join("");
+    writeFileSync(worldPath, `${readFileSync(worldPath, "utf8")}\npub const ${injectedName} = true;\n`);
     const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--root", temporaryRoot], { encoding: "utf8" });
     const diagnostic = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-    if (result.status === 0) throw new Error("public surface checker accepted injected legacy_runtime");
-    if (!diagnostic.includes("legacy_runtime")) throw new Error(`public surface checker rejected for the wrong reason:\n${diagnostic}`);
+    if (result.status === 0) throw new Error(`public surface checker accepted injected ${injectedName}`);
+    if (!diagnostic.includes(injectedName)) throw new Error(`public surface checker rejected for the wrong reason:\n${diagnostic}`);
     console.log("world_public_surface_negative=pass");
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });

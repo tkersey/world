@@ -1,6 +1,7 @@
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -8,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -41,29 +42,31 @@ function checkSingularity(root) {
     }
   }
 
-  for (const path of ["src/world_v1.zig", "src/protocol.zig"]) {
+  for (const path of [["src/world", "_v1.zig"].join(""), "src/protocol.zig"]) {
     if (existsSync(resolve(root, path))) throw new Error(`legacy path remains: ${path}`);
   }
   const legacyConformanceFiles = existsSync(resolve(root, "conformance/v0"))
-    ? readdirOrFile(resolve(root, "conformance/v0"))
+    ? readdirOrFile(resolve(root, "conformance/v0"), root)
     : [];
   if (legacyConformanceFiles.length !== 0) {
     throw new Error(`legacy conformance files remain: ${legacyConformanceFiles.join(", ")}`);
   }
 
-  const scan = ["build.zig", "build_support/application.zig", "src", "examples", "templates", "test"];
-  for (const path of walk(root, scan)) {
+  const declared = declaredPackageSurfaces(readFileSync(resolve(root, "build.zig.zon"), "utf8"));
+  const semanticTerms = forbiddenSemanticTerms();
+  const migrationDocument = "docs/migration_from_world_2.md";
+  const parityHarness = "scripts/check_world_2_3_parity.mjs";
+  const parityException = ["boundary", "_machine"].join("");
+  for (const path of walk(root, declared)) {
+    const relative = path.slice(root.length + 1);
+    if (isForbiddenLegacyPath(relative)) throw new Error(`legacy path remains: ${relative}`);
     const text = readFileSync(path, "utf8");
-    if (/world\.v1\b|boundary_machine|world_v1\.zig/.test(text)) {
-      throw new Error(`legacy construction surface remains in ${path.slice(root.length + 1)}`);
-    }
-  }
-
-  for (const name of exact.get("docs")) {
-    if (name === "migration_from_world_2.md") continue;
-    const text = readFileSync(resolve(root, "docs", name), "utf8");
-    if (/World v0|World 2|Boundary v0\.7|TurnClosure|Capsule/.test(text)) {
-      throw new Error(`historical concept outside migration document: docs/${name}`);
+    for (const term of semanticTerms) {
+      if (relative === migrationDocument) continue;
+      if (relative === parityHarness && term.marker === parityException) continue;
+      if (containsTerm(text, term.marker)) {
+        throw new Error(`forbidden semantic marker ${term.marker} remains in ${relative}`);
+      }
     }
   }
 
@@ -77,40 +80,139 @@ function checkSingularity(root) {
 function runNegativeSelfTest() {
   const temporaryRoot = mkdtempSync(join(tmpdir(), "world-singularity-negative-"));
   try {
-    for (const path of [
-      "README.md",
-      "build.zig",
-      "build.zig.zon",
-      "build_support",
-      "docs",
-      "examples",
-      "scripts",
-      "src",
-      "templates",
-      "test",
-    ]) {
-      cpSync(resolve(packageRoot, path), resolve(temporaryRoot, path), { recursive: true });
-    }
+    const pathRoot = resolve(temporaryRoot, "legacy-path");
+    copyDeclaredPackage(pathRoot);
+    const legacyWorldName = ["world", "_v1.zig"].join("");
+    const legacyWorldPath = `src/${legacyWorldName}`;
     writeFileSync(
-      resolve(temporaryRoot, "src/world_v1.zig"),
+      resolve(pathRoot, legacyWorldPath),
       "pub const legacy_world_surface = true;\n",
     );
-    const result = spawnSync(
+    const pathResult = spawnSync(
       process.execPath,
-      [fileURLToPath(import.meta.url), "--root", temporaryRoot],
+      [fileURLToPath(import.meta.url), "--root", pathRoot],
       { encoding: "utf8" },
     );
-    const diagnostic = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-    if (result.status === 0) {
-      throw new Error("singularity checker accepted an injected src/world_v1.zig surface");
+    const pathDiagnostic = `${pathResult.stdout ?? ""}\n${pathResult.stderr ?? ""}`;
+    if (pathResult.status === 0) {
+      throw new Error(`singularity checker accepted an injected ${legacyWorldPath} surface`);
     }
-    if (!diagnostic.includes("world_v1.zig")) {
-      throw new Error(`singularity checker rejected for the wrong reason:\n${diagnostic}`);
+    if (!pathDiagnostic.includes(legacyWorldName)) {
+      throw new Error(`singularity checker rejected the path injection for the wrong reason:\n${pathDiagnostic}`);
     }
+
+    const semanticRoot = resolve(temporaryRoot, "semantic-marker");
+    copyDeclaredPackage(semanticRoot);
+    const retainedScript = resolve(semanticRoot, "scripts/init_world_application.mjs");
+    const injectedMarker = ["Loaded", "Session"].join("");
+    writeFileSync(retainedScript, `${readFileSync(retainedScript, "utf8")}\n// ${injectedMarker}\n`);
+    const semanticResult = spawnSync(
+      process.execPath,
+      [fileURLToPath(import.meta.url), "--root", semanticRoot],
+      { encoding: "utf8" },
+    );
+    const semanticDiagnostic = `${semanticResult.stdout ?? ""}\n${semanticResult.stderr ?? ""}`;
+    if (semanticResult.status === 0) {
+      throw new Error(`singularity checker accepted injected semantic marker ${injectedMarker}`);
+    }
+    if (!semanticDiagnostic.includes(injectedMarker)) {
+      throw new Error(`singularity checker rejected the semantic injection for the wrong reason:\n${semanticDiagnostic}`);
+    }
+    console.log("world_singularity_negative_path=true");
+    console.log("world_singularity_negative_semantic=true");
     console.log("world_singularity_negative=pass");
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+function copyDeclaredPackage(destination) {
+  const zon = readFileSync(resolve(packageRoot, "build.zig.zon"), "utf8");
+  mkdirSync(destination, { recursive: true });
+  for (const path of declaredPackageSurfaces(zon)) {
+    cpSync(resolve(packageRoot, path), resolve(destination, path), {
+      recursive: true,
+      filter: (source) => !isIgnoredGeneratedCheckoutPath(source),
+    });
+  }
+}
+
+function declaredPackageSurfaces(zon) {
+  const body = zon.match(/\.paths\s*=\s*\.\{([\s\S]*?)\n\s*\},\n\}/)?.[1];
+  if (!body) throw new Error("cannot parse declared package paths");
+  const paths = [...body.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  if (paths.length === 0) throw new Error("declared package paths are empty");
+  return paths;
+}
+
+function forbiddenSemanticTerms() {
+  const term = (...parts) => parts.join("");
+  return [
+    term("boundary", "_machine"),
+    term("Boundary v0", ".7"),
+    term("boundary-v0", ".7"),
+    term("world", ".v1"),
+    term("world", "_v1"),
+    term("Program", "Plan"),
+    term("program", "_plan"),
+    term("Boundary", "Module"),
+    term("boundary", "_module"),
+    term("Certified", "Module"),
+    term("Certified", "Target"),
+    term("CertifiedBoundary", "Module"),
+    term("decode", "Boundary", "Module"),
+    term("decode", "Program", "Plan"),
+    term("world", "_appliance", "_load", "_executable"),
+    term("load", "Executable"),
+    term("dynamic", "_loader"),
+    term("universal", "_world"),
+    term("universal", "_world", "_runtime"),
+    term("universal", "_world", "_wasm"),
+    term("universal", "_world", "_appliance"),
+    term("world", "_universal"),
+    term("world", "_universal", "_runtime"),
+    term("world", "_universal", "_wasm"),
+    term("world", "_universal", "_appliance"),
+    term("universal", "_appliance"),
+    term("Executable", ".Image"),
+    term("Turn", "Closure"),
+    term("Run", "space"),
+    term("Fab", "ric", "Plan"),
+    term("Fab", "ric"),
+    term("Link", "er"),
+    term("Appli", "ance"),
+    term("Cap", "sule"),
+    term("Chron", "icle"),
+    term("Arch", "ive"),
+    term("Actu", "ation"),
+    term("Super", "vision"),
+    term("Environ", "ment"),
+    term("Trans", "cript"),
+    term("Hand", "off"),
+    term("Loaded", "Session"),
+    term("Certified Boundary", " Module"),
+  ].map((marker) => ({ marker }));
+}
+
+function isForbiddenLegacyPath(path) {
+  const term = (...parts) => parts.join("");
+  const forbiddenNames = new Set([
+    term("world", "_v1.zig"),
+    "protocol.zig",
+    term("appli", "ance.zig"),
+    term("run", "space.zig"),
+    term("link", "er.zig"),
+    term("arch", "ive.zig"),
+  ]);
+  const parts = path.split("/");
+  if (parts.some((part) => forbiddenNames.has(part))) return true;
+  if (parts.includes("conformance") && parts.some((part) => /^v0(?:\b|[._-])/.test(part))) return true;
+  return parts.some((part) => part.includes(term("universal", "_world")) || part.includes(term("world", "_universal")));
+}
+
+function containsTerm(text, marker) {
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`).test(text);
 }
 
 function parseArgs(args) {
@@ -139,19 +241,49 @@ function parseArgs(args) {
 function* walk(root, entries) {
   for (const entry of entries) {
     const path = resolve(root, entry);
-    const stat = existsSync(path) ? readdirOrFile(path) : [];
+    const stat = existsSync(path) ? readdirOrFile(path, root) : [];
     for (const child of stat) yield child;
   }
 }
 
-function readdirOrFile(path) {
+function readdirOrFile(path, root) {
+  if (isGeneratedDirectoryName(path)) {
+    if (root === packageRoot && isGitIgnored(path)) return [];
+    throw new Error(`packaged generated/cache path remains: ${relative(root, path)}`);
+  }
+  let entries;
   try {
-    return readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
-      if (entry.name.startsWith(".zig-cache") || entry.name === "zig-out") return [];
-      const child = resolve(path, entry.name);
-      return entry.isDirectory() ? readdirOrFile(child) : [child];
-    });
+    entries = readdirSync(path, { withFileTypes: true });
   } catch {
     return [path];
   }
+  return entries.flatMap((entry) => {
+    const child = resolve(path, entry.name);
+    return entry.isDirectory() ? readdirOrFile(child, root) : [child];
+  });
+}
+
+function isIgnoredGeneratedCheckoutPath(path) {
+  const parts = relative(packageRoot, path).split(/[\\/]/);
+  for (let index = 0; index < parts.length; index += 1) {
+    if (!generatedDirectoryNames().has(parts[index])) continue;
+    return isGitIgnored(resolve(packageRoot, ...parts.slice(0, index + 1)));
+  }
+  return false;
+}
+
+function isGeneratedDirectoryName(path) {
+  const name = path.split(/[\\/]/).at(-1);
+  return generatedDirectoryNames().has(name);
+}
+
+function generatedDirectoryNames() {
+  return new Set([".zig-cache", "zig-out", "zig-pkg"]);
+}
+
+function isGitIgnored(path) {
+  const result = spawnSync("git", ["check-ignore", "-q", "--", path], { cwd: packageRoot });
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error(`git check-ignore failed for ${path}`);
 }

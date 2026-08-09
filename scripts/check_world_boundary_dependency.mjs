@@ -31,7 +31,8 @@ function checkDependency(root) {
   if (names.length !== 1 || names[0] !== "boundary") {
     throw new Error(`World must have exactly one dependency named boundary; found ${names.join(", ")}`);
   }
-  if (/boundary_machine|v0\.7\.0/.test(zon)) throw new Error("legacy Boundary dependency identity remains");
+  const legacyNames = [["boundary", "_machine"].join(""), ["v0", ".7.0"].join("")];
+  if (legacyNames.some((name) => zon.includes(name))) throw new Error("legacy Boundary dependency identity remains");
 }
 
 function runNegativeSelfTest() {
@@ -39,15 +40,17 @@ function runNegativeSelfTest() {
   try {
     cpSync(resolve(packageRoot, "build.zig.zon"), resolve(temporaryRoot, "build.zig.zon"));
     const zonPath = resolve(temporaryRoot, "build.zig.zon");
+    const injectedName = ["boundary", "_legacy"].join("");
+    const injectedVersion = ["v0", ".7.0"].join("");
     const injected = readFileSync(zonPath, "utf8").replace(
       "    .minimum_zig_version",
-      `        .boundary_legacy = .{\n            .url = "https://example.invalid/boundary-v0.7.0.tar.gz",\n            .hash = "boundary_legacy_injected",\n        },\n    },\n    .minimum_zig_version`,
-    ).replace("    },\n        .boundary_legacy", "        .boundary_legacy");
+      `        .${injectedName} = .{\n            .url = "https://example.invalid/boundary-${injectedVersion}.tar.gz",\n            .hash = "${injectedName}_injected",\n        },\n    },\n    .minimum_zig_version`,
+    ).replace(`    },\n        .${injectedName}`, `        .${injectedName}`);
     writeFileSync(zonPath, injected);
     const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--root", temporaryRoot], { encoding: "utf8" });
     const diagnostic = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-    if (result.status === 0) throw new Error("dependency checker accepted injected boundary_legacy");
-    if (!diagnostic.includes("boundary_legacy")) throw new Error(`dependency checker rejected for the wrong reason:\n${diagnostic}`);
+    if (result.status === 0) throw new Error(`dependency checker accepted injected ${injectedName}`);
+    if (!diagnostic.includes(injectedName)) throw new Error(`dependency checker rejected for the wrong reason:\n${diagnostic}`);
     console.log("world_boundary_dependency_negative=pass");
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
