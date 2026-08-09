@@ -278,6 +278,15 @@ pub fn build(b: *std.Build) void {
     const singularity_negative_step = b.step("check-world-singularity-negative", "Prove the singularity checker rejects an injected legacy package surface.");
     singularity_negative_step.dependOn(&singularity_negative_gate.step);
 
+    const parity_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_2_3_parity.mjs", "--zig" });
+    parity_gate.addArg(b.graph.zig_exe);
+    const parity_step = b.step("check-world-2-3-parity", "Prove fixed-identity World 2 and World 3 application artifacts and lifecycles are byte-identical.");
+    parity_step.dependOn(&parity_gate.step);
+    const parity_negative_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_2_3_parity.mjs", "--negative-self-test", "--zig" });
+    parity_negative_gate.addArg(b.graph.zig_exe);
+    const parity_negative_step = b.step("check-world-2-3-parity-negative", "Prove the World 2 / World 3 parity comparator rejects lifecycle drift.");
+    parity_negative_step.dependOn(&parity_negative_gate.step);
+
     const application_step = b.step("check-world-application", "Prove native, WASM, and external application compilation.");
     application_step.dependOn(application_v1_step);
     application_step.dependOn(native_step);

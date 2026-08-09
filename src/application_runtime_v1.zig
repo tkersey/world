@@ -447,12 +447,12 @@ fn requiredCapabilities(effects: []const protocol.ResidualEffect) u64 {
     return result;
 }
 
-const PackageIdentity = struct {
+pub const ConformancePackageIdentity = struct {
     boundary_version: []const u8,
     world_version: []const u8,
 };
 
-const production_package_identity: PackageIdentity = .{
+const production_package_identity: ConformancePackageIdentity = .{
     .boundary_version = "1.0.0",
     .world_version = "3.0.0",
 };
@@ -463,12 +463,15 @@ pub fn application(comptime spec: anytype) type {
     {
         @compileError("world.application owns the World 3.0.0 / Boundary 1.0.0 package identity");
     }
-    return applicationWithIdentity(spec, production_package_identity);
+    return applicationWithIdentityForConformance(spec, production_package_identity);
 }
 
-/// Internal identity injection exists only so later parity conformance can
-/// construct an equivalent manifest. It is intentionally not public.
-fn applicationWithIdentity(comptime spec: anytype, comptime identity: PackageIdentity) type {
+/// Internal identity injection exists only for fixed-release conformance.
+/// `src/world.zig` intentionally does not re-export this constructor.
+pub fn applicationWithIdentityForConformance(
+    comptime spec: anytype,
+    comptime identity: ConformancePackageIdentity,
+) type {
     @setEvalBranchQuota(10_000_000);
     if (!@hasField(@TypeOf(spec), "name") or !@hasField(@TypeOf(spec), "version") or !@hasField(@TypeOf(spec), "root")) {
         @compileError("world.application requires name, version, and root fields");
