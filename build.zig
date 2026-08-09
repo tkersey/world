@@ -407,10 +407,10 @@ pub fn build(b: *std.Build) void {
     witnesses_step.dependOn(fixture_step);
     witnesses_step.dependOn(research_step);
 
-    const external_build = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--summary", "all" });
-    external_build.setCwd(b.path("conformance/external-build-helper"));
-    const external_step = b.step("check-world-external-build-helper", "Build an application through public addApplicationWasm.");
-    external_step.dependOn(&external_build.step);
+    const external_consumer_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_external_consumer.mjs", "--zig" });
+    external_consumer_gate.addArg(b.graph.zig_exe);
+    const external_step = b.step("check-world-external-consumer", "Build a World application from only the materialized candidate package archive.");
+    external_step.dependOn(&external_consumer_gate.step);
 
     const forged_identity = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("test/compile_fail/application_v1_forged_package_identity.zig"),
@@ -513,6 +513,7 @@ pub fn build(b: *std.Build) void {
     externality_gate.addFileArg(wasm.getEmittedBin());
     const externality_step = b.step("check-world-3-externality", "Prove World 3 applications run through the exact released generic world-host without source checkouts or Zig.");
     externality_step.dependOn(&externality_gate.step);
+    externality_step.dependOn(external_step);
     const externality_negative_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_3_externality.mjs", "--negative-self-test" });
     const externality_negative_step = b.step("check-world-3-externality-negative", "Prove the exact world-host release authenticator rejects archive drift.");
     externality_negative_step.dependOn(&externality_negative_gate.step);

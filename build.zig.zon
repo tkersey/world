@@ -20,6 +20,5 @@
         "src",
         "test",
         "templates",
-        "conformance/external-build-helper",
     },
 }

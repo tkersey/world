@@ -12,7 +12,11 @@ const listed = spawnSync("git", ["ls-files", "-z", "--", "*.zig"], {
   encoding: "buffer",
 });
 if (listed.status !== 0) throw commandError("git ls-files", listed);
-const sources = listed.stdout.toString("utf8").split("\0").filter(Boolean);
+const sources = listed.stdout
+  .toString("utf8")
+  .split("\0")
+  .filter(Boolean)
+  .filter((path) => existsSync(resolve(packageRoot, path)));
 if (sources.length === 0) throw new Error("no tracked Zig sources found");
 if (sources.some((path) => /(^|\/)(\.zig-cache|zig-cache|zig-out|zig-pkg|vendor)(\/|$)/.test(path))) {
   throw new Error("tracked Zig source enumeration entered an ignored cache or vendor tree");
