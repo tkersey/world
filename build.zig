@@ -39,6 +39,41 @@ fn addApplicationTest(
     }) });
 }
 
+fn configureWitnessWasm(
+    wasm: *std.Build.Step.Compile,
+    stack_size: u64,
+    memory_bytes: u64,
+) void {
+    wasm.entry = .disabled;
+    wasm.rdynamic = true;
+    wasm.export_memory = true;
+    wasm.stack_size = stack_size;
+    wasm.initial_memory = memory_bytes;
+    wasm.max_memory = memory_bytes;
+}
+
+fn addWitnessManifest(
+    b: *std.Build,
+    name: []const u8,
+    application: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) std.Build.LazyPath {
+    const emitter = b.addExecutable(.{
+        .name = b.fmt("{s}-manifest", .{name}),
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/application_manifest_emit_v1.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "world_application", .module = application }},
+        }),
+    });
+    const run = b.addRunArtifact(emitter);
+    const manifest = run.addOutputFileArg(b.fmt("{s}.manifest.bin", .{name}));
+    _ = run.addOutputFileArg(b.fmt("{s}.manifest.txt", .{name}));
+    return manifest;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const validation_target = if (target.result.os.tag == .freestanding) b.graph.host else target;
@@ -111,6 +146,15 @@ pub fn build(b: *std.Build) void {
         world,
         boundary,
     );
+    const application_agent_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_agent_fixtures.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "world", .module = world },
+            .{ .name = "boundary", .module = boundary },
+        },
+    });
     const research_application = b.createModule(.{
         .root_source_file = b.path("templates/application-v1/src/application.zig"),
         .target = validation_target,
@@ -156,6 +200,8 @@ pub fn build(b: *std.Build) void {
     native_step.dependOn(&runArtifact(b, agent_tests).step);
     native_step.dependOn(&runArtifact(b, research_tests).step);
     native_step.dependOn(&runArtifact(b, build_option_tests).step);
+    const machine_v2_step = b.step("check-world-machine-v2", "Run the focused Boundary Machine ABI v2 application proofs.");
+    machine_v2_step.dependOn(&runArtifact(b, application_tests).step);
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -181,6 +227,15 @@ pub fn build(b: *std.Build) void {
             .{ .name = "boundary", .module = wasm_boundary },
         },
     });
+    const wasm_agent_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_agent_fixtures.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "world", .module = wasm_world },
+            .{ .name = "boundary", .module = wasm_boundary },
+        },
+    });
     const wasm = b.addExecutable(.{
         .name = "one-effect.world",
         .root_module = b.createModule(.{
@@ -193,16 +248,164 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    wasm.entry = .disabled;
-    wasm.rdynamic = true;
-    wasm.export_memory = true;
-    wasm.stack_size = 1024 * 1024;
-    wasm.initial_memory = 8 * 1024 * 1024;
-    wasm.max_memory = 8 * 1024 * 1024;
+    configureWitnessWasm(wasm, 1024 * 1024, 8 * 1024 * 1024);
     const wasm_conformance = b.addSystemCommand(&.{ "node", "scripts/world_application_v1_conformance.mjs" });
     wasm_conformance.addFileArg(wasm.getEmittedBin());
     const wasm_step = b.step("check-world-application-wasm", "Build and inspect the import-free bounded-memory application WASM.");
     wasm_step.dependOn(&wasm_conformance.step);
+
+    const native_trace = b.addExecutable(.{
+        .name = "one-effect-native-trace",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/application_v1_native_trace.zig"),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "application_v1_fixtures", .module = application_fixtures },
+            },
+        }),
+    });
+    const run_native_trace = b.addRunArtifact(native_trace);
+    const native_trace_file = run_native_trace.addOutputFileArg("one-effect.native-trace.bin");
+    const native_wasm_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_machine_native_wasm.mjs" });
+    native_wasm_gate.addFileArg(wasm.getEmittedBin());
+    native_wasm_gate.addFileArg(native_trace_file);
+    const machine_native_wasm_step = b.step("check-world-machine-native-wasm", "Byte-compare the native and wasm32 one-effect Machine lifecycle.");
+    machine_native_wasm_step.dependOn(&native_wasm_gate.step);
+    const native_wasm_negative_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_machine_native_wasm.mjs", "--negative-self-test" });
+    native_wasm_negative_gate.addFileArg(wasm.getEmittedBin());
+    native_wasm_negative_gate.addFileArg(native_trace_file);
+    const machine_native_wasm_negative_step = b.step("check-world-machine-native-wasm-negative", "Prove the native/wasm lifecycle comparator rejects byte drift.");
+    machine_native_wasm_negative_step.dependOn(&native_wasm_negative_gate.step);
+
+    const wasm_skeleton_application = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_skeleton_app.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{.{ .name = "application_v1_agent_fixtures", .module = wasm_agent_fixtures }},
+    });
+    const skeleton_wasm = b.addExecutable(.{
+        .name = "skeleton-agent.world",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/world_application_v1_wasm.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "world", .module = wasm_world },
+                .{ .name = "world_application", .module = wasm_skeleton_application },
+            },
+        }),
+    });
+    configureWitnessWasm(skeleton_wasm, 1024 * 1024, 16 * 1024 * 1024);
+    const native_skeleton_application = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_skeleton_app.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "application_v1_agent_fixtures", .module = application_agent_fixtures }},
+    });
+    const skeleton_manifest = addWitnessManifest(b, "skeleton-agent", native_skeleton_application, validation_target, optimize);
+    const skeleton_gate = b.addSystemCommand(&.{ "node", "scripts/world_application_v1_agent_conformance.mjs" });
+    skeleton_gate.addFileArg(skeleton_wasm.getEmittedBin());
+    skeleton_gate.addArg("skeleton");
+    skeleton_gate.addFileArg(skeleton_manifest);
+    const skeleton_step = b.step("check-world-skeleton-agent", "Prove the retained skeleton agent application witness.");
+    skeleton_step.dependOn(&skeleton_gate.step);
+
+    const wasm_fixture_application = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_fixture_app.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{.{ .name = "application_v1_agent_fixtures", .module = wasm_agent_fixtures }},
+    });
+    const fixture_wasm = b.addExecutable(.{
+        .name = "fixture-agent.world",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/world_application_v1_wasm.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "world", .module = wasm_world },
+                .{ .name = "world_application", .module = wasm_fixture_application },
+            },
+        }),
+    });
+    configureWitnessWasm(fixture_wasm, 1024 * 1024, 16 * 1024 * 1024);
+    const native_fixture_application = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_fixture_app.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "application_v1_agent_fixtures", .module = application_agent_fixtures }},
+    });
+    const fixture_manifest = addWitnessManifest(b, "fixture-agent", native_fixture_application, validation_target, optimize);
+    const fixture_gate = b.addSystemCommand(&.{ "node", "scripts/world_application_v1_agent_conformance.mjs" });
+    fixture_gate.addFileArg(fixture_wasm.getEmittedBin());
+    fixture_gate.addArg("fixture");
+    fixture_gate.addFileArg(fixture_manifest);
+    const fixture_step = b.step("check-world-fixture-agent", "Prove the retained fixture agent application witness.");
+    fixture_step.dependOn(&fixture_gate.step);
+
+    const wasm_research_source = b.createModule(.{
+        .root_source_file = b.path("templates/application-v1/src/application.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "world", .module = wasm_world },
+            .{ .name = "boundary", .module = wasm_boundary },
+        },
+    });
+    const wasm_research_application = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_research_digest_app.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "world", .module = wasm_world },
+            .{ .name = "research_digest_application", .module = wasm_research_source },
+        },
+    });
+    const research_wasm = b.addExecutable(.{
+        .name = "research-digest-agent.world",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/world_application_v1_wasm.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "world", .module = wasm_world },
+                .{ .name = "world_application", .module = wasm_research_application },
+            },
+        }),
+    });
+    configureWitnessWasm(research_wasm, 4 * 1024 * 1024, 36 * 1024 * 1024);
+    const native_research_application = b.createModule(.{
+        .root_source_file = b.path("test/application_v1_research_digest_app.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "world", .module = world },
+            .{ .name = "research_digest_application", .module = research_application },
+        },
+    });
+    const research_manifest = addWitnessManifest(b, "research-digest-agent", native_research_application, validation_target, optimize);
+    const research_gate = b.addSystemCommand(&.{ "node", "scripts/world_application_v1_research_digest_conformance.mjs" });
+    research_gate.addFileArg(research_wasm.getEmittedBin());
+    research_gate.addFileArg(research_manifest);
+    const research_step = b.step("check-world-research-digest-v2", "Prove retained Research Digest Machine-owned formatting and lifecycle behavior.");
+    research_step.dependOn(&runArtifact(b, research_tests).step);
+    research_step.dependOn(&research_gate.step);
+    const research_negative_gate = b.addSystemCommand(&.{ "node", "scripts/world_application_v1_research_digest_conformance.mjs", "--negative-self-test" });
+    research_negative_gate.addFileArg(research_wasm.getEmittedBin());
+    research_negative_gate.addFileArg(research_manifest);
+    const research_negative_step = b.step("check-world-research-digest-v2-negative", "Prove the Research Digest comparator rejects expected result drift.");
+    research_negative_step.dependOn(&research_negative_gate.step);
+
+    const one_effect_step = b.step("check-world-one-effect", "Prove the retained one-effect application witness.");
+    one_effect_step.dependOn(&wasm_conformance.step);
+    one_effect_step.dependOn(machine_native_wasm_step);
+    const witnesses_step = b.step("check-world-witnesses", "Run all retained application-specific witness lanes.");
+    witnesses_step.dependOn(one_effect_step);
+    witnesses_step.dependOn(skeleton_step);
+    witnesses_step.dependOn(fixture_step);
+    witnesses_step.dependOn(research_step);
 
     const external_build = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--summary", "all" });
     external_build.setCwd(b.path("conformance/external-build-helper"));
@@ -297,4 +500,6 @@ pub fn build(b: *std.Build) void {
     check.dependOn(singularity_step);
     check.dependOn(singularity_negative_step);
     check.dependOn(application_step);
+    check.dependOn(machine_v2_step);
+    check.dependOn(witnesses_step);
 }
