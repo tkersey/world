@@ -1,7 +1,7 @@
 const world = @import("world");
 const fixtures = @import("application_v1_fixtures");
 
-const App = world.v1.application(.{
+const App = world.application(.{
     .name = "missing-binding",
     .version = "1.0.0",
     .root = fixtures.RootMachine,

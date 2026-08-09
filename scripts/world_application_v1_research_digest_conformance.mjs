@@ -8,15 +8,32 @@ import {
   instantiate,
 } from "./world_application_v1_conformance.mjs";
 
-const [wasmPath, manifestPath] = process.argv.slice(2);
-if (!wasmPath || !manifestPath) {
+const rawArgs = process.argv.slice(2);
+const negativeSelfTest = rawArgs[0] === "--negative-self-test";
+const [wasmPath, manifestPath, ...extraArgs] = negativeSelfTest ? rawArgs.slice(1) : rawArgs;
+if (!wasmPath || !manifestPath || extraArgs.length !== 0 || (rawArgs[0]?.startsWith("--") && !negativeSelfTest)) {
   throw new Error(
-    "usage: node world_application_v1_research_digest_conformance.mjs <research-digest-agent.world.wasm> <research-digest-agent.manifest.bin>",
+    "usage: node world_application_v1_research_digest_conformance.mjs [--negative-self-test] <research-digest-agent.world.wasm> <research-digest-agent.manifest.bin>",
   );
 }
 const wasmBytes = await readFile(wasmPath);
 const manifest = await readFile(manifestPath);
 const module = await WebAssembly.compile(wasmBytes);
+if (WebAssembly.Module.imports(module).length !== 0) {
+  throw new Error("Research Digest WASM must have zero imports");
+}
+const boundedInstance = await instantiate(module);
+const initialMemoryBytes = boundedInstance.memory.buffer.byteLength;
+let boundedMemory = false;
+try {
+  boundedInstance.memory.grow(1);
+} catch (error) {
+  if (error instanceof RangeError) boundedMemory = true;
+  else throw error;
+}
+if (!boundedMemory || boundedInstance.memory.buffer.byteLength !== initialMemoryBytes) {
+  throw new Error("Research Digest WASM memory is not bounded");
+}
 const applicationId = manifest.subarray(12, 44);
 const request = {
   query: "portable algebraic effects",
@@ -172,14 +189,29 @@ const maximumInput = encodeStepInput({
 });
 await complete(module, maximumInput, maximumExpectedResult);
 
-console.log("custom_effect=true");
-console.log("internal_provider=true");
-console.log("fresh_instance_resume=true");
-console.log("deterministic_retry=true");
-console.log("branching=true");
-console.log("maximum_response_budget=true");
-console.log(`digest=${expectedResult.digest}`);
-console.log(`item_count=${expectedResult.itemCount}`);
+if (negativeSelfTest) {
+  try {
+    assertDigestResult(expectedResult, {
+      digest: expectedResult.digest,
+      itemCount: expectedResult.itemCount + 1,
+    });
+    throw new Error("Research Digest comparator accepted injected item count drift");
+  } catch (error) {
+    if (!String(error.message).includes("wrong result")) throw error;
+  }
+  console.log("research_digest_v2_negative=true");
+} else {
+  console.log("custom_effect=true");
+  console.log("internal_provider=true");
+  console.log("fresh_instance_resume=true");
+  console.log("deterministic_retry=true");
+  console.log("branching=true");
+  console.log("maximum_response_budget=true");
+  console.log("imports=0");
+  console.log("bounded_memory=true");
+  console.log(`digest=${expectedResult.digest}`);
+  console.log(`item_count=${expectedResult.itemCount}`);
+}
 
 async function complete(compiled, input, expectedResult) {
   let nextInput = input;
@@ -211,15 +243,19 @@ async function complete(compiled, input, expectedResult) {
       throw new Error("Research Digest application did not complete");
     }
     const result = decodeDigestResult(frame.finalResult);
-    if (
-      result.digest !== expectedResult.digest ||
-      result.itemCount !== expectedResult.itemCount
-    ) {
-      throw new Error("Research Digest application returned the wrong result");
-    }
+    assertDigestResult(result, expectedResult);
     return bytes;
   }
   throw new Error("Research Digest application exceeded the continuation bound");
+}
+
+function assertDigestResult(actual, expected) {
+  if (
+    actual.digest !== expected.digest ||
+    actual.itemCount !== expected.itemCount
+  ) {
+    throw new Error("Research Digest application returned the wrong result");
+  }
 }
 
 function encodeResearchRequest(value) {

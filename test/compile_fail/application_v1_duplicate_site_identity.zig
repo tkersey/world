@@ -61,16 +61,16 @@ const Machine = boundary.program("duplicate-site-identity", Body).compile(.{
     .maximum_machine_fuel = 4096,
 });
 
-const App = world.v1.application(.{
+const App = world.application(.{
     .name = "duplicate-site-identity",
     .version = "2.0.0",
     .root = Machine,
     .external = .{
-        world.v1.external(Machine, 0, .{
+        world.external(Machine, 0, .{
             .site_identity = "duplicate.site.v1",
             .interface = "duplicate.first.v1",
         }),
-        world.v1.external(Machine, 1, .{
+        world.external(Machine, 1, .{
             .site_identity = "duplicate.site.v1",
             .interface = "duplicate.second.v1",
         }),

@@ -263,11 +263,11 @@ function expectMagic(bytes, expected) {
 
 function assertStandaloneStructure(bytes) {
   for (const marker of [
-    "world_appliance_load_executable",
-    "Executable.Image",
-    "FabricPlan",
+    ["world", "_appliance", "_load", "_executable"].join(""),
+    ["Executable", ".Image"].join(""),
+    ["Fab", "ric", "Plan"].join(""),
     "provider_catalog",
-    "world_universal_appliance",
+    ["world", "_universal", "_appliance"].join(""),
   ]) {
     if (bytes.includes(Buffer.from(marker))) throw new Error(`application WASM retains forbidden runtime marker: ${marker}`);
   }

@@ -1,6 +1,0 @@
-zig fmt --check src/world.zig: pass
-zig build test --summary none -- --test-filter "executable recovery": pass
-zig build test --summary none -- --test-filter "recovery": pass
-zig build test --summary none -- --test-filter "chronicle": pass
-zig build test --summary none -- --test-filter "continuity": pass
-zig build test --summary none -- --test-filter "capsule thaw": pass

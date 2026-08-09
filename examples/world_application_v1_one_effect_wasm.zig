@@ -1,7 +1,7 @@
 const world = @import("world");
 const fixtures = @import("application_v1_fixtures");
 
-const Abi = world.v1.ApplicationAbi(fixtures.OneEffectApp, .{
+const Abi = world.ApplicationAbiV1(fixtures.OneEffectApp, .{
     .input_capacity = 1024 * 1024,
     .output_capacity = 1024 * 1024,
     .scratch_capacity = 4 * 1024 * 1024,

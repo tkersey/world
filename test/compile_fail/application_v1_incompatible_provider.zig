@@ -28,11 +28,11 @@ const IncompatibleMachine = boundary.program(
     IncompatibleBody,
 ).compile(.{});
 
-const App = world.v1.application(.{
+const App = world.application(.{
     .name = "incompatible-provider",
     .version = "1.0.0",
     .root = fixtures.RootMachine,
-    .handlers = .{world.v1.handle(
+    .handlers = .{world.handle(
         fixtures.RootMachine,
         0,
         "world.test.root.v2",
