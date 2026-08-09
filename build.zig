@@ -67,6 +67,25 @@ pub fn build(b: *std.Build) void {
     }) else exported_world;
 
     const root_tests = b.addTest(.{ .root_module = world });
+    const application_golden_tests = addApplicationTest(
+        b,
+        "test/application_v1_golden_test.zig",
+        validation_target,
+        optimize,
+        world,
+        boundary,
+    );
+    const application_codec_tests = b.addTest(.{
+        .root_module = world,
+        .filters = &.{
+            "world application v1 records round trip canonically",
+            "world application v1 StepInput and manifest round trip",
+        },
+    });
+    const application_malformed_tests = b.addTest(.{
+        .root_module = world,
+        .filters = &.{"world application v1 malformed records fail closed"},
+    });
     const application_tests = addApplicationTest(
         b,
         "test/application_v1_test.zig",
@@ -232,6 +251,21 @@ pub fn build(b: *std.Build) void {
         compile_fail_step.dependOn(&negative.step);
     }
 
+    const application_golden_step = b.step("check-world-application-v1-goldens", "Freeze and round-trip the canonical Application ABI v1 byte corpus.");
+    application_golden_step.dependOn(&runArtifact(b, application_golden_tests).step);
+
+    const application_codec_step = b.step("check-world-application-v1-codecs", "Run the focused Application ABI v1 codec proofs.");
+    application_codec_step.dependOn(&runArtifact(b, application_codec_tests).step);
+
+    const application_negative_step = b.step("check-world-application-v1-negative", "Run malformed-record and comptime compile-fail witnesses for Application ABI v1.");
+    application_negative_step.dependOn(&runArtifact(b, application_malformed_tests).step);
+    application_negative_step.dependOn(compile_fail_step);
+
+    const application_v1_step = b.step("check-world-application-v1", "Run the complete focused Application ABI v1 proof.");
+    application_v1_step.dependOn(application_golden_step);
+    application_v1_step.dependOn(application_codec_step);
+    application_v1_step.dependOn(application_negative_step);
+
     const dependency_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_boundary_dependency.mjs" });
     const surface_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_public_surface.mjs" });
     const singularity_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_singularity.mjs" });
@@ -245,6 +279,7 @@ pub fn build(b: *std.Build) void {
     singularity_negative_step.dependOn(&singularity_negative_gate.step);
 
     const application_step = b.step("check-world-application", "Prove native, WASM, and external application compilation.");
+    application_step.dependOn(application_v1_step);
     application_step.dependOn(native_step);
     application_step.dependOn(wasm_step);
     application_step.dependOn(external_step);
