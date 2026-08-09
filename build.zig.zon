@@ -4,7 +4,7 @@
     .fingerprint = 0x3a77114378d4745d,
     .dependencies = .{
         .boundary = .{
-            .url = "git+https://github.com/tkersey/boundary.git#v1.0.0",
+            .url = "https://github.com/tkersey/boundary/archive/refs/tags/v1.0.0.tar.gz",
             .hash = "boundary-1.0.0-flclaPgFEQBhYvlC3eqNVK3X67InkTuaX-pHFvRLzWJ8",
         },
     },
