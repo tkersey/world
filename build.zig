@@ -509,6 +509,22 @@ pub fn build(b: *std.Build) void {
     const parity_negative_step = b.step("check-world-2-3-parity-negative", "Prove the World 2 / World 3 parity comparator rejects lifecycle drift.");
     parity_negative_step.dependOn(&parity_negative_gate.step);
 
+    const externality_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_3_externality.mjs" });
+    externality_gate.addFileArg(wasm.getEmittedBin());
+    const externality_step = b.step("check-world-3-externality", "Prove World 3 applications run through the exact released generic world-host without source checkouts or Zig.");
+    externality_step.dependOn(&externality_gate.step);
+    const externality_negative_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_3_externality.mjs", "--negative-self-test" });
+    const externality_negative_step = b.step("check-world-3-externality-negative", "Prove the exact world-host release authenticator rejects archive drift.");
+    externality_negative_step.dependOn(&externality_negative_gate.step);
+    const deterministic_retry_step = b.step("check-world-deterministic-retry", "Prove deterministic retry through the exact generic world-host.");
+    deterministic_retry_step.dependOn(externality_step);
+    const replay_step = b.step("check-world-replay", "Prove retained-result replay through the exact generic world-host.");
+    replay_step.dependOn(externality_step);
+    const branching_step = b.step("check-world-branching", "Prove immutable parent branching through the exact generic world-host.");
+    branching_step.dependOn(externality_step);
+    const migration_step = b.step("check-world-migration", "Prove receiver-preflight migration through the exact generic world-host.");
+    migration_step.dependOn(externality_step);
+
     const application_step = b.step("check-world-application", "Prove native, WASM, and external application compilation.");
     application_step.dependOn(application_v1_step);
     application_step.dependOn(native_step);
@@ -527,6 +543,8 @@ pub fn build(b: *std.Build) void {
     check.dependOn(surface_negative_step);
     check.dependOn(parity_step);
     check.dependOn(parity_negative_step);
+    check.dependOn(externality_step);
+    check.dependOn(externality_negative_step);
     check.dependOn(machine_v2_step);
     check.dependOn(machine_native_wasm_step);
     check.dependOn(machine_native_wasm_negative_step);
