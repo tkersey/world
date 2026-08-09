@@ -526,6 +526,11 @@ pub fn build(b: *std.Build) void {
     const migration_step = b.step("check-world-migration", "Prove receiver-preflight migration through the exact generic world-host.");
     migration_step.dependOn(externality_step);
 
+    const sdk_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_sdk_v3.mjs", "--zig" });
+    sdk_gate.addArg(b.graph.zig_exe);
+    const sdk_step = b.step("check-world-sdk-v3", "Authenticate the four released components and prove the standalone World SDK v3 lifecycle.");
+    sdk_step.dependOn(&sdk_gate.step);
+
     const application_step = b.step("check-world-application", "Prove native, WASM, and external application compilation.");
     application_step.dependOn(application_v1_step);
     application_step.dependOn(native_step);
@@ -546,6 +551,7 @@ pub fn build(b: *std.Build) void {
     check.dependOn(parity_negative_step);
     check.dependOn(externality_step);
     check.dependOn(externality_negative_step);
+    check.dependOn(sdk_step);
     check.dependOn(machine_v2_step);
     check.dependOn(machine_native_wasm_step);
     check.dependOn(machine_native_wasm_negative_step);

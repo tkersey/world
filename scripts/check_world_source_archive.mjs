@@ -27,7 +27,7 @@ try {
   const candidateArchive = resolve(temporaryRoot, "candidate.tar");
   const baselineArchive = resolve(temporaryRoot, "baseline.tar");
   run("tar", ["-cf", candidateArchive, "-C", packageRoot, ...candidateFiles]);
-  run("git", ["archive", "--format=tar", `--output=${baselineArchive}`, baselineCommit, "--", ...surfaces], packageRoot);
+  run("git", ["archive", "--format=tar", `--output=${baselineArchive}`, baselineCommit, "--", ...baselineFiles], packageRoot);
   const candidateRoot = resolve(temporaryRoot, "candidate");
   const baselineRoot = resolve(temporaryRoot, "baseline");
   run("mkdir", [candidateRoot]);
