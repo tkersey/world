@@ -18,10 +18,10 @@ if (options.negativeSelfTest) {
 function checkDependency(root) {
   const zon = readFileSync(resolve(root, "build.zig.zon"), "utf8");
   for (const token of [
-    '.version = "3.1.1"',
+    '.version = "3.1.2"',
     ".boundary = .{",
-    '.url = "https://github.com/tkersey/boundary/archive/refs/tags/v1.3.2.tar.gz"',
-    '.hash = "boundary-1.3.2-flclaAI0EQBXh0WrWcNTh-CwL-m0RLPbRX8RBRxP9E95"',
+    '.url = "https://github.com/tkersey/boundary/archive/refs/tags/v1.4.0.tar.gz"',
+    '.hash = "boundary-1.4.0-flclaDRLEQAzxJEl23bFxWD_WHd35B5yynEAK2vfEg-A"',
   ]) {
     if (!zon.includes(token)) throw new Error(`missing exact package identity: ${token}`);
   }
