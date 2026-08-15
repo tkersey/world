@@ -453,15 +453,15 @@ pub const ConformancePackageIdentity = struct {
 };
 
 const production_package_identity: ConformancePackageIdentity = .{
-    .boundary_version = "1.4.0",
-    .world_version = "3.1.2",
+    .boundary_version = "1.5.0",
+    .world_version = "3.1.3",
 };
 
 pub fn application(comptime spec: anytype) type {
     if (@hasField(@TypeOf(spec), "boundary_package_version") or
         @hasField(@TypeOf(spec), "world_package_version"))
     {
-        @compileError("world.application owns the World 3.1.2 / Boundary 1.4.0 package identity");
+        @compileError("world.application owns the World 3.1.3 / Boundary 1.5.0 package identity");
     }
     return applicationWithIdentityForConformance(spec, production_package_identity);
 }
