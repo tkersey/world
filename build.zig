@@ -422,7 +422,7 @@ pub fn build(b: *std.Build) void {
         },
     }) });
     forged_identity.expect_errors = .{
-        .contains = "world.application owns the World 3.1.3 / Boundary 1.5.0 package identity",
+        .contains = "world.application owns the World 3.1.4 / Boundary 1.6.0 package identity",
     };
 
     const compile_fail_step = b.step("compile-fail", "Run the surviving application compiler negative witnesses.");
@@ -470,7 +470,7 @@ pub fn build(b: *std.Build) void {
     application_v1_step.dependOn(application_negative_step);
 
     const dependency_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_boundary_dependency.mjs" });
-    const dependency_step = b.step("check-world-boundary-dependency", "Require the sole exact Boundary v1.5.0 package dependency.");
+    const dependency_step = b.step("check-world-boundary-dependency", "Require the sole exact Boundary v1.6.0 package dependency.");
     dependency_step.dependOn(&dependency_gate.step);
     const dependency_negative_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_boundary_dependency.mjs", "--negative-self-test" });
     const dependency_negative_step = b.step("check-world-boundary-dependency-negative", "Prove the dependency checker rejects an injected legacy dependency.");
