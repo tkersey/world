@@ -14,8 +14,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const boundaryUrl = "https://github.com/tkersey/boundary/archive/8998d1bd12df65de2e7280d76197ce05e0deefc4.tar.gz";
-const boundaryHash = "boundary-1.6.1-flclaPInHgBIqGD7uxEKhtaVdQOPRbAmLlh44QU3QZ6l";
+const boundaryUrl = "https://github.com/tkersey/boundary/archive/4788bc152d2b0213e9c5c4e6544df1231e4b034d.tar.gz";
+const boundaryHash = "boundary-1.6.1-flclaE0pHgC1I33KEuEcfwmoMEidT7fLonNkdqBIlfwf";
 const options = parseArgs(process.argv.slice(2));
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const proofRoot = mkdtempSync(join(tmpdir(), "world-external-consumer-"));
