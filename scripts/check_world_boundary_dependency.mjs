@@ -20,8 +20,8 @@ function checkDependency(root) {
   for (const token of [
     '.version = "3.1.4"',
     ".boundary = .{",
-    '.url = "https://github.com/tkersey/boundary/archive/f8d7acec64e5981871fa0bbd3436114e13ef5552.tar.gz"',
-    '.hash = "boundary-1.6.0-flclaHP-HQCjjVmw66Hg9eRFLEPf7jIbgB8XieZ7P0vy"',
+    '.url = "https://github.com/tkersey/boundary/archive/f4e9268aa7b44842a8a3779fa9b6db167c8e90cb.tar.gz"',
+    '.hash = "boundary-1.6.0-flclaM8nHgDZhxPK5MqHPdvRNsac_7cUW6NJ_cIC-34Y"',
   ]) {
     if (!zon.includes(token)) throw new Error(`missing exact package identity: ${token}`);
   }
