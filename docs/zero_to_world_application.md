@@ -1,6 +1,6 @@
 # Zero to a World application
 
-Create a Zig package that depends on the exact World 3.1.3 release. Declare a
+Create a Zig package that depends on the exact World 3.1.4 release. Declare a
 Boundary Machine, close its operation sites with `world.handle` and
 `world.external`, and export the resulting `world.application` as
 `Application`.
