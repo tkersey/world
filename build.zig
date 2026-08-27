@@ -173,6 +173,23 @@ pub fn build(b: *std.Build) void {
             .{ .name = "research_digest_application", .module = research_application },
         },
     }) });
+    const system_tests = addApplicationTest(
+        b,
+        "test/system_link_v1.zig",
+        validation_target,
+        optimize,
+        world,
+        boundary,
+    );
+    const system_fixtures = b.createModule(.{
+        .root_source_file = b.path("test/system_link_v1.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "world", .module = world },
+            .{ .name = "boundary", .module = boundary },
+        },
+    });
 
     const build_support = b.createModule(.{
         .root_source_file = b.path("build_support/application.zig"),
@@ -453,6 +470,33 @@ pub fn build(b: *std.Build) void {
         negative.expect_errors = .{ .contains = witness.message };
         compile_fail_step.dependOn(&negative.step);
     }
+    const system_negative_step = b.step(
+        "check-world-system-link-v1-negative",
+        "Reject invalid World System Linker graphs and type relations.",
+    );
+    for ([_]struct { path: []const u8, message: []const u8 }{
+        .{ .path = "test/compile_fail/system_v1_uncovered_effect.zig", .message = "World system has an uncovered non-external effect site" },
+        .{ .path = "test/compile_fail/system_v1_ambiguous_handler.zig", .message = "World system effect site has ambiguous disposition" },
+        .{ .path = "test/compile_fail/system_v1_incompatible_provider.zig", .message = "World system provider InitialArgs must match effect Payload" },
+        .{ .path = "test/compile_fail/system_v1_failure_mismatch.zig", .message = "World system provider Failure requires an explicit pure total morphism" },
+        .{ .path = "test/compile_fail/system_v1_duplicate_external.zig", .message = "World system has duplicate external declarations" },
+        .{ .path = "test/compile_fail/system_v1_morphism_mismatch.zig", .message = "World system effect morphism must preserve Payload and Resume" },
+        .{ .path = "test/compile_fail/system_v1_handler_cycle.zig", .message = "World system internal handler graph contains a cycle" },
+        .{ .path = "test/compile_fail/system_v1_unreachable_external.zig", .message = "World system has an unreachable external declaration" },
+    }) |witness| {
+        const negative = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(witness.path),
+            .target = validation_target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "world", .module = world },
+                .{ .name = "boundary", .module = boundary },
+                .{ .name = "system_v1_fixtures", .module = system_fixtures },
+            },
+        }) });
+        negative.expect_errors = .{ .contains = witness.message };
+        system_negative_step.dependOn(&negative.step);
+    }
 
     const application_golden_step = b.step("check-world-application-v1-goldens", "Freeze and round-trip the canonical Application ABI v1 byte corpus.");
     application_golden_step.dependOn(&runArtifact(b, application_golden_tests).step);
@@ -468,6 +512,13 @@ pub fn build(b: *std.Build) void {
     application_v1_step.dependOn(application_golden_step);
     application_v1_step.dependOn(application_codec_step);
     application_v1_step.dependOn(application_negative_step);
+
+    const system_link_step = b.step(
+        "check-world-system-link-v1",
+        "Link Boundary Program components into one ordinary BPI1.",
+    );
+    system_link_step.dependOn(&runArtifact(b, system_tests).step);
+    system_link_step.dependOn(system_negative_step);
 
     const dependency_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_boundary_dependency.mjs" });
     const dependency_step = b.step("check-world-boundary-dependency", "Require the sole exact Boundary v1.6.1 package dependency.");
@@ -537,11 +588,12 @@ pub fn build(b: *std.Build) void {
     application_step.dependOn(wasm_step);
     application_step.dependOn(external_step);
 
-    const check = b.step("check", "Run the complete World 3 application compiler proof.");
+    const check = b.step("check", "Run the complete World 3 compiler proof.");
     check.dependOn(singularity_step);
     check.dependOn(singularity_negative_step);
     check.dependOn(application_step);
     check.dependOn(application_v1_step);
+    check.dependOn(system_link_step);
     check.dependOn(compile_fail_step);
     check.dependOn(dependency_step);
     check.dependOn(dependency_negative_step);

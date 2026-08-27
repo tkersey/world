@@ -1,6 +1,7 @@
 const application_protocol = @import("application_v1.zig");
 const application_runtime = @import("application_runtime_v1.zig");
 const application_wasm = @import("application_wasm_v1.zig");
+const system_link = @import("system_v1.zig");
 
 /// Canonical World wire protocols.
 pub const protocol = struct {
@@ -36,6 +37,15 @@ pub const valueSchemaId = application_runtime.valueSchemaId;
 pub const siteId = application_runtime.siteId;
 pub const encodeValue = application_runtime.encodeValue;
 
+/// Bind one typed Boundary Program effect to an internal provider Program.
+pub const systemHandle = system_link.handle;
+/// Bind one typed Boundary Program effect to a residual effect morphism.
+pub const systemMorphism = system_link.morphism;
+/// Map one provider Failure enum into the root system Failure enum.
+pub const failureMorphism = system_link.failureMorphism;
+/// Link one acyclic Boundary Program graph into one ordinary closed Program.
+pub const system = system_link.system;
+
 pub const WasmOptions = application_wasm.Options;
 pub const WasmStatus = application_wasm.Status;
 pub const ApplicationAbiV1 = application_wasm.ApplicationAbiV1;
@@ -44,4 +54,5 @@ test {
     _ = application_protocol;
     _ = application_runtime;
     _ = application_wasm;
+    _ = system_link;
 }

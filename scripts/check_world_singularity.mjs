@@ -26,11 +26,11 @@ if (options.negativeSelfTest) {
 
 function checkSingularity(root) {
   const exact = new Map([
-    ["src", ["application_manifest_emit_v1.zig", "application_runtime_v1.zig", "application_selector_v1.zig", "application_v1.zig", "application_wasm_main_v1.zig", "application_wasm_v1.zig", "world.zig"]],
+    ["src", ["application_manifest_emit_v1.zig", "application_runtime_v1.zig", "application_selector_v1.zig", "application_v1.zig", "application_wasm_main_v1.zig", "application_wasm_v1.zig", "system_v1.zig", "world.zig"]],
     ["examples", ["world_application_v1_manifest.zig", "world_application_v1_one_effect_wasm.zig", "world_application_v1_wasm.zig"]],
-    ["docs", ["application.md", "application_abi_v1.md", "application_state.md", "application_wasm.md", "comptime_closure.md", "dynamic_subagents.md", "effect_protocol_v1.md", "migration_from_world_2.md", "sdk.md", "security_model.md", "zero_to_world_application.md"]],
+    ["docs", ["application.md", "application_abi_v1.md", "application_state.md", "application_wasm.md", "comptime_closure.md", "dynamic_subagents.md", "effect_protocol_v1.md", "migration_from_world_2.md", "sdk.md", "security_model.md", "system.md", "zero_to_world_application.md"]],
     ["scripts", ["build_world_sdk_v3.mjs", "check_world_2_3_parity.mjs", "check_world_3_externality.mjs", "check_world_boundary_dependency.mjs", "check_world_external_consumer.mjs", "check_world_lint.mjs", "check_world_machine_native_wasm.mjs", "check_world_public_surface.mjs", "check_world_sdk_v3.mjs", "check_world_singularity.mjs", "check_world_source_archive.mjs", "init_world_application.mjs", "world_application_v1_agent_conformance.mjs", "world_application_v1_artifact_check.mjs", "world_application_v1_conformance.mjs", "world_application_v1_research_digest_conformance.mjs"]],
-    ["test", ["application_build_options_test.zig", "application_v1_agent_fixtures.zig", "application_v1_fixture_app.zig", "application_v1_golden_test.zig", "application_v1_native_trace.zig", "application_v1_research_digest_app.zig", "application_v1_research_digest_test.zig", "application_v1_skeleton_app.zig", "application_v1_test.zig"]],
+    ["test", ["application_build_options_test.zig", "application_v1_agent_fixtures.zig", "application_v1_fixture_app.zig", "application_v1_golden_test.zig", "application_v1_native_trace.zig", "application_v1_research_digest_app.zig", "application_v1_research_digest_test.zig", "application_v1_skeleton_app.zig", "application_v1_test.zig", "system_link_v1.zig"]],
   ]);
   for (const [dir, expected] of exact) {
     const actual = readdirSync(resolve(root, dir), { withFileTypes: true })
@@ -71,9 +71,9 @@ function checkSingularity(root) {
   }
 
   const readme = readFileSync(resolve(root, "README.md"), "utf8");
-  const first = "World is a Zig comptime application compiler for Boundary Machines.";
+  const first = "World is a Zig comptime system linker for Boundary Programs.";
   if (!readme.startsWith(first)) throw new Error("README opening sentence is not canonical");
-  const flow = "Boundary Machine -> world.application -> application.world.wasm -> world-host -> Effect v1 capabilities";
+  const flow = "Boundary Programs -> world.system -> BPI1 -> fixed Boundary Process kernel";
   if (!readme.slice(0, 1000).includes(flow)) throw new Error("README does not lead with the canonical flow");
 }
 
@@ -179,7 +179,6 @@ function forbiddenSemanticTerms() {
     term("Run", "space"),
     term("Fab", "ric", "Plan"),
     term("Fab", "ric"),
-    term("Link", "er"),
     term("Appli", "ance"),
     term("Cap", "sule"),
     term("Chron", "icle"),

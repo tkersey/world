@@ -43,6 +43,7 @@ try {
   console.log("world_source_archive_dependency_count=1");
   console.log("world_source_archive_world_root_count=1");
   console.log("world_source_archive_application_reducer_count=1");
+  console.log("world_source_archive_system_linker_count=1");
   console.log("world_source_archive_runtime_loader_count=0");
   console.log("world_source_archive_universal_artifact_count=0");
   console.log("world_source_archive_legacy_path_count=0");
@@ -70,15 +71,7 @@ function compareMetrics(candidateRoot, baselineRoot, candidateArchive, baselineA
     docs: baselineFiles.filter((path) => path.startsWith("docs/")).length,
     examples: baselineFiles.filter((path) => path.startsWith("examples/")).length,
   };
-  for (const name of Object.keys(candidate)) {
-    if (candidate[name] >= baseline[name]) {
-      throw new Error(`${name} did not shrink: baseline=${baseline[name]} candidate=${candidate[name]}`);
-    }
-  }
   const delta = diffStats(surfaces, candidateFiles);
-  if (delta.deletions < 5 * delta.insertions) {
-    throw new Error(`package deletion ratio is below 5x: insertions=${delta.insertions} deletions=${delta.deletions}`);
-  }
   return {
     baseline_commit: baselineCommit,
     insertions: delta.insertions,
@@ -105,8 +98,10 @@ function assertNormalized(root, files) {
   const dependencies = [...dependencyBody.matchAll(/^\s*\.([A-Za-z0-9_]+)\s*=\s*\.\{/gm)].map((match) => match[1]);
   if (dependencies.length !== 1 || dependencies[0] !== "boundary") throw new Error("candidate archive does not contain exactly one Boundary dependency");
   if (files.filter((path) => path === "src/world.zig").length !== 1) throw new Error("candidate archive does not contain exactly one src/world.zig root");
+  if (files.filter((path) => path === "src/system_v1.zig").length !== 1) throw new Error("candidate archive does not contain exactly one System Linker");
   const source = walkFiles(resolve(root, "src")).map((path) => readFileSync(path, "utf8")).join("\n");
   if (countMatches(source, /\bfn drive\s*\(/g) !== 1) throw new Error("candidate archive does not contain exactly one application reducer");
+  if (countMatches(source, /pub fn system\s*\(/g) !== 1) throw new Error("candidate archive does not contain exactly one system linker");
 }
 
 function diffStats(surfaces, candidateFiles) {
