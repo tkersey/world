@@ -135,13 +135,17 @@ pub fn system(comptime spec: anytype) type {
         pub const residual_effects = Linked.residual_effects;
         pub const schema_count = Linked.schema_count;
         pub const component_count = Plan.components.count;
-        pub const internal_handler_count = handlers.len;
+        pub const internal_handler_count = activeHandlerCount(
+            Plan.components,
+            handlers,
+        );
     };
 }
 
 fn ProgramSet(comptime capacity: usize) type {
     return struct {
         items: [capacity]type = undefined,
+        admissions: [capacity]type = undefined,
         count: usize = 0,
 
         fn contains(self: @This(), comptime Program: type) bool {
@@ -153,9 +157,15 @@ fn ProgramSet(comptime capacity: usize) type {
 
         fn add(self: *@This(), comptime Program: type) bool {
             if (self.contains(Program)) return false;
+            const Admission = boundary.componentAdmission(Program);
             self.items[self.count] = Program;
+            self.admissions[self.count] = Admission;
             self.count += 1;
             return true;
+        }
+
+        fn admissionAt(comptime self: @This(), comptime index: usize) type {
+            return self.admissions[index];
         }
     };
 }
@@ -184,9 +194,6 @@ fn PlanFor(
     comptime morphisms_value: anytype,
     comptime externals_value: anytype,
 ) type {
-    comptime for (0..components_value.count) |index| {
-        _ = admission(components_value.items[index]);
-    };
     const dispositions = comptime blk: {
         var result: [totalEffects(components_value)]SiteDisposition = undefined;
         for (0..components_value.count) |component_index| {
@@ -194,7 +201,11 @@ fn PlanFor(
             for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
                 const linked_id = effectOffset(components_value, component_index) +
                     site_ordinal;
-                if (!admittedSiteReachable(Program, site_ordinal)) {
+                if (!admittedSiteReachable(
+                    components_value,
+                    Program,
+                    site_ordinal,
+                )) {
                     result[linked_id] = .inactive;
                     continue;
                 }
@@ -247,9 +258,8 @@ fn PlanFor(
             for (body(components_value.items[component_index]).control_ir.blocks) |block| {
                 const linked_id = blockOffset(components_value, component_index) +
                     block.id;
-                result[linked_id] = if (admission(
-                    components_value.items[component_index],
-                ).reachability.contains(block.id))
+                result[linked_id] = if (components_value
+                    .admissionAt(component_index).reachability.contains(block.id))
                     failureAdapterLayout(Map, block.terminator)
                 else
                     .{ .kind = .none };
@@ -269,7 +279,7 @@ fn PlanFor(
             comptime component_index: usize,
             comptime block_id: cir.BlockId,
         ) bool {
-            return admission(components.items[component_index])
+            return components.admissionAt(component_index)
                 .reachability.contains(block_id);
         }
 
@@ -299,6 +309,7 @@ fn discoverComponents(
     comptime handlers: anytype,
 ) void {
     inline for (body(Current).effect_sites, 0..) |_, site_ordinal| {
+        if (!admittedSiteReachable(result.*, Current, site_ordinal)) continue;
         inline for (handlers) |Handler| {
             if (Handler.Consumer == Current and
                 Handler.site_ordinal == site_ordinal)
@@ -328,8 +339,10 @@ fn body(comptime Program: type) type {
             @compileError("Boundary Program component is missing " ++ decl);
         }
     }
-    if (@hasDecl(Body, "effect_handlers") or
-        @hasDecl(Body, "effect_morphisms"))
+    if ((@hasDecl(Body, "effect_handlers") and
+        Body.effect_handlers.len != 0) or
+        (@hasDecl(Body, "effect_morphisms") and
+            Body.effect_morphisms.len != 0))
     {
         @compileError(
             "world.system components must leave handler and morphism selection to World",
@@ -338,29 +351,8 @@ fn body(comptime Program: type) type {
     return Body;
 }
 
-fn admission(comptime Program: type) type {
-    if (!@hasDecl(Program, "componentAdmission")) {
-        @compileError("world.system components must be admitted Boundary Programs");
-    }
-    const Admission = Program.componentAdmission();
-    if (!@hasDecl(Admission, "SourceBody") or
-        !@hasDecl(Admission, "reachability") or
-        !@hasDecl(Admission, "semantic_canonicalization") or
-        !@hasDecl(Admission, "residual_effects") or
-        !@hasDecl(Admission, "effective_block_costs") or
-        !@hasDecl(Admission, "program_transition_digest") or
-        Admission.SourceBody != body(Program))
-    {
-        @compileError("World system component admission projection is invalid");
-    }
-    return Admission;
-}
-
 fn resolveSiteOrdinal(comptime Program: type, comptime config: anytype) usize {
-    if (!@hasDecl(Program, "component")) {
-        @compileError("World system bindings require a Boundary Program component");
-    }
-    const Body = Program.component();
+    const Body = body(Program);
     if (@hasField(@TypeOf(config), "site_ordinal")) {
         const ordinal: usize = config.site_ordinal;
         if (ordinal >= Body.effect_sites.len or Body.effect_sites[ordinal] != config.site) {
@@ -392,18 +384,17 @@ fn validateSystem(comptime Plan: type) void {
     requireFailureEnum(RootBody.Failure, "root Failure");
     validateExternalDeclarations(components, externals);
     inline for (handlers) |Handler| {
+        requireHandler(Handler);
+        if (!handlerActive(components, Handler)) continue;
         validateHandler(Handler, RootBody.Failure);
-        if (!components.contains(Handler.Consumer) or
-            !components.contains(Handler.Provider))
-        {
+        if (!components.contains(Handler.Provider)) {
             @compileError("World system contains a handler unreachable from root");
         }
     }
     inline for (morphisms) |Morphism| {
+        requireMorphism(Morphism);
+        if (!morphismActive(components, Morphism)) continue;
         validateMorphism(Morphism);
-        if (!components.contains(Morphism.Consumer)) {
-            @compileError("World system contains a morphism unreachable from root");
-        }
         if (externalTargetCount(externals, Morphism.Target) != 1) {
             @compileError(
                 "World system morphism Target must be intentionally residual",
@@ -454,7 +445,10 @@ fn validateExternalUsage(comptime Plan: type) void {
             }
         }
         inline for (morphisms) |Morphism| {
-            if (!isExternalBinding(External) and Morphism.Target == External) {
+            if (morphismActive(components, Morphism) and
+                !isExternalBinding(External) and
+                Morphism.Target == External)
+            {
                 used = true;
             }
         }
@@ -507,7 +501,8 @@ fn failureMapFor(
     var Result: type = void;
     var found = false;
     inline for (handlers) |Handler| {
-        if (Handler.Provider != Program) continue;
+        if (Handler.Provider != Program or
+            !handlerActive(components, Handler)) continue;
         if (!found) {
             Result = Handler.FailureMorphism;
             found = true;
@@ -712,6 +707,40 @@ fn requireMorphism(comptime Morphism: type) void {
     }
 }
 
+fn handlerActive(comptime components: anytype, comptime Handler: type) bool {
+    return components.contains(Handler.Consumer) and
+        admittedSiteReachable(
+            components,
+            Handler.Consumer,
+            Handler.site_ordinal,
+        );
+}
+
+fn activeHandlerCount(comptime components: anytype, comptime handlers: anytype) usize {
+    var count: usize = 0;
+    inline for (handlers) |Handler| {
+        if (handlerActive(components, Handler)) count += 1;
+    }
+    return count;
+}
+
+fn morphismActive(comptime components: anytype, comptime Morphism: type) bool {
+    return components.contains(Morphism.Consumer) and
+        admittedSiteReachable(
+            components,
+            Morphism.Consumer,
+            Morphism.site_ordinal,
+        );
+}
+
+fn activeMorphismCount(comptime components: anytype, comptime morphisms: anytype) usize {
+    var count: usize = 0;
+    inline for (morphisms) |Morphism| {
+        if (morphismActive(components, Morphism)) count += 1;
+    }
+    return count;
+}
+
 fn validateHandler(
     comptime Handler: type,
     comptime SystemFailure: type,
@@ -892,7 +921,7 @@ fn bareExternalSourceCountRaw(
         const Program = components.items[component_index];
         inline for (body(Program).effect_sites, 0..) |Candidate, site_ordinal| {
             if (Candidate == Site and
-                admittedSiteReachable(Program, site_ordinal) and
+                admittedSiteReachable(components, Program, site_ordinal) and
                 handlerCount(handlers, Program, site_ordinal) == 0 and
                 morphismCount(morphisms, Program, site_ordinal) == 0)
             {
@@ -939,17 +968,20 @@ fn componentSiteReachable(
     comptime site_ordinal: usize,
 ) bool {
     return admittedSiteReachable(
+        Plan.components,
         Plan.components.items[component_index],
         site_ordinal,
     );
 }
 
 fn admittedSiteReachable(
+    comptime components: anytype,
     comptime Program: type,
     comptime site_ordinal: usize,
 ) bool {
     const Body = body(Program);
-    const reachable = admission(Program).reachability;
+    const reachable = components.admissionAt(componentIndex(components, Program))
+        .reachability;
     inline for (Body.control_ir.blocks) |block| {
         if (!reachable.contains(block.id)) continue;
         switch (block.terminator) {
@@ -990,7 +1022,9 @@ fn visitComponent(
     states[component_index] = .visiting;
     const Program = components.items[component_index];
     inline for (handlers) |Handler| {
-        if (Handler.Consumer == Program) {
+        if (Handler.Consumer == Program and
+            handlerActive(components, Handler))
+        {
             visitComponent(
                 components,
                 handlers,
@@ -1830,7 +1864,7 @@ fn buildBlocks(
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
             if (!Plan.blockReachable(component_index, source.id)) continue;
-            if (!expandsVoidReturn(components, component_index, source)) continue;
+            if (!expandsVoidReturn(Plan, component_index, source)) continue;
             const block_id = voidReturnBlockBase(
                 Plan,
                 component_index,
@@ -1864,7 +1898,7 @@ fn buildBlockCosts(
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         const Body = body(Program);
-        const Admission = admission(Program);
+        const Admission = components.admissionAt(component_index);
         inline for (Body.control_ir.blocks) |block| {
             const linked_id = blockOffset(components, component_index) + block.id;
             result[linked_id] = Admission.effective_block_costs[block.id];
@@ -1921,6 +1955,15 @@ fn remapBlockParameters(
 }
 
 fn expandsVoidReturn(
+    comptime Plan: type,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+) bool {
+    return Plan.blockReachable(component_index, source.id) and
+        isVoidReturn(Plan.components, component_index, source);
+}
+
+fn isVoidReturn(
     comptime components: anytype,
     comptime component_index: usize,
     comptime source: cir.Block,
@@ -1956,12 +1999,17 @@ fn remapBlockTerminator(
 ) cir.Terminator {
     const components = Plan.components;
     const source = source_block.terminator;
-    if (expandsVoidReturn(components, component_index, source_block)) {
+    if (expandsVoidReturn(Plan, component_index, source_block)) {
         return .{ .jump = .{ .target = @intCast(voidReturnBlockBase(
             Plan,
             component_index,
             source_block.id,
         )) } };
+    }
+    if (!Plan.blockReachable(component_index, source_block.id) and
+        isVoidReturn(components, component_index, source_block))
+    {
+        return selfLoopTerminator(components, component_index, source_block);
     }
     const Map = failureMapFor(components, Plan.handlers, component_index);
     if (!Plan.blockReachable(component_index, source_block.id) and Map != void) {
@@ -2571,14 +2619,21 @@ fn buildEffectSites(comptime components: anytype) [totalEffects(components)]type
     return result;
 }
 
-fn buildEffectHandlers(comptime Plan: type) [Plan.handlers.len]type {
+fn buildEffectHandlers(comptime Plan: type) [
+    activeHandlerCount(
+        Plan.components,
+        Plan.handlers,
+    )
+]type {
     const components = Plan.components;
     const handlers = Plan.handlers;
-    var result: [handlers.len]type = undefined;
-    inline for (handlers, 0..) |Handler, index| {
+    var result: [activeHandlerCount(components, handlers)]type = undefined;
+    var cursor: usize = 0;
+    inline for (handlers) |Handler| {
+        if (!handlerActive(components, Handler)) continue;
         const consumer_index = componentIndex(components, Handler.Consumer);
         const provider_index = componentIndex(components, Handler.Provider);
-        result[index] = boundary.effect.handler(
+        result[cursor] = boundary.effect.handler(
             @intCast(
                 effectOffset(components, consumer_index) +
                     Handler.site_ordinal,
@@ -2588,6 +2643,7 @@ fn buildEffectHandlers(comptime Plan: type) [Plan.handlers.len]type {
             else
                 functionOffset(components, provider_index)),
         );
+        cursor += 1;
     }
     return result;
 }
@@ -2595,17 +2651,20 @@ fn buildEffectHandlers(comptime Plan: type) [Plan.handlers.len]type {
 fn buildEffectMorphisms(
     comptime components: anytype,
     comptime morphisms: anytype,
-) [morphisms.len]type {
-    var result: [morphisms.len]type = undefined;
-    inline for (morphisms, 0..) |Morphism, index| {
+) [activeMorphismCount(components, morphisms)]type {
+    var result: [activeMorphismCount(components, morphisms)]type = undefined;
+    var cursor: usize = 0;
+    inline for (morphisms) |Morphism| {
+        if (!morphismActive(components, Morphism)) continue;
         const consumer_index = componentIndex(components, Morphism.Consumer);
-        result[index] = boundary.effect.morphism(
+        result[cursor] = boundary.effect.morphism(
             @intCast(
                 effectOffset(components, consumer_index) +
                     Morphism.site_ordinal,
             ),
             Morphism.Target,
         );
+        cursor += 1;
     }
     return result;
 }

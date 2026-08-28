@@ -8,7 +8,7 @@ const Body = struct {
     pub const Failure = enum { rejected };
     pub const effect_sites = .{};
     pub const schema_types = .{};
-    pub const block_costs = [_]u64{0};
+    pub const block_costs = [_]u64{1};
     pub const control_ir: boundary.ir.Program = .{
         .label = "forged-component",
         .value_types = &.{u32_type},
@@ -22,8 +22,14 @@ const Body = struct {
     };
 };
 const ForgedProgram = struct {
+    pub const program_label = "forged-component";
+
     pub fn component() type {
         return Body;
+    }
+
+    pub fn componentAdmission() type {
+        return boundary.program(program_label, Body).componentAdmission();
     }
 };
 const Invalid = world.system(.{

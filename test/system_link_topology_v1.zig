@@ -46,6 +46,7 @@ fn collectProviders(
     comptime handlers: anytype,
 ) void {
     inline for (Current.component().effect_sites, 0..) |_, site_ordinal| {
+        if (!sourceSiteReachable(Current, site_ordinal)) continue;
         inline for (handlers) |Handler| {
             if (Handler.Consumer != Current or Handler.site_ordinal != site_ordinal) {
                 continue;
@@ -68,14 +69,6 @@ fn componentConstantCount(comptime Body: type) usize {
     return if (@hasDecl(Body, "constants")) Body.constants.len else 0;
 }
 
-fn componentReachability(comptime Body: type) boundary.ir.Reachability(
-    Body.control_ir.blocks.len,
-) {
-    return boundary.ir.Reachability(Body.control_ir.blocks.len).analyze(
-        Body.control_ir,
-    ) catch unreachable;
-}
-
 fn failureMapFor(
     comptime components: anytype,
     comptime handlers: anytype,
@@ -87,7 +80,8 @@ fn failureMapFor(
     const SystemFailure = components.items[0].component().Failure;
     if (SourceFailure == SystemFailure) return void;
     inline for (handlers) |Handler| {
-        if (Handler.Provider == Program) return Handler.FailureMorphism;
+        if (Handler.Provider == Program and
+            handlerActive(components, Handler)) return Handler.FailureMorphism;
     }
     unreachable;
 }
@@ -122,7 +116,9 @@ fn deriveSourceFacts(comptime spec: anytype) Facts {
     var facts: Facts = .{ .component_count = components.count };
     inline for (0..components.count) |component_index| {
         const Body = components.items[component_index].component();
-        const reachable = comptime componentReachability(Body);
+        const reachable = comptime boundary.componentAdmission(
+            components.items[component_index],
+        ).reachability;
         facts.source_values += Body.control_ir.value_types.len;
         facts.source_blocks += Body.control_ir.blocks.len;
         facts.source_functions += componentFunctionCount(Body);
@@ -195,7 +191,8 @@ fn uncoveredSourceCount(comptime spec: anytype, comptime Site: type) usize {
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         inline for (Program.component().effect_sites, 0..) |Candidate, ordinal| {
-            if (Candidate == Site and
+            if (sourceSiteReachable(Program, ordinal) and
+                Candidate == Site and
                 handlerCount(spec.handlers, Program, ordinal) == 0 and
                 morphismCount(spec.morphisms, Program, ordinal) == 0)
             {
@@ -234,7 +231,7 @@ fn sourceSiteReachable(
     comptime site_ordinal: usize,
 ) bool {
     const Body = Program.component();
-    const reachable = comptime Program.componentAdmission().reachability;
+    const reachable = comptime boundary.componentAdmission(Program).reachability;
     inline for (Body.control_ir.blocks) |block| {
         if (comptime !reachable.contains(block.id)) continue;
         switch (block.terminator) {
@@ -251,6 +248,39 @@ fn sourceSiteReachable(
     return false;
 }
 
+fn handlerActive(comptime components: anytype, comptime Handler: type) bool {
+    return componentsContains(components, Handler.Consumer) and
+        sourceSiteReachable(Handler.Consumer, Handler.site_ordinal);
+}
+
+fn morphismActive(comptime components: anytype, comptime Morphism: type) bool {
+    return componentsContains(components, Morphism.Consumer) and
+        sourceSiteReachable(Morphism.Consumer, Morphism.site_ordinal);
+}
+
+fn componentsContains(comptime components: anytype, comptime Program: type) bool {
+    inline for (0..components.count) |index| {
+        if (components.items[index] == Program) return true;
+    }
+    return false;
+}
+
+fn activeHandlerCount(comptime components: anytype, comptime handlers: anytype) usize {
+    var result: usize = 0;
+    inline for (handlers) |Handler| {
+        if (handlerActive(components, Handler)) result += 1;
+    }
+    return result;
+}
+
+fn activeMorphismCount(comptime components: anytype, comptime morphisms: anytype) usize {
+    var result: usize = 0;
+    inline for (morphisms) |Morphism| {
+        if (morphismActive(components, Morphism)) result += 1;
+    }
+    return result;
+}
+
 fn assertDispositionClosure(comptime spec: anytype) !void {
     const components = componentSet(spec);
     inline for (0..components.count) |component_index| {
@@ -264,6 +294,7 @@ fn assertDispositionClosure(comptime spec: anytype) !void {
         }
     }
     inline for (spec.morphisms) |Morphism| {
+        if (comptime !morphismActive(components, Morphism)) continue;
         var target_count: usize = 0;
         inline for (spec.external) |External| {
             if (comptime !isExternalBinding(External)) {
@@ -497,6 +528,12 @@ fn assertTerminatorMapping(
                     );
                 } else {
                     try std.testing.expect(linked.terminator == .jump);
+                    if (!reachable) {
+                        try std.testing.expectEqual(
+                            linked.id,
+                            linked.terminator.jump.target,
+                        );
+                    }
                 }
             } else switch (linked.terminator) {
                 .return_value => |linked_value| try std.testing.expectEqual(
@@ -661,11 +698,13 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
             );
         }
     }
-    inline for (spec.handlers, 0..) |Handler, index| {
+    comptime var handler_cursor: usize = 0;
+    inline for (spec.handlers) |Handler| {
+        if (comptime !handlerActive(components, Handler)) continue;
         const consumer = comptime componentIndex(components, Handler.Consumer);
         const source_id = comptime sourceOffsets(components, consumer).effects +
             Handler.site_ordinal;
-        const linked = Linked.effect_handlers[index];
+        const linked = Linked.effect_handlers[handler_cursor];
         try std.testing.expectEqual(@as(u32, @intCast(source_id)), linked.source_id);
         const provider = comptime componentIndex(components, Handler.Provider);
         const ProviderBody = Handler.Provider.component();
@@ -680,14 +719,18 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
             @as(boundary.ir.FunctionId, @intCast(expected_function)),
             linked.function_id,
         );
+        handler_cursor += 1;
     }
-    inline for (spec.morphisms, 0..) |Morphism, index| {
+    comptime var morphism_cursor: usize = 0;
+    inline for (spec.morphisms) |Morphism| {
+        if (comptime !morphismActive(components, Morphism)) continue;
         const consumer = comptime componentIndex(components, Morphism.Consumer);
         const source_id = comptime sourceOffsets(components, consumer).effects +
             Morphism.site_ordinal;
-        const linked = Linked.effect_morphisms[index];
+        const linked = Linked.effect_morphisms[morphism_cursor];
         try std.testing.expectEqual(@as(u32, @intCast(source_id)), linked.source_id);
         try std.testing.expect(linked.Target == Morphism.Target);
+        morphism_cursor += 1;
     }
 }
 
@@ -714,8 +757,15 @@ fn assertTopology(comptime spec: anytype, comptime System: type) !void {
         Linked.constants.len,
     );
     try std.testing.expectEqual(source.source_effects, Linked.effect_sites.len);
-    try std.testing.expectEqual(spec.handlers.len, Linked.effect_handlers.len);
-    try std.testing.expectEqual(spec.morphisms.len, Linked.effect_morphisms.len);
+    const components = comptime componentSet(spec);
+    try std.testing.expectEqual(
+        activeHandlerCount(components, spec.handlers),
+        Linked.effect_handlers.len,
+    );
+    try std.testing.expectEqual(
+        activeMorphismCount(components, spec.morphisms),
+        Linked.effect_morphisms.len,
+    );
     try assertDispositionClosure(spec);
     try assertElementMappings(spec, System);
 }
@@ -734,6 +784,14 @@ test "source-derived topology closes empty Failure domains" {
 
 test "source-derived topology admits unreachable effect declarations" {
     try assertTopology(fixtures.UnusedDeclaredSpec, fixtures.UnusedDeclaredSystem);
+}
+
+test "source-derived topology excludes handlers behind unreachable sites" {
+    try assertTopology(fixtures.InertHandlerSpec, fixtures.InertHandlerSystem);
+}
+
+test "source-derived topology excludes morphisms behind unreachable sites" {
+    try assertTopology(fixtures.InertMorphismSpec, fixtures.InertMorphismSystem);
 }
 
 test "source-derived topology preserves unreachable helper mappings" {

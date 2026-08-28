@@ -687,6 +687,138 @@ test "world.system lowers dynamic fail_value through the total Failure morphism"
     }
 }
 
+const inert_component_blocks = [_]boundary.ir.Block{.{
+    .id = 0,
+    .parameters = &.{0},
+    .terminator = .{ .return_value = 0 },
+}};
+const EmptyBindingBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{};
+    pub const effect_handlers = .{};
+    pub const effect_morphisms = .{};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "empty-binding-root",
+        .value_types = &.{u32_type},
+        .blocks = &inert_component_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const EmptyBindingProgram = boundary.program(
+    "empty-binding-root",
+    EmptyBindingBody,
+);
+const EmptyBindingSystem = world.system(.{
+    .name = "empty-binding-system",
+    .root = EmptyBindingProgram,
+    .handlers = .{},
+    .morphisms = .{},
+    .external = .{},
+});
+
+test "world.system accepts explicit empty component bindings" {
+    try std.testing.expectEqual(@as(usize, 1), EmptyBindingSystem.component_count);
+    try std.testing.expectEqual(@as(usize, 0), EmptyBindingSystem.internal_handler_count);
+    try std.testing.expectEqual(@as(usize, 0), EmptyBindingSystem.residual_effects.count);
+    try std.testing.expect(EmptyBindingSystem.Program.image().bytes.len > 0);
+}
+
+const InertHandlerSite = boundary.effect.site(
+    0,
+    "generic.inert-handler.v1",
+    u32,
+    u32,
+);
+const InertHandlerRootBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{InertHandlerSite};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "inert-handler-root",
+        .value_types = &.{u32_type},
+        .blocks = &inert_component_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const InertHandlerProviderBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "inert-handler-provider",
+        .value_types = &.{u32_type},
+        .blocks = &inert_component_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+pub const InertHandlerRoot = boundary.program(
+    "inert-handler-root",
+    InertHandlerRootBody,
+);
+pub const InertHandlerProvider = boundary.program(
+    "inert-handler-provider",
+    InertHandlerProviderBody,
+);
+pub const InertHandlerSpec = .{
+    .name = "inert-handler-system",
+    .root = InertHandlerRoot,
+    .handlers = .{world.systemHandle(.{
+        .consumer = InertHandlerRoot,
+        .site = InertHandlerSite,
+        .provider = InertHandlerProvider,
+    })},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const InertHandlerSystem = world.system(InertHandlerSpec);
+
+test "world.system excludes handlers behind unreachable source sites" {
+    try std.testing.expectEqual(@as(usize, 1), InertHandlerSystem.component_count);
+    try std.testing.expectEqual(@as(usize, 0), InertHandlerSystem.internal_handler_count);
+    try std.testing.expectEqual(@as(usize, 0), InertHandlerSystem.residual_effects.count);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        boundary.componentAdmission(InertHandlerSystem.Program)
+            .residual_effects.residual_count,
+    );
+}
+
+const InertMorphismTarget = boundary.effect.site(
+    1,
+    "generic.inert-morphism-target.v1",
+    u32,
+    u32,
+);
+pub const InertMorphismSpec = .{
+    .name = "inert-morphism-system",
+    .root = InertHandlerRoot,
+    .handlers = .{},
+    .morphisms = .{world.systemMorphism(.{
+        .consumer = InertHandlerRoot,
+        .site = InertHandlerSite,
+        .target = InertMorphismTarget,
+    })},
+    .external = .{},
+};
+pub const InertMorphismSystem = world.system(InertMorphismSpec);
+
+test "world.system excludes morphisms behind unreachable source sites" {
+    const Linked = InertMorphismSystem.Program.component();
+    try std.testing.expectEqual(@as(usize, 1), InertMorphismSystem.component_count);
+    try std.testing.expectEqual(@as(usize, 0), InertMorphismSystem.residual_effects.count);
+    try std.testing.expectEqual(@as(usize, 0), Linked.effect_morphisms.len);
+}
+
 const VoidSite = boundary.effect.site(
     0,
     "generic.void-policy.v1",
@@ -1298,6 +1430,10 @@ const void_dead_provider_blocks = [_]boundary.ir.Block{
         .id = 1,
         .terminator = .{ .jump = .{ .target = 0 } },
     },
+    .{
+        .id = 2,
+        .terminator = .{ .return_value = null },
+    },
 };
 const VoidDeadProviderBody = struct {
     pub const InitialArgs = void;
@@ -1336,6 +1472,9 @@ test "world.system preserves unreachable void-entry predecessors behind a wrappe
     try std.testing.expectEqual(@as(boundary.ir.BlockId, 2), dead_edge.target);
     try std.testing.expectEqual(@as(usize, 0), dead_edge.arguments.len);
     try std.testing.expectEqual(@as(usize, 3), Linked.control_ir.functions.len);
+    const dead_return = Linked.control_ir.blocks[4].terminator.jump;
+    try std.testing.expectEqual(@as(boundary.ir.BlockId, 4), dead_return.target);
+    try std.testing.expectEqual(@as(usize, 0), dead_return.arguments.len);
 
     const DeadMachine = VoidDeadSystem.Program.compile(.{
         .maximum_frames = 8,
