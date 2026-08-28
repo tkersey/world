@@ -1067,9 +1067,15 @@ fn totalSourceFunctions(comptime components: anytype) usize {
 
 fn voidWrapperFunctionId(
     comptime components: anytype,
+    comptime handlers: anytype,
     comptime provider_index: usize,
 ) usize {
     var result = totalSourceFunctions(components);
+    inline for (0..components.count) |index| {
+        result += @intFromBool(
+            componentDynamicFailureCountFor(components, handlers, index) != 0,
+        );
+    }
     inline for (1..provider_index) |index| {
         const Body = components.items[index].component();
         if (Body.InitialArgs == void and
@@ -1382,7 +1388,17 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
             }
         }
         inline for (Body.effect_sites, 0..) |Site, index| {
-            try std.testing.expect(Linked.effect_sites[offsets.effects + index] == Site);
+            const linked = Linked.effect_sites[offsets.effects + index];
+            try std.testing.expectEqual(
+                @as(u32, @intCast(offsets.effects + index)),
+                linked.id,
+            );
+            try std.testing.expectEqualStrings(
+                Site.semantic_identity,
+                linked.semantic_identity,
+            );
+            try std.testing.expect(linked.Payload == Site.Payload);
+            try std.testing.expect(linked.Resume == Site.Resume);
         }
         if (Body.control_ir.functions.len == 0) {
             const function = Linked.control_ir.functions[offsets.functions];
@@ -1477,7 +1493,7 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
             ProviderBody.control_ir.blocks[
                 ProviderBody.control_ir.entry
             ].parameters.len == 0)
-            voidWrapperFunctionId(components, provider)
+            voidWrapperFunctionId(components, spec.handlers, provider)
         else
             sourceOffsets(components, provider).functions;
         try std.testing.expectEqual(
@@ -1548,6 +1564,10 @@ fn assertTopology(comptime spec: anytype, comptime System: type) !void {
 
 test "source-derived topology closes void wrapper and unreachable syntax" {
     try assertTopology(fixtures.VoidDeadSpec, fixtures.VoidDeadSystem);
+}
+
+test "source-derived topology remaps provider effect sites" {
+    try assertTopology(fixtures.GenericSpec, fixtures.System);
 }
 
 test "source-derived topology separates external source and target roles" {

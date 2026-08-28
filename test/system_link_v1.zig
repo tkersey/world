@@ -152,7 +152,7 @@ const ProviderBody = struct {
 
 pub const RootProgram = boundary.program("generic-root", RootBody);
 pub const ProviderProgram = boundary.program("generic-provider", ProviderBody);
-const System = world.system(.{
+pub const GenericSpec = .{
     .name = "generic-system",
     .root = RootProgram,
     .handlers = .{world.systemHandle(.{
@@ -162,7 +162,8 @@ const System = world.system(.{
     })},
     .morphisms = .{},
     .external = .{ Observe, ProviderObserve },
-});
+};
+pub const System = world.system(GenericSpec);
 
 const Machine = System.Program.compile(.{
     .maximum_frames = 8,

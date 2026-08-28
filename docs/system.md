@@ -45,8 +45,8 @@ Internal handlers require exact `Payload == Provider.InitialArgs` and
 uses one explicit pure total `world.failureMorphism`. The resulting
 `System.Program.image()` is ordinary BPI1 and contains no World runtime object.
 Each multi-tag provider Failure map used by dynamic failure sites lowers once
-into one pure selection-block Boundary function after mapped targets are
-interned by value. Dynamic sites call that function and retain one local
+into one pure selection-block Boundary function whose mapped targets are
+interned by value within that selector. Dynamic sites call that function and retain one local
 terminal continuation; quotient-size-one maps remain O(1) direct
 specializations. Identical direct failures share one adapter per source
 function and mapped target. Mapping blocks therefore scale with semantic
