@@ -110,21 +110,15 @@ pub fn system(comptime spec: anytype) type {
     else
         .{};
     const components = comptime componentsFor(spec.root, handlers, morphisms);
-    comptime validateSystem(
+    const Plan = PlanFor(
         spec.root,
         components,
         handlers,
         morphisms,
         externals,
     );
-    const Linked = LinkedBody(
-        name,
-        spec.root,
-        components,
-        handlers,
-        morphisms,
-        externals,
-    );
+    comptime validateSystem(Plan);
+    const Linked = LinkedBody(name, Plan);
     const LinkedProgram = boundary.program(name, Linked.Body);
     return struct {
         pub const Program = LinkedProgram;
@@ -134,7 +128,7 @@ pub fn system(comptime spec: anytype) type {
         pub const Failure = Linked.Body.Failure;
         pub const residual_effects = Linked.residual_effects;
         pub const schema_count = Linked.schema_count;
-        pub const component_count = components.count;
+        pub const component_count = Plan.components.count;
         pub const internal_handler_count = handlers.len;
     };
 }
@@ -175,6 +169,54 @@ fn componentsFor(
     }
     discoverComponents(&result, Root, handlers);
     return result;
+}
+
+fn maximumComponentBlocks(comptime components: anytype) usize {
+    var result: usize = 1;
+    inline for (0..components.count) |index| {
+        result = @max(
+            result,
+            body(components.items[index]).control_ir.blocks.len,
+        );
+    }
+    return result;
+}
+
+fn PlanFor(
+    comptime Root: type,
+    comptime components_value: anytype,
+    comptime handlers_value: anytype,
+    comptime morphisms_value: anytype,
+    comptime externals_value: anytype,
+) type {
+    const Reachability = cir.Reachability(maximumComponentBlocks(components_value));
+    const reachable = comptime blk: {
+        var result: [components_value.count]Reachability = undefined;
+        for (0..components_value.count) |index| {
+            validateComponentAdmission(components_value.items[index]);
+            result[index] = Reachability.analyze(
+                body(components_value.items[index]).control_ir,
+            ) catch @compileError(
+                "World system component Control IR reachability failed",
+            );
+        }
+        break :blk result;
+    };
+    return struct {
+        pub const RootProgram = Root;
+        pub const components = components_value;
+        pub const handlers = handlers_value;
+        pub const morphisms = morphisms_value;
+        pub const externals = externals_value;
+        pub const reachability = reachable;
+
+        pub fn blockReachable(
+            comptime component_index: usize,
+            comptime block_id: cir.BlockId,
+        ) bool {
+            return reachability[component_index].contains(block_id);
+        }
+    };
 }
 
 fn discoverComponents(
@@ -253,18 +295,14 @@ fn resolveSiteOrdinal(comptime Program: type, comptime config: anytype) usize {
         @compileError("World system binding Site does not occur in its component");
 }
 
-fn validateSystem(
-    comptime Root: type,
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime morphisms: anytype,
-    comptime externals: anytype,
-) void {
+fn validateSystem(comptime Plan: type) void {
+    const Root = Plan.RootProgram;
+    const components = Plan.components;
+    const handlers = Plan.handlers;
+    const morphisms = Plan.morphisms;
+    const externals = Plan.externals;
     const RootBody = body(Root);
     requireFailureEnum(RootBody.Failure, "root Failure");
-    inline for (0..components.count) |component_index| {
-        validateComponentAdmission(components.items[component_index]);
-    }
     validateExternalDeclarations(components, externals);
     inline for (handlers) |Handler| {
         validateHandler(Handler, RootBody.Failure);
@@ -291,14 +329,13 @@ fn validateSystem(
         const Body = body(Program);
         _ = failureMapFor(components, handlers, component_index);
         inline for (Body.effect_sites, 0..) |Site, site_ordinal| {
-            if (!componentSiteReachable(Program, site_ordinal)) {
+            if (!componentSiteReachable(Plan, component_index, site_ordinal)) {
                 @compileError("World system component declares an unreachable effect site");
             }
             const internal_count = handlerCount(handlers, Program, site_ordinal);
             const morphism_count = morphismCount(morphisms, Program, site_ordinal);
             const external_count = externalCount(
-                externals,
-                components,
+                Plan,
                 Program,
                 site_ordinal,
                 Site,
@@ -313,15 +350,14 @@ fn validateSystem(
             }
         }
     }
-    validateExternalUsage(components, handlers, morphisms, externals);
+    validateExternalUsage(Plan);
 }
 
-fn validateExternalUsage(
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime morphisms: anytype,
-    comptime externals: anytype,
-) void {
+fn validateExternalUsage(comptime Plan: type) void {
+    const components = Plan.components;
+    const handlers = Plan.handlers;
+    const morphisms = Plan.morphisms;
+    const externals = Plan.externals;
     inline for (externals) |External| {
         var used = false;
         inline for (0..components.count) |component_index| {
@@ -329,7 +365,7 @@ fn validateExternalUsage(
             inline for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
                 if (!isExternalBinding(External) and
                     External == Site and
-                    bareSiteOccurrenceCount(components, Site) == 1 and
+                    bareExternalSourceCount(Plan, Site) == 1 and
                     handlerCount(handlers, Program, site_ordinal) == 0 and
                     morphismCount(morphisms, Program, site_ordinal) == 0)
                 {
@@ -413,89 +449,103 @@ fn failureMapFor(
     return Result;
 }
 
-fn failureExpansionValues(comptime Map: type, comptime terminator: cir.Terminator) usize {
-    if (Map == void) return 0;
-    return switch (terminator) {
-        .fail => 1,
-        .fail_value => if (Map.targets.len <= 1)
-            1
-        else
-            1 + 2 * (Map.targets.len - 1) + Map.targets.len,
-        else => 0,
-    };
-}
+const FailureAdapterKind = enum {
+    none,
+    impossible,
+    direct,
+    dynamic,
+};
 
-fn failureExpansionBlocks(comptime Map: type, comptime terminator: cir.Terminator) usize {
-    if (Map == void) return 0;
-    return switch (terminator) {
-        .fail => 1,
-        .fail_value => if (Map.targets.len <= 1) 1 else 2 * Map.targets.len - 1,
-        else => 0,
-    };
-}
+const FailureAdapterLayout = struct {
+    kind: FailureAdapterKind,
+    value_count: usize = 0,
+    block_count: usize = 0,
+    constant_count: usize = 0,
+};
 
-fn failureExpansionConstants(comptime Map: type, comptime terminator: cir.Terminator) usize {
-    if (Map == void) return 0;
+fn failureAdapterLayout(
+    comptime Map: type,
+    comptime terminator: cir.Terminator,
+) FailureAdapterLayout {
+    if (Map == void) return .{ .kind = .none };
     return switch (terminator) {
-        .fail => 1,
-        .fail_value => if (Map.targets.len <= 1)
-            1
+        .fail => .{
+            .kind = .direct,
+            .value_count = 1,
+            .block_count = 1,
+            .constant_count = 1,
+        },
+        .fail_value => if (Map.targets.len == 0)
+            .{ .kind = .impossible }
+        else if (Map.targets.len == 1)
+            .{
+                .kind = .direct,
+                .value_count = 1,
+                .block_count = 1,
+                .constant_count = 1,
+            }
         else
-            2 * Map.targets.len - 1,
-        else => 0,
+            .{
+                .kind = .dynamic,
+                .value_count = 1 + 2 * (Map.targets.len - 1) + Map.targets.len,
+                .block_count = 2 * Map.targets.len - 1,
+                .constant_count = 2 * Map.targets.len - 1,
+            },
+        else => .{ .kind = .none },
     };
 }
 
 fn componentExtraValues(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
 ) usize {
-    const Map = failureMapFor(components, handlers, component_index);
+    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
-    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
-        result += failureExpansionValues(Map, block.terminator);
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
+        if (!Plan.blockReachable(component_index, block.id)) continue;
+        result += failureAdapterLayout(Map, block.terminator).value_count;
     }
     return result;
 }
 
 fn componentExtraBlocks(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
 ) usize {
-    const Map = failureMapFor(components, handlers, component_index);
+    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
-    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
-        result += failureExpansionBlocks(Map, block.terminator);
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
+        if (!Plan.blockReachable(component_index, block.id)) continue;
+        result += failureAdapterLayout(Map, block.terminator).block_count;
     }
     return result;
 }
 
 fn componentExtraConstants(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
 ) usize {
-    const Map = failureMapFor(components, handlers, component_index);
+    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
-    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
-        result += failureExpansionConstants(Map, block.terminator);
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
+        if (!Plan.blockReachable(component_index, block.id)) continue;
+        result += failureAdapterLayout(Map, block.terminator).constant_count;
     }
     return result;
 }
 
 fn componentVoidReturnCount(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
 ) usize {
     if (component_index == 0 or
-        body(components.items[component_index]).Result != void)
+        body(Plan.components.items[component_index]).Result != void)
     {
         return 0;
     }
     var count: usize = 0;
-    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
+        if (!Plan.blockReachable(component_index, block.id)) continue;
         if (block.function_id != 0) continue;
         switch (block.terminator) {
             .return_value => |value| if (value == null) {
@@ -507,33 +557,34 @@ fn componentVoidReturnCount(
     return count;
 }
 
-fn totalVoidReturns(comptime components: anytype) usize {
+fn totalVoidReturns(comptime Plan: type) usize {
     var result: usize = 0;
-    inline for (0..components.count) |index| {
-        result += componentVoidReturnCount(components, index);
+    inline for (0..Plan.components.count) |index| {
+        result += componentVoidReturnCount(Plan, index);
     }
     return result;
 }
 
 fn precedingVoidReturns(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
 ) usize {
     var result: usize = 0;
     inline for (0..component_index) |index| {
-        result += componentVoidReturnCount(components, index);
+        result += componentVoidReturnCount(Plan, index);
     }
     return result;
 }
 
 fn voidReturnOrdinal(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
     var result: usize = 0;
-    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (block.id == block_id) return result;
+        if (!Plan.blockReachable(component_index, block.id)) continue;
         if (block.function_id != 0) continue;
         switch (block.terminator) {
             .return_value => |value| if (value == null) {
@@ -545,7 +596,7 @@ fn voidReturnOrdinal(
     unreachable;
 }
 
-fn componentVoidInputCount(
+fn componentVoidWrapperCount(
     comptime components: anytype,
     comptime component_index: usize,
 ) usize {
@@ -557,21 +608,21 @@ fn componentVoidInputCount(
     );
 }
 
-fn totalVoidInputs(comptime components: anytype) usize {
+fn totalVoidWrappers(comptime components: anytype) usize {
     var result: usize = 0;
     inline for (0..components.count) |index| {
-        result += componentVoidInputCount(components, index);
+        result += componentVoidWrapperCount(components, index);
     }
     return result;
 }
 
-fn precedingVoidInputs(
+fn precedingVoidWrappers(
     comptime components: anytype,
     comptime component_index: usize,
 ) usize {
     var result: usize = 0;
     inline for (0..component_index) |index| {
-        result += componentVoidInputCount(components, index);
+        result += componentVoidWrapperCount(components, index);
     }
     return result;
 }
@@ -732,19 +783,20 @@ fn morphismCount(
 }
 
 fn externalCount(
-    comptime externals: anytype,
-    comptime components: anytype,
+    comptime Plan: type,
     comptime Program: type,
     comptime site_ordinal: usize,
     comptime Site: type,
 ) usize {
     var count: usize = 0;
-    inline for (externals) |External| {
+    inline for (Plan.externals) |External| {
         if (isExternalBinding(External)) {
             if (External.Consumer == Program and
                 External.site_ordinal == site_ordinal) count += 1;
         } else if (External == Site and
-            bareSiteOccurrenceCount(components, Site) == 1)
+            handlerCount(Plan.handlers, Program, site_ordinal) == 0 and
+            morphismCount(Plan.morphisms, Program, site_ordinal) == 0 and
+            bareExternalSourceCount(Plan, Site) == 1)
         {
             count += 1;
         }
@@ -760,23 +812,30 @@ fn externalTargetCount(comptime externals: anytype, comptime Target: type) usize
     return count;
 }
 
-fn bareSiteOccurrenceCount(comptime components: anytype, comptime Site: type) usize {
+fn bareExternalSourceCount(comptime Plan: type, comptime Site: type) usize {
     var count: usize = 0;
-    inline for (0..components.count) |component_index| {
-        inline for (body(components.items[component_index]).effect_sites) |Candidate| {
-            if (Candidate == Site) count += 1;
+    inline for (0..Plan.components.count) |component_index| {
+        const Program = Plan.components.items[component_index];
+        inline for (body(Program).effect_sites, 0..) |Candidate, site_ordinal| {
+            if (Candidate == Site and
+                handlerCount(Plan.handlers, Program, site_ordinal) == 0 and
+                morphismCount(Plan.morphisms, Program, site_ordinal) == 0)
+            {
+                count += 1;
+            }
         }
     }
     return count;
 }
 
-fn componentSiteReachable(comptime Program: type, comptime site_ordinal: usize) bool {
-    const Body = body(Program);
-    const Reachability = cir.Reachability(Body.control_ir.blocks.len);
-    const reachable = Reachability.analyze(Body.control_ir) catch
-        @compileError("World system component Control IR reachability failed");
+fn componentSiteReachable(
+    comptime Plan: type,
+    comptime component_index: usize,
+    comptime site_ordinal: usize,
+) bool {
+    const Body = body(Plan.components.items[component_index]);
     inline for (Body.control_ir.blocks) |block| {
-        if (!reachable.contains(block.id)) continue;
+        if (!Plan.blockReachable(component_index, block.id)) continue;
         switch (block.terminator) {
             .@"suspend" => |suspension| {
                 if (suspension.kind == .effect and
@@ -836,32 +895,22 @@ fn requireFailureEnum(comptime Failure: type, comptime label: []const u8) void {
 
 fn LinkedBody(
     comptime name: []const u8,
-    comptime Root: type,
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime morphisms: anytype,
-    comptime externals: anytype,
+    comptime Plan: type,
 ) type {
+    const Root = Plan.RootProgram;
+    const components = Plan.components;
+    const morphisms = Plan.morphisms;
     const RootComponent = body(Root);
     const schema_set = comptime schemasFor(components);
-    const value_types = comptime buildValueTypes(components, schema_set, handlers);
-    const linked_constants = comptime buildConstants(components, handlers);
-    const linked_functions = comptime buildFunctions(components, schema_set);
-    const blocks = comptime buildBlocks(
-        components,
-        schema_set,
-        handlers,
-    );
+    const value_types = comptime buildValueTypes(Plan, schema_set);
+    const linked_constants = comptime buildConstants(Plan);
+    const linked_functions = comptime buildFunctions(Plan, schema_set);
+    const blocks = comptime buildBlocks(Plan, schema_set);
     const linked_block_costs = comptime buildBlockCosts(components, blocks);
     const linked_effect_sites = comptime buildEffectSites(components);
-    const linked_effect_handlers = comptime buildEffectHandlers(components, handlers);
+    const linked_effect_handlers = comptime buildEffectHandlers(Plan);
     const linked_effect_morphisms = comptime buildEffectMorphisms(components, morphisms);
-    const linked_residual_effects = comptime residualEffects(
-        components,
-        handlers,
-        morphisms,
-        externals,
-    );
+    const linked_residual_effects = comptime residualEffects(Plan);
     const linked_limits: cir.CompilerLimits = .{
         .maximum_values = @max(64, value_types.len),
         .maximum_blocks = @max(64, blocks.len),
@@ -1048,241 +1097,233 @@ fn totalEffects(comptime components: anytype) usize {
     return result;
 }
 
-fn totalExtraValues(
-    comptime components: anytype,
-    comptime handlers: anytype,
-) usize {
+fn totalExtraValues(comptime Plan: type) usize {
     var result: usize = 0;
-    inline for (0..components.count) |index| {
-        result += componentExtraValues(components, handlers, index);
+    inline for (0..Plan.components.count) |index| {
+        result += componentExtraValues(Plan, index);
     }
     return result;
 }
 
-fn totalExtraBlocks(
-    comptime components: anytype,
-    comptime handlers: anytype,
-) usize {
+fn totalExtraBlocks(comptime Plan: type) usize {
     var result: usize = 0;
-    inline for (0..components.count) |index| {
-        result += componentExtraBlocks(components, handlers, index);
+    inline for (0..Plan.components.count) |index| {
+        result += componentExtraBlocks(Plan, index);
     }
     return result;
 }
 
-fn totalExtraConstants(
-    comptime components: anytype,
-    comptime handlers: anytype,
-) usize {
+fn totalExtraConstants(comptime Plan: type) usize {
     var result: usize = 0;
-    inline for (0..components.count) |index| {
-        result += componentExtraConstants(components, handlers, index);
+    inline for (0..Plan.components.count) |index| {
+        result += componentExtraConstants(Plan, index);
     }
     return result;
 }
 
-fn linkedTotalValues(
-    comptime components: anytype,
-    comptime handlers: anytype,
-) usize {
-    return totalValues(components) +
-        totalExtraValues(components, handlers) +
-        totalVoidReturns(components) +
-        totalVoidInputs(components);
+fn linkedTotalValues(comptime Plan: type) usize {
+    return totalValues(Plan.components) +
+        totalExtraValues(Plan) +
+        totalVoidReturns(Plan) +
+        2 * totalVoidWrappers(Plan.components);
 }
 
-fn linkedTotalBlocks(
-    comptime components: anytype,
-    comptime handlers: anytype,
-) usize {
-    return totalBlocks(components) +
-        totalExtraBlocks(components, handlers) +
-        totalVoidReturns(components);
+fn linkedTotalBlocks(comptime Plan: type) usize {
+    return totalBlocks(Plan.components) +
+        totalExtraBlocks(Plan) +
+        totalVoidReturns(Plan) +
+        2 * totalVoidWrappers(Plan.components);
 }
 
-fn linkedTotalConstants(
-    comptime components: anytype,
-    comptime handlers: anytype,
-) usize {
-    return totalConstants(components) +
-        totalExtraConstants(components, handlers) +
-        totalVoidReturns(components);
+fn linkedTotalFunctions(comptime Plan: type) usize {
+    return totalFunctions(Plan.components) + totalVoidWrappers(Plan.components);
+}
+
+fn linkedTotalConstants(comptime Plan: type) usize {
+    return totalConstants(Plan.components) +
+        totalExtraConstants(Plan) +
+        totalVoidReturns(Plan);
 }
 
 fn precedingExtraValues(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
 ) usize {
     var result: usize = 0;
     inline for (0..component_index) |index| {
-        result += componentExtraValues(components, handlers, index);
+        result += componentExtraValues(Plan, index);
     }
     return result;
 }
 
 fn precedingExtraBlocks(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
 ) usize {
     var result: usize = 0;
     inline for (0..component_index) |index| {
-        result += componentExtraBlocks(components, handlers, index);
+        result += componentExtraBlocks(Plan, index);
     }
     return result;
 }
 
 fn precedingExtraConstants(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
 ) usize {
     var result: usize = 0;
     inline for (0..component_index) |index| {
-        result += componentExtraConstants(components, handlers, index);
+        result += componentExtraConstants(Plan, index);
     }
     return result;
 }
 
 fn precedingFailureValuesInComponent(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    const Map = failureMapFor(components, handlers, component_index);
+    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
-    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (block.id == block_id) return result;
-        result += failureExpansionValues(Map, block.terminator);
+        if (!Plan.blockReachable(component_index, block.id)) continue;
+        result += failureAdapterLayout(Map, block.terminator).value_count;
     }
     unreachable;
 }
 
 fn precedingFailureBlocksInComponent(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    const Map = failureMapFor(components, handlers, component_index);
+    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
-    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (block.id == block_id) return result;
-        result += failureExpansionBlocks(Map, block.terminator);
+        if (!Plan.blockReachable(component_index, block.id)) continue;
+        result += failureAdapterLayout(Map, block.terminator).block_count;
     }
     unreachable;
 }
 
 fn precedingFailureConstantsInComponent(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    const Map = failureMapFor(components, handlers, component_index);
+    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
-    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (block.id == block_id) return result;
-        result += failureExpansionConstants(Map, block.terminator);
+        if (!Plan.blockReachable(component_index, block.id)) continue;
+        result += failureAdapterLayout(Map, block.terminator).constant_count;
     }
     unreachable;
 }
 
 fn failureValueBase(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    return totalValues(components) +
-        precedingExtraValues(components, handlers, component_index) +
+    return totalValues(Plan.components) +
+        precedingExtraValues(Plan, component_index) +
         precedingFailureValuesInComponent(
-            components,
-            handlers,
+            Plan,
             component_index,
             block_id,
         );
 }
 
 fn failureBlockBase(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    return totalBlocks(components) +
-        precedingExtraBlocks(components, handlers, component_index) +
+    return totalBlocks(Plan.components) +
+        precedingExtraBlocks(Plan, component_index) +
         precedingFailureBlocksInComponent(
-            components,
-            handlers,
+            Plan,
             component_index,
             block_id,
         );
 }
 
 fn failureConstantBase(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    return totalConstants(components) +
-        precedingExtraConstants(components, handlers, component_index) +
+    return totalConstants(Plan.components) +
+        precedingExtraConstants(Plan, component_index) +
         precedingFailureConstantsInComponent(
-            components,
-            handlers,
+            Plan,
             component_index,
             block_id,
         );
 }
 
 fn voidReturnValueBase(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    return totalValues(components) +
-        totalExtraValues(components, handlers) +
-        precedingVoidReturns(components, component_index) +
-        voidReturnOrdinal(components, component_index, block_id);
+    return totalValues(Plan.components) +
+        totalExtraValues(Plan) +
+        precedingVoidReturns(Plan, component_index) +
+        voidReturnOrdinal(Plan, component_index, block_id);
 }
 
 fn voidReturnConstantBase(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    return totalConstants(components) +
-        totalExtraConstants(components, handlers) +
-        precedingVoidReturns(components, component_index) +
-        voidReturnOrdinal(components, component_index, block_id);
+    return totalConstants(Plan.components) +
+        totalExtraConstants(Plan) +
+        precedingVoidReturns(Plan, component_index) +
+        voidReturnOrdinal(Plan, component_index, block_id);
 }
 
 fn voidReturnBlockBase(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    return totalBlocks(components) +
-        totalExtraBlocks(components, handlers) +
-        precedingVoidReturns(components, component_index) +
-        voidReturnOrdinal(components, component_index, block_id);
+    return totalBlocks(Plan.components) +
+        totalExtraBlocks(Plan) +
+        precedingVoidReturns(Plan, component_index) +
+        voidReturnOrdinal(Plan, component_index, block_id);
 }
 
-fn voidInputValueBase(
-    comptime components: anytype,
-    comptime handlers: anytype,
+fn voidWrapperValueBase(
+    comptime Plan: type,
     comptime component_index: usize,
 ) usize {
-    return totalValues(components) +
-        totalExtraValues(components, handlers) +
-        totalVoidReturns(components) +
-        precedingVoidInputs(components, component_index);
+    return totalValues(Plan.components) +
+        totalExtraValues(Plan) +
+        totalVoidReturns(Plan) +
+        2 * precedingVoidWrappers(Plan.components, component_index);
+}
+
+fn voidWrapperBlockBase(
+    comptime Plan: type,
+    comptime component_index: usize,
+) usize {
+    return totalBlocks(Plan.components) +
+        totalExtraBlocks(Plan) +
+        totalVoidReturns(Plan) +
+        2 * precedingVoidWrappers(Plan.components, component_index);
+}
+
+fn voidWrapperFunctionId(
+    comptime Plan: type,
+    comptime component_index: usize,
+) usize {
+    return totalFunctions(Plan.components) +
+        precedingVoidWrappers(Plan.components, component_index);
 }
 
 fn remapValueType(
@@ -1301,11 +1342,11 @@ fn remapValueType(
 }
 
 fn buildValueTypes(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime schemas: anytype,
-    comptime handlers: anytype,
-) [linkedTotalValues(components, handlers)]cir.ValueType {
-    var result: [linkedTotalValues(components, handlers)]cir.ValueType = undefined;
+) [linkedTotalValues(Plan)]cir.ValueType {
+    const components = Plan.components;
+    var result: [linkedTotalValues(Plan)]cir.ValueType = undefined;
     var cursor: usize = 0;
     inline for (0..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.value_types) |value_type| {
@@ -1322,14 +1363,14 @@ fn buildValueTypes(
         appendFailureValueTypes(
             &result,
             &cursor,
-            components,
+            Plan,
             schemas,
-            handlers,
             component_index,
         );
     }
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+            if (!Plan.blockReachable(component_index, block.id)) continue;
             if (block.function_id != 0) continue;
             switch (block.terminator) {
                 .return_value => |value| if (value == null and
@@ -1343,8 +1384,15 @@ fn buildValueTypes(
         }
     }
     inline for (1..components.count) |component_index| {
-        if (componentVoidInputCount(components, component_index) == 1) {
+        if (componentVoidWrapperCount(components, component_index) == 1) {
             result[cursor] = .{ .scalar = .unit };
+            cursor += 1;
+            result[cursor] = remapValueType(
+                components,
+                schemas,
+                component_index,
+                body(components.items[component_index]).control_ir.result_type,
+            );
             cursor += 1;
         }
     }
@@ -1354,33 +1402,32 @@ fn buildValueTypes(
 fn appendFailureValueTypes(
     result: anytype,
     cursor: *usize,
-    comptime components: anytype,
+    comptime Plan: type,
     comptime schemas: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
 ) void {
-    const Map = failureMapFor(components, handlers, component_index);
+    const components = Plan.components;
+    const Map = failureMapFor(components, Plan.handlers, component_index);
     if (Map == void) return;
     const target_type: cir.ValueType = .{ .schema = schemaIndex(
         schemas,
         Map.TargetFailure,
     ) };
     inline for (body(components.items[component_index]).control_ir.blocks) |block| {
-        switch (block.terminator) {
-            .fail => appendValueType(result, cursor, target_type),
-            .fail_value => {
-                if (Map.targets.len > 1) {
+        if (!Plan.blockReachable(component_index, block.id)) continue;
+        switch (failureAdapterLayout(Map, block.terminator).kind) {
+            .direct => appendValueType(result, cursor, target_type),
+            .dynamic => {
+                appendValueType(result, cursor, .{ .scalar = .u32 });
+                inline for (0..Map.targets.len - 1) |_| {
                     appendValueType(result, cursor, .{ .scalar = .u32 });
-                    inline for (0..Map.targets.len - 1) |_| {
-                        appendValueType(result, cursor, .{ .scalar = .u32 });
-                        appendValueType(result, cursor, .{ .scalar = .boolean });
-                    }
+                    appendValueType(result, cursor, .{ .scalar = .boolean });
                 }
                 inline for (0..Map.targets.len) |_| {
                     appendValueType(result, cursor, target_type);
                 }
             },
-            else => {},
+            .none, .impossible => {},
         }
     }
 }
@@ -1390,11 +1437,9 @@ fn appendValueType(result: anytype, cursor: *usize, value_type: cir.ValueType) v
     cursor.* += 1;
 }
 
-fn constantTypes(
-    comptime components: anytype,
-    comptime handlers: anytype,
-) [linkedTotalConstants(components, handlers)]type {
-    var result: [linkedTotalConstants(components, handlers)]type = undefined;
+fn constantTypes(comptime Plan: type) [linkedTotalConstants(Plan)]type {
+    const components = Plan.components;
+    var result: [linkedTotalConstants(Plan)]type = undefined;
     var cursor: usize = 0;
     inline for (0..components.count) |component_index| {
         const Body = body(components.items[component_index]);
@@ -1406,32 +1451,32 @@ fn constantTypes(
         }
     }
     inline for (0..components.count) |component_index| {
-        const Map = failureMapFor(components, handlers, component_index);
+        const Map = failureMapFor(components, Plan.handlers, component_index);
         if (Map == void) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
-            switch (block.terminator) {
-                .fail => {
+            if (!Plan.blockReachable(component_index, block.id)) continue;
+            switch (failureAdapterLayout(Map, block.terminator).kind) {
+                .direct => {
                     result[cursor] = Map.TargetFailure;
                     cursor += 1;
                 },
-                .fail_value => {
-                    if (Map.targets.len > 1) {
-                        inline for (0..Map.targets.len - 1) |_| {
-                            result[cursor] = u32;
-                            cursor += 1;
-                        }
+                .dynamic => {
+                    inline for (0..Map.targets.len - 1) |_| {
+                        result[cursor] = u32;
+                        cursor += 1;
                     }
                     inline for (0..Map.targets.len) |_| {
                         result[cursor] = Map.TargetFailure;
                         cursor += 1;
                     }
                 },
-                else => {},
+                .none, .impossible => {},
             }
         }
     }
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+            if (!Plan.blockReachable(component_index, block.id)) continue;
             if (block.function_id != 0) continue;
             switch (block.terminator) {
                 .return_value => |value| if (value == null and
@@ -1447,16 +1492,14 @@ fn constantTypes(
     return result;
 }
 
-fn Constants(comptime components: anytype, comptime handlers: anytype) type {
-    const types = constantTypes(components, handlers);
+fn Constants(comptime Plan: type) type {
+    const types = constantTypes(Plan);
     return std.meta.Tuple(&types);
 }
 
-fn buildConstants(
-    comptime components: anytype,
-    comptime handlers: anytype,
-) Constants(components, handlers) {
-    var result: Constants(components, handlers) = undefined;
+fn buildConstants(comptime Plan: type) Constants(Plan) {
+    const components = Plan.components;
+    var result: Constants(Plan) = undefined;
     var cursor: usize = 0;
     inline for (0..components.count) |component_index| {
         const Body = body(components.items[component_index]);
@@ -1474,13 +1517,13 @@ fn buildConstants(
         appendFailureConstants(
             &result,
             &cursor,
-            components,
-            handlers,
+            Plan,
             component_index,
         );
     }
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+            if (!Plan.blockReachable(component_index, block.id)) continue;
             if (block.function_id != 0) continue;
             switch (block.terminator) {
                 .return_value => |value| if (value == null and
@@ -1502,30 +1545,33 @@ fn buildConstants(
 fn appendFailureConstants(
     result: anytype,
     cursor: *usize,
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
 ) void {
-    const Map = failureMapFor(components, handlers, component_index);
+    const components = Plan.components;
+    const Map = failureMapFor(components, Plan.handlers, component_index);
     if (Map == void) return;
     inline for (body(components.items[component_index]).control_ir.blocks) |block| {
-        switch (block.terminator) {
-            .fail => |source_tag| appendConstant(
-                result,
-                cursor,
-                mappedFailureTarget(Map, source_tag),
-            ),
-            .fail_value => {
-                if (Map.targets.len > 1) {
-                    inline for (0..Map.targets.len - 1) |tag| {
-                        appendConstant(result, cursor, Map.source_tags[tag]);
-                    }
+        if (!Plan.blockReachable(component_index, block.id)) continue;
+        switch (failureAdapterLayout(Map, block.terminator).kind) {
+            .direct => switch (block.terminator) {
+                .fail => |source_tag| appendConstant(
+                    result,
+                    cursor,
+                    mappedFailureTarget(Map, source_tag),
+                ),
+                .fail_value => appendConstant(result, cursor, Map.targets[0]),
+                else => unreachable,
+            },
+            .dynamic => {
+                inline for (0..Map.targets.len - 1) |tag| {
+                    appendConstant(result, cursor, Map.source_tags[tag]);
                 }
                 inline for (Map.targets) |target| {
                     appendConstant(result, cursor, target);
                 }
             },
-            else => {},
+            .none, .impossible => {},
         }
     }
 }
@@ -1539,10 +1585,11 @@ fn appendConstant(result: anytype, cursor: *usize, value: anytype) void {
 }
 
 fn buildFunctions(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime schemas: anytype,
-) [totalFunctions(components)]cir.Function {
-    var result: [totalFunctions(components)]cir.Function = undefined;
+) [linkedTotalFunctions(Plan)]cir.Function {
+    const components = Plan.components;
+    var result: [linkedTotalFunctions(Plan)]cir.Function = undefined;
     var cursor: usize = 0;
     inline for (0..components.count) |component_index| {
         const Body = body(components.items[component_index]);
@@ -1576,23 +1623,36 @@ fn buildFunctions(
             }
         }
     }
+    inline for (1..components.count) |component_index| {
+        if (componentVoidWrapperCount(components, component_index) == 0) continue;
+        result[cursor] = .{
+            .id = @intCast(voidWrapperFunctionId(Plan, component_index)),
+            .entry = @intCast(voidWrapperBlockBase(Plan, component_index)),
+            .result_type = remapValueType(
+                components,
+                schemas,
+                component_index,
+                body(components.items[component_index]).control_ir.result_type,
+            ),
+        };
+        cursor += 1;
+    }
     return result;
 }
 
 fn buildBlocks(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime schemas: anytype,
-    comptime handlers: anytype,
-) [linkedTotalBlocks(components, handlers)]cir.Block {
-    var result: [linkedTotalBlocks(components, handlers)]cir.Block = undefined;
+) [linkedTotalBlocks(Plan)]cir.Block {
+    const components = Plan.components;
+    var result: [linkedTotalBlocks(Plan)]cir.Block = undefined;
     var cursor: usize = 0;
     inline for (0..components.count) |component_index| {
         const Body = body(components.items[component_index]);
         inline for (Body.control_ir.blocks) |source| {
             result[cursor] = remapBlock(
-                components,
+                Plan,
                 schemas,
-                handlers,
                 component_index,
                 source,
             );
@@ -1600,86 +1660,77 @@ fn buildBlocks(
         }
     }
     inline for (0..components.count) |component_index| {
-        const Map = failureMapFor(components, handlers, component_index);
+        const Map = failureMapFor(components, Plan.handlers, component_index);
         if (Map == void) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
-            switch (source.terminator) {
-                .fail => {
+            if (!Plan.blockReachable(component_index, source.id)) continue;
+            switch (failureAdapterLayout(Map, source.terminator).kind) {
+                .direct => {
                     const block_id = failureBlockBase(
-                        components,
-                        handlers,
+                        Plan,
                         component_index,
                         source.id,
                     );
                     result[block_id] = mappedFailureBlock(
-                        components,
-                        handlers,
+                        Plan,
                         component_index,
                         source,
                         block_id,
                     );
                 },
-                .fail_value => {
+                .dynamic => {
                     const extra_base = failureBlockBase(
-                        components,
-                        handlers,
+                        Plan,
                         component_index,
                         source.id,
                     );
-                    if (Map.targets.len == 1) {
-                        result[extra_base] = mappedFailureBlock(
-                            components,
-                            handlers,
+                    const fail_base = extra_base + Map.targets.len - 1;
+                    inline for (0..Map.targets.len - 1) |tag| {
+                        result[extra_base + tag] = failureCheckBlock(
+                            Plan,
                             component_index,
                             source,
+                            tag,
                             extra_base,
+                            fail_base,
                         );
-                    } else {
-                        const fail_base = extra_base + Map.targets.len - 1;
-                        inline for (0..Map.targets.len - 1) |tag| {
-                            result[extra_base + tag] = failureCheckBlock(
-                                components,
-                                handlers,
-                                component_index,
-                                source,
-                                tag,
-                                extra_base,
-                                fail_base,
-                            );
-                        }
-                        inline for (0..Map.targets.len) |tag| {
-                            result[fail_base + tag] = failureLeafBlock(
-                                components,
-                                handlers,
-                                component_index,
-                                source,
-                                tag,
-                                fail_base,
-                            );
-                        }
+                    }
+                    inline for (0..Map.targets.len) |tag| {
+                        result[fail_base + tag] = failureLeafBlock(
+                            Plan,
+                            component_index,
+                            source,
+                            tag,
+                            fail_base,
+                        );
                     }
                 },
-                else => {},
+                .none, .impossible => {},
             }
         }
     }
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
+            if (!Plan.blockReachable(component_index, source.id)) continue;
             if (!expandsVoidReturn(components, component_index, source)) continue;
             const block_id = voidReturnBlockBase(
-                components,
-                handlers,
+                Plan,
                 component_index,
                 source.id,
             );
             result[block_id] = voidReturnBlock(
-                components,
-                handlers,
+                Plan,
                 component_index,
                 source,
                 block_id,
             );
         }
+    }
+    inline for (1..components.count) |component_index| {
+        if (componentVoidWrapperCount(components, component_index) == 0) continue;
+        const block_base = voidWrapperBlockBase(Plan, component_index);
+        result[block_base] = voidWrapperEntryBlock(Plan, schemas, component_index);
+        result[block_base + 1] = voidWrapperReturnBlock(Plan, component_index);
     }
     return result;
 }
@@ -1704,22 +1755,23 @@ fn buildBlockCosts(
 }
 
 fn remapBlock(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime schemas: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source: cir.Block,
 ) cir.Block {
+    const components = Plan.components;
+    if (!Plan.blockReachable(component_index, source.id)) {
+        return remapUnreachableBlock(Plan, component_index, source);
+    }
     const Static = struct {
         const parameters = remapBlockParameters(
             components,
-            handlers,
             component_index,
             source,
         );
         const instructions = remapBlockInstructions(
             components,
-            handlers,
             component_index,
             source,
         );
@@ -1733,9 +1785,8 @@ fn remapBlock(
         .parameters = &Static.parameters,
         .instructions = &Static.instructions,
         .terminator = remapBlockTerminator(
-            components,
+            Plan,
             schemas,
-            handlers,
             component_index,
             source,
         ),
@@ -1744,32 +1795,13 @@ fn remapBlock(
 
 fn remapBlockParameters(
     comptime components: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source: cir.Block,
-) [
-    source.parameters.len + @as(usize, @intFromBool(
-        componentVoidInputCount(components, component_index) == 1 and
-            source.id == body(components.items[component_index]).control_ir.entry,
-    ))
-]cir.ValueId {
-    const add_void = componentVoidInputCount(components, component_index) == 1 and
-        source.id == body(components.items[component_index]).control_ir.entry;
-    var result: [source.parameters.len + @as(usize, @intFromBool(add_void))]cir.ValueId =
-        undefined;
-    const remapped = remapValueIds(
+) [source.parameters.len]cir.ValueId {
+    return remapValueIds(
         source.parameters,
         valueOffset(components, component_index),
     );
-    inline for (remapped, 0..) |value, index| result[index] = value;
-    if (add_void) {
-        result[source.parameters.len] = @intCast(voidInputValueBase(
-            components,
-            handlers,
-            component_index,
-        ));
-    }
-    return result;
 }
 
 fn expandsVoidReturn(
@@ -1790,11 +1822,9 @@ fn expandsVoidReturn(
 
 fn remapBlockInstructions(
     comptime components: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source: cir.Block,
 ) [source.instructions.len]cir.Instruction {
-    _ = handlers;
     return remapInstructions(
         components,
         component_index,
@@ -1803,58 +1833,116 @@ fn remapBlockInstructions(
 }
 
 fn remapBlockTerminator(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime schemas: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source_block: cir.Block,
 ) cir.Terminator {
+    const components = Plan.components;
     const source = source_block.terminator;
     if (expandsVoidReturn(components, component_index, source_block)) {
         return .{ .jump = .{ .target = @intCast(voidReturnBlockBase(
-            components,
-            handlers,
+            Plan,
             component_index,
             source_block.id,
         )) } };
     }
-    if (failureMapFor(components, handlers, component_index) != void) {
-        switch (source) {
-            .fail, .fail_value => return .{ .jump = .{ .target = @intCast(
-                failureBlockBase(
-                    components,
-                    handlers,
-                    component_index,
-                    source_block.id,
-                ),
-            ) } },
-            else => {},
-        }
+    const Map = failureMapFor(components, Plan.handlers, component_index);
+    switch (failureAdapterLayout(Map, source).kind) {
+        .impossible => return selfLoopTerminator(
+            components,
+            component_index,
+            source_block,
+        ),
+        .direct, .dynamic => return .{ .jump = .{ .target = @intCast(
+            failureBlockBase(
+                Plan,
+                component_index,
+                source_block.id,
+            ),
+        ) } },
+        .none => {},
     }
     return remapTerminator(
         components,
         schemas,
-        handlers,
         component_index,
         source_block.function_id,
         source,
     );
 }
 
-fn mappedFailureBlock(
+fn remapUnreachableBlock(
+    comptime Plan: type,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+) cir.Block {
+    const components = Plan.components;
+    const Static = struct {
+        const parameters = remapBlockParameters(
+            components,
+            component_index,
+            source,
+        );
+        const instructions = remapBlockInstructions(
+            components,
+            component_index,
+            source,
+        );
+    };
+    return .{
+        .id = @intCast(blockOffset(components, component_index) + source.id),
+        .function_id = @intCast(
+            functionOffset(components, component_index) + source.function_id,
+        ),
+        .role = source.role,
+        .parameters = &Static.parameters,
+        .instructions = &Static.instructions,
+        .terminator = selfLoopTerminator(components, component_index, source),
+    };
+}
+
+fn selfLoopTerminator(
     comptime components: anytype,
-    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+) cir.Terminator {
+    const Static = struct {
+        const arguments = blockParameterArguments(
+            source.parameters,
+            valueOffset(components, component_index),
+        );
+    };
+    return .{ .jump = .{
+        .target = @intCast(blockOffset(components, component_index) + source.id),
+        .arguments = &Static.arguments,
+    } };
+}
+
+fn blockParameterArguments(
+    comptime parameters: []const cir.ValueId,
+    comptime value_offset: usize,
+) [parameters.len]cir.EdgeArgument {
+    var result: [parameters.len]cir.EdgeArgument = undefined;
+    inline for (parameters, 0..) |parameter, index| {
+        result[index] = .{ .value = @intCast(value_offset + parameter) };
+    }
+    return result;
+}
+
+fn mappedFailureBlock(
+    comptime Plan: type,
     comptime component_index: usize,
     comptime source: cir.Block,
     comptime block_id: usize,
 ) cir.Block {
-    const Map = failureMapFor(components, handlers, component_index);
+    const components = Plan.components;
+    const Map = failureMapFor(components, Plan.handlers, component_index);
     if (Map.targets.len == 0) {
         @compileError("World failure morphism cannot map an empty Failure enum");
     }
     const value_id = failureValueBase(
-        components,
-        handlers,
+        Plan,
         component_index,
         source.id,
     );
@@ -1863,8 +1951,7 @@ fn mappedFailureBlock(
             .kind = .constant,
             .result = @intCast(value_id),
             .operation = .{ .constant = @intCast(failureConstantBase(
-                components,
-                handlers,
+                Plan,
                 component_index,
                 source.id,
             )) },
@@ -1882,15 +1969,14 @@ fn mappedFailureBlock(
 }
 
 fn voidReturnBlock(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime source: cir.Block,
     comptime block_id: usize,
 ) cir.Block {
+    const components = Plan.components;
     const value_id = voidReturnValueBase(
-        components,
-        handlers,
+        Plan,
         component_index,
         source.id,
     );
@@ -1899,8 +1985,7 @@ fn voidReturnBlock(
             .kind = .constant,
             .result = @intCast(value_id),
             .operation = .{ .constant = @intCast(voidReturnConstantBase(
-                components,
-                handlers,
+                Plan,
                 component_index,
                 source.id,
             )) },
@@ -1917,21 +2002,74 @@ fn voidReturnBlock(
     };
 }
 
+fn voidWrapperEntryBlock(
+    comptime Plan: type,
+    comptime schemas: anytype,
+    comptime component_index: usize,
+) cir.Block {
+    const components = Plan.components;
+    const Body = body(components.items[component_index]);
+    const value_base = voidWrapperValueBase(Plan, component_index);
+    const block_base = voidWrapperBlockBase(Plan, component_index);
+    const Static = struct {
+        const parameters = [_]cir.ValueId{@intCast(value_base)};
+        const resume_arguments = [_]cir.EdgeArgument{.@"resume"};
+    };
+    return .{
+        .id = @intCast(block_base),
+        .function_id = @intCast(voidWrapperFunctionId(Plan, component_index)),
+        .parameters = &Static.parameters,
+        .terminator = .{ .@"suspend" = .{
+            .kind = .call,
+            .callee_function = @intCast(functionOffset(components, component_index)),
+            .callee = .{ .target = @intCast(
+                blockOffset(components, component_index) + Body.control_ir.entry,
+            ) },
+            .continuation = .{
+                .target = @intCast(block_base + 1),
+                .arguments = &Static.resume_arguments,
+            },
+            .resume_type = remapValueType(
+                components,
+                schemas,
+                component_index,
+                Body.control_ir.result_type,
+            ),
+        } },
+    };
+}
+
+fn voidWrapperReturnBlock(
+    comptime Plan: type,
+    comptime component_index: usize,
+) cir.Block {
+    const value_id = voidWrapperValueBase(Plan, component_index) + 1;
+    const Static = struct {
+        const parameters = [_]cir.ValueId{@intCast(value_id)};
+    };
+    return .{
+        .id = @intCast(voidWrapperBlockBase(Plan, component_index) + 1),
+        .function_id = @intCast(voidWrapperFunctionId(Plan, component_index)),
+        .role = .terminal_handoff,
+        .parameters = &Static.parameters,
+        .terminator = .{ .return_to_caller = @intCast(value_id) },
+    };
+}
+
 fn firstFailureCheckBlock(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime source: cir.Block,
     comptime extra_base: usize,
     comptime fail_base: usize,
 ) cir.Block {
+    const components = Plan.components;
     const fail_value = switch (source.terminator) {
         .fail_value => |value| value,
         else => unreachable,
     };
     const value_base = failureValueBase(
-        components,
-        handlers,
+        Plan,
         component_index,
         source.id,
     );
@@ -1954,8 +2092,7 @@ fn firstFailureCheckBlock(
                 .kind = .constant,
                 .result = @intCast(value_base + 1),
                 .operation = .{ .constant = @intCast(failureConstantBase(
-                    components,
-                    handlers,
+                    Plan,
                     component_index,
                     source.id,
                 )) },
@@ -1975,8 +2112,7 @@ fn firstFailureCheckBlock(
         ),
         .instructions = &Static.instructions,
         .terminator = failureCheckTerminator(
-            components,
-            handlers,
+            Plan,
             component_index,
             source,
             0,
@@ -1987,17 +2123,16 @@ fn firstFailureCheckBlock(
 }
 
 fn laterFailureCheckBlock(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime source: cir.Block,
     comptime tag: usize,
     comptime extra_base: usize,
     comptime fail_base: usize,
 ) cir.Block {
+    const components = Plan.components;
     const value_base = failureValueBase(
-        components,
-        handlers,
+        Plan,
         component_index,
         source.id,
     );
@@ -2014,8 +2149,7 @@ fn laterFailureCheckBlock(
                 .result = @intCast(constant_value),
                 .operation = .{ .constant = @intCast(
                     failureConstantBase(
-                        components,
-                        handlers,
+                        Plan,
                         component_index,
                         source.id,
                     ) + tag,
@@ -2036,8 +2170,7 @@ fn laterFailureCheckBlock(
         ),
         .instructions = &Static.instructions,
         .terminator = failureCheckTerminator(
-            components,
-            handlers,
+            Plan,
             component_index,
             source,
             tag,
@@ -2048,19 +2181,17 @@ fn laterFailureCheckBlock(
 }
 
 fn failureCheckTerminator(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime source: cir.Block,
     comptime tag: usize,
     comptime extra_base: usize,
     comptime fail_base: usize,
 ) cir.Terminator {
-    const Map = failureMapFor(components, handlers, component_index);
+    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     return .{ .branch = .{
         .condition = @intCast(failureValueBase(
-            components,
-            handlers,
+            Plan,
             component_index,
             source.id,
         ) + 2 + 2 * tag),
@@ -2073,8 +2204,7 @@ fn failureCheckTerminator(
 }
 
 fn failureCheckBlock(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime source: cir.Block,
     comptime tag: usize,
@@ -2082,16 +2212,14 @@ fn failureCheckBlock(
     comptime fail_base: usize,
 ) cir.Block {
     if (tag == 0) return firstFailureCheckBlock(
-        components,
-        handlers,
+        Plan,
         component_index,
         source,
         extra_base,
         fail_base,
     );
     return laterFailureCheckBlock(
-        components,
-        handlers,
+        Plan,
         component_index,
         source,
         tag,
@@ -2101,23 +2229,21 @@ fn failureCheckBlock(
 }
 
 fn failureLeafBlock(
-    comptime components: anytype,
-    comptime handlers: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime source: cir.Block,
     comptime tag: usize,
     comptime fail_base: usize,
 ) cir.Block {
-    const Map = failureMapFor(components, handlers, component_index);
+    const components = Plan.components;
+    const Map = failureMapFor(components, Plan.handlers, component_index);
     const target_value_base = failureValueBase(
-        components,
-        handlers,
+        Plan,
         component_index,
         source.id,
     ) + 1 + 2 * (Map.targets.len - 1);
     const target_constant_base = failureConstantBase(
-        components,
-        handlers,
+        Plan,
         component_index,
         source.id,
     ) + Map.targets.len - 1;
@@ -2193,7 +2319,6 @@ fn remapInstruction(
 fn remapTerminator(
     comptime components: anytype,
     comptime schemas: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source_function: cir.FunctionId,
     comptime source: cir.Terminator,
@@ -2202,7 +2327,6 @@ fn remapTerminator(
     return switch (source) {
         .jump => |edge| .{ .jump = remapEdge(
             components,
-            handlers,
             component_index,
             edge,
         ) },
@@ -2210,13 +2334,11 @@ fn remapTerminator(
             .condition = @intCast(value_offset + branch.condition),
             .then_edge = remapEdge(
                 components,
-                handlers,
                 component_index,
                 branch.then_edge,
             ),
             .else_edge = remapEdge(
                 components,
-                handlers,
                 component_index,
                 branch.else_edge,
             ),
@@ -2224,7 +2346,6 @@ fn remapTerminator(
         .@"suspend" => |suspension| .{ .@"suspend" = remapSuspension(
             components,
             schemas,
-            handlers,
             component_index,
             suspension,
         ) },
@@ -2241,7 +2362,6 @@ fn remapTerminator(
         .fail => |failure| .{
             .fail = remapFailureTag(
                 components,
-                handlers,
                 component_index,
                 failure,
             ),
@@ -2252,11 +2372,9 @@ fn remapTerminator(
 
 fn remapFailureTag(
     comptime components: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source_tag: u16,
 ) u16 {
-    _ = handlers;
     if (component_index == 0) return source_tag;
     const Program = components.items[component_index];
     const ComponentFailure = body(Program).Failure;
@@ -2267,16 +2385,13 @@ fn remapFailureTag(
 
 fn remapEdge(
     comptime components: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source: cir.Edge,
 ) cir.Edge {
     const Static = struct {
         const arguments = remapEdgeArguments(
-            components,
-            handlers,
-            component_index,
-            source,
+            source.arguments,
+            valueOffset(components, component_index),
         );
     };
     return .{
@@ -2286,35 +2401,15 @@ fn remapEdge(
 }
 
 fn remapEdgeArguments(
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime component_index: usize,
-    comptime source: cir.Edge,
-) [
-    source.arguments.len + @as(usize, @intFromBool(
-        componentVoidInputCount(components, component_index) == 1 and
-            source.target == body(components.items[component_index]).control_ir.entry,
-    ))
-]cir.EdgeArgument {
-    const add_void = componentVoidInputCount(components, component_index) == 1 and
-        source.target == body(components.items[component_index]).control_ir.entry;
-    var result: [
-        source.arguments.len + @as(usize, @intFromBool(add_void))
-    ]cir.EdgeArgument = undefined;
-    inline for (source.arguments, 0..) |argument, index| {
+    comptime source: []const cir.EdgeArgument,
+    comptime value_offset: usize,
+) [source.len]cir.EdgeArgument {
+    var result: [source.len]cir.EdgeArgument = undefined;
+    inline for (source, 0..) |argument, index| {
         result[index] = switch (argument) {
-            .value => |value| .{ .value = @intCast(
-                valueOffset(components, component_index) + value,
-            ) },
+            .value => |value| .{ .value = @intCast(value_offset + value) },
             .@"resume" => .@"resume",
         };
-    }
-    if (add_void) {
-        result[source.arguments.len] = .{ .value = @intCast(voidInputValueBase(
-            components,
-            handlers,
-            component_index,
-        )) };
     }
     return result;
 }
@@ -2322,7 +2417,6 @@ fn remapEdgeArguments(
 fn remapSuspension(
     comptime components: anytype,
     comptime schemas: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source: cir.Suspension,
 ) cir.Suspension {
@@ -2344,12 +2438,11 @@ fn remapSuspension(
         else
             null,
         .callee = if (source.callee) |edge|
-            remapEdge(components, handlers, component_index, edge)
+            remapEdge(components, component_index, edge)
         else
             null,
         .continuation = remapEdge(
             components,
-            handlers,
             component_index,
             source.continuation,
         ),
@@ -2382,10 +2475,9 @@ fn buildEffectSites(comptime components: anytype) [totalEffects(components)]type
     return result;
 }
 
-fn buildEffectHandlers(
-    comptime components: anytype,
-    comptime handlers: anytype,
-) [handlers.len]type {
+fn buildEffectHandlers(comptime Plan: type) [Plan.handlers.len]type {
+    const components = Plan.components;
+    const handlers = Plan.handlers;
     var result: [handlers.len]type = undefined;
     inline for (handlers, 0..) |Handler, index| {
         const consumer_index = componentIndex(components, Handler.Consumer);
@@ -2395,7 +2487,10 @@ fn buildEffectHandlers(
                 effectOffset(components, consumer_index) +
                     Handler.site_ordinal,
             ),
-            @intCast(functionOffset(components, provider_index)),
+            @intCast(if (componentVoidWrapperCount(components, provider_index) == 1)
+                voidWrapperFunctionId(Plan, provider_index)
+            else
+                functionOffset(components, provider_index)),
         );
     }
     return result;
@@ -2419,17 +2514,17 @@ fn buildEffectMorphisms(
     return result;
 }
 
-fn residualEffects(
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime morphisms: anytype,
-    comptime externals: anytype,
-) ResidualCatalog(totalEffects(components) + morphisms.len) {
+fn residualEffects(comptime Plan: type) ResidualCatalog(
+    totalEffects(Plan.components) + Plan.morphisms.len,
+) {
+    const components = Plan.components;
+    const handlers = Plan.handlers;
+    const morphisms = Plan.morphisms;
     var result: ResidualCatalog(totalEffects(components) + morphisms.len) = .{};
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         inline for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
-            if (!componentSiteReachable(Program, site_ordinal)) continue;
+            if (!componentSiteReachable(Plan, component_index, site_ordinal)) continue;
             if (handlerCount(handlers, Program, site_ordinal) == 1) continue;
             inline for (morphisms) |Morphism| {
                 if (Morphism.Consumer == Program and
@@ -2438,13 +2533,9 @@ fn residualEffects(
                     result.add(Morphism.Target);
                 }
             }
-            if (externalCount(
-                externals,
-                components,
-                Program,
-                site_ordinal,
-                Site,
-            ) == 1) result.add(Site);
+            if (externalCount(Plan, Program, site_ordinal, Site) == 1) {
+                result.add(Site);
+            }
         }
     }
     return result;

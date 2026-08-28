@@ -28,9 +28,9 @@ pub const System = world.system(.{
 });
 ```
 
-A bare Site type remains accepted when it identifies exactly one reachable
-component-site occurrence. Use `world.systemExternal` when the same Site type
-occurs in more than one component or ordinal.
+A bare Site type may authorize a residual morphism target and, when it identifies
+exactly one otherwise-uncovered source occurrence, that occurrence. Use
+`world.systemExternal` when source occurrences require explicit disambiguation.
 
 The existing `world.application` path remains available as an optional
 specialization and compatibility surface:

@@ -1196,12 +1196,11 @@ const VoidBackedgeSystem = world.system(.{
     .external = .{},
 });
 
-test "world.system carries synthetic void input across provider backedges" {
+test "world.system preserves void provider backedges behind a wrapper" {
     const Linked = VoidBackedgeSystem.Program.component();
     const provider_backedge = Linked.control_ir.blocks[3].terminator.jump;
     try std.testing.expectEqual(@as(boundary.ir.BlockId, 2), provider_backedge.target);
-    try std.testing.expectEqual(@as(usize, 1), provider_backedge.arguments.len);
-    try std.testing.expect(provider_backedge.arguments[0] == .value);
+    try std.testing.expectEqual(@as(usize, 0), provider_backedge.arguments.len);
 }
 
 const DiamondLeaf = struct {
@@ -1264,4 +1263,276 @@ test "world.system validates a shared-provider DAG once per component" {
     try std.testing.expectEqual(@as(usize, 4), DiamondSystem.component_count);
     try std.testing.expectEqual(@as(usize, 0), DiamondSystem.residual_effects.count);
     try std.testing.expect(DiamondSystem.Program.image().bytes.len > 0);
+}
+
+const void_dead_provider_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .terminator = .{ .return_value = null },
+    },
+    .{
+        .id = 1,
+        .terminator = .{ .jump = .{ .target = 0 } },
+    },
+};
+const VoidDeadProviderBody = struct {
+    pub const InitialArgs = void;
+    pub const Result = void;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "void-dead-provider",
+        .value_types = &.{},
+        .blocks = &void_dead_provider_blocks,
+        .entry = 0,
+        .result_type = unit_type,
+    };
+};
+const VoidDeadProvider = boundary.program(
+    "void-dead-provider",
+    VoidDeadProviderBody,
+);
+pub const VoidDeadSpec = .{
+    .name = "void-dead-system",
+    .root = VoidRootProgram,
+    .handlers = .{world.systemHandle(.{
+        .consumer = VoidRootProgram,
+        .site = VoidSite,
+        .provider = VoidDeadProvider,
+    })},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const VoidDeadSystem = world.system(VoidDeadSpec);
+
+test "world.system privatizes unreachable void-entry predecessors" {
+    const Linked = VoidDeadSystem.Program.component();
+    const dead_edge = Linked.control_ir.blocks[3].terminator.jump;
+    try std.testing.expectEqual(@as(boundary.ir.BlockId, 3), dead_edge.target);
+    try std.testing.expectEqual(@as(usize, 0), dead_edge.arguments.len);
+    try std.testing.expectEqual(@as(usize, 3), Linked.control_ir.functions.len);
+
+    const DeadMachine = VoidDeadSystem.Program.compile(.{
+        .maximum_frames = 8,
+        .maximum_state_bytes = 4096,
+        .maximum_machine_fuel = 64,
+    });
+    const state = try DeadMachine.initialState(std.testing.allocator, {});
+    defer DeadMachine.deinitState(state);
+    var fuel: u64 = 64;
+    const completed = switch (try DeadMachine.step(state, &fuel)) {
+        .done => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    defer completed.deinit();
+}
+
+const RoleSource = boundary.effect.site(
+    0,
+    "generic.role-source.v1",
+    u32,
+    u32,
+);
+const RoleTarget = boundary.effect.site(
+    1,
+    "generic.role-target.v1",
+    u32,
+    u32,
+);
+const external_role_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{
+                .target = 1,
+                .arguments = &resume_arguments,
+            },
+            .resume_type = u32_type,
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 1,
+            .request_values = &.{1},
+            .continuation = .{
+                .target = 2,
+                .arguments = &resume_arguments,
+            },
+            .resume_type = u32_type,
+        } },
+    },
+    .{
+        .id = 2,
+        .parameters = &.{2},
+        .terminator = .{ .return_value = 2 },
+    },
+};
+const ExternalRoleBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{ RoleSource, RoleTarget };
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "external-role-root",
+        .value_types = &.{ u32_type, u32_type, u32_type },
+        .blocks = &external_role_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const ExternalRoleRoot = boundary.program("external-role-root", ExternalRoleBody);
+const ExternalRoleProvider = PureProvider("external-role-provider", 1);
+pub const ExternalRoleSpec = .{
+    .name = "external-role-system",
+    .root = ExternalRoleRoot,
+    .handlers = .{world.systemHandle(.{
+        .consumer = ExternalRoleRoot,
+        .site = RoleTarget,
+        .provider = ExternalRoleProvider,
+    })},
+    .morphisms = .{world.systemMorphism(.{
+        .consumer = ExternalRoleRoot,
+        .site = RoleSource,
+        .target = RoleTarget,
+    })},
+    .external = .{RoleTarget},
+};
+pub const ExternalRoleSystem = world.system(ExternalRoleSpec);
+
+test "world.system separates morphism targets from source dispositions" {
+    const RoleMachine = ExternalRoleSystem.Program.compile(.{
+        .maximum_frames = 8,
+        .maximum_state_bytes = 4096,
+        .maximum_machine_fuel = 64,
+    });
+    try std.testing.expectEqual(@as(usize, 1), ExternalRoleSystem.residual_effects.count);
+    try std.testing.expect(ExternalRoleSystem.residual_effects.items[0] == RoleTarget);
+    try std.testing.expectEqual(@as(u32, 1), RoleTarget.id);
+    try std.testing.expectEqualStrings(
+        RoleTarget.semantic_identity,
+        RoleMachine.EffectRow.site(0).semantic_identity,
+    );
+    const state = try RoleMachine.initialState(std.testing.allocator, 4);
+    defer RoleMachine.deinitState(state);
+    var fuel: u64 = 64;
+    const request = switch (try RoleMachine.step(state, &fuel)) {
+        .request => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(@as(u32, 4), request.value.s0);
+    {
+        const prepared = try RoleMachine.prepareResume(state, request);
+        defer RoleMachine.deinitPreparedResume(prepared);
+        try RoleMachine.@"resume"(prepared, @as(u32, 5));
+    }
+    const completed = switch (try RoleMachine.step(state, &fuel)) {
+        .done => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    defer completed.deinit();
+    try std.testing.expectEqual(@as(u32, 6), completed.value().*);
+}
+
+const EmptyProviderFailure = enum {};
+const EmptyFailureSite = boundary.effect.site(
+    0,
+    "generic.empty-failure.v1",
+    u32,
+    u32,
+);
+const empty_failure_type: boundary.ir.ValueType = .{ .schema = 0 };
+const empty_failure_root_blocks = failure_root_blocks;
+const EmptyFailureRootBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{EmptyFailureSite};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "empty-failure-root",
+        .value_types = &.{ u32_type, u32_type },
+        .blocks = &empty_failure_root_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const empty_failure_provider_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .return_value = 0 },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .fail_value = 1 },
+    },
+};
+const EmptyFailureProviderBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = EmptyProviderFailure;
+    pub const effect_sites = .{};
+    pub const schema_types = .{EmptyProviderFailure};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "empty-failure-provider",
+        .value_types = &.{ u32_type, empty_failure_type },
+        .blocks = &empty_failure_provider_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const EmptyFailureRoot = boundary.program("empty-failure-root", EmptyFailureRootBody);
+const EmptyFailureProvider = boundary.program(
+    "empty-failure-provider",
+    EmptyFailureProviderBody,
+);
+const EmptyFailureMap = world.failureMorphism(
+    EmptyProviderFailure,
+    SystemFailure,
+    .{},
+);
+pub const EmptyFailureSpec = .{
+    .name = "empty-failure-system",
+    .root = EmptyFailureRoot,
+    .handlers = .{world.systemHandle(.{
+        .consumer = EmptyFailureRoot,
+        .site = EmptyFailureSite,
+        .provider = EmptyFailureProvider,
+        .failure_morphism = EmptyFailureMap,
+    })},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const EmptyFailureSystem = world.system(EmptyFailureSpec);
+
+test "world.system closes zero-cardinality Failure layout" {
+    const Linked = EmptyFailureSystem.Program.component();
+    try std.testing.expectEqual(@as(usize, 4), Linked.control_ir.blocks.len);
+    const dead_edge = Linked.control_ir.blocks[3].terminator.jump;
+    try std.testing.expectEqual(@as(boundary.ir.BlockId, 3), dead_edge.target);
+
+    const EmptyMachine = EmptyFailureSystem.Program.compile(.{
+        .maximum_frames = 4,
+        .maximum_state_bytes = 4096,
+        .maximum_machine_fuel = 32,
+    });
+    const state = try EmptyMachine.initialState(std.testing.allocator, 9);
+    defer EmptyMachine.deinitState(state);
+    var fuel: u64 = 32;
+    const completed = switch (try EmptyMachine.step(state, &fuel)) {
+        .done => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    defer completed.deinit();
+    try std.testing.expectEqual(@as(u32, 9), completed.value().*);
 }

@@ -190,6 +190,15 @@ pub fn build(b: *std.Build) void {
             .{ .name = "boundary", .module = boundary },
         },
     });
+    const system_topology_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("test/system_link_topology_v1.zig"),
+        .target = validation_target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "boundary", .module = boundary },
+            .{ .name = "system_v1_fixtures", .module = system_fixtures },
+        },
+    }) });
 
     const build_support = b.createModule(.{
         .root_source_file = b.path("build_support/application.zig"),
@@ -522,6 +531,7 @@ pub fn build(b: *std.Build) void {
         "Link Boundary Program components into one ordinary BPI1.",
     );
     system_link_step.dependOn(&runArtifact(b, system_tests).step);
+    system_link_step.dependOn(&runArtifact(b, system_topology_tests).step);
     system_link_step.dependOn(system_negative_step);
 
     const dependency_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_boundary_dependency.mjs" });
