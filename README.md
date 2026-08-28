@@ -21,9 +21,16 @@ pub const System = world.system(.{
         .provider = PolicyProgram,
     })},
     .morphisms = .{},
-    .external = .{Lookup},
+    .external = .{world.systemExternal(.{
+        .consumer = RootProgram,
+        .site = Lookup,
+    })},
 });
 ```
+
+A bare Site type remains accepted when it identifies exactly one reachable
+component-site occurrence. Use `world.systemExternal` when the same Site type
+occurs in more than one component or ordinal.
 
 The existing `world.application` path remains available as an optional
 specialization and compatibility surface:

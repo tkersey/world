@@ -399,6 +399,7 @@ const FailureProviderBody = struct {
     pub const Failure = ProviderFailure;
     pub const effect_sites = .{};
     pub const schema_types = .{};
+    pub const block_costs = [_]u64{11};
     pub const control_ir: boundary.ir.Program = .{
         .label = "failure-provider",
         .value_types = &.{u32_type},
@@ -434,11 +435,11 @@ test "world.system applies one explicit pure total Failure morphism" {
     const FailureMachine = FailureSystem.Program.compile(.{
         .maximum_frames = 4,
         .maximum_state_bytes = 4096,
-        .maximum_machine_fuel = 16,
+        .maximum_machine_fuel = 64,
     });
     const state = try FailureMachine.initialState(std.testing.allocator, 7);
     defer FailureMachine.deinitState(state);
-    var fuel: u64 = 8;
+    var fuel: u64 = 64;
     const failure = switch (try FailureMachine.step(state, &fuel)) {
         .failed => |value| value,
         else => return error.TestUnexpectedResult,
@@ -450,6 +451,15 @@ test "world.system applies one explicit pure total Failure morphism" {
         ),
         else => return error.TestUnexpectedFailure,
     }
+}
+
+test "world.system preserves authored failure-block cost before its adapter" {
+    const Linked = FailureSystem.Program.component();
+    try std.testing.expectEqual(@as(u64, 11), Linked.block_costs[2]);
+    try std.testing.expectEqual(@as(usize, 0), Linked.control_ir.blocks[2].instructions.len);
+    try std.testing.expect(Linked.control_ir.blocks[2].terminator == .jump);
+    try std.testing.expectEqual(@as(u64, 2), Linked.block_costs[3]);
+    try std.testing.expectEqual(@as(usize, 1), Linked.control_ir.blocks[3].instructions.len);
 }
 
 const WrongProviderBody = struct {
@@ -719,6 +729,7 @@ const VoidProviderBody = struct {
     pub const Failure = SystemFailure;
     pub const effect_sites = .{};
     pub const schema_types = .{};
+    pub const block_costs = [_]u64{13};
     pub const control_ir: boundary.ir.Program = .{
         .label = "void-provider",
         .value_types = &.{},
@@ -745,17 +756,26 @@ test "world.system internal handlers preserve void Resume and Result" {
     const VoidMachine = VoidSystem.Program.compile(.{
         .maximum_frames = 4,
         .maximum_state_bytes = 4096,
-        .maximum_machine_fuel = 16,
+        .maximum_machine_fuel = 64,
     });
     try std.testing.expectEqual(@as(usize, 0), VoidMachine.EffectRow.operation_site_count);
     const state = try VoidMachine.initialState(std.testing.allocator, {});
     defer VoidMachine.deinitState(state);
-    var fuel: u64 = 8;
+    var fuel: u64 = 64;
     const completed = switch (try VoidMachine.step(state, &fuel)) {
         .done => |value| value,
         else => return error.TestUnexpectedResult,
     };
     defer completed.deinit();
+}
+
+test "world.system preserves authored void-return cost before its adapter" {
+    const Linked = VoidSystem.Program.component();
+    try std.testing.expectEqual(@as(u64, 13), Linked.block_costs[2]);
+    try std.testing.expectEqual(@as(usize, 0), Linked.control_ir.blocks[2].instructions.len);
+    try std.testing.expect(Linked.control_ir.blocks[2].terminator == .jump);
+    try std.testing.expectEqual(@as(u64, 2), Linked.block_costs[3]);
+    try std.testing.expectEqual(@as(usize, 1), Linked.control_ir.blocks[3].instructions.len);
 }
 
 const nonroot_entry_instructions = [_]boundary.ir.Instruction{.{
@@ -1054,4 +1074,194 @@ test "world.system canonical identity ignores handler tuple ordering" {
         &OrderSystemAB.Program.image().bytes,
         &OrderSystemBA.Program.image().bytes,
     );
+}
+
+const SharedOccurrence = struct {
+    pub const Payload = u32;
+    pub const Resume = u32;
+    pub const semantic_identity = "generic.shared-occurrence.v1";
+};
+
+const shared_occurrence_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{
+                .target = 1,
+                .arguments = &resume_arguments,
+            },
+            .resume_type = u32_type,
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .return_value = 1 },
+    },
+};
+
+fn SharedOccurrenceProgram(comptime label: []const u8) type {
+    const Body = struct {
+        pub const InitialArgs = u32;
+        pub const Result = u32;
+        pub const Failure = SystemFailure;
+        pub const effect_sites = .{SharedOccurrence};
+        pub const schema_types = .{};
+        pub const control_ir: boundary.ir.Program = .{
+            .label = label,
+            .value_types = &.{ u32_type, u32_type },
+            .blocks = &shared_occurrence_blocks,
+            .entry = 0,
+            .result_type = u32_type,
+        };
+    };
+    return boundary.program(label, Body);
+}
+
+const SharedOccurrenceRoot = SharedOccurrenceProgram("shared-occurrence-root");
+const SharedOccurrenceProvider = SharedOccurrenceProgram("shared-occurrence-provider");
+const SharedOccurrenceSystem = world.system(.{
+    .name = "shared-occurrence-system",
+    .root = SharedOccurrenceRoot,
+    .handlers = .{world.systemHandle(.{
+        .consumer = SharedOccurrenceRoot,
+        .site = SharedOccurrence,
+        .provider = SharedOccurrenceProvider,
+    })},
+    .morphisms = .{},
+    .external = .{world.systemExternal(.{
+        .consumer = SharedOccurrenceProvider,
+        .site = SharedOccurrence,
+    })},
+});
+
+test "world.system dispositions belong to component-site occurrences" {
+    const SharedMachine = SharedOccurrenceSystem.Program.compile(.{
+        .maximum_frames = 4,
+        .maximum_state_bytes = 4096,
+        .maximum_machine_fuel = 16,
+    });
+    try std.testing.expectEqual(@as(usize, 1), SharedOccurrenceSystem.residual_effects.count);
+    const state = try SharedMachine.initialState(std.testing.allocator, 7);
+    defer SharedMachine.deinitState(state);
+    var fuel: u64 = 8;
+    const request = switch (try SharedMachine.step(state, &fuel)) {
+        .request => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(@as(u32, 7), request.value.s0);
+}
+
+const void_backedge_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .terminator = .{ .jump = .{ .target = 1 } },
+    },
+    .{
+        .id = 1,
+        .terminator = .{ .jump = .{ .target = 0 } },
+    },
+};
+const VoidBackedgeBody = struct {
+    pub const InitialArgs = void;
+    pub const Result = void;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "void-backedge-provider",
+        .value_types = &.{},
+        .blocks = &void_backedge_blocks,
+        .entry = 0,
+        .result_type = unit_type,
+    };
+};
+const VoidBackedgeProvider = boundary.program(
+    "void-backedge-provider",
+    VoidBackedgeBody,
+);
+const VoidBackedgeSystem = world.system(.{
+    .name = "void-backedge-system",
+    .root = VoidRootProgram,
+    .handlers = .{world.systemHandle(.{
+        .consumer = VoidRootProgram,
+        .site = VoidSite,
+        .provider = VoidBackedgeProvider,
+    })},
+    .morphisms = .{},
+    .external = .{},
+});
+
+test "world.system carries synthetic void input across provider backedges" {
+    const Linked = VoidBackedgeSystem.Program.component();
+    const provider_backedge = Linked.control_ir.blocks[3].terminator.jump;
+    try std.testing.expectEqual(@as(boundary.ir.BlockId, 2), provider_backedge.target);
+    try std.testing.expectEqual(@as(usize, 1), provider_backedge.arguments.len);
+    try std.testing.expect(provider_backedge.arguments[0] == .value);
+}
+
+const DiamondLeaf = struct {
+    pub const Payload = u32;
+    pub const Resume = u32;
+    pub const semantic_identity = "generic.diamond-leaf.v1";
+};
+
+fn DiamondBranch(comptime label: []const u8) type {
+    const Body = struct {
+        pub const InitialArgs = u32;
+        pub const Result = u32;
+        pub const Failure = SystemFailure;
+        pub const effect_sites = .{DiamondLeaf};
+        pub const schema_types = .{};
+        pub const control_ir: boundary.ir.Program = .{
+            .label = label,
+            .value_types = &.{ u32_type, u32_type },
+            .blocks = &shared_occurrence_blocks,
+            .entry = 0,
+            .result_type = u32_type,
+        };
+    };
+    return boundary.program(label, Body);
+}
+
+const DiamondBranchA = DiamondBranch("diamond-branch-a");
+const DiamondBranchB = DiamondBranch("diamond-branch-b");
+const DiamondProvider = PureProvider("diamond-provider", 1);
+const DiamondSystem = world.system(.{
+    .name = "diamond-system",
+    .root = OrderRootProgram,
+    .handlers = .{
+        world.systemHandle(.{
+            .consumer = OrderRootProgram,
+            .site = OrderPolicyA,
+            .provider = DiamondBranchA,
+        }),
+        world.systemHandle(.{
+            .consumer = OrderRootProgram,
+            .site = OrderPolicyB,
+            .provider = DiamondBranchB,
+        }),
+        world.systemHandle(.{
+            .consumer = DiamondBranchA,
+            .site = DiamondLeaf,
+            .provider = DiamondProvider,
+        }),
+        world.systemHandle(.{
+            .consumer = DiamondBranchB,
+            .site = DiamondLeaf,
+            .provider = DiamondProvider,
+        }),
+    },
+    .morphisms = .{},
+    .external = .{},
+});
+
+test "world.system validates a shared-provider DAG once per component" {
+    try std.testing.expectEqual(@as(usize, 4), DiamondSystem.component_count);
+    try std.testing.expectEqual(@as(usize, 0), DiamondSystem.residual_effects.count);
+    try std.testing.expect(DiamondSystem.Program.image().bytes.len > 0);
 }

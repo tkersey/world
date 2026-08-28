@@ -41,6 +41,8 @@ pub const encodeValue = application_runtime.encodeValue;
 pub const systemHandle = system_link.handle;
 /// Bind one typed Boundary Program effect to a residual effect morphism.
 pub const systemMorphism = system_link.morphism;
+/// Mark one component-local effect occurrence intentionally residual.
+pub const systemExternal = system_link.external;
 /// Map one provider Failure enum into the root system Failure enum.
 pub const failureMorphism = system_link.failureMorphism;
 /// Link one acyclic Boundary Program graph into one ordinary closed Program.

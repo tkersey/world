@@ -9,7 +9,8 @@ const options = parseArgs(process.argv.slice(2));
 const rootDeclarations = [
   "protocol", "Authority", "ResponseMode", "handle", "external", "application",
   "valueSchemaId", "siteId", "encodeValue", "systemHandle", "systemMorphism",
-  "failureMorphism", "system", "WasmOptions", "WasmStatus", "ApplicationAbiV1",
+  "systemExternal", "failureMorphism", "system", "WasmOptions", "WasmStatus",
+  "ApplicationAbiV1",
 ];
 const protocolDeclarations = [
   "format_version", "abi_version", "Digest", "zero_digest", "Error", "Limits",

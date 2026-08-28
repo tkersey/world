@@ -6,6 +6,7 @@ const cir = boundary.ir;
 const BindingKind = enum {
     handler,
     morphism,
+    external,
 };
 
 pub fn handle(comptime config: anytype) type {
@@ -18,6 +19,7 @@ pub fn handle(comptime config: anytype) type {
         pub const binding_kind = BindingKind.handler;
         pub const Consumer = config.consumer;
         pub const Site = config.site;
+        pub const site_ordinal = resolveSiteOrdinal(config.consumer, config);
         pub const Provider = config.provider;
         pub const FailureMorphism = if (@hasField(
             @TypeOf(config),
@@ -36,7 +38,22 @@ pub fn morphism(comptime config: anytype) type {
         pub const binding_kind = BindingKind.morphism;
         pub const Consumer = config.consumer;
         pub const Site = config.site;
+        pub const site_ordinal = resolveSiteOrdinal(config.consumer, config);
         pub const Target = config.target;
+    };
+}
+
+pub fn external(comptime config: anytype) type {
+    inline for (.{ "consumer", "site" }) |field| {
+        if (!@hasField(@TypeOf(config), field)) {
+            @compileError("world.systemExternal requires " ++ field);
+        }
+    }
+    return struct {
+        pub const binding_kind = BindingKind.external;
+        pub const Consumer = config.consumer;
+        pub const Site = config.site;
+        pub const site_ordinal = resolveSiteOrdinal(config.consumer, config);
     };
 }
 
@@ -165,9 +182,11 @@ fn discoverComponents(
     comptime Current: type,
     comptime handlers: anytype,
 ) void {
-    inline for (body(Current).effect_sites) |Site| {
+    inline for (body(Current).effect_sites, 0..) |_, site_ordinal| {
         inline for (handlers) |Handler| {
-            if (Handler.Consumer == Current and Handler.Site == Site) {
+            if (Handler.Consumer == Current and
+                Handler.site_ordinal == site_ordinal)
+            {
                 if (result.add(Handler.Provider)) {
                     discoverComponents(result, Handler.Provider, handlers);
                 }
@@ -203,6 +222,37 @@ fn body(comptime Program: type) type {
     return Body;
 }
 
+fn validateComponentAdmission(comptime Program: type) void {
+    const Admitted = boundary.program("world-component-admission", body(Program));
+    _ = Admitted.program_transition_digest;
+}
+
+fn resolveSiteOrdinal(comptime Program: type, comptime config: anytype) usize {
+    if (!@hasDecl(Program, "component")) {
+        @compileError("World system bindings require a Boundary Program component");
+    }
+    const Body = Program.component();
+    if (@hasField(@TypeOf(config), "site_ordinal")) {
+        const ordinal: usize = config.site_ordinal;
+        if (ordinal >= Body.effect_sites.len or Body.effect_sites[ordinal] != config.site) {
+            @compileError("World system binding site_ordinal does not match its Site");
+        }
+        return ordinal;
+    }
+    var match: ?usize = null;
+    inline for (Body.effect_sites, 0..) |Site, ordinal| {
+        if (Site != config.site) continue;
+        if (match != null) {
+            @compileError(
+                "World system binding must provide site_ordinal for an aliased Site type",
+            );
+        }
+        match = ordinal;
+    }
+    return match orelse
+        @compileError("World system binding Site does not occur in its component");
+}
+
 fn validateSystem(
     comptime Root: type,
     comptime components: anytype,
@@ -212,7 +262,10 @@ fn validateSystem(
 ) void {
     const RootBody = body(Root);
     requireFailureEnum(RootBody.Failure, "root Failure");
-    validateExternalDeclarations(externals);
+    inline for (0..components.count) |component_index| {
+        validateComponentAdmission(components.items[component_index]);
+    }
+    validateExternalDeclarations(components, externals);
     inline for (handlers) |Handler| {
         validateHandler(Handler, RootBody.Failure);
         if (!components.contains(Handler.Consumer) or
@@ -226,25 +279,30 @@ fn validateSystem(
         if (!components.contains(Morphism.Consumer)) {
             @compileError("World system contains a morphism unreachable from root");
         }
-        if (externalCount(externals, Morphism.Target) != 1) {
+        if (externalTargetCount(externals, Morphism.Target) != 1) {
             @compileError(
                 "World system morphism Target must be intentionally residual",
             );
         }
     }
-    validateReachability(Root, components, handlers);
-    detectCycles(Root, handlers, .{});
+    validateAcyclic(components, handlers);
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         const Body = body(Program);
         _ = failureMapFor(components, handlers, component_index);
-        inline for (Body.effect_sites) |Site| {
-            if (!componentSiteReachable(Program, Site)) {
+        inline for (Body.effect_sites, 0..) |Site, site_ordinal| {
+            if (!componentSiteReachable(Program, site_ordinal)) {
                 @compileError("World system component declares an unreachable effect site");
             }
-            const internal_count = handlerCount(handlers, Program, Site);
-            const morphism_count = morphismCount(morphisms, Program, Site);
-            const external_count = externalCount(externals, Site);
+            const internal_count = handlerCount(handlers, Program, site_ordinal);
+            const morphism_count = morphismCount(morphisms, Program, site_ordinal);
+            const external_count = externalCount(
+                externals,
+                components,
+                Program,
+                site_ordinal,
+                Site,
+            );
             if (internal_count + morphism_count + external_count == 0) {
                 @compileError(
                     "World system has an uncovered non-external effect site",
@@ -268,17 +326,29 @@ fn validateExternalUsage(
         var used = false;
         inline for (0..components.count) |component_index| {
             const Program = components.items[component_index];
-            inline for (body(Program).effect_sites) |Site| {
-                if (Site == External and
-                    handlerCount(handlers, Program, Site) == 0 and
-                    morphismCount(morphisms, Program, Site) == 0)
+            inline for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
+                if (!isExternalBinding(External) and
+                    External == Site and
+                    bareSiteOccurrenceCount(components, Site) == 1 and
+                    handlerCount(handlers, Program, site_ordinal) == 0 and
+                    morphismCount(morphisms, Program, site_ordinal) == 0)
+                {
+                    used = true;
+                }
+                if (isExternalBinding(External) and
+                    External.Consumer == Program and
+                    External.site_ordinal == site_ordinal and
+                    handlerCount(handlers, Program, site_ordinal) == 0 and
+                    morphismCount(morphisms, Program, site_ordinal) == 0)
                 {
                     used = true;
                 }
             }
         }
         inline for (morphisms) |Morphism| {
-            if (Morphism.Target == External) used = true;
+            if (!isExternalBinding(External) and Morphism.Target == External) {
+                used = true;
+            }
         }
         if (!used) {
             @compileError("World system has an unreachable external declaration");
@@ -358,7 +428,8 @@ fn failureExpansionValues(comptime Map: type, comptime terminator: cir.Terminato
 fn failureExpansionBlocks(comptime Map: type, comptime terminator: cir.Terminator) usize {
     if (Map == void) return 0;
     return switch (terminator) {
-        .fail_value => if (Map.targets.len <= 1) 0 else 2 * Map.targets.len - 2,
+        .fail => 1,
+        .fail_value => if (Map.targets.len <= 1) 1 else 2 * Map.targets.len - 1,
         else => 0,
     };
 }
@@ -528,7 +599,7 @@ fn validateHandler(
     requireHandler(Handler);
     const ConsumerBody = body(Handler.Consumer);
     const ProviderBody = body(Handler.Provider);
-    requireComponentSite(ConsumerBody, Handler.Site);
+    requireComponentSite(ConsumerBody, Handler.Site, Handler.site_ordinal);
     if (Handler.Site.Payload != ProviderBody.InitialArgs) {
         @compileError("World system provider InitialArgs must match effect Payload");
     }
@@ -579,7 +650,7 @@ fn validateFailureMap(
 fn validateMorphism(comptime Morphism: type) void {
     requireMorphism(Morphism);
     const ConsumerBody = body(Morphism.Consumer);
-    requireComponentSite(ConsumerBody, Morphism.Site);
+    requireComponentSite(ConsumerBody, Morphism.Site, Morphism.site_ordinal);
     if (Morphism.Site.Payload != Morphism.Target.Payload or
         Morphism.Site.Resume != Morphism.Target.Resume)
     {
@@ -587,34 +658,62 @@ fn validateMorphism(comptime Morphism: type) void {
     }
 }
 
-fn requireComponentSite(comptime Body: type, comptime Site: type) void {
-    var count: usize = 0;
-    inline for (Body.effect_sites) |Candidate| {
-        if (Candidate == Site) count += 1;
-    }
-    if (count != 1) {
-        @compileError("World system binding site must occur exactly once in consumer");
+fn requireComponentSite(
+    comptime Body: type,
+    comptime Site: type,
+    comptime site_ordinal: usize,
+) void {
+    if (site_ordinal >= Body.effect_sites.len or
+        Body.effect_sites[site_ordinal] != Site)
+    {
+        @compileError("World system binding occurrence does not match its Site");
     }
 }
 
-fn validateExternalDeclarations(comptime externals: anytype) void {
-    inline for (externals, 0..) |Site, index| {
+fn validateExternalDeclarations(
+    comptime components: anytype,
+    comptime externals: anytype,
+) void {
+    inline for (externals, 0..) |External, index| {
+        if (isExternalBinding(External)) {
+            if (!components.contains(External.Consumer)) {
+                @compileError("World system contains an external unreachable from root");
+            }
+            requireComponentSite(
+                body(External.Consumer),
+                External.Site,
+                External.site_ordinal,
+            );
+        }
         inline for (0..index) |prior| {
-            if (Site == externals[prior]) {
+            if (externalDeclarationsEqual(External, externals[prior])) {
                 @compileError("World system has duplicate external declarations");
             }
         }
     }
 }
 
+fn isExternalBinding(comptime External: type) bool {
+    return @hasDecl(External, "binding_kind") and
+        External.binding_kind == .external;
+}
+
+fn externalDeclarationsEqual(comptime Left: type, comptime Right: type) bool {
+    if (isExternalBinding(Left) != isExternalBinding(Right)) return false;
+    if (!isExternalBinding(Left)) return Left == Right;
+    return Left.Consumer == Right.Consumer and
+        Left.site_ordinal == Right.site_ordinal;
+}
+
 fn handlerCount(
     comptime handlers: anytype,
     comptime Program: type,
-    comptime Site: type,
+    comptime site_ordinal: usize,
 ) usize {
     var count: usize = 0;
     inline for (handlers) |Handler| {
-        if (Handler.Consumer == Program and Handler.Site == Site) count += 1;
+        if (Handler.Consumer == Program and
+            Handler.site_ordinal == site_ordinal) count += 1;
     }
     return count;
 }
@@ -622,24 +721,56 @@ fn handlerCount(
 fn morphismCount(
     comptime morphisms: anytype,
     comptime Program: type,
-    comptime Site: type,
+    comptime site_ordinal: usize,
 ) usize {
     var count: usize = 0;
     inline for (morphisms) |Morphism| {
-        if (Morphism.Consumer == Program and Morphism.Site == Site) count += 1;
+        if (Morphism.Consumer == Program and
+            Morphism.site_ordinal == site_ordinal) count += 1;
     }
     return count;
 }
 
-fn externalCount(comptime externals: anytype, comptime Site: type) usize {
+fn externalCount(
+    comptime externals: anytype,
+    comptime components: anytype,
+    comptime Program: type,
+    comptime site_ordinal: usize,
+    comptime Site: type,
+) usize {
     var count: usize = 0;
     inline for (externals) |External| {
-        if (External == Site) count += 1;
+        if (isExternalBinding(External)) {
+            if (External.Consumer == Program and
+                External.site_ordinal == site_ordinal) count += 1;
+        } else if (External == Site and
+            bareSiteOccurrenceCount(components, Site) == 1)
+        {
+            count += 1;
+        }
     }
     return count;
 }
 
-fn componentSiteReachable(comptime Program: type, comptime Site: type) bool {
+fn externalTargetCount(comptime externals: anytype, comptime Target: type) usize {
+    var count: usize = 0;
+    inline for (externals) |External| {
+        if (!isExternalBinding(External) and External == Target) count += 1;
+    }
+    return count;
+}
+
+fn bareSiteOccurrenceCount(comptime components: anytype, comptime Site: type) usize {
+    var count: usize = 0;
+    inline for (0..components.count) |component_index| {
+        inline for (body(components.items[component_index]).effect_sites) |Candidate| {
+            if (Candidate == Site) count += 1;
+        }
+    }
+    return count;
+}
+
+fn componentSiteReachable(comptime Program: type, comptime site_ordinal: usize) bool {
     const Body = body(Program);
     const Reachability = cir.Reachability(Body.control_ir.blocks.len);
     const reachable = Reachability.analyze(Body.control_ir) catch
@@ -649,7 +780,7 @@ fn componentSiteReachable(comptime Program: type, comptime Site: type) bool {
         switch (block.terminator) {
             .@"suspend" => |suspension| {
                 if (suspension.kind == .effect and
-                    Body.effect_sites[suspension.site_id.?] == Site)
+                    suspension.site_id.? == site_ordinal)
                 {
                     return true;
                 }
@@ -660,54 +791,40 @@ fn componentSiteReachable(comptime Program: type, comptime Site: type) bool {
     return false;
 }
 
-fn validateReachability(
-    comptime Root: type,
+const VisitState = enum {
+    unseen,
+    visiting,
+    complete,
+};
+
+fn validateAcyclic(comptime components: anytype, comptime handlers: anytype) void {
+    var states = [_]VisitState{.unseen} ** components.items.len;
+    visitComponent(components, handlers, &states, 0);
+}
+
+fn visitComponent(
     comptime components: anytype,
     comptime handlers: anytype,
+    states: *[components.items.len]VisitState,
+    comptime component_index: usize,
 ) void {
-    inline for (0..components.count) |index| {
-        const Program = components.items[index];
-        if (!reachableFrom(Root, Program, handlers, .{})) {
-            @compileError("World system contains a handler component unreachable from root");
-        }
+    if (states[component_index] == .visiting) {
+        @compileError("World system internal handler graph contains a cycle");
     }
-}
-
-fn reachableFrom(
-    comptime Current: type,
-    comptime Target: type,
-    comptime handlers: anytype,
-    comptime path: anytype,
-) bool {
-    if (Current == Target) return true;
-    inline for (path) |Ancestor| if (Ancestor == Current) return false;
-    const next_path = path ++ .{Current};
+    if (states[component_index] == .complete) return;
+    states[component_index] = .visiting;
+    const Program = components.items[component_index];
     inline for (handlers) |Handler| {
-        if (Handler.Consumer == Current and
-            reachableFrom(Handler.Provider, Target, handlers, next_path))
-        {
-            return true;
+        if (Handler.Consumer == Program) {
+            visitComponent(
+                components,
+                handlers,
+                states,
+                componentIndex(components, Handler.Provider),
+            );
         }
     }
-    return false;
-}
-
-fn detectCycles(
-    comptime Current: type,
-    comptime handlers: anytype,
-    comptime path: anytype,
-) void {
-    inline for (path) |Ancestor| {
-        if (Ancestor == Current) {
-            @compileError("World system internal handler graph contains a cycle");
-        }
-    }
-    const next_path = path ++ .{Current};
-    inline for (handlers) |Handler| {
-        if (Handler.Consumer == Current) {
-            detectCycles(Handler.Provider, handlers, next_path);
-        }
-    }
+    states[component_index] = .complete;
 }
 
 fn requireFailureEnum(comptime Failure: type, comptime label: []const u8) void {
@@ -978,7 +1095,9 @@ fn linkedTotalBlocks(
     comptime components: anytype,
     comptime handlers: anytype,
 ) usize {
-    return totalBlocks(components) + totalExtraBlocks(components, handlers);
+    return totalBlocks(components) +
+        totalExtraBlocks(components, handlers) +
+        totalVoidReturns(components);
 }
 
 fn linkedTotalConstants(
@@ -1139,6 +1258,18 @@ fn voidReturnConstantBase(
 ) usize {
     return totalConstants(components) +
         totalExtraConstants(components, handlers) +
+        precedingVoidReturns(components, component_index) +
+        voidReturnOrdinal(components, component_index, block_id);
+}
+
+fn voidReturnBlockBase(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime block_id: cir.BlockId,
+) usize {
+    return totalBlocks(components) +
+        totalExtraBlocks(components, handlers) +
         precedingVoidReturns(components, component_index) +
         voidReturnOrdinal(components, component_index, block_id);
 }
@@ -1470,9 +1601,24 @@ fn buildBlocks(
     }
     inline for (0..components.count) |component_index| {
         const Map = failureMapFor(components, handlers, component_index);
-        if (Map == void or Map.targets.len <= 1) continue;
+        if (Map == void) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
             switch (source.terminator) {
+                .fail => {
+                    const block_id = failureBlockBase(
+                        components,
+                        handlers,
+                        component_index,
+                        source.id,
+                    );
+                    result[block_id] = mappedFailureBlock(
+                        components,
+                        handlers,
+                        component_index,
+                        source,
+                        block_id,
+                    );
+                },
                 .fail_value => {
                     const extra_base = failureBlockBase(
                         components,
@@ -1480,31 +1626,59 @@ fn buildBlocks(
                         component_index,
                         source.id,
                     );
-                    const fail_base = extra_base + Map.targets.len - 2;
-                    inline for (1..Map.targets.len - 1) |tag| {
-                        result[extra_base + tag - 1] = failureCheckBlock(
+                    if (Map.targets.len == 1) {
+                        result[extra_base] = mappedFailureBlock(
                             components,
                             handlers,
                             component_index,
                             source,
-                            tag,
                             extra_base,
-                            fail_base,
                         );
-                    }
-                    inline for (0..Map.targets.len) |tag| {
-                        result[fail_base + tag] = failureLeafBlock(
-                            components,
-                            handlers,
-                            component_index,
-                            source,
-                            tag,
-                            fail_base,
-                        );
+                    } else {
+                        const fail_base = extra_base + Map.targets.len - 1;
+                        inline for (0..Map.targets.len - 1) |tag| {
+                            result[extra_base + tag] = failureCheckBlock(
+                                components,
+                                handlers,
+                                component_index,
+                                source,
+                                tag,
+                                extra_base,
+                                fail_base,
+                            );
+                        }
+                        inline for (0..Map.targets.len) |tag| {
+                            result[fail_base + tag] = failureLeafBlock(
+                                components,
+                                handlers,
+                                component_index,
+                                source,
+                                tag,
+                                fail_base,
+                            );
+                        }
                     }
                 },
                 else => {},
             }
+        }
+    }
+    inline for (1..components.count) |component_index| {
+        inline for (body(components.items[component_index]).control_ir.blocks) |source| {
+            if (!expandsVoidReturn(components, component_index, source)) continue;
+            const block_id = voidReturnBlockBase(
+                components,
+                handlers,
+                component_index,
+                source.id,
+            );
+            result[block_id] = voidReturnBlock(
+                components,
+                handlers,
+                component_index,
+                source,
+                block_id,
+            );
         }
     }
     return result;
@@ -1523,10 +1697,7 @@ fn buildBlockCosts(
         if (!@hasDecl(Body, "block_costs")) continue;
         inline for (Body.control_ir.blocks) |block| {
             const linked_id = blockOffset(components, component_index) + block.id;
-            result[linked_id] = @max(
-                result[linked_id],
-                Body.block_costs[block.id],
-            );
+            result[linked_id] = Body.block_costs[block.id];
         }
     }
     return result;
@@ -1601,37 +1772,6 @@ fn remapBlockParameters(
     return result;
 }
 
-fn expandsFailureValue(
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime component_index: usize,
-    comptime source: cir.Block,
-) bool {
-    const Map = failureMapFor(components, handlers, component_index);
-    if (Map == void) return false;
-    return switch (source.terminator) {
-        .fail, .fail_value => true,
-        else => false,
-    };
-}
-
-fn failureInstructionExpansion(
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime component_index: usize,
-    comptime source: cir.Block,
-) usize {
-    if (!expandsFailureValue(components, handlers, component_index, source)) {
-        return 0;
-    }
-    const Map = failureMapFor(components, handlers, component_index);
-    return switch (source.terminator) {
-        .fail => 1,
-        .fail_value => if (Map.targets.len <= 1) 1 else 3,
-        else => unreachable,
-    };
-}
-
 fn expandsVoidReturn(
     comptime components: anytype,
     comptime component_index: usize,
@@ -1653,207 +1793,13 @@ fn remapBlockInstructions(
     comptime handlers: anytype,
     comptime component_index: usize,
     comptime source: cir.Block,
-) [
-    source.instructions.len +
-        @as(usize, if (expandsFailureValue(
-            components,
-            handlers,
-            component_index,
-            source,
-        )) failureInstructionExpansion(
-            components,
-            handlers,
-            component_index,
-            source,
-        ) else 0) +
-        @as(usize, if (expandsVoidReturn(
-            components,
-            component_index,
-            source,
-        )) 1 else 0)
-]cir.Instruction {
-    const failure_extra = failureInstructionExpansion(
-        components,
-        handlers,
-        component_index,
-        source,
-    );
-    const void_extra: usize = if (expandsVoidReturn(
-        components,
-        component_index,
-        source,
-    )) 1 else 0;
-    const extra_count = failure_extra + void_extra;
-    var result: [source.instructions.len + extra_count]cir.Instruction = undefined;
-    const remapped = remapInstructions(
+) [source.instructions.len]cir.Instruction {
+    _ = handlers;
+    return remapInstructions(
         components,
         component_index,
         source.instructions,
     );
-    inline for (remapped, 0..) |instruction, index| result[index] = instruction;
-    if (extra_count == 0) return result;
-
-    if (void_extra == 1) {
-        appendVoidReturnInstruction(
-            &result,
-            components,
-            handlers,
-            component_index,
-            source,
-        );
-        return result;
-    }
-
-    appendFailureInstructions(
-        &result,
-        components,
-        handlers,
-        component_index,
-        source,
-    );
-    return result;
-}
-
-fn appendVoidReturnInstruction(
-    result: anytype,
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime component_index: usize,
-    comptime source: cir.Block,
-) void {
-    result.*[source.instructions.len] = .{
-        .kind = .constant,
-        .result = @intCast(voidReturnValueBase(
-            components,
-            handlers,
-            component_index,
-            source.id,
-        )),
-        .operation = .{ .constant = @intCast(voidReturnConstantBase(
-            components,
-            handlers,
-            component_index,
-            source.id,
-        )) },
-    };
-}
-
-fn appendFailureInstructions(
-    result: anytype,
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime component_index: usize,
-    comptime source: cir.Block,
-) void {
-    const Map = failureMapFor(components, handlers, component_index);
-    if (Map.targets.len == 0) {
-        @compileError("World Failure morphism cannot target an empty Failure enum");
-    }
-    switch (source.terminator) {
-        .fail => {
-            appendMappedFailureConstant(
-                result,
-                components,
-                handlers,
-                component_index,
-                source,
-            );
-            return;
-        },
-        .fail_value => if (Map.targets.len == 1) {
-            appendMappedFailureConstant(
-                result,
-                components,
-                handlers,
-                component_index,
-                source,
-            );
-            return;
-        },
-        else => unreachable,
-    }
-    appendFailureTagComparison(
-        result,
-        components,
-        handlers,
-        component_index,
-        source,
-    );
-}
-
-fn appendFailureTagComparison(
-    result: anytype,
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime component_index: usize,
-    comptime source: cir.Block,
-) void {
-    const fail_value = switch (source.terminator) {
-        .fail_value => |value| value,
-        else => unreachable,
-    };
-    const value_base = failureValueBase(
-        components,
-        handlers,
-        component_index,
-        source.id,
-    );
-    const constant_base = failureConstantBase(
-        components,
-        handlers,
-        component_index,
-        source.id,
-    );
-    const Static = struct {
-        const tag_operands = [_]cir.ValueId{@intCast(
-            valueOffset(components, component_index) + fail_value,
-        )};
-        const compare_operands = [_]cir.ValueId{
-            @intCast(value_base),
-            @intCast(value_base + 1),
-        };
-    };
-    result.*[source.instructions.len] = .{
-        .kind = .pure,
-        .result = @intCast(value_base),
-        .operands = &Static.tag_operands,
-        .operation = .enum_to_u32,
-    };
-    result.*[source.instructions.len + 1] = .{
-        .kind = .constant,
-        .result = @intCast(value_base + 1),
-        .operation = .{ .constant = @intCast(constant_base) },
-    };
-    result.*[source.instructions.len + 2] = .{
-        .kind = .pure,
-        .result = @intCast(value_base + 2),
-        .operands = &Static.compare_operands,
-        .operation = .integer_equal,
-    };
-}
-
-fn appendMappedFailureConstant(
-    result: anytype,
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime component_index: usize,
-    comptime source: cir.Block,
-) void {
-    result.*[source.instructions.len] = .{
-        .kind = .constant,
-        .result = @intCast(failureValueBase(
-            components,
-            handlers,
-            component_index,
-            source.id,
-        )),
-        .operation = .{ .constant = @intCast(failureConstantBase(
-            components,
-            handlers,
-            component_index,
-            source.id,
-        )) },
-    };
 }
 
 fn remapBlockTerminator(
@@ -1865,21 +1811,23 @@ fn remapBlockTerminator(
 ) cir.Terminator {
     const source = source_block.terminator;
     if (expandsVoidReturn(components, component_index, source_block)) {
-        return .{ .return_to_caller = @intCast(voidReturnValueBase(
+        return .{ .jump = .{ .target = @intCast(voidReturnBlockBase(
             components,
             handlers,
             component_index,
             source_block.id,
-        )) };
+        )) } };
     }
     if (failureMapFor(components, handlers, component_index) != void) {
         switch (source) {
-            .fail, .fail_value => return remapMappedFailureTerminator(
-                components,
-                handlers,
-                component_index,
-                source_block,
-            ),
+            .fail, .fail_value => return .{ .jump = .{ .target = @intCast(
+                failureBlockBase(
+                    components,
+                    handlers,
+                    component_index,
+                    source_block.id,
+                ),
+            ) } },
             else => {},
         }
     }
@@ -1893,53 +1841,234 @@ fn remapBlockTerminator(
     );
 }
 
-fn remapMappedFailureTerminator(
+fn mappedFailureBlock(
     comptime components: anytype,
     comptime handlers: anytype,
     comptime component_index: usize,
     comptime source: cir.Block,
-) cir.Terminator {
+    comptime block_id: usize,
+) cir.Block {
     const Map = failureMapFor(components, handlers, component_index);
     if (Map.targets.len == 0) {
         @compileError("World failure morphism cannot map an empty Failure enum");
     }
-    switch (source.terminator) {
-        .fail => return .{ .fail_value = @intCast(failureValueBase(
-            components,
-            handlers,
-            component_index,
-            source.id,
-        )) },
-        .fail_value => if (Map.targets.len == 1) {
-            return .{ .fail_value = @intCast(failureValueBase(
+    const value_id = failureValueBase(
+        components,
+        handlers,
+        component_index,
+        source.id,
+    );
+    const Static = struct {
+        const instructions = [_]cir.Instruction{.{
+            .kind = .constant,
+            .result = @intCast(value_id),
+            .operation = .{ .constant = @intCast(failureConstantBase(
                 components,
                 handlers,
                 component_index,
                 source.id,
-            )) };
-        },
+            )) },
+        }};
+    };
+    return .{
+        .id = @intCast(block_id),
+        .function_id = @intCast(
+            functionOffset(components, component_index) + source.function_id,
+        ),
+        .role = .terminal_handoff,
+        .instructions = &Static.instructions,
+        .terminator = .{ .fail_value = @intCast(value_id) },
+    };
+}
+
+fn voidReturnBlock(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+    comptime block_id: usize,
+) cir.Block {
+    const value_id = voidReturnValueBase(
+        components,
+        handlers,
+        component_index,
+        source.id,
+    );
+    const Static = struct {
+        const instructions = [_]cir.Instruction{.{
+            .kind = .constant,
+            .result = @intCast(value_id),
+            .operation = .{ .constant = @intCast(voidReturnConstantBase(
+                components,
+                handlers,
+                component_index,
+                source.id,
+            )) },
+        }};
+    };
+    return .{
+        .id = @intCast(block_id),
+        .function_id = @intCast(
+            functionOffset(components, component_index) + source.function_id,
+        ),
+        .role = .terminal_handoff,
+        .instructions = &Static.instructions,
+        .terminator = .{ .return_to_caller = @intCast(value_id) },
+    };
+}
+
+fn firstFailureCheckBlock(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+    comptime extra_base: usize,
+    comptime fail_base: usize,
+) cir.Block {
+    const fail_value = switch (source.terminator) {
+        .fail_value => |value| value,
         else => unreachable,
-    }
+    };
     const value_base = failureValueBase(
         components,
         handlers,
         component_index,
         source.id,
     );
-    const extra_base = failureBlockBase(
+    const Static = struct {
+        const tag_operands = [_]cir.ValueId{@intCast(
+            valueOffset(components, component_index) + fail_value,
+        )};
+        const compare_operands = [_]cir.ValueId{
+            @intCast(value_base),
+            @intCast(value_base + 1),
+        };
+        const instructions = [_]cir.Instruction{
+            .{
+                .kind = .pure,
+                .result = @intCast(value_base),
+                .operands = &tag_operands,
+                .operation = .enum_to_u32,
+            },
+            .{
+                .kind = .constant,
+                .result = @intCast(value_base + 1),
+                .operation = .{ .constant = @intCast(failureConstantBase(
+                    components,
+                    handlers,
+                    component_index,
+                    source.id,
+                )) },
+            },
+            .{
+                .kind = .pure,
+                .result = @intCast(value_base + 2),
+                .operands = &compare_operands,
+                .operation = .integer_equal,
+            },
+        };
+    };
+    return .{
+        .id = @intCast(extra_base),
+        .function_id = @intCast(
+            functionOffset(components, component_index) + source.function_id,
+        ),
+        .instructions = &Static.instructions,
+        .terminator = failureCheckTerminator(
+            components,
+            handlers,
+            component_index,
+            source,
+            0,
+            extra_base,
+            fail_base,
+        ),
+    };
+}
+
+fn laterFailureCheckBlock(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+    comptime tag: usize,
+    comptime extra_base: usize,
+    comptime fail_base: usize,
+) cir.Block {
+    const value_base = failureValueBase(
         components,
         handlers,
         component_index,
         source.id,
     );
-    const fail_base = extra_base + Map.targets.len - 2;
+    const constant_value = value_base + 1 + 2 * tag;
+    const condition_value = value_base + 2 + 2 * tag;
+    const Static = struct {
+        const compare_operands = [_]cir.ValueId{
+            @intCast(value_base),
+            @intCast(constant_value),
+        };
+        const instructions = [_]cir.Instruction{
+            .{
+                .kind = .constant,
+                .result = @intCast(constant_value),
+                .operation = .{ .constant = @intCast(
+                    failureConstantBase(
+                        components,
+                        handlers,
+                        component_index,
+                        source.id,
+                    ) + tag,
+                ) },
+            },
+            .{
+                .kind = .pure,
+                .result = @intCast(condition_value),
+                .operands = &compare_operands,
+                .operation = .integer_equal,
+            },
+        };
+    };
+    return .{
+        .id = @intCast(extra_base + tag),
+        .function_id = @intCast(
+            functionOffset(components, component_index) + source.function_id,
+        ),
+        .instructions = &Static.instructions,
+        .terminator = failureCheckTerminator(
+            components,
+            handlers,
+            component_index,
+            source,
+            tag,
+            extra_base,
+            fail_base,
+        ),
+    };
+}
+
+fn failureCheckTerminator(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+    comptime tag: usize,
+    comptime extra_base: usize,
+    comptime fail_base: usize,
+) cir.Terminator {
+    const Map = failureMapFor(components, handlers, component_index);
     return .{ .branch = .{
-        .condition = @intCast(value_base + 2),
-        .then_edge = .{ .target = @intCast(fail_base) },
-        .else_edge = .{ .target = @intCast(if (Map.targets.len == 2)
-            fail_base + 1
+        .condition = @intCast(failureValueBase(
+            components,
+            handlers,
+            component_index,
+            source.id,
+        ) + 2 + 2 * tag),
+        .then_edge = .{ .target = @intCast(fail_base + tag) },
+        .else_edge = .{ .target = @intCast(if (tag + 1 == Map.targets.len - 1)
+            fail_base + Map.targets.len - 1
         else
-            extra_base) },
+            extra_base + tag + 1) },
     } };
 }
 
@@ -1952,55 +2081,23 @@ fn failureCheckBlock(
     comptime extra_base: usize,
     comptime fail_base: usize,
 ) cir.Block {
-    const Map = failureMapFor(components, handlers, component_index);
-    const value_base = failureValueBase(
+    if (tag == 0) return firstFailureCheckBlock(
         components,
         handlers,
         component_index,
-        source.id,
+        source,
+        extra_base,
+        fail_base,
     );
-    const constant_value = value_base + 1 + 2 * tag;
-    const condition_value = value_base + 2 + 2 * tag;
-    const constant_base = failureConstantBase(
+    return laterFailureCheckBlock(
         components,
         handlers,
         component_index,
-        source.id,
+        source,
+        tag,
+        extra_base,
+        fail_base,
     );
-    const Static = struct {
-        const compare_operands = [_]cir.ValueId{
-            @intCast(value_base),
-            @intCast(constant_value),
-        };
-        const instructions = [_]cir.Instruction{
-            .{
-                .kind = .constant,
-                .result = @intCast(constant_value),
-                .operation = .{ .constant = @intCast(constant_base + tag) },
-            },
-            .{
-                .kind = .pure,
-                .result = @intCast(condition_value),
-                .operands = &compare_operands,
-                .operation = .integer_equal,
-            },
-        };
-    };
-    return .{
-        .id = @intCast(extra_base + tag - 1),
-        .function_id = @intCast(
-            functionOffset(components, component_index) + source.function_id,
-        ),
-        .instructions = &Static.instructions,
-        .terminator = .{ .branch = .{
-            .condition = @intCast(condition_value),
-            .then_edge = .{ .target = @intCast(fail_base + tag) },
-            .else_edge = .{ .target = @intCast(if (tag + 1 == Map.targets.len - 1)
-                fail_base + Map.targets.len - 1
-            else
-                extra_base + tag) },
-        } },
-    };
 }
 
 fn failureLeafBlock(
@@ -2105,17 +2202,29 @@ fn remapTerminator(
     return switch (source) {
         .jump => |edge| .{ .jump = remapEdge(
             components,
+            handlers,
             component_index,
             edge,
         ) },
         .branch => |branch| .{ .branch = .{
             .condition = @intCast(value_offset + branch.condition),
-            .then_edge = remapEdge(components, component_index, branch.then_edge),
-            .else_edge = remapEdge(components, component_index, branch.else_edge),
+            .then_edge = remapEdge(
+                components,
+                handlers,
+                component_index,
+                branch.then_edge,
+            ),
+            .else_edge = remapEdge(
+                components,
+                handlers,
+                component_index,
+                branch.else_edge,
+            ),
         } },
         .@"suspend" => |suspension| .{ .@"suspend" = remapSuspension(
             components,
             schemas,
+            handlers,
             component_index,
             suspension,
         ) },
@@ -2158,13 +2267,16 @@ fn remapFailureTag(
 
 fn remapEdge(
     comptime components: anytype,
+    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source: cir.Edge,
 ) cir.Edge {
     const Static = struct {
         const arguments = remapEdgeArguments(
-            source.arguments,
-            valueOffset(components, component_index),
+            components,
+            handlers,
+            component_index,
+            source,
         );
     };
     return .{
@@ -2174,15 +2286,35 @@ fn remapEdge(
 }
 
 fn remapEdgeArguments(
-    comptime source: []const cir.EdgeArgument,
-    comptime value_offset: usize,
-) [source.len]cir.EdgeArgument {
-    var result: [source.len]cir.EdgeArgument = undefined;
-    inline for (source, 0..) |argument, index| {
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Edge,
+) [
+    source.arguments.len + @as(usize, @intFromBool(
+        componentVoidInputCount(components, component_index) == 1 and
+            source.target == body(components.items[component_index]).control_ir.entry,
+    ))
+]cir.EdgeArgument {
+    const add_void = componentVoidInputCount(components, component_index) == 1 and
+        source.target == body(components.items[component_index]).control_ir.entry;
+    var result: [
+        source.arguments.len + @as(usize, @intFromBool(add_void))
+    ]cir.EdgeArgument = undefined;
+    inline for (source.arguments, 0..) |argument, index| {
         result[index] = switch (argument) {
-            .value => |value| .{ .value = @intCast(value_offset + value) },
+            .value => |value| .{ .value = @intCast(
+                valueOffset(components, component_index) + value,
+            ) },
             .@"resume" => .@"resume",
         };
+    }
+    if (add_void) {
+        result[source.arguments.len] = .{ .value = @intCast(voidInputValueBase(
+            components,
+            handlers,
+            component_index,
+        )) };
     }
     return result;
 }
@@ -2190,6 +2322,7 @@ fn remapEdgeArguments(
 fn remapSuspension(
     comptime components: anytype,
     comptime schemas: anytype,
+    comptime handlers: anytype,
     comptime component_index: usize,
     comptime source: cir.Suspension,
 ) cir.Suspension {
@@ -2211,11 +2344,12 @@ fn remapSuspension(
         else
             null,
         .callee = if (source.callee) |edge|
-            remapEdge(components, component_index, edge)
+            remapEdge(components, handlers, component_index, edge)
         else
             null,
         .continuation = remapEdge(
             components,
+            handlers,
             component_index,
             source.continuation,
         ),
@@ -2248,13 +2382,6 @@ fn buildEffectSites(comptime components: anytype) [totalEffects(components)]type
     return result;
 }
 
-fn siteIndex(comptime Program: type, comptime Site: type) usize {
-    inline for (body(Program).effect_sites, 0..) |Candidate, index| {
-        if (Candidate == Site) return index;
-    }
-    unreachable;
-}
-
 fn buildEffectHandlers(
     comptime components: anytype,
     comptime handlers: anytype,
@@ -2266,7 +2393,7 @@ fn buildEffectHandlers(
         result[index] = boundary.effect.handler(
             @intCast(
                 effectOffset(components, consumer_index) +
-                    siteIndex(Handler.Consumer, Handler.Site),
+                    Handler.site_ordinal,
             ),
             @intCast(functionOffset(components, provider_index)),
         );
@@ -2284,7 +2411,7 @@ fn buildEffectMorphisms(
         result[index] = boundary.effect.morphism(
             @intCast(
                 effectOffset(components, consumer_index) +
-                    siteIndex(Morphism.Consumer, Morphism.Site),
+                    Morphism.site_ordinal,
             ),
             Morphism.Target,
         );
@@ -2301,15 +2428,23 @@ fn residualEffects(
     var result: ResidualCatalog(totalEffects(components) + morphisms.len) = .{};
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
-        inline for (body(Program).effect_sites) |Site| {
-            if (!componentSiteReachable(Program, Site)) continue;
-            if (handlerCount(handlers, Program, Site) == 1) continue;
+        inline for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
+            if (!componentSiteReachable(Program, site_ordinal)) continue;
+            if (handlerCount(handlers, Program, site_ordinal) == 1) continue;
             inline for (morphisms) |Morphism| {
-                if (Morphism.Consumer == Program and Morphism.Site == Site) {
+                if (Morphism.Consumer == Program and
+                    Morphism.site_ordinal == site_ordinal)
+                {
                     result.add(Morphism.Target);
                 }
             }
-            if (externalCount(externals, Site) == 1) result.add(Site);
+            if (externalCount(
+                externals,
+                components,
+                Program,
+                site_ordinal,
+                Site,
+            ) == 1) result.add(Site);
         }
     }
     return result;
