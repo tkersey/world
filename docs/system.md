@@ -37,11 +37,17 @@ external declarations are interpreted separately as morphism-target authority
 and, when unique, as a source-occurrence disposition. The plan materializes
 every reachable source-occurrence disposition and Failure-adapter layout before
 lowering.
+`System.residual_effects.items` is sized to the exact active residual count, so
+inactive declarations do not survive as public capacity or undefined slots.
 
 Internal handlers require exact `Payload == Provider.InitialArgs` and
 `Resume == Provider.Result`. Provider Failure either equals the root Failure or
 uses one explicit pure total `world.failureMorphism`. The resulting
 `System.Program.image()` is ordinary BPI1 and contains no World runtime object.
+Each non-identity provider Failure map lowers once into a shared pure Boundary
+function. Dynamic failure sites call that function and retain only one local
+terminal continuation; map topology therefore scales additively with map size
+and call sites rather than duplicating the map at every site.
 Each source component is independently admitted by Boundary before remapping;
 linker-generated unit and Failure adapters occupy separate reductions so
 source block instructions and authored Machine-v2 costs are preserved.

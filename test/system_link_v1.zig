@@ -687,6 +687,236 @@ test "world.system lowers dynamic fail_value through the total Failure morphism"
     }
 }
 
+const WideProviderFailure = enum(u32) {
+    p00,
+    p01,
+    p02,
+    p03,
+    p04,
+    p05,
+    p06,
+    p07,
+    p08,
+    p09,
+    p10,
+    p11,
+    p12,
+    p13,
+    p14,
+    p15,
+    p16,
+    p17,
+    p18,
+    p19,
+    p20,
+    p21,
+    p22,
+    p23,
+    p24,
+    p25,
+    p26,
+    p27,
+    p28,
+    p29,
+    p30,
+    p31,
+};
+const WideSystemFailure = enum(u32) {
+    s00,
+    s01,
+    s02,
+    s03,
+    s04,
+    s05,
+    s06,
+    s07,
+    s08,
+    s09,
+    s10,
+    s11,
+    s12,
+    s13,
+    s14,
+    s15,
+    s16,
+    s17,
+    s18,
+    s19,
+    s20,
+    s21,
+    s22,
+    s23,
+    s24,
+    s25,
+    s26,
+    s27,
+    s28,
+    s29,
+    s30,
+    s31,
+};
+const wide_provider_failure_type: boundary.ir.ValueType = .{ .schema = 0 };
+const wide_provider_arguments = [_]boundary.ir.EdgeArgument{.{ .value = 0 }};
+const wide_provider_instructions = [_]boundary.ir.Instruction{
+    .{
+        .kind = .pure,
+        .result = 1,
+        .operands = &.{0},
+        .operation = .enum_to_u32,
+    },
+    .{
+        .kind = .constant,
+        .result = 2,
+        .operation = .{ .constant = 0 },
+    },
+    .{
+        .kind = .pure,
+        .result = 3,
+        .operands = &.{ 1, 2 },
+        .operation = .integer_equal,
+    },
+};
+const wide_provider_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .instructions = &wide_provider_instructions,
+        .terminator = .{ .branch = .{
+            .condition = 3,
+            .then_edge = .{ .target = 1, .arguments = &wide_provider_arguments },
+            .else_edge = .{ .target = 2, .arguments = &wide_provider_arguments },
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{4},
+        .terminator = .{ .fail_value = 4 },
+    },
+    .{
+        .id = 2,
+        .parameters = &.{5},
+        .terminator = .{ .fail_value = 5 },
+    },
+};
+const WideFailureSite = boundary.effect.site(
+    0,
+    "generic.wide-failure.v1",
+    WideProviderFailure,
+    u32,
+);
+const wide_root_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{
+                .target = 1,
+                .arguments = &resume_arguments,
+            },
+            .resume_type = u32_type,
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .return_value = 1 },
+    },
+};
+const WideRootBody = struct {
+    pub const InitialArgs = WideProviderFailure;
+    pub const Result = u32;
+    pub const Failure = WideSystemFailure;
+    pub const effect_sites = .{WideFailureSite};
+    pub const schema_types = .{ WideProviderFailure, WideSystemFailure };
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "wide-failure-root",
+        .value_types = &.{ wide_provider_failure_type, u32_type },
+        .blocks = &wide_root_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const WideProviderBody = struct {
+    pub const InitialArgs = WideProviderFailure;
+    pub const Result = u32;
+    pub const Failure = WideProviderFailure;
+    pub const constants = .{@as(u32, 0)};
+    pub const effect_sites = .{};
+    pub const schema_types = .{WideProviderFailure};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "wide-failure-provider",
+        .value_types = &.{
+            wide_provider_failure_type,
+            u32_type,
+            u32_type,
+            .{ .scalar = .boolean },
+            wide_provider_failure_type,
+            wide_provider_failure_type,
+        },
+        .blocks = &wide_provider_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+pub const WideRootProgram = boundary.program("wide-failure-root", WideRootBody);
+pub const WideProviderProgram = boundary.program(
+    "wide-failure-provider",
+    WideProviderBody,
+);
+const WideFailureMap = world.failureMorphism(
+    WideProviderFailure,
+    WideSystemFailure,
+    [_]WideSystemFailure{
+        .s31, .s30, .s29, .s28, .s27, .s26, .s25, .s24,
+        .s23, .s22, .s21, .s20, .s19, .s18, .s17, .s16,
+        .s15, .s14, .s13, .s12, .s11, .s10, .s09, .s08,
+        .s07, .s06, .s05, .s04, .s03, .s02, .s01, .s00,
+    },
+);
+pub const WideFailureSpec = .{
+    .name = "wide-failure-system",
+    .root = WideRootProgram,
+    .handlers = .{world.systemHandle(.{
+        .consumer = WideRootProgram,
+        .site = WideFailureSite,
+        .provider = WideProviderProgram,
+        .failure_morphism = WideFailureMap,
+    })},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const WideFailureSystem = world.system(WideFailureSpec);
+
+test "world.system shares one wide Failure mapper across dynamic fail sites" {
+    const Linked = WideFailureSystem.Program.component();
+    try std.testing.expectEqual(@as(usize, 70), Linked.control_ir.blocks.len);
+    try std.testing.expectEqual(@as(usize, 3), Linked.control_ir.functions.len);
+    const WideMachine = WideFailureSystem.Program.compile(.{
+        .maximum_frames = 8,
+        .maximum_state_bytes = 16_384,
+        .maximum_machine_fuel = 256,
+    });
+    inline for (.{
+        .{ WideProviderFailure.p00, WideSystemFailure.s31 },
+        .{ WideProviderFailure.p31, WideSystemFailure.s00 },
+    }) |case| {
+        const state = try WideMachine.initialState(std.testing.allocator, case[0]);
+        defer WideMachine.deinitState(state);
+        var fuel: u64 = 256;
+        const failure = switch (try WideMachine.step(state, &fuel)) {
+            .failed => |value| value,
+            else => return error.TestUnexpectedResult,
+        };
+        switch (failure) {
+            .authored => |value| try std.testing.expectEqual(case[1], value),
+            else => return error.TestUnexpectedFailure,
+        }
+    }
+}
+
 const inert_component_blocks = [_]boundary.ir.Block{.{
     .id = 0,
     .parameters = &.{0},
@@ -816,6 +1046,7 @@ test "world.system excludes morphisms behind unreachable source sites" {
     const Linked = InertMorphismSystem.Program.component();
     try std.testing.expectEqual(@as(usize, 1), InertMorphismSystem.component_count);
     try std.testing.expectEqual(@as(usize, 0), InertMorphismSystem.residual_effects.count);
+    try std.testing.expectEqual(@as(usize, 0), InertMorphismSystem.residual_effects.items.len);
     try std.testing.expectEqual(@as(usize, 0), Linked.effect_morphisms.len);
 }
 

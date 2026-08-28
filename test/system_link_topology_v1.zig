@@ -12,6 +12,7 @@ const Facts = struct {
     unreachable_blocks: usize = 0,
     failure_values: usize = 0,
     failure_blocks: usize = 0,
+    failure_functions: usize = 0,
     failure_constants: usize = 0,
     void_returns: usize = 0,
     void_wrappers: usize = 0,
@@ -103,9 +104,8 @@ fn addFailureFacts(
             facts.failure_blocks += 1;
             facts.failure_constants += 1;
         } else {
-            facts.failure_values += 1 + 2 * (Map.targets.len - 1) + Map.targets.len;
-            facts.failure_blocks += 2 * Map.targets.len - 1;
-            facts.failure_constants += 2 * Map.targets.len - 1;
+            facts.failure_values += 1;
+            facts.failure_blocks += 1;
         },
         else => {},
     }
@@ -130,12 +130,19 @@ fn deriveSourceFacts(comptime spec: anytype) Facts {
             facts.void_wrappers += 1;
         }
         const Map = failureMapFor(components, spec.handlers, component_index);
+        var dynamic_failure_count: usize = 0;
         inline for (Body.control_ir.blocks) |block| {
             if (!reachable.contains(block.id)) {
                 facts.unreachable_blocks += 1;
                 continue;
             }
             addFailureFacts(&facts, Map, block.terminator);
+            if (Map != void and Map.targets.len > 1) {
+                switch (block.terminator) {
+                    .fail_value => dynamic_failure_count += 1,
+                    else => {},
+                }
+            }
             if (component_index != 0 and Body.Result == void and
                 block.function_id == 0)
             {
@@ -146,6 +153,12 @@ fn deriveSourceFacts(comptime spec: anytype) Facts {
                     else => {},
                 }
             }
+        }
+        if (dynamic_failure_count != 0) {
+            facts.failure_values += 3 * Map.targets.len;
+            facts.failure_blocks += 2 * Map.targets.len - 1;
+            facts.failure_functions += 1;
+            facts.failure_constants += 2 * Map.targets.len - 1;
         }
     }
     return facts;
@@ -312,6 +325,251 @@ fn componentIndex(comptime components: anytype, comptime Program: type) usize {
     unreachable;
 }
 
+fn failureSiteBlockCount(comptime Map: type, comptime terminator: boundary.ir.Terminator) usize {
+    if (Map == void) return 0;
+    return switch (terminator) {
+        .fail => 1,
+        .fail_value => @intFromBool(Map.targets.len != 0),
+        else => 0,
+    };
+}
+
+fn failureSiteValueCount(comptime Map: type, comptime terminator: boundary.ir.Terminator) usize {
+    return failureSiteBlockCount(Map, terminator);
+}
+
+fn failureSiteConstantCount(
+    comptime Map: type,
+    comptime terminator: boundary.ir.Terminator,
+) usize {
+    if (Map == void) return 0;
+    return switch (terminator) {
+        .fail => 1,
+        .fail_value => @intFromBool(Map.targets.len == 1),
+        else => 0,
+    };
+}
+
+fn componentFailureBlockCount(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    const Program = components.items[component_index];
+    const Map = failureMapFor(components, handlers, component_index);
+    var result: usize = 0;
+    inline for (Program.component().control_ir.blocks) |block| {
+        if (comptime !boundary.componentAdmission(Program).reachability.contains(block.id)) continue;
+        result += failureSiteBlockCount(Map, block.terminator);
+    }
+    return result;
+}
+
+fn componentFailureValueCount(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    const Program = components.items[component_index];
+    const Map = failureMapFor(components, handlers, component_index);
+    var result: usize = 0;
+    inline for (Program.component().control_ir.blocks) |block| {
+        if (comptime !boundary.componentAdmission(Program).reachability.contains(block.id)) continue;
+        result += failureSiteValueCount(Map, block.terminator);
+    }
+    return result;
+}
+
+fn componentFailureConstantCount(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    const Program = components.items[component_index];
+    const Map = failureMapFor(components, handlers, component_index);
+    var result: usize = 0;
+    inline for (Program.component().control_ir.blocks) |block| {
+        if (comptime !boundary.componentAdmission(Program).reachability.contains(block.id)) continue;
+        result += failureSiteConstantCount(Map, block.terminator);
+    }
+    return result;
+}
+
+fn componentDynamicFailureCountFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    const Program = components.items[component_index];
+    const Map = failureMapFor(components, handlers, component_index);
+    if (Map == void) return 0;
+    if (Map.targets.len <= 1) return 0;
+    var result: usize = 0;
+    inline for (Program.component().control_ir.blocks) |block| {
+        if (comptime !boundary.componentAdmission(Program).reachability.contains(block.id)) continue;
+        switch (block.terminator) {
+            .fail_value => result += 1,
+            else => {},
+        }
+    }
+    return result;
+}
+
+fn componentSharedFailureBlockCountFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    if (comptime componentDynamicFailureCountFor(
+        components,
+        handlers,
+        component_index,
+    ) == 0) {
+        return 0;
+    }
+    const Map = failureMapFor(components, handlers, component_index);
+    return 2 * Map.targets.len - 1;
+}
+
+fn componentSharedFailureValueCountFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    if (comptime componentDynamicFailureCountFor(
+        components,
+        handlers,
+        component_index,
+    ) == 0) return 0;
+    const Map = failureMapFor(components, handlers, component_index);
+    return 3 * Map.targets.len;
+}
+
+fn componentSharedFailureConstantCountFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    return componentSharedFailureBlockCountFor(components, handlers, component_index);
+}
+
+fn totalFailureBlocksFor(comptime components: anytype, comptime handlers: anytype) usize {
+    var result: usize = 0;
+    inline for (0..components.count) |index| {
+        result += componentFailureBlockCount(components, handlers, index);
+    }
+    return result;
+}
+
+fn totalFailureValuesFor(comptime components: anytype, comptime handlers: anytype) usize {
+    var result: usize = 0;
+    inline for (0..components.count) |index| {
+        result += componentFailureValueCount(components, handlers, index);
+    }
+    return result;
+}
+
+fn totalFailureConstantsFor(comptime components: anytype, comptime handlers: anytype) usize {
+    var result: usize = 0;
+    inline for (0..components.count) |index| {
+        result += componentFailureConstantCount(components, handlers, index);
+    }
+    return result;
+}
+
+fn failureValueBaseFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime block_id: boundary.ir.BlockId,
+) usize {
+    var result = sourceOffsets(components, components.count).values;
+    inline for (0..component_index) |index| {
+        result += componentFailureValueCount(components, handlers, index);
+    }
+    const Program = components.items[component_index];
+    const Map = failureMapFor(components, handlers, component_index);
+    inline for (Program.component().control_ir.blocks) |block| {
+        if (block.id == block_id) return result;
+        if (comptime !boundary.componentAdmission(Program).reachability.contains(block.id)) continue;
+        result += failureSiteValueCount(Map, block.terminator);
+    }
+    unreachable;
+}
+
+fn failureBlockBaseFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime block_id: boundary.ir.BlockId,
+) usize {
+    var result = sourceOffsets(components, components.count).blocks;
+    inline for (0..component_index) |index| {
+        result += componentFailureBlockCount(components, handlers, index);
+    }
+    const Program = components.items[component_index];
+    const Map = failureMapFor(components, handlers, component_index);
+    inline for (Program.component().control_ir.blocks) |block| {
+        if (block.id == block_id) return result;
+        if (comptime !boundary.componentAdmission(Program).reachability.contains(block.id)) continue;
+        result += failureSiteBlockCount(Map, block.terminator);
+    }
+    unreachable;
+}
+
+fn sharedFailureBlockBaseFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    var result = sourceOffsets(components, components.count).blocks +
+        totalFailureBlocksFor(components, handlers);
+    inline for (0..component_index) |index| {
+        result += componentSharedFailureBlockCountFor(components, handlers, index);
+    }
+    return result;
+}
+
+fn sharedFailureValueBaseFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    var result = sourceOffsets(components, components.count).values +
+        totalFailureValuesFor(components, handlers);
+    inline for (0..component_index) |index| {
+        result += componentSharedFailureValueCountFor(components, handlers, index);
+    }
+    return result;
+}
+
+fn sharedFailureConstantBaseFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    var result = sourceOffsets(components, components.count).constants +
+        totalFailureConstantsFor(components, handlers);
+    inline for (0..component_index) |index| {
+        result += componentSharedFailureConstantCountFor(components, handlers, index);
+    }
+    return result;
+}
+
+fn sharedFailureFunctionIdFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    var result = totalSourceFunctions(components);
+    inline for (0..component_index) |index| {
+        result += @intFromBool(
+            componentDynamicFailureCountFor(components, handlers, index) != 0,
+        );
+    }
+    return result;
+}
+
 const SourceOffsets = struct {
     values: usize,
     blocks: usize,
@@ -424,6 +682,8 @@ fn assertEdgeMapping(
 fn assertTerminatorMapping(
     comptime source: boundary.ir.Block,
     comptime linked: boundary.ir.Block,
+    comptime components: anytype,
+    comptime handlers: anytype,
     comptime Body: type,
     comptime LinkedBody: type,
     comptime Map: type,
@@ -560,14 +820,63 @@ fn assertTerminatorMapping(
                 linked.terminator.fail_value,
             ),
             else => unreachable,
-        } else {
+        } else if (!reachable or Map.targets.len == 0) {
             try std.testing.expect(linked.terminator == .jump);
-            if (!reachable or Map.targets.len == 0) {
+            try std.testing.expectEqual(
+                linked.id,
+                linked.terminator.jump.target,
+            );
+        } else switch (source.terminator) {
+            .fail => try std.testing.expect(linked.terminator == .jump),
+            .fail_value => |value| if (Map.targets.len == 1) {
+                try std.testing.expect(linked.terminator == .jump);
+            } else {
+                const suspension = linked.terminator.@"suspend";
+                try std.testing.expectEqual(boundary.ir.SuspensionKind.call, suspension.kind);
                 try std.testing.expectEqual(
-                    linked.id,
-                    linked.terminator.jump.target,
+                    @as(boundary.ir.FunctionId, @intCast(sharedFailureFunctionIdFor(
+                        components,
+                        handlers,
+                        component_index,
+                    ))),
+                    suspension.callee_function.?,
                 );
-            }
+                try std.testing.expectEqual(
+                    @as(boundary.ir.BlockId, @intCast(sharedFailureBlockBaseFor(
+                        components,
+                        handlers,
+                        component_index,
+                    ))),
+                    suspension.callee.?.target,
+                );
+                try std.testing.expectEqual(@as(usize, 1), suspension.callee.?.arguments.len);
+                switch (suspension.callee.?.arguments[0]) {
+                    .value => |linked_value| try std.testing.expectEqual(
+                        @as(boundary.ir.ValueId, @intCast(value_offset + value)),
+                        linked_value,
+                    ),
+                    else => return error.TestUnexpectedResult,
+                }
+                try std.testing.expectEqual(
+                    @as(boundary.ir.BlockId, @intCast(failureBlockBaseFor(
+                        components,
+                        handlers,
+                        component_index,
+                        source.id,
+                    ))),
+                    suspension.continuation.target,
+                );
+                try std.testing.expectEqual(@as(usize, 1), suspension.continuation.arguments.len);
+                switch (suspension.continuation.arguments[0]) {
+                    .@"resume" => {},
+                    else => return error.TestUnexpectedResult,
+                }
+                const expected_resume: boundary.ir.ValueType = .{ .schema = @intCast(
+                    linkedSchemaIndex(LinkedBody, Map.TargetFailure),
+                ) };
+                try std.testing.expect(expected_resume.eql(suspension.resume_type.?));
+            },
+            else => unreachable,
         },
     }
 }
@@ -594,6 +903,218 @@ fn voidWrapperFunctionId(
         }
     }
     return result;
+}
+
+fn assertSharedFailureMappings(comptime spec: anytype, comptime System: type) !void {
+    const components = componentSet(spec);
+    const Linked = System.Program.component();
+    inline for (0..components.count) |component_index| {
+        if (comptime componentDynamicFailureCountFor(
+            components,
+            spec.handlers,
+            component_index,
+        ) == 0) continue;
+        const Program = components.items[component_index];
+        const Map = failureMapFor(components, spec.handlers, component_index);
+        const function_id = comptime sharedFailureFunctionIdFor(
+            components,
+            spec.handlers,
+            component_index,
+        );
+        const block_base = comptime sharedFailureBlockBaseFor(
+            components,
+            spec.handlers,
+            component_index,
+        );
+        const value_base = comptime sharedFailureValueBaseFor(
+            components,
+            spec.handlers,
+            component_index,
+        );
+        const constant_base = comptime sharedFailureConstantBaseFor(
+            components,
+            spec.handlers,
+            component_index,
+        );
+        const leaf_base = block_base + Map.targets.len - 1;
+        const function = Linked.control_ir.functions[function_id];
+        try std.testing.expectEqual(
+            @as(boundary.ir.FunctionId, @intCast(function_id)),
+            function.id,
+        );
+        try std.testing.expectEqual(
+            @as(boundary.ir.BlockId, @intCast(block_base)),
+            function.entry,
+        );
+        const target_type: boundary.ir.ValueType = .{ .schema = @intCast(
+            linkedSchemaIndex(Linked, Map.TargetFailure),
+        ) };
+        try std.testing.expect(target_type.eql(function.result_type));
+        const source_type: boundary.ir.ValueType = .{ .schema = @intCast(
+            linkedSchemaIndex(Linked, Map.SourceFailure),
+        ) };
+        try std.testing.expect(source_type.eql(Linked.control_ir.value_types[value_base]));
+        try std.testing.expect((boundary.ir.ValueType{ .scalar = .u32 }).eql(
+            Linked.control_ir.value_types[value_base + 1],
+        ));
+
+        inline for (0..Map.targets.len - 1) |tag| {
+            const block = Linked.control_ir.blocks[block_base + tag];
+            const constant_value = value_base + 2 + 2 * tag;
+            const condition_value = constant_value + 1;
+            try std.testing.expectEqual(
+                @as(boundary.ir.BlockId, @intCast(block_base + tag)),
+                block.id,
+            );
+            try std.testing.expectEqual(
+                @as(boundary.ir.FunctionId, @intCast(function_id)),
+                block.function_id,
+            );
+            if (tag == 0) {
+                try std.testing.expectEqual(@as(usize, 1), block.parameters.len);
+                try std.testing.expectEqual(
+                    @as(boundary.ir.ValueId, @intCast(value_base)),
+                    block.parameters[0],
+                );
+                try std.testing.expectEqual(@as(usize, 3), block.instructions.len);
+                try std.testing.expect(block.instructions[0].operation == .enum_to_u32);
+                try std.testing.expectEqual(
+                    @as(boundary.ir.ValueId, @intCast(value_base + 1)),
+                    block.instructions[0].result,
+                );
+                try std.testing.expectEqual(
+                    @as(boundary.ir.ValueId, @intCast(value_base)),
+                    block.instructions[0].operands[0],
+                );
+            } else {
+                try std.testing.expectEqual(@as(usize, 0), block.parameters.len);
+                try std.testing.expectEqual(@as(usize, 2), block.instructions.len);
+            }
+            const constant_instruction = block.instructions[block.instructions.len - 2];
+            const compare_instruction = block.instructions[block.instructions.len - 1];
+            try std.testing.expectEqual(
+                @as(boundary.ir.ValueId, @intCast(constant_value)),
+                constant_instruction.result,
+            );
+            switch (constant_instruction.operation) {
+                .constant => |index| try std.testing.expectEqual(
+                    @as(u16, @intCast(constant_base + tag)),
+                    index,
+                ),
+                else => return error.TestUnexpectedResult,
+            }
+            try std.testing.expect(compare_instruction.operation == .integer_equal);
+            try std.testing.expectEqual(
+                @as(boundary.ir.ValueId, @intCast(condition_value)),
+                compare_instruction.result,
+            );
+            try std.testing.expectEqual(
+                @as(boundary.ir.ValueId, @intCast(value_base + 1)),
+                compare_instruction.operands[0],
+            );
+            try std.testing.expectEqual(
+                @as(boundary.ir.ValueId, @intCast(constant_value)),
+                compare_instruction.operands[1],
+            );
+            const branch = block.terminator.branch;
+            try std.testing.expectEqual(
+                @as(boundary.ir.ValueId, @intCast(condition_value)),
+                branch.condition,
+            );
+            try std.testing.expectEqual(
+                @as(boundary.ir.BlockId, @intCast(leaf_base + tag)),
+                branch.then_edge.target,
+            );
+            try std.testing.expectEqual(
+                @as(boundary.ir.BlockId, @intCast(if (tag + 1 == Map.targets.len - 1)
+                    leaf_base + Map.targets.len - 1
+                else
+                    block_base + tag + 1)),
+                branch.else_edge.target,
+            );
+            const source_constant = @field(
+                Linked.constants,
+                std.fmt.comptimePrint("{d}", .{constant_base + tag}),
+            );
+            try std.testing.expectEqual(Map.source_tags[tag], source_constant);
+            try std.testing.expect((boundary.ir.ValueType{ .scalar = .u32 }).eql(
+                Linked.control_ir.value_types[constant_value],
+            ));
+            try std.testing.expect((boundary.ir.ValueType{ .scalar = .boolean }).eql(
+                Linked.control_ir.value_types[condition_value],
+            ));
+        }
+
+        inline for (0..Map.targets.len) |tag| {
+            const block = Linked.control_ir.blocks[leaf_base + tag];
+            const value_id = value_base + 2 * Map.targets.len + tag;
+            try std.testing.expectEqual(
+                @as(boundary.ir.BlockId, @intCast(leaf_base + tag)),
+                block.id,
+            );
+            try std.testing.expectEqual(
+                @as(boundary.ir.FunctionId, @intCast(function_id)),
+                block.function_id,
+            );
+            try std.testing.expectEqual(@as(usize, 1), block.instructions.len);
+            switch (block.instructions[0].operation) {
+                .constant => |index| try std.testing.expectEqual(
+                    @as(u16, @intCast(constant_base + Map.targets.len - 1 + tag)),
+                    index,
+                ),
+                else => return error.TestUnexpectedResult,
+            }
+            try std.testing.expectEqual(
+                @as(boundary.ir.ValueId, @intCast(value_id)),
+                block.terminator.return_to_caller,
+            );
+            const target_constant = @field(
+                Linked.constants,
+                std.fmt.comptimePrint(
+                    "{d}",
+                    .{constant_base + Map.targets.len - 1 + tag},
+                ),
+            );
+            try std.testing.expectEqual(Map.targets[tag], target_constant);
+            try std.testing.expect(target_type.eql(Linked.control_ir.value_types[value_id]));
+        }
+
+        inline for (Program.component().control_ir.blocks) |source| {
+            if (comptime !boundary.componentAdmission(Program).reachability.contains(source.id)) {
+                continue;
+            }
+            switch (source.terminator) {
+                .fail_value => if (Map.targets.len > 1) {
+                    const block_id = comptime failureBlockBaseFor(
+                        components,
+                        spec.handlers,
+                        component_index,
+                        source.id,
+                    );
+                    const value_id = comptime failureValueBaseFor(
+                        components,
+                        spec.handlers,
+                        component_index,
+                        source.id,
+                    );
+                    const block = Linked.control_ir.blocks[block_id];
+                    try std.testing.expectEqual(@as(usize, 1), block.parameters.len);
+                    try std.testing.expectEqual(
+                        @as(boundary.ir.ValueId, @intCast(value_id)),
+                        block.parameters[0],
+                    );
+                    try std.testing.expectEqual(
+                        @as(boundary.ir.ValueId, @intCast(value_id)),
+                        block.terminator.fail_value,
+                    );
+                    try std.testing.expect(target_type.eql(
+                        Linked.control_ir.value_types[value_id],
+                    ));
+                },
+                else => {},
+            }
+        }
+    }
 }
 
 fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
@@ -689,6 +1210,8 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
             try assertTerminatorMapping(
                 source,
                 linked,
+                components,
+                spec.handlers,
                 Body,
                 Linked,
                 Map,
@@ -737,6 +1260,14 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
 fn assertTopology(comptime spec: anytype, comptime System: type) !void {
     const source = comptime deriveSourceFacts(spec);
     const Linked = System.Program.component();
+    try std.testing.expectEqual(
+        System.residual_effects.count,
+        System.residual_effects.items.len,
+    );
+    try std.testing.expectEqual(
+        System.residual_effects.count,
+        boundary.componentAdmission(System.Program).residual_effects.residual_count,
+    );
     try std.testing.expectEqual(source.component_count, System.component_count);
     try std.testing.expectEqual(
         source.source_values + source.failure_values + source.void_returns +
@@ -749,7 +1280,7 @@ fn assertTopology(comptime spec: anytype, comptime System: type) !void {
         Linked.control_ir.blocks.len,
     );
     try std.testing.expectEqual(
-        source.source_functions + source.void_wrappers,
+        source.source_functions + source.failure_functions + source.void_wrappers,
         Linked.control_ir.functions.len,
     );
     try std.testing.expectEqual(
@@ -768,6 +1299,7 @@ fn assertTopology(comptime spec: anytype, comptime System: type) !void {
     );
     try assertDispositionClosure(spec);
     try assertElementMappings(spec, System);
+    try assertSharedFailureMappings(spec, System);
 }
 
 test "source-derived topology closes void wrapper and unreachable syntax" {
@@ -780,6 +1312,10 @@ test "source-derived topology separates external source and target roles" {
 
 test "source-derived topology closes empty Failure domains" {
     try assertTopology(fixtures.EmptyFailureSpec, fixtures.EmptyFailureSystem);
+}
+
+test "source-derived topology shares wide Failure maps across fail sites" {
+    try assertTopology(fixtures.WideFailureSpec, fixtures.WideFailureSystem);
 }
 
 test "source-derived topology admits unreachable effect declarations" {
