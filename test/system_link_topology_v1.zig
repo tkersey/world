@@ -1140,6 +1140,7 @@ fn assertSharedFailureMappings(comptime spec: anytype, comptime System: type) !v
             Linked.control_ir.value_types[value_base + 1],
         ));
         const block = Linked.control_ir.blocks[block_base];
+        try std.testing.expectEqual(boundary.ir.BlockRole.terminal_handoff, block.role);
         try std.testing.expectEqual(@as(boundary.ir.BlockId, @intCast(block_base)), block.id);
         try std.testing.expectEqual(
             @as(boundary.ir.FunctionId, @intCast(function_id)),
@@ -1258,6 +1259,10 @@ fn assertSharedFailureMappings(comptime spec: anytype, comptime System: type) !v
                         source.id,
                     );
                     const continuation = Linked.control_ir.blocks[block_id];
+                    try std.testing.expectEqual(
+                        boundary.ir.BlockRole.terminal_handoff,
+                        continuation.role,
+                    );
                     try std.testing.expectEqual(@as(usize, 1), continuation.parameters.len);
                     try std.testing.expectEqual(
                         @as(boundary.ir.ValueId, @intCast(value_id)),
@@ -1335,6 +1340,10 @@ fn assertDirectFailureMappings(comptime spec: anytype, comptime System: type) !v
                 linked_source.terminator.jump.target,
             );
             const adapter = Linked.control_ir.blocks[block_id];
+            try std.testing.expectEqual(
+                boundary.ir.BlockRole.terminal_handoff,
+                adapter.role,
+            );
             try std.testing.expectEqual(@as(boundary.ir.BlockId, @intCast(block_id)), adapter.id);
             try std.testing.expectEqual(
                 @as(boundary.ir.FunctionId, @intCast(offsets.functions + source.function_id)),
@@ -1443,6 +1452,7 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
                 )),
                 linked.function_id,
             );
+            try std.testing.expectEqual(source.role, linked.role);
             try std.testing.expectEqual(source.instructions.len, linked.instructions.len);
             try std.testing.expectEqual(source.parameters.len, linked.parameters.len);
             inline for (source.parameters, linked.parameters) |parameter, linked_parameter| {

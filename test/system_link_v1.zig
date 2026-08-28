@@ -1914,6 +1914,18 @@ test "world.system shares one unit adapter across void exits" {
         @as(boundary.ir.BlockId, 5),
         Linked.control_ir.blocks[3].terminator.jump.target,
     );
+    try std.testing.expectEqual(
+        boundary.ir.BlockRole.terminal_handoff,
+        Linked.control_ir.blocks[5].role,
+    );
+    try std.testing.expectEqual(
+        boundary.ir.BlockRole.segment,
+        Linked.control_ir.blocks[6].role,
+    );
+    try std.testing.expectEqual(
+        boundary.ir.BlockRole.terminal_handoff,
+        Linked.control_ir.blocks[7].role,
+    );
 }
 
 const RoleSource = boundary.effect.site(
