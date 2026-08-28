@@ -45,10 +45,12 @@ Internal handlers require exact `Payload == Provider.InitialArgs` and
 uses one explicit pure total `world.failureMorphism`. The resulting
 `System.Program.image()` is ordinary BPI1 and contains no World runtime object.
 Each multi-tag provider Failure map used by dynamic failure sites lowers once
-into one pure selection-block Boundary function. Dynamic sites call that
-function and retain one local terminal continuation; static failures and
-single-target maps remain O(1) direct specializations. Mapping blocks therefore
-scale with dynamic call sites, not map cardinality or their product.
+into one pure selection-block Boundary function after mapped targets are
+interned by value. Dynamic sites call that function and retain one local
+terminal continuation; quotient-size-one maps remain O(1) direct
+specializations. Identical direct failures share one adapter per source
+function and mapped target. Mapping blocks therefore scale with semantic
+owners, not source occurrences or map cardinality.
 Each source component is independently admitted by Boundary before remapping;
 linker-generated unit and Failure adapters occupy separate reductions so
 source block instructions and authored Machine-v2 costs are preserved.
@@ -59,8 +61,9 @@ helper graphs retain their original definitions, edges, and dominance; only a
 terminal that becomes invalid under its linked non-root role is privatized to a
 local inert loop. This includes impossible Failure terminals and unreachable
 void returns; reachable void returns alone receive return adapters. A void-input
-provider keeps its original entry and Control IR edges; a generated handler
-wrapper owns the explicit unit call convention.
+provider keeps its original entry and Control IR edges; all reachable void exits
+share one component-local unit-return adapter, and a generated handler wrapper
+owns the explicit unit call convention.
 
 `world.application` remains a compatibility and optional-specialization path;
 its manifest, Frame, provider scheduler, and application-specific WebAssembly

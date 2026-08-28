@@ -986,6 +986,64 @@ test "world.system shares one wide Failure mapper across dynamic fail sites" {
     }
 }
 
+const ConstantWideFailureMap = world.failureMorphism(
+    WideProviderFailure,
+    WideSystemFailure,
+    [_]WideSystemFailure{.s00} ** 64,
+);
+pub const ConstantWideFailureSpec = .{
+    .name = "constant-wide-failure-system",
+    .root = WideRootProgram,
+    .handlers = .{world.systemHandle(.{
+        .consumer = WideRootProgram,
+        .site = WideFailureSite,
+        .provider = WideProviderProgram,
+        .failure_morphism = ConstantWideFailureMap,
+    })},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const ConstantWideFailureSystem = world.system(ConstantWideFailureSpec);
+
+const alternating_targets = blk: {
+    var result: [64]WideSystemFailure = undefined;
+    for (0..64) |index| result[index] = if (index % 2 == 0) .s00 else .s01;
+    break :blk result;
+};
+const AlternatingWideFailureMap = world.failureMorphism(
+    WideProviderFailure,
+    WideSystemFailure,
+    alternating_targets,
+);
+pub const AlternatingWideFailureSpec = .{
+    .name = "alternating-wide-failure-system",
+    .root = WideRootProgram,
+    .handlers = .{world.systemHandle(.{
+        .consumer = WideRootProgram,
+        .site = WideFailureSite,
+        .provider = WideProviderProgram,
+        .failure_morphism = AlternatingWideFailureMap,
+    })},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const AlternatingWideFailureSystem = world.system(AlternatingWideFailureSpec);
+
+test "world.system quotients constant and repeated Failure targets" {
+    try std.testing.expectEqual(
+        @as(usize, 6),
+        ConstantWideFailureSystem.Program.component().control_ir.blocks.len,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 8),
+        AlternatingWideFailureSystem.Program.component().control_ir.blocks.len,
+    );
+    try std.testing.expect(
+        AlternatingWideFailureSystem.Program.component().control_ir.value_types.len <
+            WideFailureSystem.Program.component().control_ir.value_types.len,
+    );
+}
+
 const inert_component_blocks = [_]boundary.ir.Block{.{
     .id = 0,
     .parameters = &.{0},
@@ -1789,6 +1847,72 @@ test "world.system preserves unreachable void-entry predecessors behind a wrappe
         else => return error.TestUnexpectedResult,
     };
     defer completed.deinit();
+}
+
+const shared_void_exit_instructions = [_]boundary.ir.Instruction{.{
+    .kind = .constant,
+    .result = 0,
+    .operation = .{ .constant = 0 },
+}};
+const shared_void_exit_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .instructions = &shared_void_exit_instructions,
+        .terminator = .{ .branch = .{
+            .condition = 0,
+            .then_edge = .{ .target = 1 },
+            .else_edge = .{ .target = 2 },
+        } },
+    },
+    .{ .id = 1, .terminator = .{ .return_value = null } },
+    .{ .id = 2, .terminator = .{ .return_value = null } },
+};
+const SharedVoidExitBody = struct {
+    pub const InitialArgs = void;
+    pub const Result = void;
+    pub const Failure = SystemFailure;
+    pub const constants = .{@as(bool, true)};
+    pub const effect_sites = .{};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "shared-void-exit-provider",
+        .value_types = &.{.{ .scalar = .boolean }},
+        .blocks = &shared_void_exit_blocks,
+        .entry = 0,
+        .result_type = unit_type,
+    };
+};
+pub const SharedVoidExitProvider = boundary.program(
+    "shared-void-exit-provider",
+    SharedVoidExitBody,
+);
+pub const SharedVoidExitSpec = .{
+    .name = "shared-void-exit-system",
+    .root = VoidRootProgram,
+    .handlers = .{world.systemHandle(.{
+        .consumer = VoidRootProgram,
+        .site = VoidSite,
+        .provider = SharedVoidExitProvider,
+    })},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const SharedVoidExitSystem = world.system(SharedVoidExitSpec);
+
+test "world.system shares one unit adapter across void exits" {
+    const Linked = SharedVoidExitSystem.Program.component();
+    try std.testing.expectEqual(
+        @as(usize, 8),
+        Linked.control_ir.blocks.len,
+    );
+    try std.testing.expectEqual(
+        Linked.control_ir.blocks[3].terminator.jump.target,
+        Linked.control_ir.blocks[4].terminator.jump.target,
+    );
+    try std.testing.expectEqual(
+        @as(boundary.ir.BlockId, 5),
+        Linked.control_ir.blocks[3].terminator.jump.target,
+    );
 }
 
 const RoleSource = boundary.effect.site(

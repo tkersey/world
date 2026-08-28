@@ -258,11 +258,23 @@ fn PlanFor(
             for (body(components_value.items[component_index]).control_ir.blocks) |block| {
                 const linked_id = blockOffset(components_value, component_index) +
                     block.id;
-                result[linked_id] = if (components_value
-                    .admissionAt(component_index).reachability.contains(block.id))
-                    failureAdapterLayout(Map, block.terminator)
+                if (!components_value.admissionAt(component_index)
+                    .reachability.contains(block.id))
+                {
+                    result[linked_id] = .{ .kind = .none };
+                    continue;
+                }
+                const layout = failureAdapterLayout(Map, block.terminator);
+                result[linked_id] = if (layout.kind == .direct and
+                    directFailureOwnerBlock(
+                        components_value,
+                        handlers_value,
+                        component_index,
+                        block.id,
+                    ) != block.id)
+                    .{ .kind = .direct_alias }
                 else
-                    .{ .kind = .none };
+                    layout;
             }
         }
         break :blk result;
@@ -516,10 +528,38 @@ fn failureMapFor(
     return Result;
 }
 
+fn FailureTargetQuotient(comptime Map: type) type {
+    return struct {
+        targets: [Map.targets.len]Map.TargetFailure = undefined,
+        source_to_target: [Map.targets.len]usize = undefined,
+        count: usize = 0,
+    };
+}
+
+fn failureTargetQuotient(comptime Map: type) FailureTargetQuotient(Map) {
+    var result: FailureTargetQuotient(Map) = .{};
+    inline for (Map.targets, 0..) |target, source_index| {
+        var target_index: ?usize = null;
+        inline for (0..result.count) |index| {
+            if (@intFromEnum(result.targets[index]) == @intFromEnum(target)) {
+                target_index = index;
+            }
+        }
+        if (target_index == null) {
+            target_index = result.count;
+            result.targets[result.count] = target;
+            result.count += 1;
+        }
+        result.source_to_target[source_index] = target_index.?;
+    }
+    return result;
+}
+
 const FailureAdapterKind = enum {
     none,
     impossible,
     direct,
+    direct_alias,
     dynamic,
 };
 
@@ -544,7 +584,7 @@ fn failureAdapterLayout(
         },
         .fail_value => if (Map.targets.len == 0)
             .{ .kind = .impossible }
-        else if (Map.targets.len == 1)
+        else if (failureTargetQuotient(Map).count == 1)
             .{
                 .kind = .direct,
                 .value_count = 1,
@@ -559,6 +599,41 @@ fn failureAdapterLayout(
             },
         else => .{ .kind = .none },
     };
+}
+
+fn directFailureTarget(
+    comptime Map: type,
+    comptime terminator: cir.Terminator,
+) ?Map.TargetFailure {
+    return switch (terminator) {
+        .fail => |source_tag| mappedFailureTarget(Map, source_tag),
+        .fail_value => if (failureTargetQuotient(Map).count == 1)
+            failureTargetQuotient(Map).targets[0]
+        else
+            null,
+        else => null,
+    };
+}
+
+fn directFailureOwnerBlock(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime block_id: cir.BlockId,
+) cir.BlockId {
+    const Program = components.items[component_index];
+    const Body = body(Program);
+    const Map = failureMapFor(components, handlers, component_index);
+    const current = Body.control_ir.blocks[block_id];
+    const target = directFailureTarget(Map, current.terminator) orelse unreachable;
+    inline for (Body.control_ir.blocks) |candidate| {
+        if (candidate.id > block_id) continue;
+        if (!components.admissionAt(component_index).reachability.contains(candidate.id)) continue;
+        if (candidate.function_id != current.function_id) continue;
+        const candidate_target = directFailureTarget(Map, candidate.terminator) orelse continue;
+        if (@intFromEnum(candidate_target) == @intFromEnum(target)) return candidate.id;
+    }
+    unreachable;
 }
 
 fn componentExtraValues(
@@ -617,7 +692,8 @@ fn componentSharedFailureCount(
 ) usize {
     const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     if (Map == void) return 0;
-    if (Map.targets.len <= 1) return 0;
+    const Quotient = failureTargetQuotient(Map);
+    if (Quotient.count <= 1) return 0;
     return @intFromBool(componentDynamicFailureCount(Plan, component_index) != 0);
 }
 
@@ -627,7 +703,8 @@ fn componentSharedFailureValues(
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
     const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
-    return 4 * Map.targets.len - 1;
+    const Quotient = failureTargetQuotient(Map);
+    return 3 * Map.targets.len + Quotient.count - 1;
 }
 
 fn componentSharedFailureBlocks(
@@ -644,7 +721,8 @@ fn componentSharedFailureConstants(
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
     const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
-    return 2 * Map.targets.len - 1;
+    const Quotient = failureTargetQuotient(Map);
+    return Map.targets.len - 1 + Quotient.count;
 }
 
 fn componentVoidReturnCount(
@@ -656,18 +734,32 @@ fn componentVoidReturnCount(
     {
         return 0;
     }
-    var count: usize = 0;
     inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (!Plan.blockReachable(component_index, block.id)) continue;
         if (block.function_id != 0) continue;
         switch (block.terminator) {
             .return_value => |value| if (value == null) {
-                count += 1;
+                return 1;
             },
             else => {},
         }
     }
-    return count;
+    return 0;
+}
+
+fn voidReturnOwnerBlock(
+    comptime Plan: type,
+    comptime component_index: usize,
+) cir.BlockId {
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
+        if (!Plan.blockReachable(component_index, block.id)) continue;
+        if (block.function_id != 0) continue;
+        switch (block.terminator) {
+            .return_value => |value| if (value == null) return block.id,
+            else => {},
+        }
+    }
+    unreachable;
 }
 
 fn totalVoidReturns(comptime Plan: type) usize {
@@ -694,17 +786,10 @@ fn voidReturnOrdinal(
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    var result: usize = 0;
     inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
-        if (block.id == block_id) return result;
+        if (block.id == block_id) return 0;
         if (!Plan.blockReachable(component_index, block.id)) continue;
         if (block.function_id != 0) continue;
-        switch (block.terminator) {
-            .return_value => |value| if (value == null) {
-                result += 1;
-            },
-            else => {},
-        }
     }
     unreachable;
 }
@@ -1706,6 +1791,7 @@ fn buildValueTypes(
             if (block.function_id != 0) continue;
             switch (block.terminator) {
                 .return_value => |value| if (value == null and
+                    block.id == voidReturnOwnerBlock(Plan, component_index) and
                     body(components.items[component_index]).Result == void)
                 {
                     result[cursor] = .{ .scalar = .unit };
@@ -1750,7 +1836,7 @@ fn appendFailureValueTypes(
         switch (Plan.failureLayout(component_index, block.id).kind) {
             .direct => appendValueType(result, cursor, target_type),
             .dynamic => appendValueType(result, cursor, target_type),
-            .none, .impossible => {},
+            .none, .impossible, .direct_alias => {},
         }
     }
 }
@@ -1772,13 +1858,15 @@ fn appendSharedFailureValueTypes(
         schemas,
         Map.TargetFailure,
     ) };
+    const Quotient = failureTargetQuotient(Map);
     appendValueType(result, cursor, source_type);
     appendValueType(result, cursor, .{ .scalar = .u32 });
-    appendValueType(result, cursor, target_type);
+    inline for (0..Quotient.count) |_| {
+        appendValueType(result, cursor, target_type);
+    }
     inline for (0..Map.targets.len - 1) |_| {
         appendValueType(result, cursor, .{ .scalar = .u32 });
         appendValueType(result, cursor, .{ .scalar = .boolean });
-        appendValueType(result, cursor, target_type);
         appendValueType(result, cursor, target_type);
     }
 }
@@ -1812,18 +1900,19 @@ fn constantTypes(comptime Plan: type) [linkedTotalConstants(Plan)]type {
                     cursor += 1;
                 },
                 .dynamic => {},
-                .none, .impossible => {},
+                .none, .impossible, .direct_alias => {},
             }
         }
     }
     inline for (0..components.count) |component_index| {
         if (componentSharedFailureCount(Plan, component_index) == 0) continue;
         const Map = failureMapFor(components, Plan.handlers, component_index);
+        const Quotient = failureTargetQuotient(Map);
         inline for (0..Map.targets.len - 1) |_| {
             result[cursor] = u32;
             cursor += 1;
         }
-        inline for (0..Map.targets.len) |_| {
+        inline for (0..Quotient.count) |_| {
             result[cursor] = Map.TargetFailure;
             cursor += 1;
         }
@@ -1834,6 +1923,7 @@ fn constantTypes(comptime Plan: type) [linkedTotalConstants(Plan)]type {
             if (block.function_id != 0) continue;
             switch (block.terminator) {
                 .return_value => |value| if (value == null and
+                    block.id == voidReturnOwnerBlock(Plan, component_index) and
                     body(components.items[component_index]).Result == void)
                 {
                     result[cursor] = void;
@@ -1889,6 +1979,7 @@ fn buildConstants(comptime Plan: type) Constants(Plan) {
             if (block.function_id != 0) continue;
             switch (block.terminator) {
                 .return_value => |value| if (value == null and
+                    block.id == voidReturnOwnerBlock(Plan, component_index) and
                     body(components.items[component_index]).Result == void)
                 {
                     @field(
@@ -1926,7 +2017,7 @@ fn appendFailureConstants(
                 else => unreachable,
             },
             .dynamic => {},
-            .none, .impossible => {},
+            .none, .impossible, .direct_alias => {},
         }
     }
 }
@@ -1939,11 +2030,12 @@ fn appendSharedFailureConstants(
 ) void {
     if (componentSharedFailureCount(Plan, component_index) == 0) return;
     const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    const Quotient = failureTargetQuotient(Map);
     inline for (0..Map.targets.len - 1) |tag| {
         appendConstant(result, cursor, Map.source_tags[tag]);
     }
-    inline for (Map.targets) |target| {
-        appendConstant(result, cursor, target);
+    inline for (0..Quotient.count) |index| {
+        appendConstant(result, cursor, Quotient.targets[index]);
     }
 }
 
@@ -2072,7 +2164,7 @@ fn buildBlocks(
                         block_id,
                     );
                 },
-                .none, .impossible => {},
+                .none, .impossible, .direct_alias => {},
             }
         }
     }
@@ -2085,6 +2177,7 @@ fn buildBlocks(
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
             if (!Plan.blockReachable(component_index, source.id)) continue;
             if (!expandsVoidReturn(Plan, component_index, source)) continue;
+            if (source.id != voidReturnOwnerBlock(Plan, component_index)) continue;
             const block_id = voidReturnBlockBase(
                 Plan,
                 component_index,
@@ -2255,6 +2348,18 @@ fn remapBlockTerminator(
                 source_block.id,
             ),
         ) } },
+        .direct_alias => return .{ .jump = .{ .target = @intCast(
+            failureBlockBase(
+                Plan,
+                component_index,
+                directFailureOwnerBlock(
+                    components,
+                    Plan.handlers,
+                    component_index,
+                    source_block.id,
+                ),
+            ),
+        ) } },
         .dynamic => return failureCallTerminator(
             Plan,
             schemas,
@@ -2404,10 +2509,11 @@ fn sharedFailureSelectBlock(
     comptime component_index: usize,
 ) cir.Block {
     const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    const Quotient = failureTargetQuotient(Map);
     const value_base = sharedFailureValueBase(Plan, component_index);
     const block_id = sharedFailureBlockBase(Plan, component_index);
     const constant_base = sharedFailureConstantBase(Plan, component_index);
-    const final_value = value_base + 4 * Map.targets.len - 2;
+    const final_value = value_base + 3 * Map.targets.len + Quotient.count - 2;
     const Static = struct {
         const parameters = [_]cir.ValueId{@intCast(value_base)};
         const tag_operands = [_]cir.ValueId{@intCast(value_base)};
@@ -2416,7 +2522,7 @@ fn sharedFailureSelectBlock(
             for (0..Map.targets.len - 1) |tag| {
                 result[tag] = .{
                     @intCast(value_base + 1),
-                    @intCast(value_base + 3 + 4 * tag),
+                    @intCast(value_base + 2 + Quotient.count + 3 * tag),
                 };
             }
             break :blk result;
@@ -2425,54 +2531,49 @@ fn sharedFailureSelectBlock(
             var result: [Map.targets.len - 1][3]cir.ValueId = undefined;
             for (0..Map.targets.len - 1) |tag| {
                 result[tag] = .{
-                    @intCast(value_base + 4 + 4 * tag),
-                    @intCast(value_base + 5 + 4 * tag),
+                    @intCast(value_base + 3 + Quotient.count + 3 * tag),
+                    @intCast(value_base + 2 + Quotient.source_to_target[tag]),
                     @intCast(if (tag == 0)
-                        value_base + 2
+                        value_base + 2 + Quotient.source_to_target[Map.targets.len - 1]
                     else
-                        value_base + 2 + 4 * tag),
+                        value_base + 1 + Quotient.count + 3 * tag),
                 };
             }
             break :blk result;
         };
         const instructions = blk: {
-            var result: [4 * Map.targets.len - 2]cir.Instruction = undefined;
+            var result: [3 * Map.targets.len + Quotient.count - 2]cir.Instruction = undefined;
             result[0] = .{
                 .kind = .pure,
                 .result = @intCast(value_base + 1),
                 .operands = &tag_operands,
                 .operation = .enum_to_u32,
             };
-            result[1] = .{
-                .kind = .constant,
-                .result = @intCast(value_base + 2),
-                .operation = .{ .constant = @intCast(
-                    constant_base + 2 * Map.targets.len - 2,
-                ) },
-            };
+            for (0..Quotient.count) |index| {
+                result[1 + index] = .{
+                    .kind = .constant,
+                    .result = @intCast(value_base + 2 + index),
+                    .operation = .{ .constant = @intCast(
+                        constant_base + Map.targets.len - 1 + index,
+                    ) },
+                };
+            }
             for (0..Map.targets.len - 1) |tag| {
-                const cursor = 2 + 4 * tag;
+                const cursor = 1 + Quotient.count + 3 * tag;
                 result[cursor] = .{
                     .kind = .constant,
-                    .result = @intCast(value_base + 3 + 4 * tag),
+                    .result = @intCast(value_base + 2 + Quotient.count + 3 * tag),
                     .operation = .{ .constant = @intCast(constant_base + tag) },
                 };
                 result[cursor + 1] = .{
                     .kind = .pure,
-                    .result = @intCast(value_base + 4 + 4 * tag),
+                    .result = @intCast(value_base + 3 + Quotient.count + 3 * tag),
                     .operands = &compare_operands[tag],
                     .operation = .integer_equal,
                 };
                 result[cursor + 2] = .{
-                    .kind = .constant,
-                    .result = @intCast(value_base + 5 + 4 * tag),
-                    .operation = .{ .constant = @intCast(
-                        constant_base + Map.targets.len - 1 + tag,
-                    ) },
-                };
-                result[cursor + 3] = .{
                     .kind = .pure,
-                    .result = @intCast(value_base + 6 + 4 * tag),
+                    .result = @intCast(value_base + 4 + Quotient.count + 3 * tag),
                     .operands = &select_operands[tag],
                     .operation = .select,
                 };
