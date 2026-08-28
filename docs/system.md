@@ -39,6 +39,10 @@ every reachable source-occurrence disposition and Failure-adapter layout before
 lowering.
 `System.residual_effects.items` is sized to the exact active residual count, so
 inactive declarations do not survive as public capacity or undefined slots.
+Bare Sites are distinguished from World binding wrappers by World-owned nominal
+binding kind, so unrelated Site declarations cannot acquire wrapper meaning.
+Distinct residual occurrences must also have distinct Boundary semantic
+identities; v1 rejects duplicate effective identities before BPI1 emission.
 
 Internal handlers require exact `Payload == Provider.InitialArgs` and
 `Resume == Provider.Result`. Provider Failure either equals the root Failure or
@@ -54,6 +58,16 @@ owners, not source occurrences or map cardinality.
 Each source component is independently admitted by Boundary before remapping;
 linker-generated unit and Failure adapters occupy separate reductions so
 source block instructions and authored Machine-v2 costs are preserved.
+When a provider uses a distinct Failure type, each block interns the mapped
+root-Failure targets required by its fallible instructions. Generated constant
+instructions make those targets available once per block, and evaluator
+semantics v2 appends them to each fallible instruction in Boundary role order.
+Instruction-originated failures therefore pass through the same declared total
+Failure morphism as explicit `fail` and `fail_value` terminals. The generated
+constants add only their exact minimum to the optional Machine-v2 compatibility
+cost; Process execution remains fuel-free.
+Already-linked Programs retain handler or morphism declarations and are rejected
+as source components; World v1 does not recursively relink a linked system.
 Unreachable effect declarations require no disposition and contribute no
 residual authority. Handler and morphism declarations behind those occurrences
 do not discover providers or enter the linked handler topology. Unreachable

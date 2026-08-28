@@ -10,6 +10,7 @@ const Facts = struct {
     source_constants: usize = 0,
     source_effects: usize = 0,
     unreachable_blocks: usize = 0,
+    instruction_failure_values: usize = 0,
     failure_values: usize = 0,
     failure_blocks: usize = 0,
     failure_functions: usize = 0,
@@ -114,6 +115,149 @@ fn failureTargetQuotientFor(comptime Map: type) struct {
     return .{ .targets = targets, .source_to_target = source_to_target, .count = count };
 }
 
+fn InstructionFailureTargetsFor(
+    comptime Failure: type,
+    comptime capacity: usize,
+) type {
+    return struct {
+        items: [capacity]Failure = undefined,
+        count: usize = 0,
+
+        fn add(self: *@This(), target: Failure) void {
+            inline for (0..self.count) |index| {
+                if (@intFromEnum(self.items[index]) == @intFromEnum(target)) {
+                    return;
+                }
+            }
+            self.items[self.count] = target;
+            self.count += 1;
+        }
+
+        fn indexOf(self: @This(), target: Failure) usize {
+            inline for (0..self.count) |index| {
+                if (@intFromEnum(self.items[index]) == @intFromEnum(target)) {
+                    return index;
+                }
+            }
+            unreachable;
+        }
+    };
+}
+
+fn instructionFailureCapacityFor(comptime block: boundary.ir.Block) usize {
+    var result: usize = 0;
+    inline for (block.instructions) |instruction| {
+        result += boundary.ir.mappedFailureOperandCount(instruction.operation);
+    }
+    return result;
+}
+
+fn mappedTargetForProof(comptime Map: type, comptime source_tag: u32) Map.TargetFailure {
+    inline for (Map.source_tags, Map.targets) |candidate, target| {
+        if (candidate == source_tag) return target;
+    }
+    unreachable;
+}
+
+fn instructionFailureTargetsForBlock(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime block: boundary.ir.Block,
+) InstructionFailureTargetsFor(
+    components.items[0].component().Failure,
+    instructionFailureCapacityFor(block),
+) {
+    const RootFailure = components.items[0].component().Failure;
+    var result: InstructionFailureTargetsFor(
+        RootFailure,
+        instructionFailureCapacityFor(block),
+    ) = .{};
+    const Map = failureMapFor(components, handlers, component_index);
+    if (Map == void) return result;
+    const Admission = boundary.componentAdmission(components.items[component_index]);
+    inline for (block.instructions) |instruction| {
+        const source_tags = Admission.instructionFailureTags(instruction);
+        inline for (source_tags) |source_tag| {
+            result.add(mappedTargetForProof(Map, source_tag));
+        }
+    }
+    return result;
+}
+
+fn componentInstructionFailureValueCountFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    var result: usize = 0;
+    inline for (components.items[component_index].component().control_ir.blocks) |block| {
+        result += instructionFailureTargetsForBlock(
+            components,
+            handlers,
+            component_index,
+            block,
+        ).count;
+    }
+    return result;
+}
+
+fn totalInstructionFailureValuesFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+) usize {
+    var result: usize = 0;
+    inline for (0..components.count) |index| {
+        result += componentInstructionFailureValueCountFor(
+            components,
+            handlers,
+            index,
+        );
+    }
+    return result;
+}
+
+fn instructionFailureValueBaseFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime block_id: boundary.ir.BlockId,
+) usize {
+    var result = sourceOffsets(components, components.count).values;
+    inline for (0..component_index) |index| {
+        result += componentInstructionFailureValueCountFor(
+            components,
+            handlers,
+            index,
+        );
+    }
+    inline for (components.items[component_index].component().control_ir.blocks) |block| {
+        if (block.id == block_id) return result;
+        result += instructionFailureTargetsForBlock(
+            components,
+            handlers,
+            component_index,
+            block,
+        ).count;
+    }
+    unreachable;
+}
+
+fn instructionFailureConstantBaseFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime block_id: boundary.ir.BlockId,
+) usize {
+    return instructionFailureValueBaseFor(
+        components,
+        handlers,
+        component_index,
+        block_id,
+    ) - sourceOffsets(components, components.count).values +
+        sourceOffsets(components, components.count).constants;
+}
+
 fn addFailureFacts(
     facts: *Facts,
     comptime Map: type,
@@ -160,6 +304,12 @@ fn deriveSourceFacts(comptime spec: anytype) Facts {
         var dynamic_failure_count: usize = 0;
         var void_return_found = false;
         inline for (Body.control_ir.blocks) |block| {
+            facts.instruction_failure_values += instructionFailureTargetsForBlock(
+                components,
+                spec.handlers,
+                component_index,
+                block,
+            ).count;
             if (!reachable.contains(block.id)) {
                 facts.unreachable_blocks += 1;
                 continue;
@@ -642,7 +792,8 @@ fn failureValueBaseFor(
     comptime component_index: usize,
     comptime block_id: boundary.ir.BlockId,
 ) usize {
-    var result = sourceOffsets(components, components.count).values;
+    var result = sourceOffsets(components, components.count).values +
+        totalInstructionFailureValuesFor(components, handlers);
     inline for (0..component_index) |index| {
         result += componentFailureValueCount(components, handlers, index);
     }
@@ -661,7 +812,8 @@ fn failureConstantBaseFor(
     comptime component_index: usize,
     comptime block_id: boundary.ir.BlockId,
 ) usize {
-    var result = sourceOffsets(components, components.count).constants;
+    var result = sourceOffsets(components, components.count).constants +
+        totalInstructionFailureValuesFor(components, handlers);
     inline for (0..component_index) |index| {
         result += componentFailureConstantCount(components, handlers, index);
     }
@@ -712,6 +864,7 @@ fn sharedFailureValueBaseFor(
     comptime component_index: usize,
 ) usize {
     var result = sourceOffsets(components, components.count).values +
+        totalInstructionFailureValuesFor(components, handlers) +
         totalFailureValuesFor(components, handlers);
     inline for (0..component_index) |index| {
         result += componentSharedFailureValueCountFor(components, handlers, index);
@@ -725,6 +878,7 @@ fn sharedFailureConstantBaseFor(
     comptime component_index: usize,
 ) usize {
     var result = sourceOffsets(components, components.count).constants +
+        totalInstructionFailureValuesFor(components, handlers) +
         totalFailureConstantsFor(components, handlers);
     inline for (0..component_index) |index| {
         result += componentSharedFailureConstantCountFor(components, handlers, index);
@@ -808,8 +962,11 @@ fn assertInstructionMapping(
         @as(boundary.ir.ValueId, @intCast(value_offset + source.result)),
         linked.result,
     );
-    try std.testing.expectEqual(source.operands.len, linked.operands.len);
-    inline for (source.operands, linked.operands) |source_operand, linked_operand| {
+    try std.testing.expect(source.operands.len <= linked.operands.len);
+    inline for (
+        source.operands,
+        linked.operands[0..source.operands.len],
+    ) |source_operand, linked_operand| {
         try std.testing.expectEqual(
             @as(boundary.ir.ValueId, @intCast(value_offset + source_operand)),
             linked_operand,
@@ -1442,6 +1599,17 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
         inline for (Body.control_ir.blocks) |source| {
             const linked_id = offsets.blocks + source.id;
             const linked = Linked.control_ir.blocks[linked_id];
+            const Map = comptime failureMapFor(
+                components,
+                spec.handlers,
+                component_index,
+            );
+            const targets = comptime instructionFailureTargetsForBlock(
+                components,
+                spec.handlers,
+                component_index,
+                source,
+            );
             try std.testing.expectEqual(
                 @as(boundary.ir.BlockId, @intCast(linked_id)),
                 linked.id,
@@ -1453,7 +1621,10 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
                 linked.function_id,
             );
             try std.testing.expectEqual(source.role, linked.role);
-            try std.testing.expectEqual(source.instructions.len, linked.instructions.len);
+            try std.testing.expectEqual(
+                source.instructions.len + targets.count,
+                linked.instructions.len,
+            );
             try std.testing.expectEqual(source.parameters.len, linked.parameters.len);
             inline for (source.parameters, linked.parameters) |parameter, linked_parameter| {
                 try std.testing.expectEqual(
@@ -1461,9 +1632,44 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
                     linked_parameter,
                 );
             }
+            inline for (0..targets.count) |index| {
+                const instruction = linked.instructions[index];
+                try std.testing.expectEqual(
+                    boundary.ir.InstructionKind.constant,
+                    instruction.kind,
+                );
+                try std.testing.expectEqual(
+                    @as(boundary.ir.ValueId, @intCast(
+                        instructionFailureValueBaseFor(
+                            components,
+                            spec.handlers,
+                            component_index,
+                            source.id,
+                        ) + index,
+                    )),
+                    instruction.result,
+                );
+                const constant_id = comptime instructionFailureConstantBaseFor(
+                    components,
+                    spec.handlers,
+                    component_index,
+                    source.id,
+                ) + index;
+                try std.testing.expectEqual(
+                    @as(u16, @intCast(constant_id)),
+                    instruction.operation.constant,
+                );
+                try std.testing.expectEqual(
+                    targets.items[index],
+                    @field(
+                        Linked.constants,
+                        std.fmt.comptimePrint("{d}", .{constant_id}),
+                    ),
+                );
+            }
             inline for (
                 source.instructions,
-                linked.instructions,
+                linked.instructions[targets.count..],
             ) |instruction, linked_instruction| {
                 try assertInstructionMapping(
                     instruction,
@@ -1471,8 +1677,35 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
                     offsets.values,
                     offsets.constants,
                 );
+                const source_tags = comptime Program.componentAdmission()
+                    .instructionFailureTags(instruction);
+                const mapped_count = if (Map == void) 0 else source_tags.len;
+                try std.testing.expectEqual(
+                    instruction.operands.len + mapped_count,
+                    linked_instruction.operands.len,
+                );
+                if (Map != void) {
+                    inline for (source_tags, 0..) |source_tag, index| {
+                        const target = comptime mappedTargetForProof(
+                            Map,
+                            source_tag,
+                        );
+                        try std.testing.expectEqual(
+                            @as(boundary.ir.ValueId, @intCast(
+                                instructionFailureValueBaseFor(
+                                    components,
+                                    spec.handlers,
+                                    component_index,
+                                    source.id,
+                                ) + comptime targets.indexOf(target),
+                            )),
+                            linked_instruction.operands[
+                                instruction.operands.len + index
+                            ],
+                        );
+                    }
+                }
             }
-            const Map = failureMapFor(components, spec.handlers, component_index);
             const reachable = comptime Program.componentAdmission()
                 .reachability.contains(source.id);
             try assertTerminatorMapping(
@@ -1538,7 +1771,8 @@ fn assertTopology(comptime spec: anytype, comptime System: type) !void {
     );
     try std.testing.expectEqual(source.component_count, System.component_count);
     try std.testing.expectEqual(
-        source.source_values + source.failure_values + source.void_returns +
+        source.source_values + source.instruction_failure_values +
+            source.failure_values + source.void_returns +
             2 * source.void_wrappers,
         Linked.control_ir.value_types.len,
     );
@@ -1552,7 +1786,8 @@ fn assertTopology(comptime spec: anytype, comptime System: type) !void {
         Linked.control_ir.functions.len,
     );
     try std.testing.expectEqual(
-        source.source_constants + source.failure_constants + source.void_returns,
+        source.source_constants + source.instruction_failure_values +
+            source.failure_constants + source.void_returns,
         Linked.constants.len,
     );
     try std.testing.expectEqual(source.source_effects, Linked.effect_sites.len);
@@ -1578,6 +1813,13 @@ test "source-derived topology closes void wrapper and unreachable syntax" {
 
 test "source-derived topology remaps provider effect sites" {
     try assertTopology(fixtures.GenericSpec, fixtures.System);
+}
+
+test "source-derived topology maps provider instruction failures" {
+    try assertTopology(
+        fixtures.MappedInstructionSpec,
+        fixtures.MappedInstructionSystem,
+    );
 }
 
 test "source-derived topology separates external source and target roles" {

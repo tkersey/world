@@ -423,6 +423,46 @@ fn validateSystem(comptime Plan: type) void {
         }
     }
     validateExternalUsage(Plan);
+    validateResidualIdentities(Plan);
+}
+
+fn validateResidualIdentities(comptime Plan: type) void {
+    var identities: [activeResidualCount(Plan)][]const u8 = undefined;
+    var count: usize = 0;
+    inline for (0..Plan.components.count) |component_index| {
+        const Program = Plan.components.items[component_index];
+        inline for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
+            switch (Plan.siteDisposition(component_index, site_ordinal)) {
+                .inactive, .handler => {},
+                .morphism => appendResidualIdentity(
+                    &identities,
+                    &count,
+                    morphismTargetFor(Plan.morphisms, Program, site_ordinal),
+                ),
+                .external => appendResidualIdentity(
+                    &identities,
+                    &count,
+                    Site,
+                ),
+            }
+        }
+    }
+}
+
+fn appendResidualIdentity(
+    identities: anytype,
+    count: *usize,
+    comptime Site: type,
+) void {
+    inline for (0..count.*) |index| {
+        if (std.mem.eql(u8, identities.*[index], Site.semantic_identity)) {
+            @compileError(
+                "World system residual effects require unique semantic identities",
+            );
+        }
+    }
+    identities.*[count.*] = Site.semantic_identity;
+    count.* += 1;
 }
 
 fn validateExternalUsage(comptime Plan: type) void {
@@ -551,6 +591,83 @@ fn failureTargetQuotient(comptime Map: type) FailureTargetQuotient(Map) {
             result.count += 1;
         }
         result.source_to_target[source_index] = target_index.?;
+    }
+    return result;
+}
+
+fn blockInstructionFailureCapacity(comptime block: cir.Block) usize {
+    var result: usize = 0;
+    inline for (block.instructions) |instruction| {
+        result += cir.mappedFailureOperandCount(instruction.operation);
+    }
+    return result;
+}
+
+fn InstructionFailureTargets(
+    comptime Failure: type,
+    comptime capacity: usize,
+) type {
+    return struct {
+        items: [capacity]Failure = undefined,
+        count: usize = 0,
+
+        fn add(self: *@This(), target: Failure) void {
+            inline for (0..self.count) |index| {
+                if (@intFromEnum(self.items[index]) == @intFromEnum(target)) {
+                    return;
+                }
+            }
+            self.items[self.count] = target;
+            self.count += 1;
+        }
+
+        fn indexOf(self: @This(), target: Failure) usize {
+            inline for (0..self.count) |index| {
+                if (@intFromEnum(self.items[index]) == @intFromEnum(target)) {
+                    return index;
+                }
+            }
+            unreachable;
+        }
+    };
+}
+
+fn blockInstructionFailureTargets(
+    comptime Plan: type,
+    comptime component_index: usize,
+    comptime block: cir.Block,
+) InstructionFailureTargets(
+    body(Plan.components.items[0]).Failure,
+    blockInstructionFailureCapacity(block),
+) {
+    const RootFailure = body(Plan.components.items[0]).Failure;
+    var result: InstructionFailureTargets(
+        RootFailure,
+        blockInstructionFailureCapacity(block),
+    ) = .{};
+    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    if (Map == void) return result;
+    const Admission = Plan.components.admissionAt(component_index);
+    inline for (block.instructions) |instruction| {
+        const source_tags = Admission.instructionFailureTags(instruction);
+        inline for (source_tags) |source_tag| {
+            result.add(mappedFailureTarget(Map, source_tag));
+        }
+    }
+    return result;
+}
+
+fn componentInstructionFailureValues(
+    comptime Plan: type,
+    comptime component_index: usize,
+) usize {
+    var result: usize = 0;
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
+        result += blockInstructionFailureTargets(
+            Plan,
+            component_index,
+            block,
+        ).count;
     }
     return result;
 }
@@ -827,6 +944,7 @@ fn precedingVoidWrappers(
 
 fn requireHandler(comptime Handler: type) void {
     if (!@hasDecl(Handler, "binding_kind") or
+        @TypeOf(Handler.binding_kind) != BindingKind or
         Handler.binding_kind != .handler)
     {
         @compileError("world.system handlers contains a non-handler binding");
@@ -835,6 +953,7 @@ fn requireHandler(comptime Handler: type) void {
 
 fn requireMorphism(comptime Morphism: type) void {
     if (!@hasDecl(Morphism, "binding_kind") or
+        @TypeOf(Morphism.binding_kind) != BindingKind or
         Morphism.binding_kind != .morphism)
     {
         @compileError("world.system morphisms contains a non-morphism binding");
@@ -978,6 +1097,7 @@ fn validateExternalDeclarations(
 
 fn isExternalBinding(comptime External: type) bool {
     return @hasDecl(External, "binding_kind") and
+        @TypeOf(External.binding_kind) == BindingKind and
         External.binding_kind == .external;
 }
 
@@ -1190,7 +1310,7 @@ fn LinkedBody(
     const linked_constants = comptime buildConstants(Plan);
     const linked_functions = comptime buildFunctions(Plan, schema_set);
     const blocks = comptime buildBlocks(Plan, schema_set);
-    const linked_block_costs = comptime buildBlockCosts(components, blocks);
+    const linked_block_costs = comptime buildBlockCosts(Plan, blocks);
     const linked_effect_sites = comptime buildEffectSites(components);
     const linked_effect_handlers = comptime buildEffectHandlers(Plan);
     const linked_effect_morphisms = comptime buildEffectMorphisms(components, morphisms);
@@ -1410,6 +1530,70 @@ fn totalExtraConstants(comptime Plan: type) usize {
     return result;
 }
 
+fn totalInstructionFailureValues(comptime Plan: type) usize {
+    var result: usize = 0;
+    inline for (0..Plan.components.count) |index| {
+        result += componentInstructionFailureValues(Plan, index);
+    }
+    return result;
+}
+
+fn precedingInstructionFailureValues(
+    comptime Plan: type,
+    comptime component_index: usize,
+) usize {
+    var result: usize = 0;
+    inline for (0..component_index) |index| {
+        result += componentInstructionFailureValues(Plan, index);
+    }
+    return result;
+}
+
+fn precedingInstructionFailureValuesInComponent(
+    comptime Plan: type,
+    comptime component_index: usize,
+    comptime block_id: cir.BlockId,
+) usize {
+    var result: usize = 0;
+    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
+        if (block.id == block_id) return result;
+        result += blockInstructionFailureTargets(
+            Plan,
+            component_index,
+            block,
+        ).count;
+    }
+    unreachable;
+}
+
+fn instructionFailureValueBase(
+    comptime Plan: type,
+    comptime component_index: usize,
+    comptime block_id: cir.BlockId,
+) usize {
+    return totalValues(Plan.components) +
+        precedingInstructionFailureValues(Plan, component_index) +
+        precedingInstructionFailureValuesInComponent(
+            Plan,
+            component_index,
+            block_id,
+        );
+}
+
+fn instructionFailureConstantBase(
+    comptime Plan: type,
+    comptime component_index: usize,
+    comptime block_id: cir.BlockId,
+) usize {
+    return totalConstants(Plan.components) +
+        precedingInstructionFailureValues(Plan, component_index) +
+        precedingInstructionFailureValuesInComponent(
+            Plan,
+            component_index,
+            block_id,
+        );
+}
+
 fn totalSharedFailureValues(comptime Plan: type) usize {
     var result: usize = 0;
     inline for (0..Plan.components.count) |index| {
@@ -1444,6 +1628,7 @@ fn totalSharedFailureFunctions(comptime Plan: type) usize {
 
 fn linkedTotalValues(comptime Plan: type) usize {
     return totalValues(Plan.components) +
+        totalInstructionFailureValues(Plan) +
         totalExtraValues(Plan) +
         totalSharedFailureValues(Plan) +
         totalVoidReturns(Plan) +
@@ -1466,6 +1651,7 @@ fn linkedTotalFunctions(comptime Plan: type) usize {
 
 fn linkedTotalConstants(comptime Plan: type) usize {
     return totalConstants(Plan.components) +
+        totalInstructionFailureValues(Plan) +
         totalExtraConstants(Plan) +
         totalSharedFailureConstants(Plan) +
         totalVoidReturns(Plan);
@@ -1596,6 +1782,7 @@ fn failureValueBase(
     comptime block_id: cir.BlockId,
 ) usize {
     return totalValues(Plan.components) +
+        totalInstructionFailureValues(Plan) +
         precedingExtraValues(Plan, component_index) +
         precedingFailureValuesInComponent(
             Plan,
@@ -1624,6 +1811,7 @@ fn failureConstantBase(
     comptime block_id: cir.BlockId,
 ) usize {
     return totalConstants(Plan.components) +
+        totalInstructionFailureValues(Plan) +
         precedingExtraConstants(Plan, component_index) +
         precedingFailureConstantsInComponent(
             Plan,
@@ -1637,6 +1825,7 @@ fn sharedFailureValueBase(
     comptime component_index: usize,
 ) usize {
     return totalValues(Plan.components) +
+        totalInstructionFailureValues(Plan) +
         totalExtraValues(Plan) +
         precedingSharedFailureValues(Plan, component_index);
 }
@@ -1655,6 +1844,7 @@ fn sharedFailureConstantBase(
     comptime component_index: usize,
 ) usize {
     return totalConstants(Plan.components) +
+        totalInstructionFailureValues(Plan) +
         totalExtraConstants(Plan) +
         precedingSharedFailureConstants(Plan, component_index);
 }
@@ -1673,6 +1863,7 @@ fn voidReturnValueBase(
     comptime block_id: cir.BlockId,
 ) usize {
     return totalValues(Plan.components) +
+        totalInstructionFailureValues(Plan) +
         totalExtraValues(Plan) +
         totalSharedFailureValues(Plan) +
         precedingVoidReturns(Plan, component_index) +
@@ -1685,6 +1876,7 @@ fn voidReturnConstantBase(
     comptime block_id: cir.BlockId,
 ) usize {
     return totalConstants(Plan.components) +
+        totalInstructionFailureValues(Plan) +
         totalExtraConstants(Plan) +
         totalSharedFailureConstants(Plan) +
         precedingVoidReturns(Plan, component_index) +
@@ -1708,6 +1900,7 @@ fn voidWrapperValueBase(
     comptime component_index: usize,
 ) usize {
     return totalValues(Plan.components) +
+        totalInstructionFailureValues(Plan) +
         totalExtraValues(Plan) +
         totalSharedFailureValues(Plan) +
         totalVoidReturns(Plan) +
@@ -1765,6 +1958,22 @@ fn buildValueTypes(
                 value_type,
             );
             cursor += 1;
+        }
+    }
+    const root_failure_type: cir.ValueType = .{ .schema = schemaIndex(
+        schemas,
+        body(components.items[0]).Failure,
+    ) };
+    inline for (0..components.count) |component_index| {
+        inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+            const targets = blockInstructionFailureTargets(
+                Plan,
+                component_index,
+                block,
+            );
+            inline for (0..targets.count) |_| {
+                appendValueType(&result, &cursor, root_failure_type);
+            }
         }
     }
     inline for (0..components.count) |component_index| {
@@ -1890,6 +2099,19 @@ fn constantTypes(comptime Plan: type) [linkedTotalConstants(Plan)]type {
         }
     }
     inline for (0..components.count) |component_index| {
+        inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+            const targets = blockInstructionFailureTargets(
+                Plan,
+                component_index,
+                block,
+            );
+            inline for (0..targets.count) |_| {
+                result[cursor] = body(components.items[0]).Failure;
+                cursor += 1;
+            }
+        }
+    }
+    inline for (0..components.count) |component_index| {
         const Map = failureMapFor(components, Plan.handlers, component_index);
         if (Map == void) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
@@ -1954,6 +2176,18 @@ fn buildConstants(comptime Plan: type) Constants(Plan) {
                     std.fmt.comptimePrint("{d}", .{cursor}),
                 ) = constant;
                 cursor += 1;
+            }
+        }
+    }
+    inline for (0..components.count) |component_index| {
+        inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+            const targets = blockInstructionFailureTargets(
+                Plan,
+                component_index,
+                block,
+            );
+            inline for (0..targets.count) |index| {
+                appendConstant(&result, &cursor, targets.items[index]);
             }
         }
     }
@@ -2201,9 +2435,10 @@ fn buildBlocks(
 }
 
 fn buildBlockCosts(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime blocks: anytype,
 ) [blocks.len]u64 {
+    const components = Plan.components;
     var result: [blocks.len]u64 = undefined;
     inline for (blocks, 0..) |block, index| {
         result[index] = @intCast(block.instructions.len + 1);
@@ -2214,7 +2449,12 @@ fn buildBlockCosts(
         const Admission = components.admissionAt(component_index);
         inline for (Body.control_ir.blocks) |block| {
             const linked_id = blockOffset(components, component_index) + block.id;
-            result[linked_id] = Admission.effective_block_costs[block.id];
+            result[linked_id] = Admission.effective_block_costs[block.id] +
+                blockInstructionFailureTargets(
+                    Plan,
+                    component_index,
+                    block,
+                ).count;
         }
     }
     return result;
@@ -2234,7 +2474,7 @@ fn remapBlock(
             source,
         );
         const instructions = remapBlockInstructions(
-            components,
+            Plan,
             component_index,
             source,
         );
@@ -2293,15 +2533,46 @@ fn isVoidReturn(
 }
 
 fn remapBlockInstructions(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
     comptime source: cir.Block,
-) [source.instructions.len]cir.Instruction {
-    return remapInstructions(
-        components,
+) [
+    source.instructions.len + blockInstructionFailureTargets(
+        Plan,
         component_index,
-        source.instructions,
+        source,
+    ).count
+]cir.Instruction {
+    const targets = blockInstructionFailureTargets(
+        Plan,
+        component_index,
+        source,
     );
+    var result: [source.instructions.len + targets.count]cir.Instruction = undefined;
+    inline for (0..targets.count) |index| {
+        result[index] = .{
+            .kind = .constant,
+            .result = @intCast(instructionFailureValueBase(
+                Plan,
+                component_index,
+                source.id,
+            ) + index),
+            .operation = .{ .constant = @intCast(instructionFailureConstantBase(
+                Plan,
+                component_index,
+                source.id,
+            ) + index) },
+        };
+    }
+    inline for (source.instructions, 0..) |instruction, index| {
+        result[targets.count + index] = remapInstruction(
+            Plan,
+            component_index,
+            source,
+            instruction,
+        );
+    }
+    return result;
 }
 
 fn remapBlockTerminator(
@@ -2690,30 +2961,43 @@ fn remapValueIds(
     return result;
 }
 
-fn remapInstructions(
-    comptime components: anytype,
-    comptime component_index: usize,
-    comptime source: []const cir.Instruction,
-) [source.len]cir.Instruction {
-    var result: [source.len]cir.Instruction = undefined;
-    inline for (source, 0..) |instruction, index| {
-        result[index] = remapInstruction(
-            components,
-            component_index,
-            instruction,
-        );
-    }
-    return result;
-}
-
 fn remapInstruction(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime component_index: usize,
+    comptime source_block: cir.Block,
     comptime source: cir.Instruction,
 ) cir.Instruction {
+    const components = Plan.components;
     const value_offset = valueOffset(components, component_index);
+    const Map = failureMapFor(components, Plan.handlers, component_index);
+    const Admission = components.admissionAt(component_index);
+    const source_failure_tags = Admission.instructionFailureTags(source);
+    const mapped_count = if (Map == void) 0 else source_failure_tags.len;
+    const targets = blockInstructionFailureTargets(
+        Plan,
+        component_index,
+        source_block,
+    );
     const Static = struct {
-        const operands = remapValueIds(source.operands, value_offset);
+        const operands = blk: {
+            var result: [source.operands.len + mapped_count]cir.ValueId = undefined;
+            for (source.operands, 0..) |operand, index| {
+                result[index] = @intCast(value_offset + operand);
+            }
+            if (Map != void) {
+                for (source_failure_tags, 0..) |source_tag, index| {
+                    const target = mappedFailureTarget(Map, source_tag);
+                    result[source.operands.len + index] = @intCast(
+                        instructionFailureValueBase(
+                            Plan,
+                            component_index,
+                            source_block.id,
+                        ) + targets.indexOf(target),
+                    );
+                }
+            }
+            break :blk result;
+        };
     };
     var operation = source.operation;
     switch (operation) {

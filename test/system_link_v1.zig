@@ -284,6 +284,147 @@ test "world.system BPI1 runs through one-reduction Process semantics" {
     );
 }
 
+const MappedInstructionPolicy = boundary.effect.site(
+    0,
+    "generic.mapped-instruction-policy.v1",
+    u8,
+    u8,
+);
+const MappedInstructionRootFailure = enum { mapped };
+const MappedInstructionProviderFailure = enum { arithmetic_overflow };
+const mapped_instruction_root_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{ .target = 1, .arguments = &resume_arguments },
+            .resume_type = .{ .scalar = .u8 },
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .return_value = 1 },
+    },
+};
+const MappedInstructionRootBody = struct {
+    pub const InitialArgs = u8;
+    pub const Result = u8;
+    pub const Failure = MappedInstructionRootFailure;
+    pub const effect_sites = .{MappedInstructionPolicy};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "mapped-instruction-root",
+        .value_types = &.{ .{ .scalar = .u8 }, .{ .scalar = .u8 } },
+        .blocks = &mapped_instruction_root_blocks,
+        .entry = 0,
+        .result_type = .{ .scalar = .u8 },
+    };
+};
+const mapped_instruction_provider_blocks = [_]boundary.ir.Block{.{
+    .id = 0,
+    .parameters = &.{0},
+    .instructions = &.{
+        .{
+            .kind = .constant,
+            .result = 1,
+            .operation = .{ .constant = 0 },
+        },
+        .{
+            .kind = .pure,
+            .result = 2,
+            .operands = &.{ 0, 1 },
+            .operation = .integer_add,
+        },
+    },
+    .terminator = .{ .return_value = 2 },
+}};
+const MappedInstructionProviderBody = struct {
+    pub const InitialArgs = u8;
+    pub const Result = u8;
+    pub const Failure = MappedInstructionProviderFailure;
+    pub const constants = .{@as(u8, 1)};
+    pub const effect_sites = .{};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "mapped-instruction-provider",
+        .value_types = &.{
+            .{ .scalar = .u8 },
+            .{ .scalar = .u8 },
+            .{ .scalar = .u8 },
+        },
+        .blocks = &mapped_instruction_provider_blocks,
+        .entry = 0,
+        .result_type = .{ .scalar = .u8 },
+    };
+};
+const MappedInstructionRoot = boundary.program(
+    "mapped-instruction-root",
+    MappedInstructionRootBody,
+);
+const MappedInstructionProvider = boundary.program(
+    "mapped-instruction-provider",
+    MappedInstructionProviderBody,
+);
+pub const MappedInstructionSpec = .{
+    .name = "mapped-instruction-system",
+    .root = MappedInstructionRoot,
+    .handlers = .{world.systemHandle(.{
+        .consumer = MappedInstructionRoot,
+        .site = MappedInstructionPolicy,
+        .provider = MappedInstructionProvider,
+        .failure_morphism = world.failureMorphism(
+            MappedInstructionProviderFailure,
+            MappedInstructionRootFailure,
+            .{MappedInstructionRootFailure.mapped},
+        ),
+    })},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const MappedInstructionSystem = world.system(MappedInstructionSpec);
+
+test "world.system maps provider instruction failures inside ordinary BPI1" {
+    const Image = MappedInstructionSystem.Program.image();
+    try std.testing.expectEqual(
+        boundary.image.evaluator_semantics_v2,
+        Image.evaluator_semantics_version,
+    );
+    const Storage = boundary.process_v1.CapacityStorage(.{
+        .input = 4096,
+        .output = 4096,
+        .state = 4096,
+        .value = 4096,
+        .request = 4096,
+        .environment = 4096,
+        .scratch = 64 * 1024,
+    });
+    var first_storage: Storage = .{};
+    var second_storage: Storage = .{};
+    var first_workspace: boundary.image.ValidationWorkspace = .{};
+    var second_workspace: boundary.image.ValidationWorkspace = .{};
+    const first = try first_storage.advance(
+        &Image.bytes,
+        .{ .initial_args = &.{std.math.maxInt(u8)} },
+        null,
+        &first_workspace,
+    );
+    const state = first.progressed;
+    const second = try second_storage.advance(
+        &Image.bytes,
+        .{ .process_state = state },
+        null,
+        &second_workspace,
+    );
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(MappedInstructionRootFailure.mapped)),
+        std.mem.readInt(u32, second.authored_failure[0..4], .little),
+    );
+}
+
 pub const MorphSource = boundary.effect.site(
     0,
     "generic.morph-source.v1",
@@ -1397,6 +1538,12 @@ const DuplicateTarget = boundary.effect.site(
     u32,
     u32,
 );
+const DuplicateTargetB = boundary.effect.site(
+    0,
+    "generic.duplicate-target-b.v1",
+    u32,
+    u32,
+);
 const duplicate_morph_blocks = [_]boundary.ir.Block{
     .{
         .id = 0,
@@ -1463,10 +1610,10 @@ const DuplicateMorphSystem = world.system(.{
         world.systemMorphism(.{
             .consumer = DuplicateMorphProgram,
             .site = DuplicateMorphB,
-            .target = DuplicateTarget,
+            .target = DuplicateTargetB,
         }),
     },
-    .external = .{DuplicateTarget},
+    .external = .{ DuplicateTarget, DuplicateTargetB },
 });
 
 test "world.system retains every reachable residual source-site occurrence" {
@@ -1483,10 +1630,69 @@ test "world.system retains every reachable residual source-site occurrence" {
     );
     try expectResidualSite(
         DuplicateMorphSystem.residual_effects.items[1],
-        DuplicateTarget,
+        DuplicateTargetB,
         1,
     );
     try std.testing.expectEqual(@as(usize, 2), DuplicateMachine.EffectRow.operation_site_count);
+}
+
+const CollidingExternalSite = struct {
+    pub const id: u32 = 0;
+    pub const semantic_identity = "generic.colliding-external-site.v1";
+    pub const Payload = u32;
+    pub const Resume = u32;
+    pub const binding_kind = enum { external }.external;
+};
+const colliding_external_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{ .target = 1, .arguments = &resume_arguments },
+            .resume_type = u32_type,
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .return_value = 1 },
+    },
+};
+const CollidingExternalBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{CollidingExternalSite};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "colliding-external-site",
+        .value_types = &.{ u32_type, u32_type },
+        .blocks = &colliding_external_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const CollidingExternalProgram = boundary.program(
+    "colliding-external-site",
+    CollidingExternalBody,
+);
+const CollidingExternalSystem = world.system(.{
+    .name = "colliding-external-site",
+    .root = CollidingExternalProgram,
+    .handlers = .{},
+    .morphisms = .{},
+    .external = .{CollidingExternalSite},
+});
+
+test "world.system bare Site shorthand ignores unrelated binding_kind declarations" {
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        CollidingExternalSystem.residual_effects.count,
+    );
+    _ = CollidingExternalSystem.Program.image();
 }
 
 const OrderPolicyA = boundary.effect.site(
