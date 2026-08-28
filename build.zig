@@ -545,8 +545,10 @@ pub fn build(b: *std.Build) void {
     const surface_negative_step = b.step("check-world-public-surface-negative", "Prove the public-surface checker rejects an injected legacy declaration.");
     surface_negative_step.dependOn(&surface_negative_gate.step);
     const source_archive_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_source_archive.mjs" });
+    const source_archive_negative_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_source_archive.mjs", "--negative-self-test" });
     const source_archive_step = b.step("check-world-source-archive", "Build and inspect the normalized World source archive against the fixed baseline.");
     source_archive_step.dependOn(&source_archive_gate.step);
+    source_archive_step.dependOn(&source_archive_negative_gate.step);
     const lint_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_lint.mjs", "--zig" });
     lint_gate.addArg(b.graph.zig_exe);
     if (b.args) |args| lint_gate.addArgs(args);

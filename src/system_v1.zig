@@ -627,7 +627,7 @@ fn componentSharedFailureValues(
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
     const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
-    return 3 * Map.targets.len;
+    return 4 * Map.targets.len - 1;
 }
 
 fn componentSharedFailureBlocks(
@@ -635,15 +635,16 @@ fn componentSharedFailureBlocks(
     comptime component_index: usize,
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
-    return 2 * Map.targets.len - 1;
+    return componentSharedFailureCount(Plan, component_index);
 }
 
 fn componentSharedFailureConstants(
     comptime Plan: type,
     comptime component_index: usize,
 ) usize {
-    return componentSharedFailureBlocks(Plan, component_index);
+    if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
+    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    return 2 * Map.targets.len - 1;
 }
 
 fn componentVoidReturnCount(
@@ -1773,11 +1774,11 @@ fn appendSharedFailureValueTypes(
     ) };
     appendValueType(result, cursor, source_type);
     appendValueType(result, cursor, .{ .scalar = .u32 });
+    appendValueType(result, cursor, target_type);
     inline for (0..Map.targets.len - 1) |_| {
         appendValueType(result, cursor, .{ .scalar = .u32 });
         appendValueType(result, cursor, .{ .scalar = .boolean });
-    }
-    inline for (0..Map.targets.len) |_| {
+        appendValueType(result, cursor, target_type);
         appendValueType(result, cursor, target_type);
     }
 }
@@ -2077,23 +2078,8 @@ fn buildBlocks(
     }
     inline for (0..components.count) |component_index| {
         if (componentSharedFailureCount(Plan, component_index) == 0) continue;
-        const Map = failureMapFor(components, Plan.handlers, component_index);
         const block_base = sharedFailureBlockBase(Plan, component_index);
-        inline for (0..Map.targets.len - 1) |tag| {
-            result[block_base + tag] = sharedFailureCheckBlock(
-                Plan,
-                component_index,
-                tag,
-            );
-        }
-        const leaf_base = block_base + Map.targets.len - 1;
-        inline for (0..Map.targets.len) |tag| {
-            result[leaf_base + tag] = sharedFailureLeafBlock(
-                Plan,
-                component_index,
-                tag,
-            );
-        }
+        result[block_base] = sharedFailureSelectBlock(Plan, component_index);
     }
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
@@ -2413,106 +2399,94 @@ fn failureContinuationBlock(
     };
 }
 
-fn sharedFailureCheckBlock(
+fn sharedFailureSelectBlock(
     comptime Plan: type,
     comptime component_index: usize,
-    comptime tag: usize,
 ) cir.Block {
     const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     const value_base = sharedFailureValueBase(Plan, component_index);
-    const block_base = sharedFailureBlockBase(Plan, component_index);
-    const leaf_base = block_base + Map.targets.len - 1;
-    const constant_value = value_base + 2 + 2 * tag;
-    const condition_value = constant_value + 1;
+    const block_id = sharedFailureBlockBase(Plan, component_index);
+    const constant_base = sharedFailureConstantBase(Plan, component_index);
+    const final_value = value_base + 4 * Map.targets.len - 2;
     const Static = struct {
         const parameters = [_]cir.ValueId{@intCast(value_base)};
         const tag_operands = [_]cir.ValueId{@intCast(value_base)};
-        const compare_operands = [_]cir.ValueId{
-            @intCast(value_base + 1),
-            @intCast(constant_value),
+        const compare_operands = blk: {
+            var result: [Map.targets.len - 1][2]cir.ValueId = undefined;
+            for (0..Map.targets.len - 1) |tag| {
+                result[tag] = .{
+                    @intCast(value_base + 1),
+                    @intCast(value_base + 3 + 4 * tag),
+                };
+            }
+            break :blk result;
         };
-        const entry_instructions = [_]cir.Instruction{
-            .{
+        const select_operands = blk: {
+            var result: [Map.targets.len - 1][3]cir.ValueId = undefined;
+            for (0..Map.targets.len - 1) |tag| {
+                result[tag] = .{
+                    @intCast(value_base + 4 + 4 * tag),
+                    @intCast(value_base + 5 + 4 * tag),
+                    @intCast(if (tag == 0)
+                        value_base + 2
+                    else
+                        value_base + 2 + 4 * tag),
+                };
+            }
+            break :blk result;
+        };
+        const instructions = blk: {
+            var result: [4 * Map.targets.len - 2]cir.Instruction = undefined;
+            result[0] = .{
                 .kind = .pure,
                 .result = @intCast(value_base + 1),
                 .operands = &tag_operands,
                 .operation = .enum_to_u32,
-            },
-            .{
+            };
+            result[1] = .{
                 .kind = .constant,
-                .result = @intCast(constant_value),
+                .result = @intCast(value_base + 2),
                 .operation = .{ .constant = @intCast(
-                    sharedFailureConstantBase(Plan, component_index) + tag,
+                    constant_base + 2 * Map.targets.len - 2,
                 ) },
-            },
-            .{
-                .kind = .pure,
-                .result = @intCast(condition_value),
-                .operands = &compare_operands,
-                .operation = .integer_equal,
-            },
+            };
+            for (0..Map.targets.len - 1) |tag| {
+                const cursor = 2 + 4 * tag;
+                result[cursor] = .{
+                    .kind = .constant,
+                    .result = @intCast(value_base + 3 + 4 * tag),
+                    .operation = .{ .constant = @intCast(constant_base + tag) },
+                };
+                result[cursor + 1] = .{
+                    .kind = .pure,
+                    .result = @intCast(value_base + 4 + 4 * tag),
+                    .operands = &compare_operands[tag],
+                    .operation = .integer_equal,
+                };
+                result[cursor + 2] = .{
+                    .kind = .constant,
+                    .result = @intCast(value_base + 5 + 4 * tag),
+                    .operation = .{ .constant = @intCast(
+                        constant_base + Map.targets.len - 1 + tag,
+                    ) },
+                };
+                result[cursor + 3] = .{
+                    .kind = .pure,
+                    .result = @intCast(value_base + 6 + 4 * tag),
+                    .operands = &select_operands[tag],
+                    .operation = .select,
+                };
+            }
+            break :blk result;
         };
-        const later_instructions = [_]cir.Instruction{
-            .{
-                .kind = .constant,
-                .result = @intCast(constant_value),
-                .operation = .{ .constant = @intCast(
-                    sharedFailureConstantBase(Plan, component_index) + tag,
-                ) },
-            },
-            .{
-                .kind = .pure,
-                .result = @intCast(condition_value),
-                .operands = &compare_operands,
-                .operation = .integer_equal,
-            },
-        };
-    };
-    return .{
-        .id = @intCast(block_base + tag),
-        .function_id = @intCast(sharedFailureFunctionId(Plan, component_index)),
-        .parameters = if (tag == 0) &Static.parameters else &.{},
-        .instructions = if (tag == 0)
-            &Static.entry_instructions
-        else
-            &Static.later_instructions,
-        .terminator = .{ .branch = .{
-            .condition = @intCast(condition_value),
-            .then_edge = .{ .target = @intCast(leaf_base + tag) },
-            .else_edge = .{ .target = @intCast(if (tag + 1 == Map.targets.len - 1)
-                leaf_base + Map.targets.len - 1
-            else
-                block_base + tag + 1) },
-        } },
-    };
-}
-
-fn sharedFailureLeafBlock(
-    comptime Plan: type,
-    comptime component_index: usize,
-    comptime tag: usize,
-) cir.Block {
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
-    const value_id = sharedFailureValueBase(Plan, component_index) +
-        2 * Map.targets.len + tag;
-    const block_id = sharedFailureBlockBase(Plan, component_index) +
-        Map.targets.len - 1 + tag;
-    const Static = struct {
-        const instructions = [_]cir.Instruction{.{
-            .kind = .constant,
-            .result = @intCast(value_id),
-            .operation = .{ .constant = @intCast(
-                sharedFailureConstantBase(Plan, component_index) +
-                    Map.targets.len - 1 + tag,
-            ) },
-        }};
     };
     return .{
         .id = @intCast(block_id),
         .function_id = @intCast(sharedFailureFunctionId(Plan, component_index)),
         .role = .terminal_handoff,
+        .parameters = &Static.parameters,
         .instructions = &Static.instructions,
-        .terminator = .{ .return_to_caller = @intCast(value_id) },
+        .terminator = .{ .return_to_caller = @intCast(final_value) },
     };
 }
 

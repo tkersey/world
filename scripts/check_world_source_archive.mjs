@@ -13,6 +13,10 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const baselineCommit = "053f82088d5e614cd1fc92ec0447c308f80ed4ce";
+if (process.argv.includes("--negative-self-test")) {
+  runNegativeSelfTest();
+  process.exit(0);
+}
 const temporaryRoot = mkdtempSync(join(tmpdir(), "world-source-archive-"));
 
 try {
@@ -72,6 +76,7 @@ function compareMetrics(candidateRoot, baselineRoot, candidateArchive, baselineA
     examples: baselineFiles.filter((path) => path.startsWith("examples/")).length,
   };
   const delta = diffStats(surfaces, candidateFiles);
+  assertMetricRegression(candidate, baseline, delta);
   return {
     baseline_commit: baselineCommit,
     insertions: delta.insertions,
@@ -90,6 +95,33 @@ function compareMetrics(candidateRoot, baselineRoot, candidateArchive, baselineA
     baseline_examples: baseline.examples,
     candidate_examples: candidate.examples,
   };
+}
+
+function assertMetricRegression(candidate, baseline, delta) {
+  for (const name of Object.keys(candidate)) {
+    if (candidate[name] >= baseline[name]) {
+      throw new Error(`${name} did not shrink: baseline=${baseline[name]} candidate=${candidate[name]}`);
+    }
+  }
+  if (delta.deletions < 5 * delta.insertions) {
+    throw new Error(`package deletion ratio is below 5x: insertions=${delta.insertions} deletions=${delta.deletions}`);
+  }
+}
+
+function runNegativeSelfTest() {
+  let rejected = 0;
+  for (const witness of [
+    [{ archive_bytes: 10 }, { archive_bytes: 10 }, { insertions: 1, deletions: 10 }],
+    [{ archive_bytes: 9 }, { archive_bytes: 10 }, { insertions: 3, deletions: 14 }],
+  ]) {
+    try {
+      assertMetricRegression(...witness);
+    } catch {
+      rejected += 1;
+    }
+  }
+  if (rejected !== 2) throw new Error("source archive regression self-test did not reject both witnesses");
+  console.log("world_source_archive_negative=pass");
 }
 
 function assertNormalized(root, files) {

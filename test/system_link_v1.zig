@@ -720,6 +720,38 @@ const WideProviderFailure = enum(u32) {
     p29,
     p30,
     p31,
+    p32,
+    p33,
+    p34,
+    p35,
+    p36,
+    p37,
+    p38,
+    p39,
+    p40,
+    p41,
+    p42,
+    p43,
+    p44,
+    p45,
+    p46,
+    p47,
+    p48,
+    p49,
+    p50,
+    p51,
+    p52,
+    p53,
+    p54,
+    p55,
+    p56,
+    p57,
+    p58,
+    p59,
+    p60,
+    p61,
+    p62,
+    p63,
 };
 const WideSystemFailure = enum(u32) {
     s00,
@@ -754,6 +786,38 @@ const WideSystemFailure = enum(u32) {
     s29,
     s30,
     s31,
+    s32,
+    s33,
+    s34,
+    s35,
+    s36,
+    s37,
+    s38,
+    s39,
+    s40,
+    s41,
+    s42,
+    s43,
+    s44,
+    s45,
+    s46,
+    s47,
+    s48,
+    s49,
+    s50,
+    s51,
+    s52,
+    s53,
+    s54,
+    s55,
+    s56,
+    s57,
+    s58,
+    s59,
+    s60,
+    s61,
+    s62,
+    s63,
 };
 const wide_provider_failure_type: boundary.ir.ValueType = .{ .schema = 0 };
 const wide_provider_arguments = [_]boundary.ir.EdgeArgument{.{ .value = 0 }};
@@ -870,6 +934,10 @@ const WideFailureMap = world.failureMorphism(
     WideProviderFailure,
     WideSystemFailure,
     [_]WideSystemFailure{
+        .s63, .s62, .s61, .s60, .s59, .s58, .s57, .s56,
+        .s55, .s54, .s53, .s52, .s51, .s50, .s49, .s48,
+        .s47, .s46, .s45, .s44, .s43, .s42, .s41, .s40,
+        .s39, .s38, .s37, .s36, .s35, .s34, .s33, .s32,
         .s31, .s30, .s29, .s28, .s27, .s26, .s25, .s24,
         .s23, .s22, .s21, .s20, .s19, .s18, .s17, .s16,
         .s15, .s14, .s13, .s12, .s11, .s10, .s09, .s08,
@@ -892,20 +960,21 @@ pub const WideFailureSystem = world.system(WideFailureSpec);
 
 test "world.system shares one wide Failure mapper across dynamic fail sites" {
     const Linked = WideFailureSystem.Program.component();
-    try std.testing.expectEqual(@as(usize, 70), Linked.control_ir.blocks.len);
+    try std.testing.expectEqual(@as(usize, 8), Linked.control_ir.blocks.len);
     try std.testing.expectEqual(@as(usize, 3), Linked.control_ir.functions.len);
     const WideMachine = WideFailureSystem.Program.compile(.{
         .maximum_frames = 8,
         .maximum_state_bytes = 16_384,
-        .maximum_machine_fuel = 256,
+        .maximum_machine_fuel = 1024,
     });
     inline for (.{
-        .{ WideProviderFailure.p00, WideSystemFailure.s31 },
-        .{ WideProviderFailure.p31, WideSystemFailure.s00 },
+        .{ WideProviderFailure.p00, WideSystemFailure.s63 },
+        .{ WideProviderFailure.p31, WideSystemFailure.s32 },
+        .{ WideProviderFailure.p63, WideSystemFailure.s00 },
     }) |case| {
         const state = try WideMachine.initialState(std.testing.allocator, case[0]);
         defer WideMachine.deinitState(state);
-        var fuel: u64 = 256;
+        var fuel: u64 = 1024;
         const failure = switch (try WideMachine.step(state, &fuel)) {
             .failed => |value| value,
             else => return error.TestUnexpectedResult,
