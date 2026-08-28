@@ -43,31 +43,31 @@ pub fn morphism(comptime config: anytype) type {
 pub fn failureMorphism(
     comptime Source: type,
     comptime Target: type,
-    comptime targets: anytype,
+    comptime target_values: anytype,
 ) type {
     requireFailureEnum(Source, "failure morphism Source");
     requireFailureEnum(Target, "failure morphism Target");
     const source_fields = @typeInfo(Source).@"enum".fields;
-    if (targets.len != source_fields.len) {
+    if (target_values.len != source_fields.len) {
         @compileError("World failure morphism must map every provider Failure tag");
     }
     const mapping = comptime blk: {
-        var source_tags: [targets.len]u32 = undefined;
-        var target_tags: [targets.len]u16 = undefined;
-        for (targets, 0..) |target, index| {
+        var source_tags: [target_values.len]u32 = undefined;
+        var mapped_targets: [target_values.len]Target = undefined;
+        for (target_values, 0..) |target, index| {
             if (@TypeOf(target) != Target) {
                 @compileError("World failure morphism targets must use system Failure");
             }
             source_tags[index] = @intCast(source_fields[index].value);
-            target_tags[index] = @intCast(@intFromEnum(target));
+            mapped_targets[index] = target;
         }
-        break :blk .{ source_tags, target_tags };
+        break :blk .{ source_tags, mapped_targets };
     };
     return struct {
         pub const SourceFailure = Source;
         pub const TargetFailure = Target;
         pub const source_tags = mapping[0];
-        pub const tags = mapping[1];
+        pub const targets = mapping[1];
     };
 }
 
@@ -127,12 +127,18 @@ fn ProgramSet(comptime capacity: usize) type {
         items: [capacity]type = undefined,
         count: usize = 0,
 
-        fn add(self: *@This(), comptime Program: type) void {
+        fn contains(self: @This(), comptime Program: type) bool {
             inline for (0..self.count) |index| {
-                if (self.items[index] == Program) return;
+                if (self.items[index] == Program) return true;
             }
+            return false;
+        }
+
+        fn add(self: *@This(), comptime Program: type) bool {
+            if (self.contains(Program)) return false;
             self.items[self.count] = Program;
             self.count += 1;
+            return true;
         }
     };
 }
@@ -143,17 +149,31 @@ fn componentsFor(
     comptime morphisms: anytype,
 ) ProgramSet(1 + handlers.len * 2 + morphisms.len) {
     var result: ProgramSet(1 + handlers.len * 2 + morphisms.len) = .{};
-    result.add(Root);
+    _ = result.add(Root);
     inline for (handlers) |Handler| {
         requireHandler(Handler);
-        result.add(Handler.Consumer);
-        result.add(Handler.Provider);
     }
     inline for (morphisms) |Morphism| {
         requireMorphism(Morphism);
-        result.add(Morphism.Consumer);
     }
+    discoverComponents(&result, Root, handlers);
     return result;
+}
+
+fn discoverComponents(
+    result: anytype,
+    comptime Current: type,
+    comptime handlers: anytype,
+) void {
+    inline for (body(Current).effect_sites) |Site| {
+        inline for (handlers) |Handler| {
+            if (Handler.Consumer == Current and Handler.Site == Site) {
+                if (result.add(Handler.Provider)) {
+                    discoverComponents(result, Handler.Provider, handlers);
+                }
+            }
+        }
+    }
 }
 
 fn body(comptime Program: type) type {
@@ -193,9 +213,19 @@ fn validateSystem(
     const RootBody = body(Root);
     requireFailureEnum(RootBody.Failure, "root Failure");
     validateExternalDeclarations(externals);
-    inline for (handlers) |Handler| validateHandler(Handler, RootBody.Failure);
+    inline for (handlers) |Handler| {
+        validateHandler(Handler, RootBody.Failure);
+        if (!components.contains(Handler.Consumer) or
+            !components.contains(Handler.Provider))
+        {
+            @compileError("World system contains a handler unreachable from root");
+        }
+    }
     inline for (morphisms) |Morphism| {
         validateMorphism(Morphism);
+        if (!components.contains(Morphism.Consumer)) {
+            @compileError("World system contains a morphism unreachable from root");
+        }
         if (externalCount(externals, Morphism.Target) != 1) {
             @compileError(
                 "World system morphism Target must be intentionally residual",
@@ -209,6 +239,9 @@ fn validateSystem(
         const Body = body(Program);
         _ = failureMapFor(components, handlers, component_index);
         inline for (Body.effect_sites) |Site| {
+            if (!componentSiteReachable(Program, Site)) {
+                @compileError("World system component declares an unreachable effect site");
+            }
             const internal_count = handlerCount(handlers, Program, Site);
             const morphism_count = morphismCount(morphisms, Program, Site);
             const external_count = externalCount(externals, Site);
@@ -222,6 +255,15 @@ fn validateSystem(
             }
         }
     }
+    validateExternalUsage(components, handlers, morphisms, externals);
+}
+
+fn validateExternalUsage(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime morphisms: anytype,
+    comptime externals: anytype,
+) void {
     inline for (externals) |External| {
         var used = false;
         inline for (0..components.count) |component_index| {
@@ -248,21 +290,30 @@ fn failureMapsEqual(comptime Left: type, comptime Right: type) bool {
     if (Left == void or Right == void) return Left == Right;
     if (Left.SourceFailure != Right.SourceFailure or
         Left.TargetFailure != Right.TargetFailure or
-        Left.tags.len != Right.tags.len)
+        Left.targets.len != Right.targets.len)
     {
         return false;
     }
     inline for (
         Left.source_tags,
         Right.source_tags,
-        Left.tags,
-        Right.tags,
+        Left.targets,
+        Right.targets,
     ) |left_source, right_source, left_target, right_target| {
-        if (left_source != right_source or left_target != right_target) {
+        if (left_source != right_source or
+            @intFromEnum(left_target) != @intFromEnum(right_target))
+        {
             return false;
         }
     }
     return true;
+}
+
+fn mappedFailureTarget(comptime Map: type, comptime source_tag: u32) Map.TargetFailure {
+    inline for (Map.source_tags, Map.targets) |from, target| {
+        if (from == source_tag) return target;
+    }
+    unreachable;
 }
 
 fn failureMapFor(
@@ -292,37 +343,36 @@ fn failureMapFor(
     return Result;
 }
 
-fn failureTagCount(comptime Failure: type) usize {
-    return @typeInfo(Failure).@"enum".fields.len;
+fn failureExpansionValues(comptime Map: type, comptime terminator: cir.Terminator) usize {
+    if (Map == void) return 0;
+    return switch (terminator) {
+        .fail => 1,
+        .fail_value => if (Map.targets.len <= 1)
+            1
+        else
+            1 + 2 * (Map.targets.len - 1) + Map.targets.len,
+        else => 0,
+    };
 }
 
-fn failureValueExpansionValues(comptime Map: type) usize {
-    if (Map == void or Map.tags.len <= 1) return 0;
-    return 1 + 2 * (Map.tags.len - 1);
+fn failureExpansionBlocks(comptime Map: type, comptime terminator: cir.Terminator) usize {
+    if (Map == void) return 0;
+    return switch (terminator) {
+        .fail_value => if (Map.targets.len <= 1) 0 else 2 * Map.targets.len - 2,
+        else => 0,
+    };
 }
 
-fn failureValueExpansionBlocks(comptime Map: type) usize {
-    if (Map == void or Map.tags.len <= 1) return 0;
-    return 2 * Map.tags.len - 2;
-}
-
-fn failureValueExpansionConstants(comptime Map: type) usize {
-    if (Map == void or Map.tags.len <= 1) return 0;
-    return Map.tags.len - 1;
-}
-
-fn componentFailValueCount(
-    comptime components: anytype,
-    comptime component_index: usize,
-) usize {
-    var count: usize = 0;
-    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
-        switch (block.terminator) {
-            .fail_value => count += 1,
-            else => {},
-        }
-    }
-    return count;
+fn failureExpansionConstants(comptime Map: type, comptime terminator: cir.Terminator) usize {
+    if (Map == void) return 0;
+    return switch (terminator) {
+        .fail => 1,
+        .fail_value => if (Map.targets.len <= 1)
+            1
+        else
+            2 * Map.targets.len - 1,
+        else => 0,
+    };
 }
 
 fn componentExtraValues(
@@ -330,12 +380,12 @@ fn componentExtraValues(
     comptime handlers: anytype,
     comptime component_index: usize,
 ) usize {
-    return componentFailValueCount(components, component_index) *
-        failureValueExpansionValues(failureMapFor(
-            components,
-            handlers,
-            component_index,
-        ));
+    const Map = failureMapFor(components, handlers, component_index);
+    var result: usize = 0;
+    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+        result += failureExpansionValues(Map, block.terminator);
+    }
+    return result;
 }
 
 fn componentExtraBlocks(
@@ -343,12 +393,12 @@ fn componentExtraBlocks(
     comptime handlers: anytype,
     comptime component_index: usize,
 ) usize {
-    return componentFailValueCount(components, component_index) *
-        failureValueExpansionBlocks(failureMapFor(
-            components,
-            handlers,
-            component_index,
-        ));
+    const Map = failureMapFor(components, handlers, component_index);
+    var result: usize = 0;
+    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+        result += failureExpansionBlocks(Map, block.terminator);
+    }
+    return result;
 }
 
 fn componentExtraConstants(
@@ -356,12 +406,12 @@ fn componentExtraConstants(
     comptime handlers: anytype,
     comptime component_index: usize,
 ) usize {
-    return componentFailValueCount(components, component_index) *
-        failureValueExpansionConstants(failureMapFor(
-            components,
-            handlers,
-            component_index,
-        ));
+    const Map = failureMapFor(components, handlers, component_index);
+    var result: usize = 0;
+    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+        result += failureExpansionConstants(Map, block.terminator);
+    }
+    return result;
 }
 
 fn componentVoidReturnCount(
@@ -424,6 +474,37 @@ fn voidReturnOrdinal(
     unreachable;
 }
 
+fn componentVoidInputCount(
+    comptime components: anytype,
+    comptime component_index: usize,
+) usize {
+    if (component_index == 0) return 0;
+    const Body = body(components.items[component_index]);
+    return @intFromBool(
+        Body.InitialArgs == void and
+            Body.control_ir.blocks[Body.control_ir.entry].parameters.len == 0,
+    );
+}
+
+fn totalVoidInputs(comptime components: anytype) usize {
+    var result: usize = 0;
+    inline for (0..components.count) |index| {
+        result += componentVoidInputCount(components, index);
+    }
+    return result;
+}
+
+fn precedingVoidInputs(
+    comptime components: anytype,
+    comptime component_index: usize,
+) usize {
+    var result: usize = 0;
+    inline for (0..component_index) |index| {
+        result += componentVoidInputCount(components, index);
+    }
+    return result;
+}
+
 fn requireHandler(comptime Handler: type) void {
     if (!@hasDecl(Handler, "binding_kind") or
         Handler.binding_kind != .handler)
@@ -466,10 +547,32 @@ fn validateHandler(
         );
     }
     const Map = Handler.FailureMorphism;
-    if (Map.SourceFailure != ProviderBody.Failure or
-        Map.TargetFailure != SystemFailure)
-    {
+    validateFailureMap(Map, ProviderBody.Failure, SystemFailure);
+}
+
+fn validateFailureMap(
+    comptime Map: type,
+    comptime SourceFailure: type,
+    comptime TargetFailure: type,
+) void {
+    inline for (.{ "SourceFailure", "TargetFailure", "source_tags", "targets" }) |decl| {
+        if (!@hasDecl(Map, decl)) {
+            @compileError("World system Failure morphism is missing " ++ decl);
+        }
+    }
+    if (Map.SourceFailure != SourceFailure or Map.TargetFailure != TargetFailure) {
         @compileError("World system failure morphism has the wrong endpoint types");
+    }
+    const fields = @typeInfo(SourceFailure).@"enum".fields;
+    if (Map.source_tags.len != fields.len or Map.targets.len != fields.len) {
+        @compileError("World system Failure morphism must cover every source tag");
+    }
+    inline for (fields, 0..) |field, index| {
+        if (Map.source_tags[index] != field.value or
+            @TypeOf(Map.targets[index]) != TargetFailure)
+        {
+            @compileError("World system Failure morphism is not canonical and total");
+        }
     }
 }
 
@@ -534,6 +637,27 @@ fn externalCount(comptime externals: anytype, comptime Site: type) usize {
         if (External == Site) count += 1;
     }
     return count;
+}
+
+fn componentSiteReachable(comptime Program: type, comptime Site: type) bool {
+    const Body = body(Program);
+    const Reachability = cir.Reachability(Body.control_ir.blocks.len);
+    const reachable = Reachability.analyze(Body.control_ir) catch
+        @compileError("World system component Control IR reachability failed");
+    inline for (Body.control_ir.blocks) |block| {
+        if (!reachable.contains(block.id)) continue;
+        switch (block.terminator) {
+            .@"suspend" => |suspension| {
+                if (suspension.kind == .effect and
+                    Body.effect_sites[suspension.site_id.?] == Site)
+                {
+                    return true;
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
 }
 
 fn validateReachability(
@@ -611,6 +735,7 @@ fn LinkedBody(
         schema_set,
         handlers,
     );
+    const linked_block_costs = comptime buildBlockCosts(components, blocks);
     const linked_effect_sites = comptime buildEffectSites(components);
     const linked_effect_handlers = comptime buildEffectHandlers(components, handlers);
     const linked_effect_morphisms = comptime buildEffectMorphisms(components, morphisms);
@@ -640,6 +765,7 @@ fn LinkedBody(
             pub const effect_sites = linked_effect_sites;
             pub const effect_handlers = linked_effect_handlers;
             pub const effect_morphisms = linked_effect_morphisms;
+            pub const block_costs = linked_block_costs;
             pub const compiler_limits = linked_limits;
             pub const control_ir: cir.Program = .{
                 .label = name,
@@ -673,8 +799,20 @@ fn TypeSet(comptime capacity: usize) type {
     };
 }
 
+fn ResidualCatalog(comptime capacity: usize) type {
+    return struct {
+        items: [capacity]type = undefined,
+        count: usize = 0,
+
+        fn add(self: *@This(), comptime Site: type) void {
+            self.items[self.count] = Site;
+            self.count += 1;
+        }
+    };
+}
+
 fn totalSchemaCount(comptime components: anytype) usize {
-    var count: usize = 0;
+    var count: usize = components.count;
     inline for (0..components.count) |index| {
         count += body(components.items[index]).schema_types.len;
     }
@@ -686,6 +824,7 @@ fn schemasFor(
 ) TypeSet(totalSchemaCount(components)) {
     var result: TypeSet(totalSchemaCount(components)) = .{};
     inline for (0..components.count) |index| {
+        result.add(body(components.items[index]).Failure);
         inline for (body(components.items[index]).schema_types) |Schema| {
             result.add(Schema);
         }
@@ -831,7 +970,8 @@ fn linkedTotalValues(
 ) usize {
     return totalValues(components) +
         totalExtraValues(components, handlers) +
-        totalVoidReturns(components);
+        totalVoidReturns(components) +
+        totalVoidInputs(components);
 }
 
 fn linkedTotalBlocks(
@@ -886,18 +1026,47 @@ fn precedingExtraConstants(
     return result;
 }
 
-fn failValueOrdinal(
+fn precedingFailureValuesInComponent(
     comptime components: anytype,
+    comptime handlers: anytype,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
+    const Map = failureMapFor(components, handlers, component_index);
     var result: usize = 0;
     inline for (body(components.items[component_index]).control_ir.blocks) |block| {
         if (block.id == block_id) return result;
-        switch (block.terminator) {
-            .fail_value => result += 1,
-            else => {},
-        }
+        result += failureExpansionValues(Map, block.terminator);
+    }
+    unreachable;
+}
+
+fn precedingFailureBlocksInComponent(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime block_id: cir.BlockId,
+) usize {
+    const Map = failureMapFor(components, handlers, component_index);
+    var result: usize = 0;
+    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+        if (block.id == block_id) return result;
+        result += failureExpansionBlocks(Map, block.terminator);
+    }
+    unreachable;
+}
+
+fn precedingFailureConstantsInComponent(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime block_id: cir.BlockId,
+) usize {
+    const Map = failureMapFor(components, handlers, component_index);
+    var result: usize = 0;
+    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+        if (block.id == block_id) return result;
+        result += failureExpansionConstants(Map, block.terminator);
     }
     unreachable;
 }
@@ -908,11 +1077,14 @@ fn failureValueBase(
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    const Map = failureMapFor(components, handlers, component_index);
     return totalValues(components) +
         precedingExtraValues(components, handlers, component_index) +
-        failValueOrdinal(components, component_index, block_id) *
-            failureValueExpansionValues(Map);
+        precedingFailureValuesInComponent(
+            components,
+            handlers,
+            component_index,
+            block_id,
+        );
 }
 
 fn failureBlockBase(
@@ -921,11 +1093,14 @@ fn failureBlockBase(
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    const Map = failureMapFor(components, handlers, component_index);
     return totalBlocks(components) +
         precedingExtraBlocks(components, handlers, component_index) +
-        failValueOrdinal(components, component_index, block_id) *
-            failureValueExpansionBlocks(Map);
+        precedingFailureBlocksInComponent(
+            components,
+            handlers,
+            component_index,
+            block_id,
+        );
 }
 
 fn failureConstantBase(
@@ -934,11 +1109,14 @@ fn failureConstantBase(
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    const Map = failureMapFor(components, handlers, component_index);
     return totalConstants(components) +
         precedingExtraConstants(components, handlers, component_index) +
-        failValueOrdinal(components, component_index, block_id) *
-            failureValueExpansionConstants(Map);
+        precedingFailureConstantsInComponent(
+            components,
+            handlers,
+            component_index,
+            block_id,
+        );
 }
 
 fn voidReturnValueBase(
@@ -963,6 +1141,17 @@ fn voidReturnConstantBase(
         totalExtraConstants(components, handlers) +
         precedingVoidReturns(components, component_index) +
         voidReturnOrdinal(components, component_index, block_id);
+}
+
+fn voidInputValueBase(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    return totalValues(components) +
+        totalExtraValues(components, handlers) +
+        totalVoidReturns(components) +
+        precedingVoidInputs(components, component_index);
 }
 
 fn remapValueType(
@@ -999,22 +1188,14 @@ fn buildValueTypes(
         }
     }
     inline for (0..components.count) |component_index| {
-        const Map = failureMapFor(components, handlers, component_index);
-        if (Map == void or Map.tags.len <= 1) continue;
-        inline for (body(components.items[component_index]).control_ir.blocks) |block| {
-            switch (block.terminator) {
-                .fail_value => {
-                    result[cursor] = .{ .scalar = .u32 };
-                    cursor += 1;
-                    inline for (0..Map.tags.len - 1) |_| {
-                        result[cursor] = .{ .scalar = .u32 };
-                        result[cursor + 1] = .{ .scalar = .boolean };
-                        cursor += 2;
-                    }
-                },
-                else => {},
-            }
-        }
+        appendFailureValueTypes(
+            &result,
+            &cursor,
+            components,
+            schemas,
+            handlers,
+            component_index,
+        );
     }
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
@@ -1030,7 +1211,52 @@ fn buildValueTypes(
             }
         }
     }
+    inline for (1..components.count) |component_index| {
+        if (componentVoidInputCount(components, component_index) == 1) {
+            result[cursor] = .{ .scalar = .unit };
+            cursor += 1;
+        }
+    }
     return result;
+}
+
+fn appendFailureValueTypes(
+    result: anytype,
+    cursor: *usize,
+    comptime components: anytype,
+    comptime schemas: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) void {
+    const Map = failureMapFor(components, handlers, component_index);
+    if (Map == void) return;
+    const target_type: cir.ValueType = .{ .schema = schemaIndex(
+        schemas,
+        Map.TargetFailure,
+    ) };
+    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+        switch (block.terminator) {
+            .fail => appendValueType(result, cursor, target_type),
+            .fail_value => {
+                if (Map.targets.len > 1) {
+                    appendValueType(result, cursor, .{ .scalar = .u32 });
+                    inline for (0..Map.targets.len - 1) |_| {
+                        appendValueType(result, cursor, .{ .scalar = .u32 });
+                        appendValueType(result, cursor, .{ .scalar = .boolean });
+                    }
+                }
+                inline for (0..Map.targets.len) |_| {
+                    appendValueType(result, cursor, target_type);
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn appendValueType(result: anytype, cursor: *usize, value_type: cir.ValueType) void {
+    result.*[cursor.*] = value_type;
+    cursor.* += 1;
 }
 
 fn constantTypes(
@@ -1050,12 +1276,24 @@ fn constantTypes(
     }
     inline for (0..components.count) |component_index| {
         const Map = failureMapFor(components, handlers, component_index);
-        if (Map == void or Map.tags.len <= 1) continue;
+        if (Map == void) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
             switch (block.terminator) {
-                .fail_value => inline for (0..Map.tags.len - 1) |_| {
-                    result[cursor] = u32;
+                .fail => {
+                    result[cursor] = Map.TargetFailure;
                     cursor += 1;
+                },
+                .fail_value => {
+                    if (Map.targets.len > 1) {
+                        inline for (0..Map.targets.len - 1) |_| {
+                            result[cursor] = u32;
+                            cursor += 1;
+                        }
+                    }
+                    inline for (0..Map.targets.len) |_| {
+                        result[cursor] = Map.TargetFailure;
+                        cursor += 1;
+                    }
                 },
                 else => {},
             }
@@ -1102,20 +1340,13 @@ fn buildConstants(
         }
     }
     inline for (0..components.count) |component_index| {
-        const Map = failureMapFor(components, handlers, component_index);
-        if (Map == void or Map.tags.len <= 1) continue;
-        inline for (body(components.items[component_index]).control_ir.blocks) |block| {
-            switch (block.terminator) {
-                .fail_value => inline for (0..Map.tags.len - 1) |tag| {
-                    @field(
-                        result,
-                        std.fmt.comptimePrint("{d}", .{cursor}),
-                    ) = Map.source_tags[tag];
-                    cursor += 1;
-                },
-                else => {},
-            }
-        }
+        appendFailureConstants(
+            &result,
+            &cursor,
+            components,
+            handlers,
+            component_index,
+        );
     }
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
@@ -1135,6 +1366,45 @@ fn buildConstants(
         }
     }
     return result;
+}
+
+fn appendFailureConstants(
+    result: anytype,
+    cursor: *usize,
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) void {
+    const Map = failureMapFor(components, handlers, component_index);
+    if (Map == void) return;
+    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+        switch (block.terminator) {
+            .fail => |source_tag| appendConstant(
+                result,
+                cursor,
+                mappedFailureTarget(Map, source_tag),
+            ),
+            .fail_value => {
+                if (Map.targets.len > 1) {
+                    inline for (0..Map.targets.len - 1) |tag| {
+                        appendConstant(result, cursor, Map.source_tags[tag]);
+                    }
+                }
+                inline for (Map.targets) |target| {
+                    appendConstant(result, cursor, target);
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+fn appendConstant(result: anytype, cursor: *usize, value: anytype) void {
+    @field(
+        result.*,
+        std.fmt.comptimePrint("{d}", .{cursor.*}),
+    ) = value;
+    cursor.* += 1;
 }
 
 fn buildFunctions(
@@ -1200,7 +1470,7 @@ fn buildBlocks(
     }
     inline for (0..components.count) |component_index| {
         const Map = failureMapFor(components, handlers, component_index);
-        if (Map == void or Map.tags.len <= 1) continue;
+        if (Map == void or Map.targets.len <= 1) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
             switch (source.terminator) {
                 .fail_value => {
@@ -1210,8 +1480,8 @@ fn buildBlocks(
                         component_index,
                         source.id,
                     );
-                    const fail_base = extra_base + Map.tags.len - 2;
-                    inline for (1..Map.tags.len - 1) |tag| {
+                    const fail_base = extra_base + Map.targets.len - 2;
+                    inline for (1..Map.targets.len - 1) |tag| {
                         result[extra_base + tag - 1] = failureCheckBlock(
                             components,
                             handlers,
@@ -1222,20 +1492,41 @@ fn buildBlocks(
                             fail_base,
                         );
                     }
-                    inline for (0..Map.tags.len) |tag| {
-                        result[fail_base + tag] = .{
-                            .id = @intCast(fail_base + tag),
-                            .function_id = @intCast(
-                                functionOffset(components, component_index) +
-                                    source.function_id,
-                            ),
-                            .role = .terminal_handoff,
-                            .terminator = .{ .fail = Map.tags[tag] },
-                        };
+                    inline for (0..Map.targets.len) |tag| {
+                        result[fail_base + tag] = failureLeafBlock(
+                            components,
+                            handlers,
+                            component_index,
+                            source,
+                            tag,
+                            fail_base,
+                        );
                     }
                 },
                 else => {},
             }
+        }
+    }
+    return result;
+}
+
+fn buildBlockCosts(
+    comptime components: anytype,
+    comptime blocks: anytype,
+) [blocks.len]u64 {
+    var result: [blocks.len]u64 = undefined;
+    inline for (blocks, 0..) |block, index| {
+        result[index] = @intCast(block.instructions.len + 1);
+    }
+    inline for (0..components.count) |component_index| {
+        const Body = body(components.items[component_index]);
+        if (!@hasDecl(Body, "block_costs")) continue;
+        inline for (Body.control_ir.blocks) |block| {
+            const linked_id = blockOffset(components, component_index) + block.id;
+            result[linked_id] = @max(
+                result[linked_id],
+                Body.block_costs[block.id],
+            );
         }
     }
     return result;
@@ -1249,9 +1540,11 @@ fn remapBlock(
     comptime source: cir.Block,
 ) cir.Block {
     const Static = struct {
-        const parameters = remapValueIds(
-            source.parameters,
-            valueOffset(components, component_index),
+        const parameters = remapBlockParameters(
+            components,
+            handlers,
+            component_index,
+            source,
         );
         const instructions = remapBlockInstructions(
             components,
@@ -1278,6 +1571,36 @@ fn remapBlock(
     };
 }
 
+fn remapBlockParameters(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+) [
+    source.parameters.len + @as(usize, @intFromBool(
+        componentVoidInputCount(components, component_index) == 1 and
+            source.id == body(components.items[component_index]).control_ir.entry,
+    ))
+]cir.ValueId {
+    const add_void = componentVoidInputCount(components, component_index) == 1 and
+        source.id == body(components.items[component_index]).control_ir.entry;
+    var result: [source.parameters.len + @as(usize, @intFromBool(add_void))]cir.ValueId =
+        undefined;
+    const remapped = remapValueIds(
+        source.parameters,
+        valueOffset(components, component_index),
+    );
+    inline for (remapped, 0..) |value, index| result[index] = value;
+    if (add_void) {
+        result[source.parameters.len] = @intCast(voidInputValueBase(
+            components,
+            handlers,
+            component_index,
+        ));
+    }
+    return result;
+}
+
 fn expandsFailureValue(
     comptime components: anytype,
     comptime handlers: anytype,
@@ -1285,10 +1608,27 @@ fn expandsFailureValue(
     comptime source: cir.Block,
 ) bool {
     const Map = failureMapFor(components, handlers, component_index);
-    if (Map == void or Map.tags.len <= 1) return false;
+    if (Map == void) return false;
     return switch (source.terminator) {
-        .fail_value => true,
+        .fail, .fail_value => true,
         else => false,
+    };
+}
+
+fn failureInstructionExpansion(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+) usize {
+    if (!expandsFailureValue(components, handlers, component_index, source)) {
+        return 0;
+    }
+    const Map = failureMapFor(components, handlers, component_index);
+    return switch (source.terminator) {
+        .fail => 1,
+        .fail_value => if (Map.targets.len <= 1) 1 else 3,
+        else => unreachable,
     };
 }
 
@@ -1320,19 +1660,24 @@ fn remapBlockInstructions(
             handlers,
             component_index,
             source,
-        )) 3 else 0) +
+        )) failureInstructionExpansion(
+            components,
+            handlers,
+            component_index,
+            source,
+        ) else 0) +
         @as(usize, if (expandsVoidReturn(
             components,
             component_index,
             source,
         )) 1 else 0)
 ]cir.Instruction {
-    const failure_extra: usize = if (expandsFailureValue(
+    const failure_extra = failureInstructionExpansion(
         components,
         handlers,
         component_index,
         source,
-    )) 3 else 0;
+    );
     const void_extra: usize = if (expandsVoidReturn(
         components,
         component_index,
@@ -1359,7 +1704,7 @@ fn remapBlockInstructions(
         return result;
     }
 
-    appendFailureValueInstructions(
+    appendFailureInstructions(
         &result,
         components,
         handlers,
@@ -1393,7 +1738,50 @@ fn appendVoidReturnInstruction(
     };
 }
 
-fn appendFailureValueInstructions(
+fn appendFailureInstructions(
+    result: anytype,
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+) void {
+    const Map = failureMapFor(components, handlers, component_index);
+    if (Map.targets.len == 0) {
+        @compileError("World Failure morphism cannot target an empty Failure enum");
+    }
+    switch (source.terminator) {
+        .fail => {
+            appendMappedFailureConstant(
+                result,
+                components,
+                handlers,
+                component_index,
+                source,
+            );
+            return;
+        },
+        .fail_value => if (Map.targets.len == 1) {
+            appendMappedFailureConstant(
+                result,
+                components,
+                handlers,
+                component_index,
+                source,
+            );
+            return;
+        },
+        else => unreachable,
+    }
+    appendFailureTagComparison(
+        result,
+        components,
+        handlers,
+        component_index,
+        source,
+    );
+}
+
+fn appendFailureTagComparison(
     result: anytype,
     comptime components: anytype,
     comptime handlers: anytype,
@@ -1444,6 +1832,30 @@ fn appendFailureValueInstructions(
     };
 }
 
+fn appendMappedFailureConstant(
+    result: anytype,
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+) void {
+    result.*[source.instructions.len] = .{
+        .kind = .constant,
+        .result = @intCast(failureValueBase(
+            components,
+            handlers,
+            component_index,
+            source.id,
+        )),
+        .operation = .{ .constant = @intCast(failureConstantBase(
+            components,
+            handlers,
+            component_index,
+            source.id,
+        )) },
+    };
+}
+
 fn remapBlockTerminator(
     comptime components: anytype,
     comptime schemas: anytype,
@@ -1462,34 +1874,12 @@ fn remapBlockTerminator(
     }
     if (failureMapFor(components, handlers, component_index) != void) {
         switch (source) {
-            .fail_value => {
-                const Map = failureMapFor(components, handlers, component_index);
-                if (Map.tags.len == 0) {
-                    @compileError("World failure morphism cannot map an empty Failure enum");
-                }
-                if (Map.tags.len == 1) return .{ .fail = Map.tags[0] };
-                const value_base = failureValueBase(
-                    components,
-                    handlers,
-                    component_index,
-                    source_block.id,
-                );
-                const extra_base = failureBlockBase(
-                    components,
-                    handlers,
-                    component_index,
-                    source_block.id,
-                );
-                const fail_base = extra_base + Map.tags.len - 2;
-                return .{ .branch = .{
-                    .condition = @intCast(value_base + 2),
-                    .then_edge = .{ .target = @intCast(fail_base) },
-                    .else_edge = .{ .target = @intCast(if (Map.tags.len == 2)
-                        fail_base + 1
-                    else
-                        extra_base) },
-                } };
-            },
+            .fail, .fail_value => return remapMappedFailureTerminator(
+                components,
+                handlers,
+                component_index,
+                source_block,
+            ),
             else => {},
         }
     }
@@ -1501,6 +1891,56 @@ fn remapBlockTerminator(
         source_block.function_id,
         source,
     );
+}
+
+fn remapMappedFailureTerminator(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+) cir.Terminator {
+    const Map = failureMapFor(components, handlers, component_index);
+    if (Map.targets.len == 0) {
+        @compileError("World failure morphism cannot map an empty Failure enum");
+    }
+    switch (source.terminator) {
+        .fail => return .{ .fail_value = @intCast(failureValueBase(
+            components,
+            handlers,
+            component_index,
+            source.id,
+        )) },
+        .fail_value => if (Map.targets.len == 1) {
+            return .{ .fail_value = @intCast(failureValueBase(
+                components,
+                handlers,
+                component_index,
+                source.id,
+            )) };
+        },
+        else => unreachable,
+    }
+    const value_base = failureValueBase(
+        components,
+        handlers,
+        component_index,
+        source.id,
+    );
+    const extra_base = failureBlockBase(
+        components,
+        handlers,
+        component_index,
+        source.id,
+    );
+    const fail_base = extra_base + Map.targets.len - 2;
+    return .{ .branch = .{
+        .condition = @intCast(value_base + 2),
+        .then_edge = .{ .target = @intCast(fail_base) },
+        .else_edge = .{ .target = @intCast(if (Map.targets.len == 2)
+            fail_base + 1
+        else
+            extra_base) },
+    } };
 }
 
 fn failureCheckBlock(
@@ -1555,11 +1995,50 @@ fn failureCheckBlock(
         .terminator = .{ .branch = .{
             .condition = @intCast(condition_value),
             .then_edge = .{ .target = @intCast(fail_base + tag) },
-            .else_edge = .{ .target = @intCast(if (tag + 1 == Map.tags.len - 1)
-                fail_base + Map.tags.len - 1
+            .else_edge = .{ .target = @intCast(if (tag + 1 == Map.targets.len - 1)
+                fail_base + Map.targets.len - 1
             else
                 extra_base + tag) },
         } },
+    };
+}
+
+fn failureLeafBlock(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+    comptime source: cir.Block,
+    comptime tag: usize,
+    comptime fail_base: usize,
+) cir.Block {
+    const Map = failureMapFor(components, handlers, component_index);
+    const target_value_base = failureValueBase(
+        components,
+        handlers,
+        component_index,
+        source.id,
+    ) + 1 + 2 * (Map.targets.len - 1);
+    const target_constant_base = failureConstantBase(
+        components,
+        handlers,
+        component_index,
+        source.id,
+    ) + Map.targets.len - 1;
+    const Static = struct {
+        const instructions = [_]cir.Instruction{.{
+            .kind = .constant,
+            .result = @intCast(target_value_base + tag),
+            .operation = .{ .constant = @intCast(target_constant_base + tag) },
+        }};
+    };
+    return .{
+        .id = @intCast(fail_base + tag),
+        .function_id = @intCast(
+            functionOffset(components, component_index) + source.function_id,
+        ),
+        .role = .terminal_handoff,
+        .instructions = &Static.instructions,
+        .terminator = .{ .fail_value = @intCast(target_value_base + tag) },
     };
 }
 
@@ -1668,20 +2147,12 @@ fn remapFailureTag(
     comptime component_index: usize,
     comptime source_tag: u16,
 ) u16 {
+    _ = handlers;
     if (component_index == 0) return source_tag;
     const Program = components.items[component_index];
     const ComponentFailure = body(Program).Failure;
     const SystemFailure = body(components.items[0]).Failure;
     if (ComponentFailure == SystemFailure) return source_tag;
-    inline for (handlers) |Handler| {
-        if (Handler.Provider == Program) {
-            const Map = Handler.FailureMorphism;
-            inline for (Map.source_tags, Map.tags) |from, to| {
-                if (from == source_tag) return to;
-            }
-            unreachable;
-        }
-    }
     unreachable;
 }
 
@@ -1826,11 +2297,12 @@ fn residualEffects(
     comptime handlers: anytype,
     comptime morphisms: anytype,
     comptime externals: anytype,
-) TypeSet(totalEffects(components) + morphisms.len) {
-    var result: TypeSet(totalEffects(components) + morphisms.len) = .{};
+) ResidualCatalog(totalEffects(components) + morphisms.len) {
+    var result: ResidualCatalog(totalEffects(components) + morphisms.len) = .{};
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         inline for (body(Program).effect_sites) |Site| {
+            if (!componentSiteReachable(Program, Site)) continue;
             if (handlerCount(handlers, Program, Site) == 1) continue;
             inline for (morphisms) |Morphism| {
                 if (Morphism.Consumer == Program and Morphism.Site == Site) {

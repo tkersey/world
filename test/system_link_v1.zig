@@ -158,7 +158,7 @@ const Machine = System.Program.compile(.{
 test "world.system links one internal Program handler into one BPI1" {
     try std.testing.expectEqual(@as(usize, 2), System.component_count);
     try std.testing.expectEqual(@as(usize, 1), System.internal_handler_count);
-    try std.testing.expectEqual(@as(usize, 1), System.schema_count);
+    try std.testing.expectEqual(@as(usize, 2), System.schema_count);
     try std.testing.expectEqual(@as(usize, 2), System.residual_effects.count);
     try std.testing.expect(System.residual_effects.items[0] == Observe);
     try std.testing.expect(System.residual_effects.items[1] == ProviderObserve);
@@ -539,15 +539,15 @@ const CycleBBody = struct {
 pub const CycleAProgram = boundary.program("cycle-a", CycleABody);
 pub const CycleBProgram = boundary.program("cycle-b", CycleBBody);
 
-const DynamicProviderFailure = enum(u8) {
+pub const DynamicProviderFailure = enum(u8) {
     denied = 3,
     retry = 9,
 };
-const DynamicSystemFailure = enum {
-    policy_denied,
-    policy_retry,
+pub const DynamicSystemFailure = enum(u32) {
+    policy_denied = 70_000,
+    policy_retry = 90_000,
 };
-const DynamicFailureSite = boundary.effect.site(
+pub const DynamicFailureSite = boundary.effect.site(
     0,
     "generic.dynamic-failure.v1",
     DynamicProviderFailure,
@@ -608,11 +608,11 @@ const DynamicProviderBody = struct {
         .result_type = u32_type,
     };
 };
-const DynamicRootProgram = boundary.program(
+pub const DynamicRootProgram = boundary.program(
     "dynamic-failure-root",
     DynamicRootBody,
 );
-const DynamicProviderProgram = boundary.program(
+pub const DynamicProviderProgram = boundary.program(
     "dynamic-failure-provider",
     DynamicProviderBody,
 );
@@ -664,14 +664,19 @@ test "world.system lowers dynamic fail_value through the total Failure morphism"
 const VoidSite = boundary.effect.site(
     0,
     "generic.void-policy.v1",
-    u32,
+    void,
     void,
 );
 const unit_type: boundary.ir.ValueType = .{ .scalar = .unit };
+const void_root_instructions = [_]boundary.ir.Instruction{.{
+    .kind = .constant,
+    .result = 0,
+    .operation = .{ .constant = 0 },
+}};
 const void_root_blocks = [_]boundary.ir.Block{
     .{
         .id = 0,
-        .parameters = &.{0},
+        .instructions = &void_root_instructions,
         .terminator = .{ .@"suspend" = .{
             .kind = .effect,
             .site_id = 0,
@@ -690,14 +695,15 @@ const void_root_blocks = [_]boundary.ir.Block{
     },
 };
 const VoidRootBody = struct {
-    pub const InitialArgs = u32;
+    pub const InitialArgs = void;
     pub const Result = void;
     pub const Failure = SystemFailure;
+    pub const constants = .{@as(void, {})};
     pub const effect_sites = .{VoidSite};
     pub const schema_types = .{};
     pub const control_ir: boundary.ir.Program = .{
         .label = "void-root",
-        .value_types = &.{ u32_type, unit_type },
+        .value_types = &.{ unit_type, unit_type },
         .blocks = &void_root_blocks,
         .entry = 0,
         .result_type = unit_type,
@@ -705,18 +711,17 @@ const VoidRootBody = struct {
 };
 const void_provider_blocks = [_]boundary.ir.Block{.{
     .id = 0,
-    .parameters = &.{0},
     .terminator = .{ .return_value = null },
 }};
 const VoidProviderBody = struct {
-    pub const InitialArgs = u32;
+    pub const InitialArgs = void;
     pub const Result = void;
     pub const Failure = SystemFailure;
     pub const effect_sites = .{};
     pub const schema_types = .{};
     pub const control_ir: boundary.ir.Program = .{
         .label = "void-provider",
-        .value_types = &.{u32_type},
+        .value_types = &.{},
         .blocks = &void_provider_blocks,
         .entry = 0,
         .result_type = unit_type,
@@ -743,7 +748,7 @@ test "world.system internal handlers preserve void Resume and Result" {
         .maximum_machine_fuel = 16,
     });
     try std.testing.expectEqual(@as(usize, 0), VoidMachine.EffectRow.operation_site_count);
-    const state = try VoidMachine.initialState(std.testing.allocator, 7);
+    const state = try VoidMachine.initialState(std.testing.allocator, {});
     defer VoidMachine.deinitState(state);
     var fuel: u64 = 8;
     const completed = switch (try VoidMachine.step(state, &fuel)) {
@@ -809,4 +814,244 @@ test "world.system preserves a root component entry other than block zero" {
     };
     defer completed.deinit();
     try std.testing.expectEqual(@as(u32, 7), completed.value().*);
+}
+
+const CostBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{};
+    pub const schema_types = .{};
+    pub const block_costs = [_]u64{10};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "cost-root",
+        .value_types = &.{u32_type},
+        .blocks = &.{.{
+            .id = 0,
+            .parameters = &.{0},
+            .terminator = .{ .return_value = 0 },
+        }},
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const CostProgram = boundary.program("cost-root", CostBody);
+const CostSystem = world.system(.{
+    .name = "cost-system",
+    .root = CostProgram,
+    .handlers = .{},
+    .morphisms = .{},
+    .external = .{},
+});
+
+test "world.system preserves component-authored Machine-v2 block costs" {
+    try std.testing.expectEqualSlices(
+        u8,
+        &CostProgram.machine_v2_semantic_digest,
+        &CostSystem.Program.machine_v2_semantic_digest,
+    );
+}
+
+const DuplicateMorphA = boundary.effect.site(
+    0,
+    "generic.duplicate-source-a.v1",
+    u32,
+    u32,
+);
+const DuplicateMorphB = boundary.effect.site(
+    1,
+    "generic.duplicate-source-b.v1",
+    u32,
+    u32,
+);
+const DuplicateTarget = boundary.effect.site(
+    0,
+    "generic.duplicate-target.v1",
+    u32,
+    u32,
+);
+const duplicate_morph_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{
+                .target = 1,
+                .arguments = &resume_arguments,
+            },
+            .resume_type = u32_type,
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 1,
+            .request_values = &.{1},
+            .continuation = .{
+                .target = 2,
+                .arguments = &resume_arguments,
+            },
+            .resume_type = u32_type,
+        } },
+    },
+    .{
+        .id = 2,
+        .parameters = &.{2},
+        .terminator = .{ .return_value = 2 },
+    },
+};
+const DuplicateMorphBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{ DuplicateMorphA, DuplicateMorphB };
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "duplicate-morph-root",
+        .value_types = &.{ u32_type, u32_type, u32_type },
+        .blocks = &duplicate_morph_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const DuplicateMorphProgram = boundary.program(
+    "duplicate-morph-root",
+    DuplicateMorphBody,
+);
+const DuplicateMorphSystem = world.system(.{
+    .name = "duplicate-morph-system",
+    .root = DuplicateMorphProgram,
+    .handlers = .{},
+    .morphisms = .{
+        world.systemMorphism(.{
+            .consumer = DuplicateMorphProgram,
+            .site = DuplicateMorphA,
+            .target = DuplicateTarget,
+        }),
+        world.systemMorphism(.{
+            .consumer = DuplicateMorphProgram,
+            .site = DuplicateMorphB,
+            .target = DuplicateTarget,
+        }),
+    },
+    .external = .{DuplicateTarget},
+});
+
+test "world.system retains every reachable residual source-site occurrence" {
+    const DuplicateMachine = DuplicateMorphSystem.Program.compile(.{
+        .maximum_frames = 4,
+        .maximum_state_bytes = 4096,
+        .maximum_machine_fuel = 16,
+    });
+    try std.testing.expectEqual(@as(usize, 2), DuplicateMorphSystem.residual_effects.count);
+    try std.testing.expect(DuplicateMorphSystem.residual_effects.items[0] == DuplicateTarget);
+    try std.testing.expect(DuplicateMorphSystem.residual_effects.items[1] == DuplicateTarget);
+    try std.testing.expectEqual(@as(usize, 2), DuplicateMachine.EffectRow.operation_site_count);
+}
+
+const OrderPolicyA = boundary.effect.site(
+    0,
+    "generic.order-policy-a.v1",
+    u32,
+    u32,
+);
+const OrderPolicyB = boundary.effect.site(
+    1,
+    "generic.order-policy-b.v1",
+    u32,
+    u32,
+);
+const order_root_blocks = duplicate_morph_blocks;
+const OrderRootBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{ OrderPolicyA, OrderPolicyB };
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "order-root",
+        .value_types = &.{ u32_type, u32_type, u32_type },
+        .blocks = &order_root_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+
+fn PureProvider(comptime label: []const u8, comptime delta: u32) type {
+    const GeneratedBody = struct {
+        const instructions = [_]boundary.ir.Instruction{
+            .{
+                .kind = .constant,
+                .result = 1,
+                .operation = .{ .constant = 0 },
+            },
+            .{
+                .kind = .pure,
+                .result = 2,
+                .operands = &.{ 0, 1 },
+                .operation = .integer_add,
+            },
+        };
+        const blocks = [_]boundary.ir.Block{.{
+            .id = 0,
+            .parameters = &.{0},
+            .instructions = &instructions,
+            .terminator = .{ .return_value = 2 },
+        }};
+        pub const InitialArgs = u32;
+        pub const Result = u32;
+        pub const Failure = SystemFailure;
+        pub const constants = .{delta};
+        pub const effect_sites = .{};
+        pub const schema_types = .{};
+        pub const control_ir: boundary.ir.Program = .{
+            .label = label,
+            .value_types = &.{ u32_type, u32_type, u32_type },
+            .blocks = &blocks,
+            .entry = 0,
+            .result_type = u32_type,
+        };
+    };
+    return boundary.program(label, GeneratedBody);
+}
+
+const OrderRootProgram = boundary.program("order-root", OrderRootBody);
+const OrderProviderA = PureProvider("order-provider-a", 1);
+const OrderProviderB = PureProvider("order-provider-b", 2);
+const OrderHandlerA = world.systemHandle(.{
+    .consumer = OrderRootProgram,
+    .site = OrderPolicyA,
+    .provider = OrderProviderA,
+});
+const OrderHandlerB = world.systemHandle(.{
+    .consumer = OrderRootProgram,
+    .site = OrderPolicyB,
+    .provider = OrderProviderB,
+});
+const OrderSystemAB = world.system(.{
+    .name = "order-system",
+    .root = OrderRootProgram,
+    .handlers = .{ OrderHandlerA, OrderHandlerB },
+    .morphisms = .{},
+    .external = .{},
+});
+const OrderSystemBA = world.system(.{
+    .name = "order-system",
+    .root = OrderRootProgram,
+    .handlers = .{ OrderHandlerB, OrderHandlerA },
+    .morphisms = .{},
+    .external = .{},
+});
+
+test "world.system canonical identity ignores handler tuple ordering" {
+    try std.testing.expectEqualSlices(
+        u8,
+        &OrderSystemAB.Program.image().bytes,
+        &OrderSystemBA.Program.image().bytes,
+    );
 }
