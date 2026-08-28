@@ -649,7 +649,9 @@ fn blockInstructionFailureTargets(
     if (Map == void) return result;
     const Admission = Plan.components.admissionAt(component_index);
     inline for (block.instructions) |instruction| {
-        const source_tags = Admission.instructionFailureTags(instruction);
+        const source_tags = Admission.instructionFailureProjection(
+            instruction,
+        ).failure_tags;
         inline for (source_tags) |source_tag| {
             result.add(mappedFailureTarget(Map, source_tag));
         }
@@ -2971,7 +2973,12 @@ fn remapInstruction(
     const value_offset = valueOffset(components, component_index);
     const Map = failureMapFor(components, Plan.handlers, component_index);
     const Admission = components.admissionAt(component_index);
-    const source_failure_tags = Admission.instructionFailureTags(source);
+    const projection = Admission.instructionFailureProjection(source);
+    const source_failure_tags = projection.failure_tags;
+    const copied_operand_count = if (Map == void)
+        source.operands.len
+    else
+        projection.ordinary_operand_count;
     const mapped_count = if (Map == void) 0 else source_failure_tags.len;
     const targets = blockInstructionFailureTargets(
         Plan,
@@ -2980,14 +2987,14 @@ fn remapInstruction(
     );
     const Static = struct {
         const operands = blk: {
-            var result: [source.operands.len + mapped_count]cir.ValueId = undefined;
-            for (source.operands, 0..) |operand, index| {
+            var result: [copied_operand_count + mapped_count]cir.ValueId = undefined;
+            for (source.operands[0..copied_operand_count], 0..) |operand, index| {
                 result[index] = @intCast(value_offset + operand);
             }
             if (Map != void) {
                 for (source_failure_tags, 0..) |source_tag, index| {
                     const target = mappedFailureTarget(Map, source_tag);
-                    result[source.operands.len + index] = @intCast(
+                    result[copied_operand_count + index] = @intCast(
                         instructionFailureValueBase(
                             Plan,
                             component_index,

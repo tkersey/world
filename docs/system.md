@@ -59,7 +59,11 @@ Each source component is independently admitted by Boundary before remapping;
 linker-generated unit and Failure adapters occupy separate reductions so
 source block instructions and authored Machine-v2 costs are preserved.
 When a provider uses a distinct Failure type, each block interns the mapped
-root-Failure targets required by its fallible instructions. Generated constant
+root-Failure targets required by its fallible instructions. Boundary component
+admission normalizes evaluator-v1 role defaults and evaluator-v2 authored
+Failure constants to one ordinary-operand-count plus effective-tag projection;
+World preserves an unchanged suffix or replaces it exactly once through the
+declared morphism. Generated constant
 instructions make those targets available once per block, and evaluator
 semantics v2 appends them to each fallible instruction in Boundary role order.
 Instruction-originated failures therefore pass through the same declared total

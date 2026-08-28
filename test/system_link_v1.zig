@@ -425,6 +425,182 @@ test "world.system maps provider instruction failures inside ordinary BPI1" {
     );
 }
 
+const AuthoredInstructionProviderFailure = enum { custom };
+const authored_instruction_provider_blocks = [_]boundary.ir.Block{.{
+    .id = 0,
+    .parameters = &.{0},
+    .instructions = &.{
+        .{
+            .kind = .constant,
+            .result = 1,
+            .operation = .{ .constant = 0 },
+        },
+        .{
+            .kind = .constant,
+            .result = 2,
+            .operation = .{ .constant = 1 },
+        },
+        .{
+            .kind = .pure,
+            .result = 3,
+            .operands = &.{ 0, 1, 2 },
+            .operation = .integer_add,
+        },
+    },
+    .terminator = .{ .return_value = 3 },
+}};
+const AuthoredInstructionProviderBody = struct {
+    pub const InitialArgs = u8;
+    pub const Result = u8;
+    pub const Failure = AuthoredInstructionProviderFailure;
+    pub const constants = .{
+        @as(u8, 1),
+        AuthoredInstructionProviderFailure.custom,
+    };
+    pub const effect_sites = .{};
+    pub const schema_types = .{AuthoredInstructionProviderFailure};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "authored-instruction-provider",
+        .value_types = &.{
+            .{ .scalar = .u8 },
+            .{ .scalar = .u8 },
+            .{ .schema = 0 },
+            .{ .scalar = .u8 },
+        },
+        .blocks = &authored_instruction_provider_blocks,
+        .entry = 0,
+        .result_type = .{ .scalar = .u8 },
+    };
+};
+const AuthoredInstructionProvider = boundary.program(
+    "authored-instruction-provider",
+    AuthoredInstructionProviderBody,
+);
+pub const AuthoredInstructionSpec = .{
+    .name = "authored-instruction-system",
+    .root = MappedInstructionRoot,
+    .handlers = .{world.systemHandle(.{
+        .consumer = MappedInstructionRoot,
+        .site = MappedInstructionPolicy,
+        .provider = AuthoredInstructionProvider,
+        .failure_morphism = world.failureMorphism(
+            AuthoredInstructionProviderFailure,
+            MappedInstructionRootFailure,
+            .{MappedInstructionRootFailure.mapped},
+        ),
+    })},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const AuthoredInstructionSystem = world.system(AuthoredInstructionSpec);
+
+test "world.system translates authored evaluator-v2 provider failures exactly once" {
+    const Image = AuthoredInstructionSystem.Program.image();
+    try std.testing.expectEqual(
+        boundary.image.evaluator_semantics_v2,
+        Image.evaluator_semantics_version,
+    );
+    const Storage = boundary.process_v1.CapacityStorage(.{
+        .input = 4096,
+        .output = 4096,
+        .state = 4096,
+        .value = 4096,
+        .request = 4096,
+        .environment = 4096,
+        .scratch = 64 * 1024,
+    });
+    var first_storage: Storage = .{};
+    var second_storage: Storage = .{};
+    var first_workspace: boundary.image.ValidationWorkspace = .{};
+    var second_workspace: boundary.image.ValidationWorkspace = .{};
+    const first = try first_storage.advance(
+        &Image.bytes,
+        .{ .initial_args = &.{std.math.maxInt(u8)} },
+        null,
+        &first_workspace,
+    );
+    const second = try second_storage.advance(
+        &Image.bytes,
+        .{ .process_state = first.progressed },
+        null,
+        &second_workspace,
+    );
+    try std.testing.expectEqual(
+        @as(u32, @intFromEnum(MappedInstructionRootFailure.mapped)),
+        std.mem.readInt(u32, second.authored_failure[0..4], .little),
+    );
+}
+
+const SameFailureV2Body = struct {
+    pub const InitialArgs = void;
+    pub const Result = u8;
+    pub const Failure = AuthoredInstructionProviderFailure;
+    pub const constants = .{
+        @as(u8, std.math.maxInt(u8)),
+        @as(u8, 1),
+        AuthoredInstructionProviderFailure.custom,
+    };
+    pub const effect_sites = .{};
+    pub const schema_types = .{AuthoredInstructionProviderFailure};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "same-failure-v2-root",
+        .value_types = &.{
+            .{ .scalar = .u8 },
+            .{ .scalar = .u8 },
+            .{ .schema = 0 },
+            .{ .scalar = .u8 },
+        },
+        .blocks = &.{.{
+            .id = 0,
+            .instructions = &.{
+                .{
+                    .kind = .constant,
+                    .result = 0,
+                    .operation = .{ .constant = 0 },
+                },
+                .{
+                    .kind = .constant,
+                    .result = 1,
+                    .operation = .{ .constant = 1 },
+                },
+                .{
+                    .kind = .constant,
+                    .result = 2,
+                    .operation = .{ .constant = 2 },
+                },
+                .{
+                    .kind = .pure,
+                    .result = 3,
+                    .operands = &.{ 0, 1, 2 },
+                    .operation = .integer_add,
+                },
+            },
+            .terminator = .{ .return_value = 3 },
+        }},
+        .entry = 0,
+        .result_type = .{ .scalar = .u8 },
+    };
+};
+const SameFailureV2Program = boundary.program(
+    "same-failure-v2-root",
+    SameFailureV2Body,
+);
+const SameFailureV2System = world.system(.{
+    .name = "same-failure-v2-root",
+    .root = SameFailureV2Program,
+    .handlers = .{},
+    .morphisms = .{},
+    .external = .{},
+});
+
+test "world.system preserves authored evaluator-v2 failures without a morphism" {
+    const Image = SameFailureV2System.Program.image();
+    try std.testing.expectEqual(
+        boundary.image.evaluator_semantics_v2,
+        Image.evaluator_semantics_version,
+    );
+}
+
 pub const MorphSource = boundary.effect.site(
     0,
     "generic.morph-source.v1",

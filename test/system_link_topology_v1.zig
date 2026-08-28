@@ -177,7 +177,9 @@ fn instructionFailureTargetsForBlock(
     if (Map == void) return result;
     const Admission = boundary.componentAdmission(components.items[component_index]);
     inline for (block.instructions) |instruction| {
-        const source_tags = Admission.instructionFailureTags(instruction);
+        const source_tags = Admission.instructionFailureProjection(
+            instruction,
+        ).failure_tags;
         inline for (source_tags) |source_tag| {
             result.add(mappedTargetForProof(Map, source_tag));
         }
@@ -954,6 +956,7 @@ fn expectedValueType(
 fn assertInstructionMapping(
     comptime source: boundary.ir.Instruction,
     comptime linked: boundary.ir.Instruction,
+    comptime copied_operand_count: usize,
     value_offset: usize,
     constant_offset: usize,
 ) !void {
@@ -962,10 +965,10 @@ fn assertInstructionMapping(
         @as(boundary.ir.ValueId, @intCast(value_offset + source.result)),
         linked.result,
     );
-    try std.testing.expect(source.operands.len <= linked.operands.len);
+    try std.testing.expect(copied_operand_count <= linked.operands.len);
     inline for (
-        source.operands,
-        linked.operands[0..source.operands.len],
+        source.operands[0..copied_operand_count],
+        linked.operands[0..copied_operand_count],
     ) |source_operand, linked_operand| {
         try std.testing.expectEqual(
             @as(boundary.ir.ValueId, @intCast(value_offset + source_operand)),
@@ -1671,17 +1674,23 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
                 source.instructions,
                 linked.instructions[targets.count..],
             ) |instruction, linked_instruction| {
+                const projection = comptime Program.componentAdmission()
+                    .instructionFailureProjection(instruction);
+                const copied_operand_count = if (Map == void)
+                    instruction.operands.len
+                else
+                    projection.ordinary_operand_count;
                 try assertInstructionMapping(
                     instruction,
                     linked_instruction,
+                    copied_operand_count,
                     offsets.values,
                     offsets.constants,
                 );
-                const source_tags = comptime Program.componentAdmission()
-                    .instructionFailureTags(instruction);
+                const source_tags = projection.failure_tags;
                 const mapped_count = if (Map == void) 0 else source_tags.len;
                 try std.testing.expectEqual(
-                    instruction.operands.len + mapped_count,
+                    copied_operand_count + mapped_count,
                     linked_instruction.operands.len,
                 );
                 if (Map != void) {
@@ -1700,7 +1709,7 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
                                 ) + comptime targets.indexOf(target),
                             )),
                             linked_instruction.operands[
-                                instruction.operands.len + index
+                                copied_operand_count + index
                             ],
                         );
                     }
@@ -1819,6 +1828,10 @@ test "source-derived topology maps provider instruction failures" {
     try assertTopology(
         fixtures.MappedInstructionSpec,
         fixtures.MappedInstructionSystem,
+    );
+    try assertTopology(
+        fixtures.AuthoredInstructionSpec,
+        fixtures.AuthoredInstructionSystem,
     );
 }
 
