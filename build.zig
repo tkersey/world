@@ -492,10 +492,8 @@ pub fn build(b: *std.Build) void {
         .{ .path = "test/compile_fail/system_v1_morphism_mismatch.zig", .message = "World system effect morphism must preserve Payload and Resume" },
         .{ .path = "test/compile_fail/system_v1_handler_cycle.zig", .message = "World system internal handler graph contains a cycle" },
         .{ .path = "test/compile_fail/system_v1_unreachable_external.zig", .message = "World system has an unreachable external declaration" },
-        .{ .path = "test/compile_fail/system_v1_unreachable_site.zig", .message = "World system component declares an unreachable effect site" },
-        .{ .path = "test/compile_fail/system_v1_aliased_unreachable_site.zig", .message = "World system component declares an unreachable effect site" },
         .{ .path = "test/compile_fail/system_v1_forged_failure_map.zig", .message = "World system Failure morphism must cover every source tag" },
-        .{ .path = "test/compile_fail/system_v1_forged_component.zig", .message = "Body.block_costs cannot undercharge Control IR operations" },
+        .{ .path = "test/compile_fail/system_v1_forged_component.zig", .message = "world.system components must be admitted Boundary Programs" },
     }) |witness| {
         const negative = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(witness.path),

@@ -28,11 +28,12 @@ accept `site_ordinal` when one component repeats the same Site type. Bare
 external Site declarations are shorthand only when the Site type identifies
 one reachable occurrence across the linked graph.
 
-One compile-time Link Plan derives the rooted component graph and each
-component's Boundary reachability before lowering. Bare external declarations
-are interpreted separately as morphism-target authority and, when unique, as a
-source-occurrence disposition. Every linked count and emitted adapter is derived
-from the same plan.
+One compile-time Link Plan consumes each Program's Boundary-owned admitted
+component projection: source identity, reachability, canonical mappings,
+residual analysis, effective costs, and digests. Bare external declarations are
+interpreted separately as morphism-target authority and, when unique, as a
+source-occurrence disposition. The plan materializes every reachable
+source-occurrence disposition and Failure-adapter layout before lowering.
 
 Internal handlers require exact `Payload == Provider.InitialArgs` and
 `Resume == Provider.Result`. Provider Failure either equals the root Failure or
@@ -41,10 +42,12 @@ uses one explicit pure total `world.failureMorphism`. The resulting
 Each source component is independently admitted by Boundary before remapping;
 linker-generated unit and Failure adapters occupy separate reductions so
 source block instructions and authored Machine-v2 costs are preserved.
-Unreachable source blocks retain their definitions behind private self-loops,
-so they cannot create cross-component edges or Failure obligations. A void-input
-provider keeps its original entry and Control IR edges; a generated handler
-wrapper owns the explicit unit call convention.
+Unreachable effect declarations require no disposition and contribute no
+residual authority. Unreachable helper graphs retain their original definitions,
+edges, and dominance; only an impossible Failure terminal whose source domain is
+empty or whose non-identity map is unreachable becomes a local inert loop. A
+void-input provider keeps its original entry and Control IR edges; a generated
+handler wrapper owns the explicit unit call convention.
 
 `world.application` remains a compatibility and optional-specialization path;
 its manifest, Frame, provider scheduler, and application-specific WebAssembly

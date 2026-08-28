@@ -31,6 +31,21 @@ const SharedSchema = struct {
 
 const u32_type: boundary.ir.ValueType = .{ .scalar = .u32 };
 const resume_arguments = [_]boundary.ir.EdgeArgument{.@"resume"};
+
+fn expectResidualSite(
+    comptime Actual: type,
+    comptime Expected: type,
+    expected_ordinal: u32,
+) !void {
+    try std.testing.expectEqual(expected_ordinal, Actual.id);
+    try std.testing.expectEqual(expected_ordinal, Actual.site_id);
+    try std.testing.expectEqualStrings(
+        Expected.semantic_identity,
+        Actual.semantic_identity,
+    );
+    try std.testing.expect(Actual.Payload == Expected.Payload);
+    try std.testing.expect(Actual.Resume == Expected.Resume);
+}
 const root_blocks = [_]boundary.ir.Block{
     .{
         .id = 0,
@@ -156,12 +171,13 @@ const Machine = System.Program.compile(.{
 });
 
 test "world.system links one internal Program handler into one BPI1" {
+    try std.testing.expect(!@hasDecl(System, "Root"));
     try std.testing.expectEqual(@as(usize, 2), System.component_count);
     try std.testing.expectEqual(@as(usize, 1), System.internal_handler_count);
     try std.testing.expectEqual(@as(usize, 2), System.schema_count);
     try std.testing.expectEqual(@as(usize, 2), System.residual_effects.count);
-    try std.testing.expect(System.residual_effects.items[0] == Observe);
-    try std.testing.expect(System.residual_effects.items[1] == ProviderObserve);
+    try expectResidualSite(System.residual_effects.items[0], Observe, 0);
+    try expectResidualSite(System.residual_effects.items[1], ProviderObserve, 1);
     try std.testing.expect(System.Program.image().bytes.len > 0);
     try std.testing.expectEqual(@as(usize, 2), Machine.EffectRow.operation_site_count);
     try std.testing.expectEqualStrings(
@@ -334,7 +350,7 @@ test "world.system calculates the residual effect after one morphism" {
         .maximum_machine_fuel = 16,
     });
     try std.testing.expectEqual(@as(usize, 1), MorphedSystem.residual_effects.count);
-    try std.testing.expect(MorphedSystem.residual_effects.items[0] == MorphTarget);
+    try expectResidualSite(MorphedSystem.residual_effects.items[0], MorphTarget, 0);
     try std.testing.expectEqualStrings(
         MorphTarget.semantic_identity,
         MorphedMachine.EffectRow.site(0).semantic_identity,
@@ -969,8 +985,16 @@ test "world.system retains every reachable residual source-site occurrence" {
         .maximum_machine_fuel = 16,
     });
     try std.testing.expectEqual(@as(usize, 2), DuplicateMorphSystem.residual_effects.count);
-    try std.testing.expect(DuplicateMorphSystem.residual_effects.items[0] == DuplicateTarget);
-    try std.testing.expect(DuplicateMorphSystem.residual_effects.items[1] == DuplicateTarget);
+    try expectResidualSite(
+        DuplicateMorphSystem.residual_effects.items[0],
+        DuplicateTarget,
+        0,
+    );
+    try expectResidualSite(
+        DuplicateMorphSystem.residual_effects.items[1],
+        DuplicateTarget,
+        1,
+    );
     try std.testing.expectEqual(@as(usize, 2), DuplicateMachine.EffectRow.operation_site_count);
 }
 
@@ -1306,10 +1330,10 @@ pub const VoidDeadSpec = .{
 };
 pub const VoidDeadSystem = world.system(VoidDeadSpec);
 
-test "world.system privatizes unreachable void-entry predecessors" {
+test "world.system preserves unreachable void-entry predecessors behind a wrapper" {
     const Linked = VoidDeadSystem.Program.component();
     const dead_edge = Linked.control_ir.blocks[3].terminator.jump;
-    try std.testing.expectEqual(@as(boundary.ir.BlockId, 3), dead_edge.target);
+    try std.testing.expectEqual(@as(boundary.ir.BlockId, 2), dead_edge.target);
     try std.testing.expectEqual(@as(usize, 0), dead_edge.arguments.len);
     try std.testing.expectEqual(@as(usize, 3), Linked.control_ir.functions.len);
 
@@ -1415,7 +1439,11 @@ test "world.system separates morphism targets from source dispositions" {
         .maximum_machine_fuel = 64,
     });
     try std.testing.expectEqual(@as(usize, 1), ExternalRoleSystem.residual_effects.count);
-    try std.testing.expect(ExternalRoleSystem.residual_effects.items[0] == RoleTarget);
+    try expectResidualSite(
+        ExternalRoleSystem.residual_effects.items[0],
+        RoleTarget,
+        0,
+    );
     try std.testing.expectEqual(@as(u32, 1), RoleTarget.id);
     try std.testing.expectEqualStrings(
         RoleTarget.semantic_identity,
@@ -1535,4 +1563,122 @@ test "world.system closes zero-cardinality Failure layout" {
     };
     defer completed.deinit();
     try std.testing.expectEqual(@as(u32, 9), completed.value().*);
+}
+
+const UnusedDeclared = boundary.effect.site(
+    0,
+    "generic.unused-declared.v1",
+    u32,
+    u32,
+);
+const UnusedDeclaredBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{UnusedDeclared};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "unused-declared",
+        .value_types = &.{u32_type},
+        .blocks = &.{.{
+            .id = 0,
+            .parameters = &.{0},
+            .terminator = .{ .return_value = 0 },
+        }},
+        .entry = 0,
+        .result_type = u32_type,
+    };
+};
+const UnusedDeclaredProgram = boundary.program(
+    "unused-declared",
+    UnusedDeclaredBody,
+);
+pub const UnusedDeclaredSpec = .{
+    .name = "unused-declared-system",
+    .root = UnusedDeclaredProgram,
+    .handlers = .{},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const UnusedDeclaredSystem = world.system(UnusedDeclaredSpec);
+
+test "world.system ignores unreachable effect declarations" {
+    try std.testing.expectEqual(@as(usize, 0), UnusedDeclaredSystem.residual_effects.count);
+    try std.testing.expect(UnusedDeclaredSystem.Program.image().bytes.len > 0);
+}
+
+const helper_instructions = [_]boundary.ir.Instruction{.{
+    .kind = .constant,
+    .result = 1,
+    .operation = .{ .constant = 0 },
+}};
+const helper_return_instructions = [_]boundary.ir.Instruction{.{
+    .kind = .copy,
+    .result = 2,
+    .operands = &.{1},
+    .operation = .copy,
+}};
+const unreachable_helper_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .return_value = 0 },
+    },
+    .{
+        .id = 1,
+        .function_id = 1,
+        .instructions = &helper_instructions,
+        .terminator = .{ .jump = .{ .target = 2 } },
+    },
+    .{
+        .id = 2,
+        .function_id = 1,
+        .instructions = &helper_return_instructions,
+        .terminator = .{ .return_to_caller = 2 },
+    },
+};
+const unreachable_helper_functions = [_]boundary.ir.Function{
+    .{ .id = 0, .entry = 0, .result_type = u32_type },
+    .{ .id = 1, .entry = 1, .result_type = u32_type },
+};
+const UnreachableHelperBody = struct {
+    pub const InitialArgs = u32;
+    pub const Result = u32;
+    pub const Failure = SystemFailure;
+    pub const constants = .{@as(u32, 7)};
+    pub const effect_sites = .{};
+    pub const schema_types = .{};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "unreachable-helper",
+        .value_types = &.{ u32_type, u32_type, u32_type },
+        .blocks = &unreachable_helper_blocks,
+        .entry = 0,
+        .result_type = u32_type,
+        .functions = &unreachable_helper_functions,
+    };
+};
+const UnreachableHelperProgram = boundary.program(
+    "unreachable-helper",
+    UnreachableHelperBody,
+);
+pub const UnreachableHelperSpec = .{
+    .name = "unreachable-helper-system",
+    .root = UnreachableHelperProgram,
+    .handlers = .{},
+    .morphisms = .{},
+    .external = .{},
+};
+pub const UnreachableHelperSystem = world.system(UnreachableHelperSpec);
+
+test "world.system preserves unreachable helper SSA topology" {
+    const Linked = UnreachableHelperSystem.Program.component();
+    try std.testing.expectEqual(
+        @as(boundary.ir.BlockId, 2),
+        Linked.control_ir.blocks[1].terminator.jump.target,
+    );
+    try std.testing.expectEqual(
+        @as(boundary.ir.ValueId, 1),
+        Linked.control_ir.blocks[2].instructions[0].operands[0],
+    );
+    try std.testing.expect(UnreachableHelperSystem.Program.image().bytes.len > 0);
 }

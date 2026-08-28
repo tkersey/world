@@ -9,6 +9,13 @@ const BindingKind = enum {
     external,
 };
 
+const SiteDisposition = enum {
+    inactive,
+    handler,
+    morphism,
+    external,
+};
+
 pub fn handle(comptime config: anytype) type {
     inline for (.{ "consumer", "site", "provider" }) |field| {
         if (!@hasField(@TypeOf(config), field)) {
@@ -122,7 +129,6 @@ pub fn system(comptime spec: anytype) type {
     const LinkedProgram = boundary.program(name, Linked.Body);
     return struct {
         pub const Program = LinkedProgram;
-        pub const Root = spec.root;
         pub const InitialArgs = Linked.Body.InitialArgs;
         pub const Result = Linked.Body.Result;
         pub const Failure = Linked.Body.Failure;
@@ -171,17 +177,6 @@ fn componentsFor(
     return result;
 }
 
-fn maximumComponentBlocks(comptime components: anytype) usize {
-    var result: usize = 1;
-    inline for (0..components.count) |index| {
-        result = @max(
-            result,
-            body(components.items[index]).control_ir.blocks.len,
-        );
-    }
-    return result;
-}
-
 fn PlanFor(
     comptime Root: type,
     comptime components_value: anytype,
@@ -189,16 +184,76 @@ fn PlanFor(
     comptime morphisms_value: anytype,
     comptime externals_value: anytype,
 ) type {
-    const Reachability = cir.Reachability(maximumComponentBlocks(components_value));
-    const reachable = comptime blk: {
-        var result: [components_value.count]Reachability = undefined;
-        for (0..components_value.count) |index| {
-            validateComponentAdmission(components_value.items[index]);
-            result[index] = Reachability.analyze(
-                body(components_value.items[index]).control_ir,
-            ) catch @compileError(
-                "World system component Control IR reachability failed",
+    comptime for (0..components_value.count) |index| {
+        _ = admission(components_value.items[index]);
+    };
+    const dispositions = comptime blk: {
+        var result: [totalEffects(components_value)]SiteDisposition = undefined;
+        for (0..components_value.count) |component_index| {
+            const Program = components_value.items[component_index];
+            for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
+                const linked_id = effectOffset(components_value, component_index) +
+                    site_ordinal;
+                if (!admittedSiteReachable(Program, site_ordinal)) {
+                    result[linked_id] = .inactive;
+                    continue;
+                }
+                const internal_count = handlerCount(
+                    handlers_value,
+                    Program,
+                    site_ordinal,
+                );
+                const morphism_count = morphismCount(
+                    morphisms_value,
+                    Program,
+                    site_ordinal,
+                );
+                const external_count = externalSourceCountRaw(
+                    components_value,
+                    handlers_value,
+                    morphisms_value,
+                    externals_value,
+                    Program,
+                    site_ordinal,
+                    Site,
+                );
+                const count = internal_count + morphism_count + external_count;
+                if (count == 0) {
+                    @compileError(
+                        "World system has an uncovered non-external effect site",
+                    );
+                }
+                if (count != 1) {
+                    @compileError("World system effect site has ambiguous disposition");
+                }
+                result[linked_id] = if (internal_count == 1)
+                    .handler
+                else if (morphism_count == 1)
+                    .morphism
+                else
+                    .external;
+            }
+        }
+        break :blk result;
+    };
+    const failure_layouts = comptime blk: {
+        var result: [totalBlocks(components_value)]FailureAdapterLayout = undefined;
+        for (0..components_value.count) |component_index| {
+            const Map = failureMapFor(
+                components_value,
+                handlers_value,
+                component_index,
             );
+            for (body(components_value.items[component_index]).control_ir.blocks) |block| {
+                const linked_id = blockOffset(components_value, component_index) +
+                    block.id;
+                result[linked_id] = if (admission(
+                    components_value.items[component_index],
+                ).reachability.contains(block.id))
+                    failureAdapterLayout(Map, block.terminator)
+                else
+                    .{ .kind = .none };
+            }
         }
         break :blk result;
     };
@@ -208,13 +263,32 @@ fn PlanFor(
         pub const handlers = handlers_value;
         pub const morphisms = morphisms_value;
         pub const externals = externals_value;
-        pub const reachability = reachable;
-
+        pub const site_dispositions = dispositions;
+        pub const failure_adapter_layouts = failure_layouts;
         pub fn blockReachable(
             comptime component_index: usize,
             comptime block_id: cir.BlockId,
         ) bool {
-            return reachability[component_index].contains(block_id);
+            return admission(components.items[component_index])
+                .reachability.contains(block_id);
+        }
+
+        pub fn siteDisposition(
+            comptime component_index: usize,
+            comptime site_ordinal: usize,
+        ) SiteDisposition {
+            return site_dispositions[
+                effectOffset(components, component_index) + site_ordinal
+            ];
+        }
+
+        pub fn failureLayout(
+            comptime component_index: usize,
+            comptime block_id: cir.BlockId,
+        ) FailureAdapterLayout {
+            return failure_adapter_layouts[
+                blockOffset(components, component_index) + block_id
+            ];
         }
     };
 }
@@ -264,9 +338,22 @@ fn body(comptime Program: type) type {
     return Body;
 }
 
-fn validateComponentAdmission(comptime Program: type) void {
-    const Admitted = boundary.program("world-component-admission", body(Program));
-    _ = Admitted.program_transition_digest;
+fn admission(comptime Program: type) type {
+    if (!@hasDecl(Program, "componentAdmission")) {
+        @compileError("world.system components must be admitted Boundary Programs");
+    }
+    const Admission = Program.componentAdmission();
+    if (!@hasDecl(Admission, "SourceBody") or
+        !@hasDecl(Admission, "reachability") or
+        !@hasDecl(Admission, "semantic_canonicalization") or
+        !@hasDecl(Admission, "residual_effects") or
+        !@hasDecl(Admission, "effective_block_costs") or
+        !@hasDecl(Admission, "program_transition_digest") or
+        Admission.SourceBody != body(Program))
+    {
+        @compileError("World system component admission projection is invalid");
+    }
+    return Admission;
 }
 
 fn resolveSiteOrdinal(comptime Program: type, comptime config: anytype) usize {
@@ -328,26 +415,8 @@ fn validateSystem(comptime Plan: type) void {
         const Program = components.items[component_index];
         const Body = body(Program);
         _ = failureMapFor(components, handlers, component_index);
-        inline for (Body.effect_sites, 0..) |Site, site_ordinal| {
-            if (!componentSiteReachable(Plan, component_index, site_ordinal)) {
-                @compileError("World system component declares an unreachable effect site");
-            }
-            const internal_count = handlerCount(handlers, Program, site_ordinal);
-            const morphism_count = morphismCount(morphisms, Program, site_ordinal);
-            const external_count = externalCount(
-                Plan,
-                Program,
-                site_ordinal,
-                Site,
-            );
-            if (internal_count + morphism_count + external_count == 0) {
-                @compileError(
-                    "World system has an uncovered non-external effect site",
-                );
-            }
-            if (internal_count + morphism_count + external_count != 1) {
-                @compileError("World system effect site has ambiguous disposition");
-            }
+        inline for (Body.effect_sites, 0..) |_, site_ordinal| {
+            _ = Plan.siteDisposition(component_index, site_ordinal);
         }
     }
     validateExternalUsage(Plan);
@@ -363,6 +432,9 @@ fn validateExternalUsage(comptime Plan: type) void {
         inline for (0..components.count) |component_index| {
             const Program = components.items[component_index];
             inline for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
+                if (!componentSiteReachable(Plan, component_index, site_ordinal)) {
+                    continue;
+                }
                 if (!isExternalBinding(External) and
                     External == Site and
                     bareExternalSourceCount(Plan, Site) == 1 and
@@ -499,11 +571,10 @@ fn componentExtraValues(
     comptime Plan: type,
     comptime component_index: usize,
 ) usize {
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
     inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (!Plan.blockReachable(component_index, block.id)) continue;
-        result += failureAdapterLayout(Map, block.terminator).value_count;
+        result += Plan.failureLayout(component_index, block.id).value_count;
     }
     return result;
 }
@@ -512,11 +583,10 @@ fn componentExtraBlocks(
     comptime Plan: type,
     comptime component_index: usize,
 ) usize {
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
     inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (!Plan.blockReachable(component_index, block.id)) continue;
-        result += failureAdapterLayout(Map, block.terminator).block_count;
+        result += Plan.failureLayout(component_index, block.id).block_count;
     }
     return result;
 }
@@ -525,11 +595,10 @@ fn componentExtraConstants(
     comptime Plan: type,
     comptime component_index: usize,
 ) usize {
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
     inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (!Plan.blockReachable(component_index, block.id)) continue;
-        result += failureAdapterLayout(Map, block.terminator).constant_count;
+        result += Plan.failureLayout(component_index, block.id).constant_count;
     }
     return result;
 }
@@ -788,20 +857,11 @@ fn externalCount(
     comptime site_ordinal: usize,
     comptime Site: type,
 ) usize {
-    var count: usize = 0;
-    inline for (Plan.externals) |External| {
-        if (isExternalBinding(External)) {
-            if (External.Consumer == Program and
-                External.site_ordinal == site_ordinal) count += 1;
-        } else if (External == Site and
-            handlerCount(Plan.handlers, Program, site_ordinal) == 0 and
-            morphismCount(Plan.morphisms, Program, site_ordinal) == 0 and
-            bareExternalSourceCount(Plan, Site) == 1)
-        {
-            count += 1;
-        }
-    }
-    return count;
+    _ = Site;
+    const component_index = componentIndex(Plan.components, Program);
+    return @intFromBool(
+        Plan.siteDisposition(component_index, site_ordinal) == .external,
+    );
 }
 
 fn externalTargetCount(comptime externals: anytype, comptime Target: type) usize {
@@ -813,16 +873,61 @@ fn externalTargetCount(comptime externals: anytype, comptime Target: type) usize
 }
 
 fn bareExternalSourceCount(comptime Plan: type, comptime Site: type) usize {
+    return bareExternalSourceCountRaw(
+        Plan.components,
+        Plan.handlers,
+        Plan.morphisms,
+        Site,
+    );
+}
+
+fn bareExternalSourceCountRaw(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime morphisms: anytype,
+    comptime Site: type,
+) usize {
     var count: usize = 0;
-    inline for (0..Plan.components.count) |component_index| {
-        const Program = Plan.components.items[component_index];
+    inline for (0..components.count) |component_index| {
+        const Program = components.items[component_index];
         inline for (body(Program).effect_sites, 0..) |Candidate, site_ordinal| {
             if (Candidate == Site and
-                handlerCount(Plan.handlers, Program, site_ordinal) == 0 and
-                morphismCount(Plan.morphisms, Program, site_ordinal) == 0)
+                admittedSiteReachable(Program, site_ordinal) and
+                handlerCount(handlers, Program, site_ordinal) == 0 and
+                morphismCount(morphisms, Program, site_ordinal) == 0)
             {
                 count += 1;
             }
+        }
+    }
+    return count;
+}
+
+fn externalSourceCountRaw(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime morphisms: anytype,
+    comptime externals: anytype,
+    comptime Program: type,
+    comptime site_ordinal: usize,
+    comptime Site: type,
+) usize {
+    var count: usize = 0;
+    inline for (externals) |External| {
+        if (isExternalBinding(External)) {
+            if (External.Consumer == Program and
+                External.site_ordinal == site_ordinal) count += 1;
+        } else if (External == Site and
+            handlerCount(handlers, Program, site_ordinal) == 0 and
+            morphismCount(morphisms, Program, site_ordinal) == 0 and
+            bareExternalSourceCountRaw(
+                components,
+                handlers,
+                morphisms,
+                Site,
+            ) == 1)
+        {
+            count += 1;
         }
     }
     return count;
@@ -833,9 +938,20 @@ fn componentSiteReachable(
     comptime component_index: usize,
     comptime site_ordinal: usize,
 ) bool {
-    const Body = body(Plan.components.items[component_index]);
+    return admittedSiteReachable(
+        Plan.components.items[component_index],
+        site_ordinal,
+    );
+}
+
+fn admittedSiteReachable(
+    comptime Program: type,
+    comptime site_ordinal: usize,
+) bool {
+    const Body = body(Program);
+    const reachable = admission(Program).reachability;
     inline for (Body.control_ir.blocks) |block| {
-        if (!Plan.blockReachable(component_index, block.id)) continue;
+        if (!reachable.contains(block.id)) continue;
         switch (block.terminator) {
             .@"suspend" => |suspension| {
                 if (suspension.kind == .effect and
@@ -971,7 +1087,12 @@ fn ResidualCatalog(comptime capacity: usize) type {
         count: usize = 0,
 
         fn add(self: *@This(), comptime Site: type) void {
-            self.items[self.count] = Site;
+            self.items[self.count] = boundary.effect.site(
+                @intCast(self.count),
+                Site.semantic_identity,
+                Site.Payload,
+                Site.Resume,
+            );
             self.count += 1;
         }
     };
@@ -1183,12 +1304,11 @@ fn precedingFailureValuesInComponent(
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
     inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (block.id == block_id) return result;
         if (!Plan.blockReachable(component_index, block.id)) continue;
-        result += failureAdapterLayout(Map, block.terminator).value_count;
+        result += Plan.failureLayout(component_index, block.id).value_count;
     }
     unreachable;
 }
@@ -1198,12 +1318,11 @@ fn precedingFailureBlocksInComponent(
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
     inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (block.id == block_id) return result;
         if (!Plan.blockReachable(component_index, block.id)) continue;
-        result += failureAdapterLayout(Map, block.terminator).block_count;
+        result += Plan.failureLayout(component_index, block.id).block_count;
     }
     unreachable;
 }
@@ -1213,12 +1332,11 @@ fn precedingFailureConstantsInComponent(
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
 ) usize {
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
     var result: usize = 0;
     inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
         if (block.id == block_id) return result;
         if (!Plan.blockReachable(component_index, block.id)) continue;
-        result += failureAdapterLayout(Map, block.terminator).constant_count;
+        result += Plan.failureLayout(component_index, block.id).constant_count;
     }
     unreachable;
 }
@@ -1415,7 +1533,7 @@ fn appendFailureValueTypes(
     ) };
     inline for (body(components.items[component_index]).control_ir.blocks) |block| {
         if (!Plan.blockReachable(component_index, block.id)) continue;
-        switch (failureAdapterLayout(Map, block.terminator).kind) {
+        switch (Plan.failureLayout(component_index, block.id).kind) {
             .direct => appendValueType(result, cursor, target_type),
             .dynamic => {
                 appendValueType(result, cursor, .{ .scalar = .u32 });
@@ -1455,7 +1573,7 @@ fn constantTypes(comptime Plan: type) [linkedTotalConstants(Plan)]type {
         if (Map == void) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
             if (!Plan.blockReachable(component_index, block.id)) continue;
-            switch (failureAdapterLayout(Map, block.terminator).kind) {
+            switch (Plan.failureLayout(component_index, block.id).kind) {
                 .direct => {
                     result[cursor] = Map.TargetFailure;
                     cursor += 1;
@@ -1553,7 +1671,7 @@ fn appendFailureConstants(
     if (Map == void) return;
     inline for (body(components.items[component_index]).control_ir.blocks) |block| {
         if (!Plan.blockReachable(component_index, block.id)) continue;
-        switch (failureAdapterLayout(Map, block.terminator).kind) {
+        switch (Plan.failureLayout(component_index, block.id).kind) {
             .direct => switch (block.terminator) {
                 .fail => |source_tag| appendConstant(
                     result,
@@ -1664,7 +1782,7 @@ fn buildBlocks(
         if (Map == void) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
             if (!Plan.blockReachable(component_index, source.id)) continue;
-            switch (failureAdapterLayout(Map, source.terminator).kind) {
+            switch (Plan.failureLayout(component_index, source.id).kind) {
                 .direct => {
                     const block_id = failureBlockBase(
                         Plan,
@@ -1744,11 +1862,12 @@ fn buildBlockCosts(
         result[index] = @intCast(block.instructions.len + 1);
     }
     inline for (0..components.count) |component_index| {
-        const Body = body(components.items[component_index]);
-        if (!@hasDecl(Body, "block_costs")) continue;
+        const Program = components.items[component_index];
+        const Body = body(Program);
+        const Admission = admission(Program);
         inline for (Body.control_ir.blocks) |block| {
             const linked_id = blockOffset(components, component_index) + block.id;
-            result[linked_id] = Body.block_costs[block.id];
+            result[linked_id] = Admission.effective_block_costs[block.id];
         }
     }
     return result;
@@ -1761,9 +1880,6 @@ fn remapBlock(
     comptime source: cir.Block,
 ) cir.Block {
     const components = Plan.components;
-    if (!Plan.blockReachable(component_index, source.id)) {
-        return remapUnreachableBlock(Plan, component_index, source);
-    }
     const Static = struct {
         const parameters = remapBlockParameters(
             components,
@@ -1848,7 +1964,17 @@ fn remapBlockTerminator(
         )) } };
     }
     const Map = failureMapFor(components, Plan.handlers, component_index);
-    switch (failureAdapterLayout(Map, source).kind) {
+    if (!Plan.blockReachable(component_index, source_block.id) and Map != void) {
+        switch (source) {
+            .fail, .fail_value => return selfLoopTerminator(
+                components,
+                component_index,
+                source_block,
+            ),
+            else => {},
+        }
+    }
+    switch (Plan.failureLayout(component_index, source_block.id).kind) {
         .impossible => return selfLoopTerminator(
             components,
             component_index,
@@ -1870,36 +1996,6 @@ fn remapBlockTerminator(
         source_block.function_id,
         source,
     );
-}
-
-fn remapUnreachableBlock(
-    comptime Plan: type,
-    comptime component_index: usize,
-    comptime source: cir.Block,
-) cir.Block {
-    const components = Plan.components;
-    const Static = struct {
-        const parameters = remapBlockParameters(
-            components,
-            component_index,
-            source,
-        );
-        const instructions = remapBlockInstructions(
-            components,
-            component_index,
-            source,
-        );
-    };
-    return .{
-        .id = @intCast(blockOffset(components, component_index) + source.id),
-        .function_id = @intCast(
-            functionOffset(components, component_index) + source.function_id,
-        ),
-        .role = source.role,
-        .parameters = &Static.parameters,
-        .instructions = &Static.instructions,
-        .terminator = selfLoopTerminator(components, component_index, source),
-    };
 }
 
 fn selfLoopTerminator(
@@ -2518,25 +2614,36 @@ fn residualEffects(comptime Plan: type) ResidualCatalog(
     totalEffects(Plan.components) + Plan.morphisms.len,
 ) {
     const components = Plan.components;
-    const handlers = Plan.handlers;
     const morphisms = Plan.morphisms;
     var result: ResidualCatalog(totalEffects(components) + morphisms.len) = .{};
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         inline for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
-            if (!componentSiteReachable(Plan, component_index, site_ordinal)) continue;
-            if (handlerCount(handlers, Program, site_ordinal) == 1) continue;
-            inline for (morphisms) |Morphism| {
-                if (Morphism.Consumer == Program and
-                    Morphism.site_ordinal == site_ordinal)
-                {
-                    result.add(Morphism.Target);
-                }
-            }
-            if (externalCount(Plan, Program, site_ordinal, Site) == 1) {
-                result.add(Site);
+            switch (Plan.siteDisposition(component_index, site_ordinal)) {
+                .inactive, .handler => {},
+                .morphism => result.add(morphismTargetFor(
+                    morphisms,
+                    Program,
+                    site_ordinal,
+                )),
+                .external => result.add(Site),
             }
         }
     }
     return result;
+}
+
+fn morphismTargetFor(
+    comptime morphisms: anytype,
+    comptime Program: type,
+    comptime site_ordinal: usize,
+) type {
+    inline for (morphisms) |Morphism| {
+        if (Morphism.Consumer == Program and
+            Morphism.site_ordinal == site_ordinal)
+        {
+            return Morphism.Target;
+        }
+    }
+    unreachable;
 }

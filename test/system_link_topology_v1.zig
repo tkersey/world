@@ -229,11 +229,34 @@ fn externalCount(
     return result;
 }
 
+fn sourceSiteReachable(
+    comptime Program: type,
+    comptime site_ordinal: usize,
+) bool {
+    const Body = Program.component();
+    const reachable = comptime Program.componentAdmission().reachability;
+    inline for (Body.control_ir.blocks) |block| {
+        if (comptime !reachable.contains(block.id)) continue;
+        switch (block.terminator) {
+            .@"suspend" => |suspension| {
+                if (suspension.kind == .effect and
+                    suspension.site_id.? == site_ordinal)
+                {
+                    return true;
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
 fn assertDispositionClosure(comptime spec: anytype) !void {
     const components = componentSet(spec);
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         inline for (Program.component().effect_sites, 0..) |Site, ordinal| {
+            if (comptime !sourceSiteReachable(Program, ordinal)) continue;
             const count = handlerCount(spec.handlers, Program, ordinal) +
                 morphismCount(spec.morphisms, Program, ordinal) +
                 externalCount(spec, Program, ordinal, Site);
@@ -251,28 +274,420 @@ fn assertDispositionClosure(comptime spec: anytype) !void {
     }
 }
 
-fn assertUnreachablePrivatization(comptime spec: anytype, comptime System: type) !void {
-    const components = componentSet(spec);
-    const Linked = System.Program.component();
-    var block_offset: usize = 0;
-    inline for (0..components.count) |component_index| {
-        const Body = components.items[component_index].component();
-        const reachable = comptime componentReachability(Body);
-        inline for (Body.control_ir.blocks) |source| {
-            if (comptime reachable.contains(source.id)) continue;
-            const linked_id = block_offset + source.id;
-            const linked = Linked.control_ir.blocks[linked_id];
-            try std.testing.expectEqual(source.instructions.len, linked.instructions.len);
-            try std.testing.expectEqual(source.parameters.len, linked.parameters.len);
-            switch (linked.terminator) {
-                .jump => |edge| try std.testing.expectEqual(
-                    @as(boundary.ir.BlockId, @intCast(linked_id)),
-                    edge.target,
+fn componentIndex(comptime components: anytype, comptime Program: type) usize {
+    inline for (0..components.count) |index| {
+        if (components.items[index] == Program) return index;
+    }
+    unreachable;
+}
+
+const SourceOffsets = struct {
+    values: usize,
+    blocks: usize,
+    functions: usize,
+    constants: usize,
+    effects: usize,
+};
+
+fn sourceOffsets(
+    comptime components: anytype,
+    comptime component_index: usize,
+) SourceOffsets {
+    var result: SourceOffsets = .{
+        .values = 0,
+        .blocks = 0,
+        .functions = 0,
+        .constants = 0,
+        .effects = 0,
+    };
+    inline for (0..component_index) |index| {
+        const Body = components.items[index].component();
+        result.values += Body.control_ir.value_types.len;
+        result.blocks += Body.control_ir.blocks.len;
+        result.functions += componentFunctionCount(Body);
+        result.constants += componentConstantCount(Body);
+        result.effects += Body.effect_sites.len;
+    }
+    return result;
+}
+
+fn linkedSchemaIndex(comptime Linked: type, comptime Schema: type) usize {
+    inline for (Linked.schema_types, 0..) |Candidate, index| {
+        if (Candidate == Schema) return index;
+    }
+    unreachable;
+}
+
+fn expectedValueType(
+    comptime Body: type,
+    comptime Linked: type,
+    comptime source: boundary.ir.ValueType,
+) boundary.ir.ValueType {
+    return switch (source) {
+        .scalar => source,
+        .schema => |index| .{ .schema = @intCast(linkedSchemaIndex(
+            Linked,
+            Body.schema_types[index],
+        )) },
+    };
+}
+
+fn assertInstructionMapping(
+    comptime source: boundary.ir.Instruction,
+    comptime linked: boundary.ir.Instruction,
+    value_offset: usize,
+    constant_offset: usize,
+) !void {
+    try std.testing.expectEqual(source.kind, linked.kind);
+    try std.testing.expectEqual(
+        @as(boundary.ir.ValueId, @intCast(value_offset + source.result)),
+        linked.result,
+    );
+    try std.testing.expectEqual(source.operands.len, linked.operands.len);
+    inline for (source.operands, linked.operands) |source_operand, linked_operand| {
+        try std.testing.expectEqual(
+            @as(boundary.ir.ValueId, @intCast(value_offset + source_operand)),
+            linked_operand,
+        );
+    }
+    switch (source.operation) {
+        .constant => |index| switch (linked.operation) {
+            .constant => |linked_index| try std.testing.expectEqual(
+                @as(u32, @intCast(constant_offset + index)),
+                linked_index,
+            ),
+            else => return error.TestUnexpectedResult,
+        },
+        else => try std.testing.expect(std.meta.eql(source.operation, linked.operation)),
+    }
+}
+
+fn assertEdgeMapping(
+    comptime source: boundary.ir.Edge,
+    comptime linked: boundary.ir.Edge,
+    block_offset: usize,
+    value_offset: usize,
+) !void {
+    try std.testing.expectEqual(
+        @as(boundary.ir.BlockId, @intCast(block_offset + source.target)),
+        linked.target,
+    );
+    try std.testing.expectEqual(source.arguments.len, linked.arguments.len);
+    inline for (source.arguments, linked.arguments) |source_arg, linked_arg| {
+        switch (source_arg) {
+            .value => |value| switch (linked_arg) {
+                .value => |linked_value| try std.testing.expectEqual(
+                    @as(boundary.ir.ValueId, @intCast(value_offset + value)),
+                    linked_value,
+                ),
+                else => return error.TestUnexpectedResult,
+            },
+            .@"resume" => switch (linked_arg) {
+                .@"resume" => {},
+                else => return error.TestUnexpectedResult,
+            },
+        }
+    }
+}
+
+fn assertTerminatorMapping(
+    comptime source: boundary.ir.Block,
+    comptime linked: boundary.ir.Block,
+    comptime Body: type,
+    comptime LinkedBody: type,
+    comptime Map: type,
+    comptime reachable: bool,
+    comptime component_index: usize,
+    comptime offsets: SourceOffsets,
+) !void {
+    const value_offset = offsets.values;
+    const block_offset = offsets.blocks;
+    switch (source.terminator) {
+        .jump => |edge| try assertEdgeMapping(
+            edge,
+            linked.terminator.jump,
+            block_offset,
+            value_offset,
+        ),
+        .branch => |branch| {
+            const linked_branch = linked.terminator.branch;
+            try std.testing.expectEqual(
+                @as(boundary.ir.ValueId, @intCast(value_offset + branch.condition)),
+                linked_branch.condition,
+            );
+            try assertEdgeMapping(
+                branch.then_edge,
+                linked_branch.then_edge,
+                block_offset,
+                value_offset,
+            );
+            try assertEdgeMapping(
+                branch.else_edge,
+                linked_branch.else_edge,
+                block_offset,
+                value_offset,
+            );
+        },
+        .@"suspend" => |suspension| {
+            const linked_suspension = linked.terminator.@"suspend";
+            try std.testing.expectEqual(suspension.kind, linked_suspension.kind);
+            try std.testing.expectEqual(
+                if (suspension.site_id) |site_id|
+                    @as(u32, @intCast(offsets.effects + site_id))
+                else
+                    null,
+                linked_suspension.site_id,
+            );
+            try std.testing.expectEqual(
+                if (suspension.callee_function) |function_id|
+                    @as(boundary.ir.FunctionId, @intCast(
+                        offsets.functions + function_id,
+                    ))
+                else
+                    null,
+                linked_suspension.callee_function,
+            );
+            try std.testing.expectEqual(
+                suspension.request_values.len,
+                linked_suspension.request_values.len,
+            );
+            inline for (
+                suspension.request_values,
+                linked_suspension.request_values,
+            ) |value, linked_value| {
+                try std.testing.expectEqual(
+                    @as(boundary.ir.ValueId, @intCast(value_offset + value)),
+                    linked_value,
+                );
+            }
+            if (suspension.callee) |callee| {
+                try assertEdgeMapping(
+                    callee,
+                    linked_suspension.callee.?,
+                    block_offset,
+                    value_offset,
+                );
+            } else {
+                try std.testing.expect(linked_suspension.callee == null);
+            }
+            try assertEdgeMapping(
+                suspension.continuation,
+                linked_suspension.continuation,
+                block_offset,
+                value_offset,
+            );
+            if (suspension.resume_type) |resume_type| {
+                try std.testing.expect(expectedValueType(
+                    Body,
+                    LinkedBody,
+                    resume_type,
+                ).eql(linked_suspension.resume_type.?));
+            } else {
+                try std.testing.expect(linked_suspension.resume_type == null);
+            }
+        },
+        .return_value => |value| {
+            if (component_index != 0 and source.function_id == 0) {
+                if (value) |value_id| {
+                    try std.testing.expectEqual(
+                        @as(boundary.ir.ValueId, @intCast(
+                            value_offset + value_id,
+                        )),
+                        linked.terminator.return_to_caller,
+                    );
+                } else {
+                    try std.testing.expect(linked.terminator == .jump);
+                }
+            } else switch (linked.terminator) {
+                .return_value => |linked_value| try std.testing.expectEqual(
+                    if (value) |value_id|
+                        @as(boundary.ir.ValueId, @intCast(value_offset + value_id))
+                    else
+                        null,
+                    linked_value,
                 ),
                 else => return error.TestUnexpectedResult,
             }
+        },
+        .return_to_caller => |value| try std.testing.expectEqual(
+            @as(boundary.ir.ValueId, @intCast(value_offset + value)),
+            linked.terminator.return_to_caller,
+        ),
+        .fail, .fail_value => if (Map == void) switch (source.terminator) {
+            .fail => |failure| try std.testing.expectEqual(
+                failure,
+                linked.terminator.fail,
+            ),
+            .fail_value => |value| try std.testing.expectEqual(
+                @as(boundary.ir.ValueId, @intCast(value_offset + value)),
+                linked.terminator.fail_value,
+            ),
+            else => unreachable,
+        } else {
+            try std.testing.expect(linked.terminator == .jump);
+            if (!reachable or Map.targets.len == 0) {
+                try std.testing.expectEqual(
+                    linked.id,
+                    linked.terminator.jump.target,
+                );
+            }
+        },
+    }
+}
+
+fn totalSourceFunctions(comptime components: anytype) usize {
+    var result: usize = 0;
+    inline for (0..components.count) |index| {
+        result += componentFunctionCount(components.items[index].component());
+    }
+    return result;
+}
+
+fn voidWrapperFunctionId(
+    comptime components: anytype,
+    comptime provider_index: usize,
+) usize {
+    var result = totalSourceFunctions(components);
+    inline for (1..provider_index) |index| {
+        const Body = components.items[index].component();
+        if (Body.InitialArgs == void and
+            Body.control_ir.blocks[Body.control_ir.entry].parameters.len == 0)
+        {
+            result += 1;
         }
-        block_offset += Body.control_ir.blocks.len;
+    }
+    return result;
+}
+
+fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
+    const components = componentSet(spec);
+    const Linked = System.Program.component();
+    inline for (0..components.count) |component_index| {
+        const Program = components.items[component_index];
+        const Body = components.items[component_index].component();
+        const offsets = comptime sourceOffsets(components, component_index);
+        inline for (Body.control_ir.value_types, 0..) |source, index| {
+            const expected = expectedValueType(Body, Linked, source);
+            try std.testing.expect(expected.eql(
+                Linked.control_ir.value_types[offsets.values + index],
+            ));
+        }
+        if (@hasDecl(Body, "constants")) {
+            inline for (Body.constants, 0..) |source, index| {
+                const linked = @field(
+                    Linked.constants,
+                    std.fmt.comptimePrint("{d}", .{offsets.constants + index}),
+                );
+                try std.testing.expect(std.meta.eql(source, linked));
+            }
+        }
+        inline for (Body.effect_sites, 0..) |Site, index| {
+            try std.testing.expect(Linked.effect_sites[offsets.effects + index] == Site);
+        }
+        if (Body.control_ir.functions.len == 0) {
+            const function = Linked.control_ir.functions[offsets.functions];
+            try std.testing.expectEqual(
+                @as(boundary.ir.FunctionId, @intCast(offsets.functions)),
+                function.id,
+            );
+            try std.testing.expectEqual(
+                @as(boundary.ir.BlockId, @intCast(
+                    offsets.blocks + Body.control_ir.entry,
+                )),
+                function.entry,
+            );
+        } else {
+            inline for (Body.control_ir.functions) |source| {
+                const linked = Linked.control_ir.functions[offsets.functions + source.id];
+                try std.testing.expectEqual(
+                    @as(boundary.ir.FunctionId, @intCast(offsets.functions + source.id)),
+                    linked.id,
+                );
+                try std.testing.expectEqual(
+                    @as(boundary.ir.BlockId, @intCast(offsets.blocks + source.entry)),
+                    linked.entry,
+                );
+                try std.testing.expect(expectedValueType(
+                    Body,
+                    Linked,
+                    source.result_type,
+                ).eql(linked.result_type));
+            }
+        }
+        inline for (Body.control_ir.blocks) |source| {
+            const linked_id = offsets.blocks + source.id;
+            const linked = Linked.control_ir.blocks[linked_id];
+            try std.testing.expectEqual(
+                @as(boundary.ir.BlockId, @intCast(linked_id)),
+                linked.id,
+            );
+            try std.testing.expectEqual(
+                @as(boundary.ir.FunctionId, @intCast(
+                    offsets.functions + source.function_id,
+                )),
+                linked.function_id,
+            );
+            try std.testing.expectEqual(source.instructions.len, linked.instructions.len);
+            try std.testing.expectEqual(source.parameters.len, linked.parameters.len);
+            inline for (source.parameters, linked.parameters) |parameter, linked_parameter| {
+                try std.testing.expectEqual(
+                    @as(boundary.ir.ValueId, @intCast(offsets.values + parameter)),
+                    linked_parameter,
+                );
+            }
+            inline for (
+                source.instructions,
+                linked.instructions,
+            ) |instruction, linked_instruction| {
+                try assertInstructionMapping(
+                    instruction,
+                    linked_instruction,
+                    offsets.values,
+                    offsets.constants,
+                );
+            }
+            const Map = failureMapFor(components, spec.handlers, component_index);
+            const reachable = comptime Program.componentAdmission()
+                .reachability.contains(source.id);
+            try assertTerminatorMapping(
+                source,
+                linked,
+                Body,
+                Linked,
+                Map,
+                reachable,
+                component_index,
+                offsets,
+            );
+        }
+    }
+    inline for (spec.handlers, 0..) |Handler, index| {
+        const consumer = comptime componentIndex(components, Handler.Consumer);
+        const source_id = comptime sourceOffsets(components, consumer).effects +
+            Handler.site_ordinal;
+        const linked = Linked.effect_handlers[index];
+        try std.testing.expectEqual(@as(u32, @intCast(source_id)), linked.source_id);
+        const provider = comptime componentIndex(components, Handler.Provider);
+        const ProviderBody = Handler.Provider.component();
+        const expected_function = if (ProviderBody.InitialArgs == void and
+            ProviderBody.control_ir.blocks[
+                ProviderBody.control_ir.entry
+            ].parameters.len == 0)
+            voidWrapperFunctionId(components, provider)
+        else
+            sourceOffsets(components, provider).functions;
+        try std.testing.expectEqual(
+            @as(boundary.ir.FunctionId, @intCast(expected_function)),
+            linked.function_id,
+        );
+    }
+    inline for (spec.morphisms, 0..) |Morphism, index| {
+        const consumer = comptime componentIndex(components, Morphism.Consumer);
+        const source_id = comptime sourceOffsets(components, consumer).effects +
+            Morphism.site_ordinal;
+        const linked = Linked.effect_morphisms[index];
+        try std.testing.expectEqual(@as(u32, @intCast(source_id)), linked.source_id);
+        try std.testing.expect(linked.Target == Morphism.Target);
     }
 }
 
@@ -302,7 +717,7 @@ fn assertTopology(comptime spec: anytype, comptime System: type) !void {
     try std.testing.expectEqual(spec.handlers.len, Linked.effect_handlers.len);
     try std.testing.expectEqual(spec.morphisms.len, Linked.effect_morphisms.len);
     try assertDispositionClosure(spec);
-    try assertUnreachablePrivatization(spec, System);
+    try assertElementMappings(spec, System);
 }
 
 test "source-derived topology closes void wrapper and unreachable syntax" {
@@ -315,4 +730,12 @@ test "source-derived topology separates external source and target roles" {
 
 test "source-derived topology closes empty Failure domains" {
     try assertTopology(fixtures.EmptyFailureSpec, fixtures.EmptyFailureSystem);
+}
+
+test "source-derived topology admits unreachable effect declarations" {
+    try assertTopology(fixtures.UnusedDeclaredSpec, fixtures.UnusedDeclaredSystem);
+}
+
+test "source-derived topology preserves unreachable helper mappings" {
+    try assertTopology(fixtures.UnreachableHelperSpec, fixtures.UnreachableHelperSystem);
 }
