@@ -181,6 +181,14 @@ pub fn build(b: *std.Build) void {
         world,
         boundary,
     );
+    const system_scaling_tests = addApplicationTest(
+        b,
+        "test/system_link_scaling_v1.zig",
+        validation_target,
+        optimize,
+        world,
+        boundary,
+    );
     const system_fixtures = b.createModule(.{
         .root_source_file = b.path("test/system_link_v1.zig"),
         .target = validation_target,
@@ -530,6 +538,7 @@ pub fn build(b: *std.Build) void {
         "Link Boundary Program components into one ordinary BPI1.",
     );
     system_link_step.dependOn(&runArtifact(b, system_tests).step);
+    system_link_step.dependOn(&runArtifact(b, system_scaling_tests).step);
     system_link_step.dependOn(&runArtifact(b, system_topology_tests).step);
     system_link_step.dependOn(system_negative_step);
 

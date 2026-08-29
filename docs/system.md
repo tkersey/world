@@ -35,7 +35,8 @@ Plan carries that admitted projection; it never trusts a structurally compatible
 caller declaration or recompiles admission through repeated body lookups. Bare
 external declarations are interpreted separately as morphism-target authority
 and, when unique, as a source-occurrence disposition. The plan materializes
-every reachable source-occurrence disposition and Failure-adapter layout before
+every reachable source-occurrence disposition, each per-site Failure-adapter
+kind, every shared direct-adapter owner, and every dynamic-selector owner before
 lowering.
 `System.residual_effects.items` is sized to the exact active residual count, so
 inactive declarations do not survive as public capacity or undefined slots.
@@ -48,10 +49,11 @@ Internal handlers require exact `Payload == Provider.InitialArgs` and
 `Resume == Provider.Result`. Provider Failure either equals the root Failure or
 uses one explicit pure total `world.failureMorphism`. The resulting
 `System.Program.image()` is ordinary BPI1 and contains no World runtime object.
-Each multi-tag provider Failure map used by dynamic failure sites lowers once
-into one pure selection-block Boundary function whose mapped targets are
-interned by value within that selector. Dynamic sites call that function and retain one local
-terminal continuation; quotient-size-one maps remain O(1) direct
+Each distinct multi-tag provider Failure map used by dynamic failure sites
+lowers once into one pure selection-block Boundary function shared across
+providers with the same source type, target type, source tags, and mapped
+targets. Dynamic sites call that function and retain one local terminal
+continuation; quotient-size-one maps remain O(1) direct
 specializations. Identical direct failures share one adapter per source
 function and mapped target. Mapping blocks therefore scale with semantic
 owners, not source occurrences or map cardinality.

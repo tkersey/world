@@ -2,6 +2,7 @@ const boundary = @import("boundary");
 const std = @import("std");
 
 const cir = boundary.ir;
+const system_eval_branch_quota = 500_000_000;
 
 const BindingKind = enum {
     handler,
@@ -96,7 +97,7 @@ pub fn failureMorphism(
 }
 
 pub fn system(comptime spec: anytype) type {
-    @setEvalBranchQuota(500_000_000);
+    @setEvalBranchQuota(system_eval_branch_quota);
     if (!@hasField(@TypeOf(spec), "name") or
         !@hasField(@TypeOf(spec), "root"))
     {
@@ -247,14 +248,49 @@ fn PlanFor(
         }
         break :blk result;
     };
-    const failure_layouts = comptime blk: {
-        var result: [totalBlocks(components_value)]FailureAdapterLayout = undefined;
+    const failure_maps = comptime blk: {
+        var result: [components_value.count]type = undefined;
         for (0..components_value.count) |component_index| {
-            const Map = failureMapFor(
+            result[component_index] = failureMapFor(
                 components_value,
                 handlers_value,
                 component_index,
             );
+        }
+        break :blk result;
+    };
+    const dynamic_failure_components = comptime blk: {
+        var result: [components_value.count]bool = undefined;
+        for (0..components_value.count) |component_index| {
+            result[component_index] = componentHasDynamicFailureForMap(
+                components_value,
+                component_index,
+                failure_maps[component_index],
+            );
+        }
+        break :blk result;
+    };
+    const failure_selector_owners = comptime blk: {
+        var result: [components_value.count]?usize = undefined;
+        for (0..components_value.count) |component_index| {
+            result[component_index] = null;
+            if (!dynamic_failure_components[component_index]) continue;
+            const Map = failure_maps[component_index];
+            for (0..component_index + 1) |candidate_index| {
+                if (!dynamic_failure_components[candidate_index]) continue;
+                const CandidateMap = failure_maps[candidate_index];
+                if (failureMapsEqual(Map, CandidateMap)) {
+                    result[component_index] = candidate_index;
+                    break;
+                }
+            }
+        }
+        break :blk result;
+    };
+    const failure_layouts = comptime blk: {
+        var result: [totalBlocks(components_value)]FailureAdapterLayout = undefined;
+        for (0..components_value.count) |component_index| {
+            const Map = failure_maps[component_index];
             for (body(components_value.items[component_index]).control_ir.blocks) |block| {
                 const linked_id = blockOffset(components_value, component_index) +
                     block.id;
@@ -264,17 +300,27 @@ fn PlanFor(
                     result[linked_id] = .{ .kind = .none };
                     continue;
                 }
-                const layout = failureAdapterLayout(Map, block.terminator);
-                result[linked_id] = if (layout.kind == .direct and
-                    directFailureOwnerBlock(
+                var layout = failureAdapterLayout(Map, block.terminator);
+                if (layout.kind == .direct) {
+                    const owner_block = directFailureOwnerBlockForMap(
                         components_value,
-                        handlers_value,
                         component_index,
                         block.id,
-                    ) != block.id)
-                    .{ .kind = .direct_alias }
-                else
-                    layout;
+                        Map,
+                    );
+                    if (owner_block != block.id) {
+                        layout = .{
+                            .kind = .direct_alias,
+                            .direct_owner_block = owner_block,
+                        };
+                    } else {
+                        layout.direct_owner_block = owner_block;
+                    }
+                } else if (layout.kind == .dynamic) {
+                    layout.selector_owner_component =
+                        failure_selector_owners[component_index].?;
+                }
+                result[linked_id] = layout;
             }
         }
         break :blk result;
@@ -286,6 +332,8 @@ fn PlanFor(
         pub const morphisms = morphisms_value;
         pub const externals = externals_value;
         pub const site_dispositions = dispositions;
+        pub const failure_map_types = failure_maps;
+        pub const failure_selector_owner_components = failure_selector_owners;
         pub const failure_adapter_layouts = failure_layouts;
         pub fn blockReachable(
             comptime component_index: usize,
@@ -312,6 +360,16 @@ fn PlanFor(
                 blockOffset(components, component_index) + block_id
             ];
         }
+
+        pub fn failureSelectorOwner(
+            comptime component_index: usize,
+        ) ?usize {
+            return failure_selector_owner_components[component_index];
+        }
+
+        pub fn failureMap(comptime component_index: usize) type {
+            return failure_map_types[component_index];
+        }
     };
 }
 
@@ -335,6 +393,7 @@ fn discoverComponents(
 }
 
 fn body(comptime Program: type) type {
+    @setEvalBranchQuota(system_eval_branch_quota);
     if (!@hasDecl(Program, "component")) {
         @compileError("world.system components must be Boundary Programs");
     }
@@ -645,7 +704,7 @@ fn blockInstructionFailureTargets(
         RootFailure,
         blockInstructionFailureCapacity(block),
     ) = .{};
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     if (Map == void) return result;
     const Admission = Plan.components.admissionAt(component_index);
     inline for (block.instructions) |instruction| {
@@ -687,6 +746,8 @@ const FailureAdapterLayout = struct {
     value_count: usize = 0,
     block_count: usize = 0,
     constant_count: usize = 0,
+    direct_owner_block: ?cir.BlockId = null,
+    selector_owner_component: ?usize = null,
 };
 
 fn failureAdapterLayout(
@@ -734,15 +795,14 @@ fn directFailureTarget(
     };
 }
 
-fn directFailureOwnerBlock(
+fn directFailureOwnerBlockForMap(
     comptime components: anytype,
-    comptime handlers: anytype,
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
+    comptime Map: type,
 ) cir.BlockId {
     const Program = components.items[component_index];
     const Body = body(Program);
-    const Map = failureMapFor(components, handlers, component_index);
     const current = Body.control_ir.blocks[block_id];
     const target = directFailureTarget(Map, current.terminator) orelse unreachable;
     inline for (Body.control_ir.blocks) |candidate| {
@@ -791,29 +851,28 @@ fn componentExtraConstants(
     return result;
 }
 
-fn componentDynamicFailureCount(
-    comptime Plan: type,
+fn componentHasDynamicFailureForMap(
+    comptime components: anytype,
     comptime component_index: usize,
-) usize {
-    var result: usize = 0;
-    inline for (body(Plan.components.items[component_index]).control_ir.blocks) |block| {
-        if (!Plan.blockReachable(component_index, block.id)) continue;
-        result += @intFromBool(
-            Plan.failureLayout(component_index, block.id).kind == .dynamic,
-        );
+    comptime Map: type,
+) bool {
+    inline for (body(components.items[component_index]).control_ir.blocks) |block| {
+        if (!components.admissionAt(component_index).reachability.contains(block.id)) {
+            continue;
+        }
+        if (failureAdapterLayout(Map, block.terminator).kind == .dynamic) {
+            return true;
+        }
     }
-    return result;
+    return false;
 }
 
 fn componentSharedFailureCount(
     comptime Plan: type,
     comptime component_index: usize,
 ) usize {
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
-    if (Map == void) return 0;
-    const Quotient = failureTargetQuotient(Map);
-    if (Quotient.count <= 1) return 0;
-    return @intFromBool(componentDynamicFailureCount(Plan, component_index) != 0);
+    const owner = Plan.failureSelectorOwner(component_index) orelse return 0;
+    return @intFromBool(owner == component_index);
 }
 
 fn componentSharedFailureValues(
@@ -821,7 +880,7 @@ fn componentSharedFailureValues(
     comptime component_index: usize,
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     const Quotient = failureTargetQuotient(Map);
     return 3 * Map.targets.len + Quotient.count - 1;
 }
@@ -839,7 +898,7 @@ fn componentSharedFailureConstants(
     comptime component_index: usize,
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     const Quotient = failureTargetQuotient(Map);
     return Map.targets.len - 1 + Quotient.count;
 }
@@ -1303,6 +1362,7 @@ fn LinkedBody(
     comptime name: []const u8,
     comptime Plan: type,
 ) type {
+    @setEvalBranchQuota(system_eval_branch_quota);
     const Root = Plan.RootProgram;
     const components = Plan.components;
     const morphisms = Plan.morphisms;
@@ -2036,7 +2096,7 @@ fn appendFailureValueTypes(
     comptime component_index: usize,
 ) void {
     const components = Plan.components;
-    const Map = failureMapFor(components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     if (Map == void) return;
     const target_type: cir.ValueType = .{ .schema = schemaIndex(
         schemas,
@@ -2060,7 +2120,7 @@ fn appendSharedFailureValueTypes(
     comptime component_index: usize,
 ) void {
     if (componentSharedFailureCount(Plan, component_index) == 0) return;
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     const source_type: cir.ValueType = .{ .schema = schemaIndex(
         schemas,
         Map.SourceFailure,
@@ -2114,7 +2174,7 @@ fn constantTypes(comptime Plan: type) [linkedTotalConstants(Plan)]type {
         }
     }
     inline for (0..components.count) |component_index| {
-        const Map = failureMapFor(components, Plan.handlers, component_index);
+        const Map = Plan.failureMap(component_index);
         if (Map == void) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
             if (!Plan.blockReachable(component_index, block.id)) continue;
@@ -2130,7 +2190,7 @@ fn constantTypes(comptime Plan: type) [linkedTotalConstants(Plan)]type {
     }
     inline for (0..components.count) |component_index| {
         if (componentSharedFailureCount(Plan, component_index) == 0) continue;
-        const Map = failureMapFor(components, Plan.handlers, component_index);
+        const Map = Plan.failureMap(component_index);
         const Quotient = failureTargetQuotient(Map);
         inline for (0..Map.targets.len - 1) |_| {
             result[cursor] = u32;
@@ -2238,7 +2298,7 @@ fn appendFailureConstants(
     comptime component_index: usize,
 ) void {
     const components = Plan.components;
-    const Map = failureMapFor(components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     if (Map == void) return;
     inline for (body(components.items[component_index]).control_ir.blocks) |block| {
         if (!Plan.blockReachable(component_index, block.id)) continue;
@@ -2265,7 +2325,7 @@ fn appendSharedFailureConstants(
     comptime component_index: usize,
 ) void {
     if (componentSharedFailureCount(Plan, component_index) == 0) return;
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     const Quotient = failureTargetQuotient(Map);
     inline for (0..Map.targets.len - 1) |tag| {
         appendConstant(result, cursor, Map.source_tags[tag]);
@@ -2324,7 +2384,7 @@ fn buildFunctions(
     }
     inline for (0..components.count) |component_index| {
         if (componentSharedFailureCount(Plan, component_index) == 0) continue;
-        const Map = failureMapFor(components, Plan.handlers, component_index);
+        const Map = Plan.failureMap(component_index);
         result[cursor] = .{
             .id = @intCast(sharedFailureFunctionId(Plan, component_index)),
             .entry = @intCast(sharedFailureBlockBase(Plan, component_index)),
@@ -2369,7 +2429,7 @@ fn buildBlocks(
         }
     }
     inline for (0..components.count) |component_index| {
-        const Map = failureMapFor(components, Plan.handlers, component_index);
+        const Map = Plan.failureMap(component_index);
         if (Map == void) continue;
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
             if (!Plan.blockReachable(component_index, source.id)) continue;
@@ -2597,7 +2657,7 @@ fn remapBlockTerminator(
     {
         return selfLoopTerminator(components, component_index, source_block);
     }
-    const Map = failureMapFor(components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     if (!Plan.blockReachable(component_index, source_block.id) and Map != void) {
         switch (source) {
             .fail, .fail_value => return selfLoopTerminator(
@@ -2625,12 +2685,10 @@ fn remapBlockTerminator(
             failureBlockBase(
                 Plan,
                 component_index,
-                directFailureOwnerBlock(
-                    components,
-                    Plan.handlers,
+                Plan.failureLayout(
                     component_index,
                     source_block.id,
-                ),
+                ).direct_owner_block.?,
             ),
         ) } },
         .dynamic => return failureCallTerminator(
@@ -2685,7 +2743,7 @@ fn mappedFailureBlock(
     comptime block_id: usize,
 ) cir.Block {
     const components = Plan.components;
-    const Map = failureMapFor(components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     if (Map.targets.len == 0) {
         @compileError("World failure morphism cannot map an empty Failure enum");
     }
@@ -2723,7 +2781,11 @@ fn failureCallTerminator(
     comptime source: cir.Block,
 ) cir.Terminator {
     const components = Plan.components;
-    const Map = failureMapFor(components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
+    const selector_owner = Plan.failureLayout(
+        component_index,
+        source.id,
+    ).selector_owner_component.?;
     const fail_value = switch (source.terminator) {
         .fail_value => |value| value,
         else => unreachable,
@@ -2738,10 +2800,10 @@ fn failureCallTerminator(
         .kind = .call,
         .callee_function = @intCast(sharedFailureFunctionId(
             Plan,
-            component_index,
+            selector_owner,
         )),
         .callee = .{
-            .target = @intCast(sharedFailureBlockBase(Plan, component_index)),
+            .target = @intCast(sharedFailureBlockBase(Plan, selector_owner)),
             .arguments = &Static.callee_arguments,
         },
         .continuation = .{
@@ -2781,7 +2843,7 @@ fn sharedFailureSelectBlock(
     comptime Plan: type,
     comptime component_index: usize,
 ) cir.Block {
-    const Map = failureMapFor(Plan.components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     const Quotient = failureTargetQuotient(Map);
     const value_base = sharedFailureValueBase(Plan, component_index);
     const block_id = sharedFailureBlockBase(Plan, component_index);
@@ -2971,7 +3033,7 @@ fn remapInstruction(
 ) cir.Instruction {
     const components = Plan.components;
     const value_offset = valueOffset(components, component_index);
-    const Map = failureMapFor(components, Plan.handlers, component_index);
+    const Map = Plan.failureMap(component_index);
     const Admission = components.admissionAt(component_index);
     const projection = Admission.instructionFailureProjection(source);
     const source_failure_tags = projection.failure_tags;
