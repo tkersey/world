@@ -45,8 +45,11 @@ direct-adapter owner, and every dynamic-selector owner before lowering.
 inactive declarations do not survive as public capacity or undefined slots.
 Types whose `Payload` and `Resume` declarations are types and whose
 `semantic_identity` is a nonempty byte string follow the bare-Site path,
-regardless of extra declarations. Bare authorities compare by that Boundary
-Site contract, not Zig type or constructor ordinal. Other external entries are
+regardless of extra declarations. Bare authorities compare semantic identity
+plus Boundary portable-schema digests for `Payload` and `Resume`, not Zig type
+or constructor ordinal. Typed handler, morphism, and Failure-map endpoints keep
+their exact source types; Boundary's BPI emitter structurally interns their
+portable runtime schemas. Other external entries are
 occurrence wrappers only when they provide `Consumer`, `Site`, and
 `site_ordinal`.
 Distinct residual occurrences must also have distinct Boundary semantic

@@ -1290,9 +1290,17 @@ fn isByteStringType(comptime T: type) bool {
 
 fn siteContractsEqual(comptime Left: type, comptime Right: type) bool {
     if (!isBoundarySite(Left) or !isBoundarySite(Right)) return false;
-    return Left.Payload == Right.Payload and
-        Left.Resume == Right.Resume and
+    return schemasEqual(Left.Payload, Right.Payload) and
+        schemasEqual(Left.Resume, Right.Resume) and
         std.mem.eql(u8, Left.semantic_identity, Right.semantic_identity);
+}
+
+fn schemasEqual(comptime Left: type, comptime Right: type) bool {
+    return std.mem.eql(
+        u8,
+        &boundary.schema.schemaDigest(Left),
+        &boundary.schema.schemaDigest(Right),
+    );
 }
 
 fn externalDeclarationsEqual(comptime Left: type, comptime Right: type) bool {

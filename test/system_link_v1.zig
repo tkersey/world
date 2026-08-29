@@ -2101,6 +2101,74 @@ test "world.system matches bare external authority by Site semantic contract" {
     _ = ReconstructedMorphismSystem.Program.image();
 }
 
+const SchemaPayloadA = struct { value: u32 };
+const SchemaPayloadB = struct { renamed: u32 };
+const SchemaResumeA = struct { result: u32 };
+const SchemaResumeB = struct { outcome: u32 };
+const schema_payload_type: boundary.ir.ValueType = .{ .schema = 0 };
+const schema_resume_type: boundary.ir.ValueType = .{ .schema = 1 };
+const SchemaSourceSite = boundary.effect.site(
+    0,
+    "generic.schema-equivalent-site.v1",
+    SchemaPayloadA,
+    SchemaResumeA,
+);
+const SchemaAuthoritySite = boundary.effect.site(
+    91,
+    "generic.schema-equivalent-site.v1",
+    SchemaPayloadB,
+    SchemaResumeB,
+);
+const schema_root_blocks = [_]boundary.ir.Block{
+    .{ .id = 0, .parameters = &.{0}, .terminator = .{ .@"suspend" = .{
+        .kind = .effect,
+        .site_id = 0,
+        .request_values = &.{0},
+        .continuation = .{ .target = 1, .arguments = &resume_arguments },
+        .resume_type = schema_resume_type,
+    } } },
+    .{ .id = 1, .parameters = &.{1}, .terminator = .{ .return_value = 1 } },
+};
+const SchemaRootBody = struct {
+    pub const InitialArgs = SchemaPayloadA;
+    pub const Result = SchemaResumeA;
+    pub const Failure = SystemFailure;
+    pub const effect_sites = .{SchemaSourceSite};
+    pub const schema_types = .{ SchemaPayloadA, SchemaResumeA };
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "schema-equivalent-root",
+        .value_types = &.{ schema_payload_type, schema_resume_type },
+        .blocks = &schema_root_blocks,
+        .entry = 0,
+        .result_type = schema_resume_type,
+    };
+};
+pub const SchemaRootProgram = boundary.program(
+    "schema-equivalent-root",
+    SchemaRootBody,
+);
+pub const SchemaExternalSpec = .{
+    .name = "schema-equivalent-external",
+    .root = SchemaRootProgram,
+    .handlers = .{},
+    .morphisms = .{},
+    .external = .{SchemaAuthoritySite},
+};
+pub const SchemaExternalSystem = world.system(SchemaExternalSpec);
+
+test "world.system matches bare authority by Boundary portable schema identity" {
+    try std.testing.expectEqual(
+        boundary.schema.schemaDigest(SchemaPayloadA),
+        boundary.schema.schemaDigest(SchemaPayloadB),
+    );
+    try std.testing.expectEqual(
+        boundary.schema.schemaDigest(SchemaResumeA),
+        boundary.schema.schemaDigest(SchemaResumeB),
+    );
+    try std.testing.expectEqual(@as(usize, 3), SchemaExternalSystem.schema_count);
+    _ = SchemaExternalSystem.Program.image();
+}
+
 const OrderPolicyA = boundary.effect.site(
     0,
     "generic.order-policy-a.v1",

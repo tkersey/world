@@ -486,9 +486,17 @@ fn isByteStringType(comptime T: type) bool {
 
 fn siteContractsEqual(comptime Left: type, comptime Right: type) bool {
     if (!isBoundarySite(Left) or !isBoundarySite(Right)) return false;
-    return Left.Payload == Right.Payload and
-        Left.Resume == Right.Resume and
+    return schemasEqual(Left.Payload, Right.Payload) and
+        schemasEqual(Left.Resume, Right.Resume) and
         std.mem.eql(u8, Left.semantic_identity, Right.semantic_identity);
+}
+
+fn schemasEqual(comptime Left: type, comptime Right: type) bool {
+    return std.mem.eql(
+        u8,
+        &boundary.schema.schemaDigest(Left),
+        &boundary.schema.schemaDigest(Right),
+    );
 }
 
 fn uncoveredSourceCount(comptime spec: anytype, comptime Site: type) usize {
@@ -661,8 +669,8 @@ fn assertResidualEntries(comptime spec: anytype, comptime System: type) !void {
                 Expected.semantic_identity,
                 Actual.semantic_identity,
             );
-            try std.testing.expect(Actual.Payload == Expected.Payload);
-            try std.testing.expect(Actual.Resume == Expected.Resume);
+            try std.testing.expect(schemasEqual(Actual.Payload, Expected.Payload));
+            try std.testing.expect(schemasEqual(Actual.Resume, Expected.Resume));
             cursor += 1;
         }
     }
@@ -1692,8 +1700,8 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
                 Site.semantic_identity,
                 linked.semantic_identity,
             );
-            try std.testing.expect(linked.Payload == Site.Payload);
-            try std.testing.expect(linked.Resume == Site.Resume);
+            try std.testing.expect(schemasEqual(linked.Payload, Site.Payload));
+            try std.testing.expect(schemasEqual(linked.Resume, Site.Resume));
         }
         if (Body.control_ir.functions.len == 0) {
             const function = Linked.control_ir.functions[offsets.functions];
@@ -1985,6 +1993,7 @@ test "source-derived topology separates external source and target roles" {
         fixtures.ReconstructedMorphismSpec,
         fixtures.ReconstructedMorphismSystem,
     );
+    try assertTopology(fixtures.SchemaExternalSpec, fixtures.SchemaExternalSystem);
 }
 
 test "source-derived topology closes empty Failure domains" {
