@@ -70,8 +70,10 @@ Instruction-originated failures therefore pass through the same declared total
 Failure morphism as explicit `fail` and `fail_value` terminals. The generated
 constants add only their exact minimum to the optional Machine-v2 compatibility
 cost; Process execution remains fuel-free.
-Already-linked Programs retain handler or morphism declarations and are rejected
-as source components; World v1 does not recursively relink a linked system.
+Programs with retained nonempty handler or morphism declarations are rejected as
+source components. A linked Program whose generated binding rows are empty may
+be admitted as an ordinary Boundary Program; general recursive relinking is not
+a World v1 guarantee.
 Unreachable effect declarations require no disposition and contribute no
 residual authority. Handler and morphism declarations behind those occurrences
 do not discover providers or enter the linked handler topology. Unreachable
