@@ -953,9 +953,7 @@ fn componentSharedFailureValues(
     comptime component_index: usize,
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
-    const Map = Plan.failureMap(component_index);
-    const Quotient = Plan.FailureQuotient(component_index).value;
-    return 3 * Map.targets.len + Quotient.count - 1;
+    return 12;
 }
 
 fn componentSharedFailureBlocks(
@@ -963,7 +961,7 @@ fn componentSharedFailureBlocks(
     comptime component_index: usize,
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
-    return componentSharedFailureCount(Plan, component_index);
+    return 3;
 }
 
 fn componentSharedFailureConstants(
@@ -971,9 +969,15 @@ fn componentSharedFailureConstants(
     comptime component_index: usize,
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
-    const Map = Plan.failureMap(component_index);
-    const Quotient = Plan.FailureQuotient(component_index).value;
-    return Map.targets.len - 1 + Quotient.count;
+    return 5;
+}
+
+fn FailureSourceTags(comptime Map: type) type {
+    return boundary.schema.Vector(u32, Map.targets.len);
+}
+
+fn FailureTargets(comptime Map: type) type {
+    return boundary.schema.Vector(Map.TargetFailure, Map.targets.len);
 }
 
 fn componentVoidReturnCount(
@@ -1502,7 +1506,7 @@ fn LinkedBody(
     const components = Plan.components;
     const morphisms = Plan.morphisms;
     const RootComponent = body(Root);
-    const schema_set = comptime schemasFor(components);
+    const schema_set = comptime schemasFor(Plan);
     const value_types = comptime buildValueTypes(Plan, schema_set);
     const linked_constants = comptime buildConstants(Plan);
     const linked_functions = comptime buildFunctions(Plan, schema_set);
@@ -1583,22 +1587,29 @@ fn ResidualCatalog(comptime capacity: usize) type {
     };
 }
 
-fn totalSchemaCount(comptime components: anytype) usize {
+fn totalSchemaCount(comptime Plan: type) usize {
+    const components = Plan.components;
     var count: usize = components.count;
     inline for (0..components.count) |index| {
         count += body(components.items[index]).schema_types.len;
     }
-    return count;
+    return count + 2 * components.count;
 }
 
 fn schemasFor(
-    comptime components: anytype,
-) TypeSet(totalSchemaCount(components)) {
-    var result: TypeSet(totalSchemaCount(components)) = .{};
+    comptime Plan: type,
+) TypeSet(totalSchemaCount(Plan)) {
+    const components = Plan.components;
+    var result: TypeSet(totalSchemaCount(Plan)) = .{};
     inline for (0..components.count) |index| {
         result.add(body(components.items[index]).Failure);
         inline for (body(components.items[index]).schema_types) |Schema| {
             result.add(Schema);
+        }
+        if (componentSharedFailureCount(Plan, index) != 0) {
+            const Map = Plan.failureMap(index);
+            result.add(FailureSourceTags(Map));
+            result.add(FailureTargets(Map));
         }
     }
     return result;
@@ -2257,17 +2268,26 @@ fn appendSharedFailureValueTypes(
         schemas,
         Map.TargetFailure,
     ) };
-    const Quotient = Plan.FailureQuotient(component_index).value;
+    const source_tags_type: cir.ValueType = .{ .schema = schemaIndex(
+        schemas,
+        FailureSourceTags(Map),
+    ) };
+    const targets_type: cir.ValueType = .{ .schema = schemaIndex(
+        schemas,
+        FailureTargets(Map),
+    ) };
     appendValueType(result, cursor, source_type);
     appendValueType(result, cursor, .{ .scalar = .u32 });
-    inline for (0..Quotient.count) |_| {
-        appendValueType(result, cursor, target_type);
-    }
-    inline for (0..Map.targets.len - 1) |_| {
-        appendValueType(result, cursor, .{ .scalar = .u32 });
-        appendValueType(result, cursor, .{ .scalar = .boolean });
-        appendValueType(result, cursor, target_type);
-    }
+    appendValueType(result, cursor, source_tags_type);
+    appendValueType(result, cursor, targets_type);
+    appendValueType(result, cursor, .{ .scalar = .u32 });
+    appendValueType(result, cursor, .{ .scalar = .u32 });
+    appendValueType(result, cursor, target_type);
+    appendValueType(result, cursor, .{ .scalar = .u32 });
+    appendValueType(result, cursor, .{ .scalar = .u32 });
+    appendValueType(result, cursor, .{ .scalar = .boolean });
+    appendValueType(result, cursor, .{ .scalar = .u32 });
+    appendValueType(result, cursor, target_type);
 }
 
 fn appendValueType(result: anytype, cursor: *usize, value_type: cir.ValueType) void {
@@ -2319,15 +2339,16 @@ fn constantTypes(comptime Plan: type) [linkedTotalConstants(Plan)]type {
     inline for (0..components.count) |component_index| {
         if (componentSharedFailureCount(Plan, component_index) == 0) continue;
         const Map = Plan.failureMap(component_index);
-        const Quotient = Plan.FailureQuotient(component_index).value;
-        inline for (0..Map.targets.len - 1) |_| {
-            result[cursor] = u32;
-            cursor += 1;
-        }
-        inline for (0..Quotient.count) |_| {
-            result[cursor] = Map.TargetFailure;
-            cursor += 1;
-        }
+        result[cursor] = FailureSourceTags(Map);
+        cursor += 1;
+        result[cursor] = FailureTargets(Map);
+        cursor += 1;
+        result[cursor] = u32;
+        cursor += 1;
+        result[cursor] = u32;
+        cursor += 1;
+        result[cursor] = Map.TargetFailure;
+        cursor += 1;
     }
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |block| {
@@ -2454,13 +2475,14 @@ fn appendSharedFailureConstants(
 ) void {
     if (componentSharedFailureCount(Plan, component_index) == 0) return;
     const Map = Plan.failureMap(component_index);
-    const Quotient = Plan.FailureQuotient(component_index).value;
-    inline for (0..Map.targets.len - 1) |tag| {
-        appendConstant(result, cursor, Map.source_tags[tag]);
-    }
-    inline for (0..Quotient.count) |index| {
-        appendConstant(result, cursor, Quotient.targets[index]);
-    }
+    const source_tags = FailureSourceTags(Map).fromSlice(&Map.source_tags) catch
+        unreachable;
+    const targets = FailureTargets(Map).fromSlice(&Map.targets) catch unreachable;
+    appendConstant(result, cursor, source_tags);
+    appendConstant(result, cursor, targets);
+    appendConstant(result, cursor, @as(u32, 0));
+    appendConstant(result, cursor, @as(u32, 1));
+    appendConstant(result, cursor, Map.targets[0]);
 }
 
 fn appendConstant(result: anytype, cursor: *usize, value: anytype) void {
@@ -2595,7 +2617,9 @@ fn buildBlocks(
     inline for (0..components.count) |component_index| {
         if (componentSharedFailureCount(Plan, component_index) == 0) continue;
         const block_base = sharedFailureBlockBase(Plan, component_index);
-        result[block_base] = sharedFailureSelectBlock(Plan, component_index);
+        result[block_base] = sharedFailureEntryBlock(Plan, component_index);
+        result[block_base + 1] = sharedFailureLoopBlock(Plan, component_index);
+        result[block_base + 2] = sharedFailureReturnBlock(Plan, component_index);
     }
     inline for (1..components.count) |component_index| {
         inline for (body(components.items[component_index]).control_ir.blocks) |source| {
@@ -2967,90 +2991,114 @@ fn failureContinuationBlock(
     };
 }
 
-fn sharedFailureSelectBlock(
+fn sharedFailureEntryBlock(
     comptime Plan: type,
     comptime component_index: usize,
 ) cir.Block {
-    const Map = Plan.failureMap(component_index);
-    const Quotient = Plan.FailureQuotient(component_index).value;
     const value_base = sharedFailureValueBase(Plan, component_index);
     const block_id = sharedFailureBlockBase(Plan, component_index);
     const constant_base = sharedFailureConstantBase(Plan, component_index);
-    const final_value = value_base + 3 * Map.targets.len + Quotient.count - 2;
     const Static = struct {
         const parameters = [_]cir.ValueId{@intCast(value_base)};
         const tag_operands = [_]cir.ValueId{@intCast(value_base)};
-        const compare_operands = blk: {
-            var result: [Map.targets.len - 1][2]cir.ValueId = undefined;
-            for (0..Map.targets.len - 1) |tag| {
-                result[tag] = .{
-                    @intCast(value_base + 1),
-                    @intCast(value_base + 2 + Quotient.count + 3 * tag),
-                };
-            }
-            break :blk result;
-        };
-        const select_operands = blk: {
-            var result: [Map.targets.len - 1][3]cir.ValueId = undefined;
-            for (0..Map.targets.len - 1) |tag| {
-                result[tag] = .{
-                    @intCast(value_base + 3 + Quotient.count + 3 * tag),
-                    @intCast(value_base + 2 + Quotient.source_to_target[tag]),
-                    @intCast(if (tag == 0)
-                        value_base + 2 + Quotient.source_to_target[Map.targets.len - 1]
-                    else
-                        value_base + 1 + Quotient.count + 3 * tag),
-                };
-            }
-            break :blk result;
-        };
-        const instructions = blk: {
-            var result: [3 * Map.targets.len + Quotient.count - 2]cir.Instruction = undefined;
-            result[0] = .{
+        const instructions = [_]cir.Instruction{
+            .{
                 .kind = .pure,
                 .result = @intCast(value_base + 1),
                 .operands = &tag_operands,
                 .operation = .enum_to_u32,
-            };
-            for (0..Quotient.count) |index| {
-                result[1 + index] = .{
-                    .kind = .constant,
-                    .result = @intCast(value_base + 2 + index),
-                    .operation = .{ .constant = @intCast(
-                        constant_base + Map.targets.len - 1 + index,
-                    ) },
-                };
-            }
-            for (0..Map.targets.len - 1) |tag| {
-                const cursor = 1 + Quotient.count + 3 * tag;
-                result[cursor] = .{
-                    .kind = .constant,
-                    .result = @intCast(value_base + 2 + Quotient.count + 3 * tag),
-                    .operation = .{ .constant = @intCast(constant_base + tag) },
-                };
-                result[cursor + 1] = .{
-                    .kind = .pure,
-                    .result = @intCast(value_base + 3 + Quotient.count + 3 * tag),
-                    .operands = &compare_operands[tag],
-                    .operation = .integer_equal,
-                };
-                result[cursor + 2] = .{
-                    .kind = .pure,
-                    .result = @intCast(value_base + 4 + Quotient.count + 3 * tag),
-                    .operands = &select_operands[tag],
-                    .operation = .select,
-                };
-            }
-            break :blk result;
+            },
+            .{ .kind = .constant, .result = @intCast(value_base + 2), .operation = .{ .constant = @intCast(constant_base) } },
+            .{ .kind = .constant, .result = @intCast(value_base + 3), .operation = .{ .constant = @intCast(constant_base + 1) } },
+            .{ .kind = .constant, .result = @intCast(value_base + 4), .operation = .{ .constant = @intCast(constant_base + 2) } },
+            .{ .kind = .constant, .result = @intCast(value_base + 5), .operation = .{ .constant = @intCast(constant_base + 3) } },
+            .{ .kind = .constant, .result = @intCast(value_base + 6), .operation = .{ .constant = @intCast(constant_base + 4) } },
         };
+        const loop_arguments = [_]cir.EdgeArgument{.{ .value = @intCast(value_base + 4) }};
+    };
+    return .{
+        .id = @intCast(block_id),
+        .function_id = @intCast(sharedFailureFunctionId(Plan, component_index)),
+        .parameters = &Static.parameters,
+        .instructions = &Static.instructions,
+        .terminator = .{ .jump = .{
+            .target = @intCast(block_id + 1),
+            .arguments = &Static.loop_arguments,
+        } },
+    };
+}
+
+fn sharedFailureLoopBlock(
+    comptime Plan: type,
+    comptime component_index: usize,
+) cir.Block {
+    const value_base = sharedFailureValueBase(Plan, component_index);
+    const block_id = sharedFailureBlockBase(Plan, component_index) + 1;
+    const Static = struct {
+        const parameters = [_]cir.ValueId{@intCast(value_base + 7)};
+        const get_operands = [_]cir.ValueId{
+            @intCast(value_base + 2),
+            @intCast(value_base + 7),
+            @intCast(value_base + 6),
+        };
+        const equal_operands = [_]cir.ValueId{
+            @intCast(value_base + 8),
+            @intCast(value_base + 1),
+        };
+        const increment_operands = [_]cir.ValueId{
+            @intCast(value_base + 7),
+            @intCast(value_base + 5),
+            @intCast(value_base + 6),
+        };
+        const instructions = [_]cir.Instruction{
+            .{ .kind = .pure, .result = @intCast(value_base + 8), .operands = &get_operands, .operation = .vector_get },
+            .{ .kind = .pure, .result = @intCast(value_base + 9), .operands = &equal_operands, .operation = .integer_equal },
+            .{ .kind = .pure, .result = @intCast(value_base + 10), .operands = &increment_operands, .operation = .integer_add },
+        };
+        const next_arguments = [_]cir.EdgeArgument{.{ .value = @intCast(value_base + 10) }};
+    };
+    return .{
+        .id = @intCast(block_id),
+        .function_id = @intCast(sharedFailureFunctionId(Plan, component_index)),
+        .role = .loop_header,
+        .parameters = &Static.parameters,
+        .instructions = &Static.instructions,
+        .terminator = .{ .branch = .{
+            .condition = @intCast(value_base + 9),
+            .then_edge = .{ .target = @intCast(block_id + 1) },
+            .else_edge = .{
+                .target = @intCast(block_id),
+                .arguments = &Static.next_arguments,
+            },
+        } },
+    };
+}
+
+fn sharedFailureReturnBlock(
+    comptime Plan: type,
+    comptime component_index: usize,
+) cir.Block {
+    const value_base = sharedFailureValueBase(Plan, component_index);
+    const block_id = sharedFailureBlockBase(Plan, component_index) + 2;
+    const Static = struct {
+        const get_operands = [_]cir.ValueId{
+            @intCast(value_base + 3),
+            @intCast(value_base + 7),
+            @intCast(value_base + 6),
+        };
+        const instructions = [_]cir.Instruction{.{
+            .kind = .pure,
+            .result = @intCast(value_base + 11),
+            .operands = &get_operands,
+            .operation = .vector_get,
+        }};
     };
     return .{
         .id = @intCast(block_id),
         .function_id = @intCast(sharedFailureFunctionId(Plan, component_index)),
         .role = .terminal_handoff,
-        .parameters = &Static.parameters,
         .instructions = &Static.instructions,
-        .terminator = .{ .return_to_caller = @intCast(final_value) },
+        .terminator = .{ .return_to_caller = @intCast(value_base + 11) },
     };
 }
 

@@ -2,7 +2,7 @@ const boundary = @import("boundary");
 const std = @import("std");
 const world = @import("world");
 
-const wide_tag_count = 128;
+const wide_tag_count = 256;
 
 fn WideFailure(comptime prefix: []const u8) type {
     @setEvalBranchQuota(100_000);
@@ -147,8 +147,8 @@ const WideMapSystem = world.system(.{
 
 test "world.system shares one wide Failure selector by mapping identity" {
     const Linked = WideMapSystem.Program.component();
-    try std.testing.expectEqual(@as(usize, 519), Linked.control_ir.value_types.len);
-    try std.testing.expectEqual(@as(usize, 8), Linked.control_ir.blocks.len);
+    try std.testing.expectEqual(@as(usize, 20), Linked.control_ir.value_types.len);
+    try std.testing.expectEqual(@as(usize, 10), Linked.control_ir.blocks.len);
     try std.testing.expectEqual(@as(usize, 4), Linked.control_ir.functions.len);
     const provider_a_call = Linked.control_ir.blocks[3].terminator.@"suspend";
     const provider_b_call = Linked.control_ir.blocks[4].terminator.@"suspend";
@@ -291,7 +291,7 @@ const QuotaSystem = world.system(.{
 
 test "world.system applies its branch quota in lazy lowering scopes" {
     const Linked = QuotaSystem.Program.component();
-    try std.testing.expectEqual(@as(usize, 60), Linked.control_ir.value_types.len);
+    try std.testing.expectEqual(@as(usize, 65), Linked.control_ir.value_types.len);
     try std.testing.expect(QuotaSystem.Program.image().bytes.len > 0);
 }
 
@@ -358,8 +358,8 @@ const DistinctMapSystem = world.system(.{
 
 test "world.system does not share distinct Failure mappings" {
     const Linked = DistinctMapSystem.Program.component();
-    try std.testing.expectEqual(@as(usize, 22), Linked.control_ir.value_types.len);
-    try std.testing.expectEqual(@as(usize, 9), Linked.control_ir.blocks.len);
+    try std.testing.expectEqual(@as(usize, 32), Linked.control_ir.value_types.len);
+    try std.testing.expectEqual(@as(usize, 13), Linked.control_ir.blocks.len);
     try std.testing.expectEqual(@as(usize, 5), Linked.control_ir.functions.len);
     const provider_a_call = Linked.control_ir.blocks[3].terminator.@"suspend";
     const provider_b_call = Linked.control_ir.blocks[4].terminator.@"suspend";
@@ -395,8 +395,8 @@ test "world.system preserves distinct Failure maps for repeated provider Program
         @as(usize, 3),
         RepeatedProviderDistinctMapSystem.component_count,
     );
-    try std.testing.expectEqual(@as(usize, 21), Linked.control_ir.value_types.len);
-    try std.testing.expectEqual(@as(usize, 9), Linked.control_ir.blocks.len);
+    try std.testing.expectEqual(@as(usize, 31), Linked.control_ir.value_types.len);
+    try std.testing.expectEqual(@as(usize, 13), Linked.control_ir.blocks.len);
     try std.testing.expectEqual(@as(usize, 5), Linked.control_ir.functions.len);
     const provider_a_call = Linked.control_ir.blocks[3].terminator.@"suspend";
     const provider_b_call = Linked.control_ir.blocks[4].terminator.@"suspend";

@@ -60,13 +60,15 @@ Internal handlers require exact `Payload == Provider.InitialArgs` and
 uses one explicit pure total `world.failureMorphism`. The resulting
 `System.Program.image()` is ordinary BPI1 and contains no World runtime object.
 Each distinct multi-tag provider Failure map used by dynamic failure sites
-lowers once into one pure selection-block Boundary function shared across
+lowers once into one three-block Boundary loop over canonical source-tag and
+target vectors, shared across
 providers with the same source type, target type, source tags, and mapped
 targets. Dynamic sites call that function and retain one local terminal
 continuation; quotient-size-one maps remain O(1) direct
 specializations. Identical direct failures share one adapter per source
-function and mapped target. Mapping blocks therefore scale with semantic
-owners, not source occurrences or map cardinality.
+function and mapped target. Selector values, blocks, and constants therefore
+scale with semantic owners rather than source occurrences or map cardinality;
+only the canonical table bytes scale with the finite map.
 Each source component is independently admitted by Boundary before remapping;
 linker-generated unit and Failure adapters occupy separate reductions so
 source block instructions and authored Machine-v2 costs are preserved.

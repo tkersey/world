@@ -985,7 +985,7 @@ test "world.system lowers dynamic fail_value through the total Failure morphism"
     const DynamicMachine = DynamicFailureSystem.Program.compile(.{
         .maximum_frames = 4,
         .maximum_state_bytes = 4096,
-        .maximum_machine_fuel = 32,
+        .maximum_machine_fuel = 1024,
     });
     inline for (.{
         .{ DynamicProviderFailure.denied, DynamicSystemFailure.policy_retry },
@@ -993,7 +993,7 @@ test "world.system lowers dynamic fail_value through the total Failure morphism"
     }) |case| {
         const state = try DynamicMachine.initialState(std.testing.allocator, case[0]);
         defer DynamicMachine.deinitState(state);
-        var fuel: u64 = 16;
+        var fuel: u64 = 1024;
         const failure = switch (try DynamicMachine.step(state, &fuel)) {
             .failed => |value| value,
             else => return error.TestUnexpectedResult,
@@ -1421,12 +1421,12 @@ pub const WideFailureSystem = world.system(WideFailureSpec);
 
 test "world.system shares one wide Failure mapper across dynamic fail sites" {
     const Linked = WideFailureSystem.Program.component();
-    try std.testing.expectEqual(@as(usize, 8), Linked.control_ir.blocks.len);
+    try std.testing.expectEqual(@as(usize, 10), Linked.control_ir.blocks.len);
     try std.testing.expectEqual(@as(usize, 3), Linked.control_ir.functions.len);
     const WideMachine = WideFailureSystem.Program.compile(.{
         .maximum_frames = 8,
         .maximum_state_bytes = 16_384,
-        .maximum_machine_fuel = 1024,
+        .maximum_machine_fuel = 1_000_000,
     });
     inline for (.{
         .{ WideProviderFailure.p00, WideSystemFailure.s63 },
@@ -1435,7 +1435,7 @@ test "world.system shares one wide Failure mapper across dynamic fail sites" {
     }) |case| {
         const state = try WideMachine.initialState(std.testing.allocator, case[0]);
         defer WideMachine.deinitState(state);
-        var fuel: u64 = 1024;
+        var fuel: u64 = 1_000_000;
         const failure = switch (try WideMachine.step(state, &fuel)) {
             .failed => |value| value,
             else => return error.TestUnexpectedResult,
@@ -1496,12 +1496,12 @@ test "world.system quotients constant and repeated Failure targets" {
         ConstantWideFailureSystem.Program.component().control_ir.blocks.len,
     );
     try std.testing.expectEqual(
-        @as(usize, 8),
+        @as(usize, 10),
         AlternatingWideFailureSystem.Program.component().control_ir.blocks.len,
     );
-    try std.testing.expect(
-        AlternatingWideFailureSystem.Program.component().control_ir.value_types.len <
-            WideFailureSystem.Program.component().control_ir.value_types.len,
+    try std.testing.expectEqual(
+        WideFailureSystem.Program.component().control_ir.value_types.len,
+        AlternatingWideFailureSystem.Program.component().control_ir.value_types.len,
     );
 }
 

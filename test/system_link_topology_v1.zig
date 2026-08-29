@@ -410,11 +410,10 @@ fn deriveSourceFacts(comptime spec: anytype) Facts {
                 component_index,
             ).? == component_index)
         {
-            const Quotient = comptime failureTargetQuotientFor(Map);
-            facts.failure_values += 3 * Map.targets.len + Quotient.count - 1;
-            facts.failure_blocks += 1;
+            facts.failure_values += 12;
+            facts.failure_blocks += 3;
             facts.failure_functions += 1;
-            facts.failure_constants += Map.targets.len - 1 + Quotient.count;
+            facts.failure_constants += 5;
         }
         facts.void_returns += @intFromBool(void_return_found);
     }
@@ -853,7 +852,7 @@ fn failureSelectorOwnerFor(
     unreachable;
 }
 
-fn componentSharedFailureBlockCountFor(
+fn componentSharedFailureOwnerCountFor(
     comptime components: anytype,
     comptime handlers: anytype,
     comptime component_index: usize,
@@ -867,6 +866,18 @@ fn componentSharedFailureBlockCountFor(
     return @intFromBool(owner.? == component_index);
 }
 
+fn componentSharedFailureBlockCountFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) usize {
+    return 3 * componentSharedFailureOwnerCountFor(
+        components,
+        handlers,
+        component_index,
+    );
+}
+
 fn componentSharedFailureValueCountFor(
     comptime components: anytype,
     comptime handlers: anytype,
@@ -877,9 +888,7 @@ fn componentSharedFailureValueCountFor(
         handlers,
         component_index,
     ) == 0) return 0;
-    const Map = failureMapFor(components, handlers, component_index);
-    const Quotient = comptime failureTargetQuotientFor(Map);
-    return 3 * Map.targets.len + Quotient.count - 1;
+    return 12;
 }
 
 fn componentSharedFailureConstantCountFor(
@@ -892,9 +901,7 @@ fn componentSharedFailureConstantCountFor(
         handlers,
         component_index,
     ) == 0) return 0;
-    const Map = failureMapFor(components, handlers, component_index);
-    const Quotient = comptime failureTargetQuotientFor(Map);
-    return Map.targets.len - 1 + Quotient.count;
+    return 5;
 }
 
 fn totalFailureBlocksFor(comptime components: anytype, comptime handlers: anytype) usize {
@@ -1028,7 +1035,7 @@ fn sharedFailureFunctionIdFor(
 ) usize {
     var result = totalSourceFunctions(components);
     inline for (0..component_index) |index| {
-        result += componentSharedFailureBlockCountFor(components, handlers, index);
+        result += componentSharedFailureOwnerCountFor(components, handlers, index);
     }
     return result;
 }
@@ -1392,7 +1399,6 @@ fn assertSharedFailureMappings(comptime spec: anytype, comptime System: type) !v
         ) == 0) continue;
         const Program = components.items[component_index];
         const Map = failureMapFor(components, spec.handlers, component_index);
-        const Quotient = comptime failureTargetQuotientFor(Map);
         const function_id = comptime sharedFailureFunctionIdFor(
             components,
             spec.handlers,
@@ -1434,7 +1440,7 @@ fn assertSharedFailureMappings(comptime spec: anytype, comptime System: type) !v
             Linked.control_ir.value_types[value_base + 1],
         ));
         const block = Linked.control_ir.blocks[block_base];
-        try std.testing.expectEqual(boundary.ir.BlockRole.terminal_handoff, block.role);
+        try std.testing.expectEqual(boundary.ir.BlockRole.segment, block.role);
         try std.testing.expectEqual(@as(boundary.ir.BlockId, @intCast(block_base)), block.id);
         try std.testing.expectEqual(
             @as(boundary.ir.FunctionId, @intCast(function_id)),
@@ -1445,93 +1451,92 @@ fn assertSharedFailureMappings(comptime spec: anytype, comptime System: type) !v
             @as(boundary.ir.ValueId, @intCast(value_base)),
             block.parameters[0],
         );
-        try std.testing.expectEqual(
-            3 * Map.targets.len + Quotient.count - 2,
-            block.instructions.len,
-        );
+        try std.testing.expectEqual(@as(usize, 6), block.instructions.len);
         try std.testing.expect(block.instructions[0].operation == .enum_to_u32);
         try std.testing.expectEqual(
             @as(boundary.ir.ValueId, @intCast(value_base + 1)),
             block.instructions[0].result,
         );
-        inline for (0..Quotient.count) |index| {
-            switch (block.instructions[1 + index].operation) {
-                .constant => |constant_index| try std.testing.expectEqual(
-                    @as(u16, @intCast(constant_base + Map.targets.len - 1 + index)),
-                    constant_index,
-                ),
-                else => return error.TestUnexpectedResult,
-            }
-            try std.testing.expectEqual(Quotient.targets[index], @field(
-                Linked.constants,
-                std.fmt.comptimePrint("{d}", .{constant_base + Map.targets.len - 1 + index}),
-            ));
-            try std.testing.expect(target_type.eql(
-                Linked.control_ir.value_types[value_base + 2 + index],
-            ));
-        }
-        inline for (0..Map.targets.len - 1) |tag| {
-            const cursor = 1 + Quotient.count + 3 * tag;
-            const source_value = value_base + 2 + Quotient.count + 3 * tag;
-            const condition_value = source_value + 1;
-            const selected_value = source_value + 2;
-            switch (block.instructions[cursor].operation) {
-                .constant => |index| try std.testing.expectEqual(
-                    @as(u16, @intCast(constant_base + tag)),
-                    index,
-                ),
-                else => return error.TestUnexpectedResult,
-            }
-            try std.testing.expect(block.instructions[cursor + 1].operation == .integer_equal);
-            try std.testing.expectEqual(
-                @as(boundary.ir.ValueId, @intCast(condition_value)),
-                block.instructions[cursor + 1].result,
-            );
-            try std.testing.expectEqual(
-                @as(boundary.ir.ValueId, @intCast(value_base + 1)),
-                block.instructions[cursor + 1].operands[0],
-            );
-            try std.testing.expectEqual(
-                @as(boundary.ir.ValueId, @intCast(source_value)),
-                block.instructions[cursor + 1].operands[1],
-            );
-            try std.testing.expect(block.instructions[cursor + 2].operation == .select);
-            try std.testing.expectEqual(
-                @as(boundary.ir.ValueId, @intCast(condition_value)),
-                block.instructions[cursor + 2].operands[0],
-            );
-            try std.testing.expectEqual(
-                @as(boundary.ir.ValueId, @intCast(
-                    value_base + 2 + Quotient.source_to_target[tag],
-                )),
-                block.instructions[cursor + 2].operands[1],
-            );
-            try std.testing.expectEqual(
-                @as(boundary.ir.ValueId, @intCast(if (tag == 0)
-                    value_base + 2 + Quotient.source_to_target[Map.targets.len - 1]
-                else
-                    value_base + 1 + Quotient.count + 3 * tag)),
-                block.instructions[cursor + 2].operands[2],
-            );
-            try std.testing.expectEqual(Map.source_tags[tag], @field(
-                Linked.constants,
-                std.fmt.comptimePrint("{d}", .{constant_base + tag}),
-            ));
-            try std.testing.expect((boundary.ir.ValueType{ .scalar = .u32 }).eql(
-                Linked.control_ir.value_types[source_value],
-            ));
-            try std.testing.expect((boundary.ir.ValueType{ .scalar = .boolean }).eql(
-                Linked.control_ir.value_types[condition_value],
-            ));
-            try std.testing.expect(target_type.eql(
-                Linked.control_ir.value_types[selected_value],
-            ));
-        }
+        inline for (1..6) |index| switch (block.instructions[index].operation) {
+            .constant => |constant_index| try std.testing.expectEqual(
+                @as(u16, @intCast(constant_base + index - 1)),
+                constant_index,
+            ),
+            else => return error.TestUnexpectedResult,
+        };
+        const source_tags = @field(
+            Linked.constants,
+            std.fmt.comptimePrint("{d}", .{constant_base}),
+        );
+        const targets = @field(
+            Linked.constants,
+            std.fmt.comptimePrint("{d}", .{constant_base + 1}),
+        );
+        try std.testing.expectEqual(@as(u32, @intCast(Map.source_tags.len)), source_tags.logical_length);
+        try std.testing.expectEqual(@as(u32, @intCast(Map.targets.len)), targets.logical_length);
+        try std.testing.expectEqualSlices(
+            u32,
+            &Map.source_tags,
+            source_tags.storage[0..Map.source_tags.len],
+        );
+        try std.testing.expectEqualSlices(
+            Map.TargetFailure,
+            &Map.targets,
+            targets.storage[0..Map.targets.len],
+        );
+        try std.testing.expectEqual(@as(u32, 0), @field(
+            Linked.constants,
+            std.fmt.comptimePrint("{d}", .{constant_base + 2}),
+        ));
+        try std.testing.expectEqual(@as(u32, 1), @field(
+            Linked.constants,
+            std.fmt.comptimePrint("{d}", .{constant_base + 3}),
+        ));
+        try std.testing.expectEqual(Map.targets[0], @field(
+            Linked.constants,
+            std.fmt.comptimePrint("{d}", .{constant_base + 4}),
+        ));
         try std.testing.expectEqual(
-            @as(boundary.ir.ValueId, @intCast(
-                value_base + 3 * Map.targets.len + Quotient.count - 2,
-            )),
-            block.terminator.return_to_caller,
+            @as(boundary.ir.BlockId, @intCast(block_base + 1)),
+            block.terminator.jump.target,
+        );
+        try std.testing.expectEqual(@as(usize, 1), block.terminator.jump.arguments.len);
+        try std.testing.expectEqual(
+            @as(boundary.ir.ValueId, @intCast(value_base + 4)),
+            block.terminator.jump.arguments[0].value,
+        );
+
+        const loop = Linked.control_ir.blocks[block_base + 1];
+        try std.testing.expectEqual(boundary.ir.BlockRole.loop_header, loop.role);
+        try std.testing.expectEqual(@as(usize, 1), loop.parameters.len);
+        try std.testing.expectEqual(
+            @as(boundary.ir.ValueId, @intCast(value_base + 7)),
+            loop.parameters[0],
+        );
+        try std.testing.expectEqual(@as(usize, 3), loop.instructions.len);
+        try std.testing.expect(loop.instructions[0].operation == .vector_get);
+        try std.testing.expect(loop.instructions[1].operation == .integer_equal);
+        try std.testing.expect(loop.instructions[2].operation == .integer_add);
+        try std.testing.expectEqual(
+            @as(boundary.ir.ValueId, @intCast(value_base + 9)),
+            loop.terminator.branch.condition,
+        );
+        try std.testing.expectEqual(
+            @as(boundary.ir.BlockId, @intCast(block_base + 2)),
+            loop.terminator.branch.then_edge.target,
+        );
+        try std.testing.expectEqual(
+            @as(boundary.ir.BlockId, @intCast(block_base + 1)),
+            loop.terminator.branch.else_edge.target,
+        );
+
+        const returned = Linked.control_ir.blocks[block_base + 2];
+        try std.testing.expectEqual(boundary.ir.BlockRole.terminal_handoff, returned.role);
+        try std.testing.expectEqual(@as(usize, 1), returned.instructions.len);
+        try std.testing.expect(returned.instructions[0].operation == .vector_get);
+        try std.testing.expectEqual(
+            @as(boundary.ir.ValueId, @intCast(value_base + 11)),
+            returned.terminator.return_to_caller,
         );
 
         inline for (Program.component().control_ir.blocks) |source| {
