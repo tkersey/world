@@ -75,10 +75,11 @@ as source components; World v1 does not recursively relink a linked system.
 Unreachable effect declarations require no disposition and contribute no
 residual authority. Handler and morphism declarations behind those occurrences
 do not discover providers or enter the linked handler topology. Unreachable
-helper graphs retain their original definitions, edges, and dominance; only a
-terminal that becomes invalid under its linked non-root role is privatized to a
-local inert loop. This includes impossible Failure terminals and unreachable
-void returns; reachable void returns alone receive return adapters. A void-input
+helper graphs may be source-normalized where the linked root types or function
+roles require it; they are absent from RNF/BPI1 and carry no runtime semantics.
+This includes Failure instructions and terminals, impossible Failure terminals,
+and unreachable void returns; reachable void returns alone receive return
+adapters. A void-input
 provider keeps its original entry and Control IR edges; all reachable void exits
 share one component-local unit-return adapter, and a generated handler wrapper
 owns the explicit unit call convention.
