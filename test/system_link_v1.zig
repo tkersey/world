@@ -2009,6 +2009,66 @@ const CollidingExternalBinding = world.systemExternal(.{
     .consumer = CollidingExternalProgram,
     .site = CollidingExternalSite,
 });
+const ReconstructedCollidingExternalSite = struct {
+    pub const id: u32 = 91;
+    pub const semantic_identity = CollidingExternalSite.semantic_identity;
+    pub const Payload = CollidingExternalSite.Payload;
+    pub const Resume = CollidingExternalSite.Resume;
+};
+pub const ReconstructedBareExternalSpec = .{
+    .name = "reconstructed-bare-external-site",
+    .root = CollidingExternalProgram,
+    .handlers = .{},
+    .morphisms = .{},
+    .external = .{ReconstructedCollidingExternalSite},
+};
+pub const ReconstructedBareExternalSystem = world.system(
+    ReconstructedBareExternalSpec,
+);
+const DecoratedExternalWrapper = struct {
+    pub const Consumer = CollidingExternalProgram;
+    pub const Site = CollidingExternalSite;
+    pub const site_ordinal: usize = 0;
+    pub const Payload = 7;
+    pub const Resume = false;
+    pub const semantic_identity = 11;
+};
+pub const DecoratedExternalWrapperSpec = .{
+    .name = "decorated-external-wrapper",
+    .root = CollidingExternalProgram,
+    .handlers = .{},
+    .morphisms = .{},
+    .external = .{DecoratedExternalWrapper},
+};
+pub const DecoratedExternalWrapperSystem = world.system(
+    DecoratedExternalWrapperSpec,
+);
+const ReconstructedMorphismTarget = struct {
+    pub const id: u32 = 17;
+    pub const semantic_identity = "generic.reconstructed-morphism-target.v1";
+    pub const Payload = u32;
+    pub const Resume = u32;
+};
+const ReconstructedMorphismAuthority = struct {
+    pub const id: u32 = 29;
+    pub const semantic_identity = ReconstructedMorphismTarget.semantic_identity;
+    pub const Payload = ReconstructedMorphismTarget.Payload;
+    pub const Resume = ReconstructedMorphismTarget.Resume;
+};
+pub const ReconstructedMorphismSpec = .{
+    .name = "reconstructed-morphism-authority",
+    .root = CollidingExternalProgram,
+    .handlers = .{},
+    .morphisms = .{world.systemMorphism(.{
+        .consumer = CollidingExternalProgram,
+        .site = CollidingExternalSite,
+        .target = ReconstructedMorphismTarget,
+    })},
+    .external = .{ReconstructedMorphismAuthority},
+};
+pub const ReconstructedMorphismSystem = world.system(
+    ReconstructedMorphismSpec,
+);
 
 test "world.system gives Boundary Site semantics precedence over extra declarations" {
     try std.testing.expect(!@hasDecl(CollidingExternalBinding, "binding_kind"));
@@ -2017,6 +2077,28 @@ test "world.system gives Boundary Site semantics precedence over extra declarati
         CollidingExternalSystem.residual_effects.count,
     );
     _ = CollidingExternalSystem.Program.image();
+}
+
+test "world.system matches bare external authority by Site semantic contract" {
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        ReconstructedBareExternalSystem.residual_effects.count,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        DecoratedExternalWrapperSystem.residual_effects.count,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        ReconstructedMorphismSystem.residual_effects.count,
+    );
+    try std.testing.expectEqualStrings(
+        ReconstructedMorphismTarget.semantic_identity,
+        ReconstructedMorphismSystem.residual_effects.items[0].semantic_identity,
+    );
+    _ = ReconstructedBareExternalSystem.Program.image();
+    _ = DecoratedExternalWrapperSystem.Program.image();
+    _ = ReconstructedMorphismSystem.Program.image();
 }
 
 const OrderPolicyA = boundary.effect.site(

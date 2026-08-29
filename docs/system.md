@@ -43,10 +43,12 @@ its quotient projection, each per-site Failure-adapter kind, every shared
 direct-adapter owner, and every dynamic-selector owner before lowering.
 `System.residual_effects.items` is sized to the exact active residual count, so
 inactive declarations do not survive as public capacity or undefined slots.
-Types satisfying Boundary's `Payload` / `Resume` / `semantic_identity` Site
-interface always follow the bare-Site path, regardless of extra declarations.
-Other external entries are occurrence wrappers only when they provide
-`Consumer`, `Site`, and `site_ordinal`.
+Types whose `Payload` and `Resume` declarations are types and whose
+`semantic_identity` is a nonempty byte string follow the bare-Site path,
+regardless of extra declarations. Bare authorities compare by that Boundary
+Site contract, not Zig type or constructor ordinal. Other external entries are
+occurrence wrappers only when they provide `Consumer`, `Site`, and
+`site_ordinal`.
 Distinct residual occurrences must also have distinct Boundary semantic
 identities; v1 rejects duplicate effective identities before BPI1 emission.
 

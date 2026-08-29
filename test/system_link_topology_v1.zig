@@ -450,12 +450,45 @@ fn morphismCount(
 }
 
 fn isExternalBinding(comptime External: type) bool {
-    if (@hasDecl(External, "Payload") and
-        @hasDecl(External, "Resume") and
-        @hasDecl(External, "semantic_identity")) return false;
+    if (isBoundarySite(External)) return false;
     return @hasDecl(External, "Consumer") and
         @hasDecl(External, "Site") and
         @hasDecl(External, "site_ordinal");
+}
+
+fn isBoundarySite(comptime Site: type) bool {
+    if (!@hasDecl(Site, "Payload") or
+        !@hasDecl(Site, "Resume") or
+        !@hasDecl(Site, "semantic_identity") or
+        @TypeOf(Site.Payload) != type or
+        @TypeOf(Site.Resume) != type or
+        !isByteStringType(@TypeOf(Site.semantic_identity)))
+    {
+        return false;
+    }
+    return Site.semantic_identity.len != 0;
+}
+
+fn isByteStringType(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .array => |array| array.child == u8,
+        .pointer => |pointer| switch (pointer.size) {
+            .slice => pointer.child == u8,
+            .one => switch (@typeInfo(pointer.child)) {
+                .array => |array| array.child == u8,
+                else => false,
+            },
+            else => false,
+        },
+        else => false,
+    };
+}
+
+fn siteContractsEqual(comptime Left: type, comptime Right: type) bool {
+    if (!isBoundarySite(Left) or !isBoundarySite(Right)) return false;
+    return Left.Payload == Right.Payload and
+        Left.Resume == Right.Resume and
+        std.mem.eql(u8, Left.semantic_identity, Right.semantic_identity);
 }
 
 fn uncoveredSourceCount(comptime spec: anytype, comptime Site: type) usize {
@@ -465,7 +498,7 @@ fn uncoveredSourceCount(comptime spec: anytype, comptime Site: type) usize {
         const Program = components.items[component_index];
         inline for (Program.component().effect_sites, 0..) |Candidate, ordinal| {
             if (sourceSiteReachable(Program, ordinal) and
-                Candidate == Site and
+                siteContractsEqual(Candidate, Site) and
                 handlerCount(spec.handlers, Program, ordinal) == 0 and
                 morphismCount(spec.morphisms, Program, ordinal) == 0)
             {
@@ -488,7 +521,7 @@ fn externalCount(
             if (External.Consumer == Program and External.site_ordinal == site_ordinal) {
                 result += 1;
             }
-        } else if (External == Site and
+        } else if (siteContractsEqual(External, Site) and
             handlerCount(spec.handlers, Program, site_ordinal) == 0 and
             morphismCount(spec.morphisms, Program, site_ordinal) == 0 and
             uncoveredSourceCount(spec, Site) == 1)
@@ -578,7 +611,7 @@ fn assertDispositionClosure(comptime spec: anytype) !void {
         var target_count: usize = 0;
         inline for (spec.external) |External| {
             if (comptime !isExternalBinding(External)) {
-                if (External == Morphism.Target) target_count += 1;
+                if (siteContractsEqual(External, Morphism.Target)) target_count += 1;
             }
         }
         try std.testing.expectEqual(@as(usize, 1), target_count);
@@ -1940,6 +1973,18 @@ test "source-derived topology maps provider instruction failures" {
 
 test "source-derived topology separates external source and target roles" {
     try assertTopology(fixtures.ExternalRoleSpec, fixtures.ExternalRoleSystem);
+    try assertTopology(
+        fixtures.ReconstructedBareExternalSpec,
+        fixtures.ReconstructedBareExternalSystem,
+    );
+    try assertTopology(
+        fixtures.DecoratedExternalWrapperSpec,
+        fixtures.DecoratedExternalWrapperSystem,
+    );
+    try assertTopology(
+        fixtures.ReconstructedMorphismSpec,
+        fixtures.ReconstructedMorphismSystem,
+    );
 }
 
 test "source-derived topology closes empty Failure domains" {

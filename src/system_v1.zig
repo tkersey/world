@@ -613,7 +613,7 @@ fn validateExternalUsage(comptime Plan: type) void {
                     continue;
                 }
                 if (!isExternalBinding(External) and
-                    External == Site and
+                    siteContractsEqual(External, Site) and
                     bareExternalSourceCount(Plan, Site) == 1 and
                     handlerCount(handlers, Program, site_ordinal) == 0 and
                     morphismCount(morphisms, Program, site_ordinal) == 0)
@@ -633,7 +633,7 @@ fn validateExternalUsage(comptime Plan: type) void {
         inline for (morphisms) |Morphism| {
             if (morphismActive(components, Morphism) and
                 !isExternalBinding(External) and
-                Morphism.Target == External)
+                siteContractsEqual(Morphism.Target, External))
             {
                 used = true;
             }
@@ -1240,6 +1240,10 @@ fn validateExternalDeclarations(
                 External.Site,
                 External.site_ordinal,
             );
+        } else if (!isBoundarySite(External)) {
+            @compileError(
+                "World system external entries must be Boundary Sites or occurrence wrappers",
+            );
         }
         inline for (0..index) |prior| {
             if (externalDeclarationsEqual(External, externals[prior])) {
@@ -1257,14 +1261,43 @@ fn isExternalBinding(comptime External: type) bool {
 }
 
 fn isBoundarySite(comptime Site: type) bool {
-    return @hasDecl(Site, "Payload") and
-        @hasDecl(Site, "Resume") and
-        @hasDecl(Site, "semantic_identity");
+    if (!@hasDecl(Site, "Payload") or
+        !@hasDecl(Site, "Resume") or
+        !@hasDecl(Site, "semantic_identity") or
+        @TypeOf(Site.Payload) != type or
+        @TypeOf(Site.Resume) != type or
+        !isByteStringType(@TypeOf(Site.semantic_identity)))
+    {
+        return false;
+    }
+    return Site.semantic_identity.len != 0;
+}
+
+fn isByteStringType(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .array => |array| array.child == u8,
+        .pointer => |pointer| switch (pointer.size) {
+            .slice => pointer.child == u8,
+            .one => switch (@typeInfo(pointer.child)) {
+                .array => |array| array.child == u8,
+                else => false,
+            },
+            else => false,
+        },
+        else => false,
+    };
+}
+
+fn siteContractsEqual(comptime Left: type, comptime Right: type) bool {
+    if (!isBoundarySite(Left) or !isBoundarySite(Right)) return false;
+    return Left.Payload == Right.Payload and
+        Left.Resume == Right.Resume and
+        std.mem.eql(u8, Left.semantic_identity, Right.semantic_identity);
 }
 
 fn externalDeclarationsEqual(comptime Left: type, comptime Right: type) bool {
     if (isExternalBinding(Left) != isExternalBinding(Right)) return false;
-    if (!isExternalBinding(Left)) return Left == Right;
+    if (!isExternalBinding(Left)) return siteContractsEqual(Left, Right);
     return Left.Consumer == Right.Consumer and
         Left.site_ordinal == Right.site_ordinal;
 }
@@ -1298,7 +1331,8 @@ fn morphismCount(
 fn externalTargetCount(comptime externals: anytype, comptime Target: type) usize {
     var count: usize = 0;
     inline for (externals) |External| {
-        if (!isExternalBinding(External) and External == Target) count += 1;
+        if (!isExternalBinding(External) and
+            siteContractsEqual(External, Target)) count += 1;
     }
     return count;
 }
@@ -1322,7 +1356,7 @@ fn bareExternalSourceCountRaw(
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         inline for (body(Program).effect_sites, 0..) |Candidate, site_ordinal| {
-            if (Candidate == Site and
+            if (siteContractsEqual(Candidate, Site) and
                 admittedSiteReachableAt(
                     components,
                     component_index,
@@ -1352,7 +1386,7 @@ fn externalSourceCountRaw(
         if (isExternalBinding(External)) {
             if (External.Consumer == Program and
                 External.site_ordinal == site_ordinal) count += 1;
-        } else if (External == Site and
+        } else if (siteContractsEqual(External, Site) and
             handlerCount(handlers, Program, site_ordinal) == 0 and
             morphismCount(morphisms, Program, site_ordinal) == 0 and
             bareExternalSourceCountRaw(
