@@ -1857,12 +1857,6 @@ const DuplicateTarget = boundary.effect.site(
     u32,
     u32,
 );
-const DuplicateTargetB = boundary.effect.site(
-    0,
-    "generic.duplicate-target-b.v1",
-    u32,
-    u32,
-);
 const duplicate_morph_blocks = [_]boundary.ir.Block{
     .{
         .id = 0,
@@ -1929,10 +1923,10 @@ const DuplicateMorphSystem = world.system(.{
         world.systemMorphism(.{
             .consumer = DuplicateMorphProgram,
             .site = DuplicateMorphB,
-            .target = DuplicateTargetB,
+            .target = DuplicateTarget,
         }),
     },
-    .external = .{ DuplicateTarget, DuplicateTargetB },
+    .external = .{DuplicateTarget},
 });
 
 test "world.system retains every reachable residual source-site occurrence" {
@@ -1949,7 +1943,7 @@ test "world.system retains every reachable residual source-site occurrence" {
     );
     try expectResidualSite(
         DuplicateMorphSystem.residual_effects.items[1],
-        DuplicateTargetB,
+        DuplicateTarget,
         1,
     );
     try std.testing.expectEqual(@as(usize, 2), DuplicateMachine.EffectRow.operation_site_count);

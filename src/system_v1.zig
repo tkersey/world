@@ -557,46 +557,6 @@ fn validateSystem(comptime Plan: type) void {
         }
     }
     validateExternalUsage(Plan);
-    validateResidualIdentities(Plan);
-}
-
-fn validateResidualIdentities(comptime Plan: type) void {
-    var identities: [activeResidualCount(Plan)][]const u8 = undefined;
-    var count: usize = 0;
-    inline for (0..Plan.components.count) |component_index| {
-        const Program = Plan.components.items[component_index];
-        inline for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
-            switch (Plan.siteDisposition(component_index, site_ordinal)) {
-                .inactive, .handler => {},
-                .morphism => appendResidualIdentity(
-                    &identities,
-                    &count,
-                    morphismTargetFor(Plan.morphisms, Program, site_ordinal),
-                ),
-                .external => appendResidualIdentity(
-                    &identities,
-                    &count,
-                    Site,
-                ),
-            }
-        }
-    }
-}
-
-fn appendResidualIdentity(
-    identities: anytype,
-    count: *usize,
-    comptime Site: type,
-) void {
-    inline for (0..count.*) |index| {
-        if (std.mem.eql(u8, identities.*[index], Site.semantic_identity)) {
-            @compileError(
-                "World system residual effects require unique semantic identities",
-            );
-        }
-    }
-    identities.*[count.*] = Site.semantic_identity;
-    count.* += 1;
 }
 
 fn validateExternalUsage(comptime Plan: type) void {
@@ -1427,23 +1387,8 @@ fn admittedSiteReachableAt(
     comptime component_index: usize,
     comptime site_ordinal: usize,
 ) bool {
-    const Program = components.items[component_index];
-    const Body = body(Program);
-    const reachable = components.admissionAt(component_index).reachability;
-    inline for (Body.control_ir.blocks) |block| {
-        if (!reachable.contains(block.id)) continue;
-        switch (block.terminator) {
-            .@"suspend" => |suspension| {
-                if (suspension.kind == .effect and
-                    suspension.site_id.? == site_ordinal)
-                {
-                    return true;
-                }
-            },
-            else => {},
-        }
-    }
-    return false;
+    return components.admissionAt(component_index)
+        .residual_effects.source_to_residual[site_ordinal] != null;
 }
 
 const VisitState = enum {
