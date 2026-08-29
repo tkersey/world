@@ -1005,6 +1005,149 @@ test "world.system lowers dynamic fail_value through the total Failure morphism"
     }
 }
 
+const SharedMapSiteA = boundary.effect.site(
+    0,
+    "generic.shared-map-a.v1",
+    DynamicProviderFailure,
+    DynamicProviderFailure,
+);
+const SharedMapSiteB = boundary.effect.site(
+    1,
+    "generic.shared-map-b.v1",
+    DynamicProviderFailure,
+    DynamicProviderFailure,
+);
+const shared_map_root_blocks = [_]boundary.ir.Block{
+    .{
+        .id = 0,
+        .parameters = &.{0},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 0,
+            .request_values = &.{0},
+            .continuation = .{ .target = 1, .arguments = &resume_arguments },
+            .resume_type = dynamic_failure_type,
+        } },
+    },
+    .{
+        .id = 1,
+        .parameters = &.{1},
+        .terminator = .{ .@"suspend" = .{
+            .kind = .effect,
+            .site_id = 1,
+            .request_values = &.{1},
+            .continuation = .{ .target = 2, .arguments = &resume_arguments },
+            .resume_type = dynamic_failure_type,
+        } },
+    },
+    .{
+        .id = 2,
+        .parameters = &.{2},
+        .terminator = .{ .return_value = 2 },
+    },
+};
+const SharedMapRootBody = struct {
+    pub const InitialArgs = DynamicProviderFailure;
+    pub const Result = DynamicProviderFailure;
+    pub const Failure = DynamicSystemFailure;
+    pub const effect_sites = .{ SharedMapSiteA, SharedMapSiteB };
+    pub const schema_types = .{DynamicProviderFailure};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "shared-map-root",
+        .value_types = &.{ dynamic_failure_type, dynamic_failure_type, dynamic_failure_type },
+        .blocks = &shared_map_root_blocks,
+        .entry = 0,
+        .result_type = dynamic_failure_type,
+    };
+};
+const SharedMapProviderBody = struct {
+    pub const InitialArgs = DynamicProviderFailure;
+    pub const Result = DynamicProviderFailure;
+    pub const Failure = DynamicProviderFailure;
+    pub const effect_sites = .{};
+    pub const schema_types = .{DynamicProviderFailure};
+    pub const control_ir: boundary.ir.Program = .{
+        .label = "shared-map-provider",
+        .value_types = &.{dynamic_failure_type},
+        .blocks = &dynamic_provider_blocks,
+        .entry = 0,
+        .result_type = dynamic_failure_type,
+    };
+};
+pub const SharedMapRootProgram = boundary.program(
+    "shared-map-root",
+    SharedMapRootBody,
+);
+pub const SharedMapProviderA = boundary.program(
+    "shared-map-provider-a",
+    SharedMapProviderBody,
+);
+pub const SharedMapProviderB = boundary.program(
+    "shared-map-provider-b",
+    SharedMapProviderBody,
+);
+pub const SharedMapSpec = .{
+    .name = "shared-map-system",
+    .root = SharedMapRootProgram,
+    .handlers = .{
+        world.systemHandle(.{
+            .consumer = SharedMapRootProgram,
+            .site = SharedMapSiteA,
+            .provider = SharedMapProviderA,
+            .failure_morphism = DynamicFailureMap,
+        }),
+        world.systemHandle(.{
+            .consumer = SharedMapRootProgram,
+            .site = SharedMapSiteB,
+            .provider = SharedMapProviderB,
+            .failure_morphism = DynamicFailureMap,
+        }),
+    },
+    .morphisms = .{},
+    .external = .{},
+};
+pub const SharedMapSystem = world.system(SharedMapSpec);
+
+const DynamicFailureMapSwapped = world.failureMorphism(
+    DynamicProviderFailure,
+    DynamicSystemFailure,
+    .{
+        DynamicSystemFailure.policy_denied,
+        DynamicSystemFailure.policy_retry,
+    },
+);
+pub const RepeatedProviderMapSpec = .{
+    .name = "repeated-provider-map-system",
+    .root = SharedMapRootProgram,
+    .handlers = .{
+        world.systemHandle(.{
+            .consumer = SharedMapRootProgram,
+            .site = SharedMapSiteA,
+            .provider = SharedMapProviderA,
+            .failure_morphism = DynamicFailureMap,
+        }),
+        world.systemHandle(.{
+            .consumer = SharedMapRootProgram,
+            .site = SharedMapSiteB,
+            .provider = SharedMapProviderA,
+            .failure_morphism = DynamicFailureMapSwapped,
+        }),
+    },
+    .morphisms = .{},
+    .external = .{},
+};
+pub const RepeatedProviderMapSystem = world.system(RepeatedProviderMapSpec);
+
+test "world.system keys provider instances by Program and Failure map" {
+    try std.testing.expectEqual(@as(usize, 3), SharedMapSystem.component_count);
+    try std.testing.expectEqual(
+        @as(usize, 3),
+        RepeatedProviderMapSystem.component_count,
+    );
+    try std.testing.expect(SharedMapSystem.Program.image().bytes.len > 0);
+    try std.testing.expect(RepeatedProviderMapSystem.Program.image().bytes.len > 0);
+}
+
 const WideProviderFailure = enum(u32) {
     p00,
     p01,
@@ -1862,8 +2005,13 @@ const CollidingExternalSystem = world.system(.{
     .morphisms = .{},
     .external = .{CollidingExternalSite},
 });
+const CollidingExternalBinding = world.systemExternal(.{
+    .consumer = CollidingExternalProgram,
+    .site = CollidingExternalSite,
+});
 
-test "world.system bare Site shorthand ignores unrelated binding_kind declarations" {
+test "world.system gives Boundary Site semantics precedence over extra declarations" {
+    try std.testing.expect(!@hasDecl(CollidingExternalBinding, "binding_kind"));
     try std.testing.expectEqual(
         @as(usize, 1),
         CollidingExternalSystem.residual_effects.count,

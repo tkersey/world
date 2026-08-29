@@ -367,3 +367,42 @@ test "world.system does not share distinct Failure mappings" {
     try std.testing.expect(provider_a_call.callee.?.target != provider_b_call.callee.?.target);
     try std.testing.expect(DistinctMapSystem.Program.image().bytes.len > 0);
 }
+
+const RepeatedProviderDistinctMapSystem = world.system(.{
+    .name = "world-scaling-repeated-provider-distinct-map-system",
+    .root = DistinctMapRoot,
+    .handlers = .{
+        world.systemHandle(.{
+            .consumer = DistinctMapRoot,
+            .site = quota_sites[0],
+            .provider = QuotaProvider(0),
+            .failure_morphism = QuotaMap,
+        }),
+        world.systemHandle(.{
+            .consumer = DistinctMapRoot,
+            .site = quota_sites[1],
+            .provider = QuotaProvider(0),
+            .failure_morphism = QuotaMapSwapped,
+        }),
+    },
+    .morphisms = .{},
+    .external = .{},
+});
+
+test "world.system preserves distinct Failure maps for repeated provider Programs" {
+    const Linked = RepeatedProviderDistinctMapSystem.Program.component();
+    try std.testing.expectEqual(
+        @as(usize, 3),
+        RepeatedProviderDistinctMapSystem.component_count,
+    );
+    try std.testing.expectEqual(@as(usize, 21), Linked.control_ir.value_types.len);
+    try std.testing.expectEqual(@as(usize, 9), Linked.control_ir.blocks.len);
+    try std.testing.expectEqual(@as(usize, 5), Linked.control_ir.functions.len);
+    const provider_a_call = Linked.control_ir.blocks[3].terminator.@"suspend";
+    const provider_b_call = Linked.control_ir.blocks[4].terminator.@"suspend";
+    try std.testing.expect(provider_a_call.callee_function != provider_b_call.callee_function);
+    try std.testing.expect(provider_a_call.callee.?.target != provider_b_call.callee.?.target);
+    try std.testing.expect(
+        RepeatedProviderDistinctMapSystem.Program.image().bytes.len > 0,
+    );
+}

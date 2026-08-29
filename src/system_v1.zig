@@ -7,7 +7,6 @@ const system_eval_branch_quota = 500_000_000;
 const BindingKind = enum {
     handler,
     morphism,
-    external,
 };
 
 const SiteDisposition = enum {
@@ -58,7 +57,6 @@ pub fn external(comptime config: anytype) type {
         }
     }
     return struct {
-        pub const binding_kind = BindingKind.external;
         pub const Consumer = config.consumer;
         pub const Site = config.site;
         pub const site_ordinal = resolveSiteOrdinal(config.consumer, config);
@@ -143,9 +141,10 @@ pub fn system(comptime spec: anytype) type {
     };
 }
 
-fn ProgramSet(comptime capacity: usize) type {
+fn ComponentSet(comptime capacity: usize) type {
     return struct {
         items: [capacity]type = undefined,
+        failure_maps: [capacity]type = undefined,
         admissions: [capacity]type = undefined,
         count: usize = 0,
 
@@ -156,10 +155,30 @@ fn ProgramSet(comptime capacity: usize) type {
             return false;
         }
 
-        fn add(self: *@This(), comptime Program: type) bool {
-            if (self.contains(Program)) return false;
+        fn containsInstance(
+            self: @This(),
+            comptime Program: type,
+            comptime FailureMap: type,
+        ) bool {
+            inline for (0..self.count) |index| {
+                if (self.items[index] == Program and
+                    failureMapsEqual(self.failure_maps[index], FailureMap))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        fn add(
+            self: *@This(),
+            comptime Program: type,
+            comptime FailureMap: type,
+        ) bool {
+            if (self.containsInstance(Program, FailureMap)) return false;
             const Admission = boundary.componentAdmission(Program);
             self.items[self.count] = Program;
+            self.failure_maps[self.count] = FailureMap;
             self.admissions[self.count] = Admission;
             self.count += 1;
             return true;
@@ -168,6 +187,25 @@ fn ProgramSet(comptime capacity: usize) type {
         fn admissionAt(comptime self: @This(), comptime index: usize) type {
             return self.admissions[index];
         }
+
+        fn failureMapAt(comptime self: @This(), comptime index: usize) type {
+            return self.failure_maps[index];
+        }
+
+        fn indexOfInstance(
+            comptime self: @This(),
+            comptime Program: type,
+            comptime FailureMap: type,
+        ) usize {
+            inline for (0..self.count) |index| {
+                if (self.items[index] == Program and
+                    failureMapsEqual(self.failure_maps[index], FailureMap))
+                {
+                    return index;
+                }
+            }
+            unreachable;
+        }
     };
 }
 
@@ -175,16 +213,16 @@ fn componentsFor(
     comptime Root: type,
     comptime handlers: anytype,
     comptime morphisms: anytype,
-) ProgramSet(1 + handlers.len * 2 + morphisms.len) {
-    var result: ProgramSet(1 + handlers.len * 2 + morphisms.len) = .{};
-    _ = result.add(Root);
+) ComponentSet(1 + handlers.len * 2 + morphisms.len) {
+    var result: ComponentSet(1 + handlers.len * 2 + morphisms.len) = .{};
+    _ = result.add(Root, void);
     inline for (handlers) |Handler| {
         requireHandler(Handler);
     }
     inline for (morphisms) |Morphism| {
         requireMorphism(Morphism);
     }
-    discoverComponents(&result, Root, handlers);
+    discoverComponents(&result, 0, handlers);
     return result;
 }
 
@@ -202,9 +240,9 @@ fn PlanFor(
             for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
                 const linked_id = effectOffset(components_value, component_index) +
                     site_ordinal;
-                if (!admittedSiteReachable(
+                if (!admittedSiteReachableAt(
                     components_value,
-                    Program,
+                    component_index,
                     site_ordinal,
                 )) {
                     result[linked_id] = .inactive;
@@ -251,10 +289,15 @@ fn PlanFor(
     const failure_maps = comptime blk: {
         var result: [components_value.count]type = undefined;
         for (0..components_value.count) |component_index| {
-            result[component_index] = failureMapFor(
-                components_value,
-                handlers_value,
-                component_index,
+            result[component_index] = components_value.failureMapAt(component_index);
+        }
+        break :blk result;
+    };
+    const failure_quotients = comptime blk: {
+        var result: [components_value.count]type = undefined;
+        for (0..components_value.count) |component_index| {
+            result[component_index] = FailureQuotientProjection(
+                failure_maps[component_index],
             );
         }
         break :blk result;
@@ -266,6 +309,7 @@ fn PlanFor(
                 components_value,
                 component_index,
                 failure_maps[component_index],
+                failure_quotients[component_index],
             );
         }
         break :blk result;
@@ -300,13 +344,18 @@ fn PlanFor(
                     result[linked_id] = .{ .kind = .none };
                     continue;
                 }
-                var layout = failureAdapterLayout(Map, block.terminator);
+                var layout = failureAdapterLayout(
+                    Map,
+                    failure_quotients[component_index],
+                    block.terminator,
+                );
                 if (layout.kind == .direct) {
                     const owner_block = directFailureOwnerBlockForMap(
                         components_value,
                         component_index,
                         block.id,
                         Map,
+                        failure_quotients[component_index],
                     );
                     if (owner_block != block.id) {
                         layout = .{
@@ -333,6 +382,7 @@ fn PlanFor(
         pub const externals = externals_value;
         pub const site_dispositions = dispositions;
         pub const failure_map_types = failure_maps;
+        pub const failure_quotient_projections = failure_quotients;
         pub const failure_selector_owner_components = failure_selector_owners;
         pub const failure_adapter_layouts = failure_layouts;
         pub fn blockReachable(
@@ -370,26 +420,52 @@ fn PlanFor(
         pub fn failureMap(comptime component_index: usize) type {
             return failure_map_types[component_index];
         }
+
+        pub fn FailureQuotient(comptime component_index: usize) type {
+            return failure_quotient_projections[component_index];
+        }
     };
 }
 
 fn discoverComponents(
     result: anytype,
-    comptime Current: type,
+    comptime current_index: usize,
     comptime handlers: anytype,
 ) void {
+    const Current = result.items[current_index];
     inline for (body(Current).effect_sites, 0..) |_, site_ordinal| {
-        if (!admittedSiteReachable(result.*, Current, site_ordinal)) continue;
+        if (!admittedSiteReachableAt(result.*, current_index, site_ordinal)) continue;
         inline for (handlers) |Handler| {
             if (Handler.Consumer == Current and
                 Handler.site_ordinal == site_ordinal)
             {
-                if (result.add(Handler.Provider)) {
-                    discoverComponents(result, Handler.Provider, handlers);
+                const FailureMap = handlerFailureMap(
+                    Handler,
+                    body(result.items[0]).Failure,
+                );
+                if (result.add(Handler.Provider, FailureMap)) {
+                    discoverComponents(
+                        result,
+                        result.indexOfInstance(
+                            Handler.Provider,
+                            FailureMap,
+                        ),
+                        handlers,
+                    );
                 }
             }
         }
     }
+}
+
+fn handlerFailureMap(
+    comptime Handler: type,
+    comptime RootFailure: type,
+) type {
+    return if (body(Handler.Provider).Failure == RootFailure)
+        void
+    else
+        Handler.FailureMorphism;
 }
 
 fn body(comptime Program: type) type {
@@ -476,7 +552,6 @@ fn validateSystem(comptime Plan: type) void {
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         const Body = body(Program);
-        _ = failureMapFor(components, handlers, component_index);
         inline for (Body.effect_sites, 0..) |_, site_ordinal| {
             _ = Plan.siteDisposition(component_index, site_ordinal);
         }
@@ -599,34 +674,6 @@ fn mappedFailureTarget(comptime Map: type, comptime source_tag: u32) Map.TargetF
     unreachable;
 }
 
-fn failureMapFor(
-    comptime components: anytype,
-    comptime handlers: anytype,
-    comptime component_index: usize,
-) type {
-    if (component_index == 0) return void;
-    const Program = components.items[component_index];
-    const ComponentFailure = body(Program).Failure;
-    const SystemFailure = body(components.items[0]).Failure;
-    if (ComponentFailure == SystemFailure) return void;
-    var Result: type = void;
-    var found = false;
-    inline for (handlers) |Handler| {
-        if (Handler.Provider != Program or
-            !handlerActive(components, Handler)) continue;
-        if (!found) {
-            Result = Handler.FailureMorphism;
-            found = true;
-        } else if (!failureMapsEqual(Result, Handler.FailureMorphism)) {
-            @compileError(
-                "World system requires one canonical Failure morphism per provider",
-            );
-        }
-    }
-    if (!found) unreachable;
-    return Result;
-}
-
 fn FailureTargetQuotient(comptime Map: type) type {
     return struct {
         targets: [Map.targets.len]Map.TargetFailure = undefined,
@@ -652,6 +699,16 @@ fn failureTargetQuotient(comptime Map: type) FailureTargetQuotient(Map) {
         result.source_to_target[source_index] = target_index.?;
     }
     return result;
+}
+
+fn FailureQuotientProjection(comptime Map: type) type {
+    if (Map == void) return struct {};
+    return struct {
+        pub const value = blk: {
+            @setEvalBranchQuota(system_eval_branch_quota);
+            break :blk failureTargetQuotient(Map);
+        };
+    };
 }
 
 fn blockInstructionFailureCapacity(comptime block: cir.Block) usize {
@@ -752,6 +809,7 @@ const FailureAdapterLayout = struct {
 
 fn failureAdapterLayout(
     comptime Map: type,
+    comptime QuotientProjection: type,
     comptime terminator: cir.Terminator,
 ) FailureAdapterLayout {
     if (Map == void) return .{ .kind = .none };
@@ -764,7 +822,7 @@ fn failureAdapterLayout(
         },
         .fail_value => if (Map.targets.len == 0)
             .{ .kind = .impossible }
-        else if (failureTargetQuotient(Map).count == 1)
+        else if (QuotientProjection.value.count == 1)
             .{
                 .kind = .direct,
                 .value_count = 1,
@@ -783,12 +841,13 @@ fn failureAdapterLayout(
 
 fn directFailureTarget(
     comptime Map: type,
+    comptime QuotientProjection: type,
     comptime terminator: cir.Terminator,
 ) ?Map.TargetFailure {
     return switch (terminator) {
         .fail => |source_tag| mappedFailureTarget(Map, source_tag),
-        .fail_value => if (failureTargetQuotient(Map).count == 1)
-            failureTargetQuotient(Map).targets[0]
+        .fail_value => if (QuotientProjection.value.count == 1)
+            QuotientProjection.value.targets[0]
         else
             null,
         else => null,
@@ -800,16 +859,25 @@ fn directFailureOwnerBlockForMap(
     comptime component_index: usize,
     comptime block_id: cir.BlockId,
     comptime Map: type,
+    comptime QuotientProjection: type,
 ) cir.BlockId {
     const Program = components.items[component_index];
     const Body = body(Program);
     const current = Body.control_ir.blocks[block_id];
-    const target = directFailureTarget(Map, current.terminator) orelse unreachable;
+    const target = directFailureTarget(
+        Map,
+        QuotientProjection,
+        current.terminator,
+    ) orelse unreachable;
     inline for (Body.control_ir.blocks) |candidate| {
         if (candidate.id > block_id) continue;
         if (!components.admissionAt(component_index).reachability.contains(candidate.id)) continue;
         if (candidate.function_id != current.function_id) continue;
-        const candidate_target = directFailureTarget(Map, candidate.terminator) orelse continue;
+        const candidate_target = directFailureTarget(
+            Map,
+            QuotientProjection,
+            candidate.terminator,
+        ) orelse continue;
         if (@intFromEnum(candidate_target) == @intFromEnum(target)) return candidate.id;
     }
     unreachable;
@@ -855,12 +923,17 @@ fn componentHasDynamicFailureForMap(
     comptime components: anytype,
     comptime component_index: usize,
     comptime Map: type,
+    comptime QuotientProjection: type,
 ) bool {
     inline for (body(components.items[component_index]).control_ir.blocks) |block| {
         if (!components.admissionAt(component_index).reachability.contains(block.id)) {
             continue;
         }
-        if (failureAdapterLayout(Map, block.terminator).kind == .dynamic) {
+        if (failureAdapterLayout(
+            Map,
+            QuotientProjection,
+            block.terminator,
+        ).kind == .dynamic) {
             return true;
         }
     }
@@ -881,7 +954,7 @@ fn componentSharedFailureValues(
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
     const Map = Plan.failureMap(component_index);
-    const Quotient = failureTargetQuotient(Map);
+    const Quotient = Plan.FailureQuotient(component_index).value;
     return 3 * Map.targets.len + Quotient.count - 1;
 }
 
@@ -899,7 +972,7 @@ fn componentSharedFailureConstants(
 ) usize {
     if (componentSharedFailureCount(Plan, component_index) == 0) return 0;
     const Map = Plan.failureMap(component_index);
-    const Quotient = failureTargetQuotient(Map);
+    const Quotient = Plan.FailureQuotient(component_index).value;
     return Map.targets.len - 1 + Quotient.count;
 }
 
@@ -1022,35 +1095,55 @@ fn requireMorphism(comptime Morphism: type) void {
 }
 
 fn handlerActive(comptime components: anytype, comptime Handler: type) bool {
-    return components.contains(Handler.Consumer) and
-        admittedSiteReachable(
-            components,
-            Handler.Consumer,
-            Handler.site_ordinal,
-        );
+    inline for (0..components.count) |component_index| {
+        if (components.items[component_index] == Handler.Consumer and
+            admittedSiteReachableAt(
+                components,
+                component_index,
+                Handler.site_ordinal,
+            )) return true;
+    }
+    return false;
 }
 
 fn activeHandlerCount(comptime components: anytype, comptime handlers: anytype) usize {
     var count: usize = 0;
-    inline for (handlers) |Handler| {
-        if (handlerActive(components, Handler)) count += 1;
+    inline for (0..components.count) |component_index| {
+        inline for (handlers) |Handler| {
+            if (components.items[component_index] == Handler.Consumer and
+                admittedSiteReachableAt(
+                    components,
+                    component_index,
+                    Handler.site_ordinal,
+                )) count += 1;
+        }
     }
     return count;
 }
 
 fn morphismActive(comptime components: anytype, comptime Morphism: type) bool {
-    return components.contains(Morphism.Consumer) and
-        admittedSiteReachable(
-            components,
-            Morphism.Consumer,
-            Morphism.site_ordinal,
-        );
+    inline for (0..components.count) |component_index| {
+        if (components.items[component_index] == Morphism.Consumer and
+            admittedSiteReachableAt(
+                components,
+                component_index,
+                Morphism.site_ordinal,
+            )) return true;
+    }
+    return false;
 }
 
 fn activeMorphismCount(comptime components: anytype, comptime morphisms: anytype) usize {
     var count: usize = 0;
-    inline for (morphisms) |Morphism| {
-        if (morphismActive(components, Morphism)) count += 1;
+    inline for (0..components.count) |component_index| {
+        inline for (morphisms) |Morphism| {
+            if (components.items[component_index] == Morphism.Consumer and
+                admittedSiteReachableAt(
+                    components,
+                    component_index,
+                    Morphism.site_ordinal,
+                )) count += 1;
+        }
     }
     return count;
 }
@@ -1157,9 +1250,16 @@ fn validateExternalDeclarations(
 }
 
 fn isExternalBinding(comptime External: type) bool {
-    return @hasDecl(External, "binding_kind") and
-        @TypeOf(External.binding_kind) == BindingKind and
-        External.binding_kind == .external;
+    if (isBoundarySite(External)) return false;
+    return @hasDecl(External, "Consumer") and
+        @hasDecl(External, "Site") and
+        @hasDecl(External, "site_ordinal");
+}
+
+fn isBoundarySite(comptime Site: type) bool {
+    return @hasDecl(Site, "Payload") and
+        @hasDecl(Site, "Resume") and
+        @hasDecl(Site, "semantic_identity");
 }
 
 fn externalDeclarationsEqual(comptime Left: type, comptime Right: type) bool {
@@ -1195,19 +1295,6 @@ fn morphismCount(
     return count;
 }
 
-fn externalCount(
-    comptime Plan: type,
-    comptime Program: type,
-    comptime site_ordinal: usize,
-    comptime Site: type,
-) usize {
-    _ = Site;
-    const component_index = componentIndex(Plan.components, Program);
-    return @intFromBool(
-        Plan.siteDisposition(component_index, site_ordinal) == .external,
-    );
-}
-
 fn externalTargetCount(comptime externals: anytype, comptime Target: type) usize {
     var count: usize = 0;
     inline for (externals) |External| {
@@ -1236,7 +1323,11 @@ fn bareExternalSourceCountRaw(
         const Program = components.items[component_index];
         inline for (body(Program).effect_sites, 0..) |Candidate, site_ordinal| {
             if (Candidate == Site and
-                admittedSiteReachable(components, Program, site_ordinal) and
+                admittedSiteReachableAt(
+                    components,
+                    component_index,
+                    site_ordinal,
+                ) and
                 handlerCount(handlers, Program, site_ordinal) == 0 and
                 morphismCount(morphisms, Program, site_ordinal) == 0)
             {
@@ -1282,21 +1373,17 @@ fn componentSiteReachable(
     comptime component_index: usize,
     comptime site_ordinal: usize,
 ) bool {
-    return admittedSiteReachable(
-        Plan.components,
-        Plan.components.items[component_index],
-        site_ordinal,
-    );
+    return admittedSiteReachableAt(Plan.components, component_index, site_ordinal);
 }
 
-fn admittedSiteReachable(
+fn admittedSiteReachableAt(
     comptime components: anytype,
-    comptime Program: type,
+    comptime component_index: usize,
     comptime site_ordinal: usize,
 ) bool {
+    const Program = components.items[component_index];
     const Body = body(Program);
-    const reachable = components.admissionAt(componentIndex(components, Program))
-        .reachability;
+    const reachable = components.admissionAt(component_index).reachability;
     inline for (Body.control_ir.blocks) |block| {
         if (!reachable.contains(block.id)) continue;
         switch (block.terminator) {
@@ -1344,7 +1431,13 @@ fn visitComponent(
                 components,
                 handlers,
                 states,
-                componentIndex(components, Handler.Provider),
+                components.indexOfInstance(
+                    Handler.Provider,
+                    handlerFailureMap(
+                        Handler,
+                        body(components.items[0]).Failure,
+                    ),
+                ),
             );
         }
     }
@@ -1472,13 +1565,6 @@ fn schemasFor(
 fn schemaIndex(comptime schemas: anytype, comptime Schema: type) u32 {
     inline for (0..schemas.count) |index| {
         if (schemas.items[index] == Schema) return @intCast(index);
-    }
-    unreachable;
-}
-
-fn componentIndex(comptime components: anytype, comptime Program: type) usize {
-    inline for (0..components.count) |index| {
-        if (components.items[index] == Program) return index;
     }
     unreachable;
 }
@@ -2129,7 +2215,7 @@ fn appendSharedFailureValueTypes(
         schemas,
         Map.TargetFailure,
     ) };
-    const Quotient = failureTargetQuotient(Map);
+    const Quotient = Plan.FailureQuotient(component_index).value;
     appendValueType(result, cursor, source_type);
     appendValueType(result, cursor, .{ .scalar = .u32 });
     inline for (0..Quotient.count) |_| {
@@ -2191,7 +2277,7 @@ fn constantTypes(comptime Plan: type) [linkedTotalConstants(Plan)]type {
     inline for (0..components.count) |component_index| {
         if (componentSharedFailureCount(Plan, component_index) == 0) continue;
         const Map = Plan.failureMap(component_index);
-        const Quotient = failureTargetQuotient(Map);
+        const Quotient = Plan.FailureQuotient(component_index).value;
         inline for (0..Map.targets.len - 1) |_| {
             result[cursor] = u32;
             cursor += 1;
@@ -2326,7 +2412,7 @@ fn appendSharedFailureConstants(
 ) void {
     if (componentSharedFailureCount(Plan, component_index) == 0) return;
     const Map = Plan.failureMap(component_index);
-    const Quotient = failureTargetQuotient(Map);
+    const Quotient = Plan.FailureQuotient(component_index).value;
     inline for (0..Map.targets.len - 1) |tag| {
         appendConstant(result, cursor, Map.source_tags[tag]);
     }
@@ -2844,7 +2930,7 @@ fn sharedFailureSelectBlock(
     comptime component_index: usize,
 ) cir.Block {
     const Map = Plan.failureMap(component_index);
-    const Quotient = failureTargetQuotient(Map);
+    const Quotient = Plan.FailureQuotient(component_index).value;
     const value_base = sharedFailureValueBase(Plan, component_index);
     const block_id = sharedFailureBlockBase(Plan, component_index);
     const constant_base = sharedFailureConstantBase(Plan, component_index);
@@ -3252,21 +3338,33 @@ fn buildEffectHandlers(comptime Plan: type) [
     const handlers = Plan.handlers;
     var result: [activeHandlerCount(components, handlers)]type = undefined;
     var cursor: usize = 0;
-    inline for (handlers) |Handler| {
-        if (!handlerActive(components, Handler)) continue;
-        const consumer_index = componentIndex(components, Handler.Consumer);
-        const provider_index = componentIndex(components, Handler.Provider);
-        result[cursor] = boundary.effect.handler(
-            @intCast(
-                effectOffset(components, consumer_index) +
+    inline for (0..components.count) |consumer_index| {
+        inline for (handlers) |Handler| {
+            if (components.items[consumer_index] != Handler.Consumer or
+                !admittedSiteReachableAt(
+                    components,
+                    consumer_index,
                     Handler.site_ordinal,
-            ),
-            @intCast(if (componentVoidWrapperCount(components, provider_index) == 1)
-                voidWrapperFunctionId(Plan, provider_index)
-            else
-                functionOffset(components, provider_index)),
-        );
-        cursor += 1;
+                )) continue;
+            const provider_index = components.indexOfInstance(
+                Handler.Provider,
+                handlerFailureMap(
+                    Handler,
+                    body(components.items[0]).Failure,
+                ),
+            );
+            result[cursor] = boundary.effect.handler(
+                @intCast(
+                    effectOffset(components, consumer_index) +
+                        Handler.site_ordinal,
+                ),
+                @intCast(if (componentVoidWrapperCount(components, provider_index) == 1)
+                    voidWrapperFunctionId(Plan, provider_index)
+                else
+                    functionOffset(components, provider_index)),
+            );
+            cursor += 1;
+        }
     }
     return result;
 }
@@ -3277,17 +3375,23 @@ fn buildEffectMorphisms(
 ) [activeMorphismCount(components, morphisms)]type {
     var result: [activeMorphismCount(components, morphisms)]type = undefined;
     var cursor: usize = 0;
-    inline for (morphisms) |Morphism| {
-        if (!morphismActive(components, Morphism)) continue;
-        const consumer_index = componentIndex(components, Morphism.Consumer);
-        result[cursor] = boundary.effect.morphism(
-            @intCast(
-                effectOffset(components, consumer_index) +
+    inline for (0..components.count) |consumer_index| {
+        inline for (morphisms) |Morphism| {
+            if (components.items[consumer_index] != Morphism.Consumer or
+                !admittedSiteReachableAt(
+                    components,
+                    consumer_index,
                     Morphism.site_ordinal,
-            ),
-            Morphism.Target,
-        );
-        cursor += 1;
+                )) continue;
+            result[cursor] = boundary.effect.morphism(
+                @intCast(
+                    effectOffset(components, consumer_index) +
+                        Morphism.site_ordinal,
+                ),
+                Morphism.Target,
+            );
+            cursor += 1;
+        }
     }
     return result;
 }

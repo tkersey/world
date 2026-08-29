@@ -19,45 +19,112 @@ const Facts = struct {
     void_wrappers: usize = 0,
 };
 
-fn TypeSet(comptime capacity: usize) type {
+fn ComponentSet(comptime capacity: usize) type {
     return struct {
         items: [capacity]type = undefined,
+        failure_maps: [capacity]type = undefined,
         count: usize = 0,
 
-        fn add(self: *@This(), comptime Item: type) bool {
+        fn add(
+            self: *@This(),
+            comptime Program: type,
+            comptime FailureMap: type,
+        ) bool {
             inline for (0..self.count) |index| {
-                if (self.items[index] == Item) return false;
+                if (self.items[index] == Program and
+                    failureMapsEqual(self.failure_maps[index], FailureMap))
+                {
+                    return false;
+                }
             }
-            self.items[self.count] = Item;
+            self.items[self.count] = Program;
+            self.failure_maps[self.count] = FailureMap;
             self.count += 1;
             return true;
+        }
+
+        fn indexOf(
+            comptime self: @This(),
+            comptime Program: type,
+            comptime FailureMap: type,
+        ) usize {
+            inline for (0..self.count) |index| {
+                if (self.items[index] == Program and
+                    failureMapsEqual(self.failure_maps[index], FailureMap))
+                {
+                    return index;
+                }
+            }
+            unreachable;
         }
     };
 }
 
-fn componentSet(comptime spec: anytype) TypeSet(1 + spec.handlers.len) {
-    var result: TypeSet(1 + spec.handlers.len) = .{};
-    _ = result.add(spec.root);
-    collectProviders(&result, spec.root, spec.handlers);
+fn componentSet(comptime spec: anytype) ComponentSet(1 + spec.handlers.len) {
+    var result: ComponentSet(1 + spec.handlers.len) = .{};
+    _ = result.add(spec.root, void);
+    collectProviders(&result, 0, spec.handlers);
     return result;
 }
 
 fn collectProviders(
     result: anytype,
-    comptime Current: type,
+    comptime current_index: usize,
     comptime handlers: anytype,
 ) void {
+    const Current = result.items[current_index];
     inline for (Current.component().effect_sites, 0..) |_, site_ordinal| {
         if (!sourceSiteReachable(Current, site_ordinal)) continue;
         inline for (handlers) |Handler| {
             if (Handler.Consumer != Current or Handler.site_ordinal != site_ordinal) {
                 continue;
             }
-            if (result.add(Handler.Provider)) {
-                collectProviders(result, Handler.Provider, handlers);
+            const FailureMap = handlerFailureMap(
+                Handler,
+                result.items[0].component().Failure,
+            );
+            if (result.add(Handler.Provider, FailureMap)) {
+                collectProviders(
+                    result,
+                    result.indexOf(Handler.Provider, FailureMap),
+                    handlers,
+                );
             }
         }
     }
+}
+
+fn failureMapsEqual(comptime Left: type, comptime Right: type) bool {
+    if (Left == void or Right == void) return Left == Right;
+    if (Left.SourceFailure != Right.SourceFailure or
+        Left.TargetFailure != Right.TargetFailure or
+        Left.targets.len != Right.targets.len)
+    {
+        return false;
+    }
+    inline for (
+        Left.source_tags,
+        Right.source_tags,
+        Left.targets,
+        Right.targets,
+    ) |left_source, right_source, left_target, right_target| {
+        if (left_source != right_source or
+            @intFromEnum(left_target) != @intFromEnum(right_target))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn handlerFailureMap(
+    comptime Handler: type,
+    comptime RootFailure: type,
+) type {
+    return if (Handler.Provider.component().Failure == RootFailure)
+        void
+    else
+        Handler.FailureMorphism;
 }
 
 fn componentFunctionCount(comptime Body: type) usize {
@@ -76,16 +143,8 @@ fn failureMapFor(
     comptime handlers: anytype,
     comptime component_index: usize,
 ) type {
-    if (component_index == 0) return void;
-    const Program = components.items[component_index];
-    const SourceFailure = Program.component().Failure;
-    const SystemFailure = components.items[0].component().Failure;
-    if (SourceFailure == SystemFailure) return void;
-    inline for (handlers) |Handler| {
-        if (Handler.Provider == Program and
-            handlerActive(components, Handler)) return Handler.FailureMorphism;
-    }
-    unreachable;
+    _ = handlers;
+    return components.failure_maps[component_index];
 }
 
 fn failureTargetQuotientFor(comptime Map: type) struct {
@@ -344,7 +403,13 @@ fn deriveSourceFacts(comptime spec: anytype) Facts {
                 }
             }
         }
-        if (dynamic_failure_count != 0) {
+        if (dynamic_failure_count != 0 and
+            failureSelectorOwnerFor(
+                components,
+                spec.handlers,
+                component_index,
+            ).? == component_index)
+        {
             const Quotient = comptime failureTargetQuotientFor(Map);
             facts.failure_values += 3 * Map.targets.len + Quotient.count - 1;
             facts.failure_blocks += 1;
@@ -385,8 +450,11 @@ fn morphismCount(
 }
 
 fn isExternalBinding(comptime External: type) bool {
-    return @hasDecl(External, "binding_kind") and
-        @hasDecl(External, "Consumer") and
+    if (@hasDecl(External, "Payload") and
+        @hasDecl(External, "Resume") and
+        @hasDecl(External, "semantic_identity")) return false;
+    return @hasDecl(External, "Consumer") and
+        @hasDecl(External, "Site") and
         @hasDecl(External, "site_ordinal");
 }
 
@@ -453,11 +521,6 @@ fn sourceSiteReachable(
     return false;
 }
 
-fn handlerActive(comptime components: anytype, comptime Handler: type) bool {
-    return componentsContains(components, Handler.Consumer) and
-        sourceSiteReachable(Handler.Consumer, Handler.site_ordinal);
-}
-
 fn morphismActive(comptime components: anytype, comptime Morphism: type) bool {
     return componentsContains(components, Morphism.Consumer) and
         sourceSiteReachable(Morphism.Consumer, Morphism.site_ordinal);
@@ -472,16 +535,28 @@ fn componentsContains(comptime components: anytype, comptime Program: type) bool
 
 fn activeHandlerCount(comptime components: anytype, comptime handlers: anytype) usize {
     var result: usize = 0;
-    inline for (handlers) |Handler| {
-        if (handlerActive(components, Handler)) result += 1;
+    inline for (0..components.count) |component_index| {
+        inline for (handlers) |Handler| {
+            if (components.items[component_index] == Handler.Consumer and
+                sourceSiteReachable(Handler.Consumer, Handler.site_ordinal))
+            {
+                result += 1;
+            }
+        }
     }
     return result;
 }
 
 fn activeMorphismCount(comptime components: anytype, comptime morphisms: anytype) usize {
     var result: usize = 0;
-    inline for (morphisms) |Morphism| {
-        if (morphismActive(components, Morphism)) result += 1;
+    inline for (0..components.count) |component_index| {
+        inline for (morphisms) |Morphism| {
+            if (components.items[component_index] == Morphism.Consumer and
+                sourceSiteReachable(Morphism.Consumer, Morphism.site_ordinal))
+            {
+                result += 1;
+            }
+        }
     }
     return result;
 }
@@ -559,13 +634,6 @@ fn assertResidualEntries(comptime spec: anytype, comptime System: type) !void {
         }
     }
     try std.testing.expectEqual(cursor, System.residual_effects.count);
-}
-
-fn componentIndex(comptime components: anytype, comptime Program: type) usize {
-    inline for (0..components.count) |index| {
-        if (components.items[index] == Program) return index;
-    }
-    unreachable;
 }
 
 fn failureSiteBlockCount(comptime Map: type, comptime terminator: boundary.ir.Terminator) usize {
@@ -719,19 +787,43 @@ fn componentDynamicFailureCountFor(
     return result;
 }
 
+fn failureSelectorOwnerFor(
+    comptime components: anytype,
+    comptime handlers: anytype,
+    comptime component_index: usize,
+) ?usize {
+    if (componentDynamicFailureCountFor(
+        components,
+        handlers,
+        component_index,
+    ) == 0) return null;
+    const Map = failureMapFor(components, handlers, component_index);
+    inline for (0..component_index + 1) |candidate_index| {
+        if (componentDynamicFailureCountFor(
+            components,
+            handlers,
+            candidate_index,
+        ) == 0) continue;
+        if (failureMapsEqual(
+            Map,
+            failureMapFor(components, handlers, candidate_index),
+        )) return candidate_index;
+    }
+    unreachable;
+}
+
 fn componentSharedFailureBlockCountFor(
     comptime components: anytype,
     comptime handlers: anytype,
     comptime component_index: usize,
 ) usize {
-    if (comptime componentDynamicFailureCountFor(
+    const owner = comptime failureSelectorOwnerFor(
         components,
         handlers,
         component_index,
-    ) == 0) {
-        return 0;
-    }
-    return 1;
+    );
+    if (comptime owner == null) return 0;
+    return @intFromBool(owner.? == component_index);
 }
 
 fn componentSharedFailureValueCountFor(
@@ -739,7 +831,7 @@ fn componentSharedFailureValueCountFor(
     comptime handlers: anytype,
     comptime component_index: usize,
 ) usize {
-    if (comptime componentDynamicFailureCountFor(
+    if (comptime componentSharedFailureBlockCountFor(
         components,
         handlers,
         component_index,
@@ -754,7 +846,7 @@ fn componentSharedFailureConstantCountFor(
     comptime handlers: anytype,
     comptime component_index: usize,
 ) usize {
-    if (comptime componentDynamicFailureCountFor(
+    if (comptime componentSharedFailureBlockCountFor(
         components,
         handlers,
         component_index,
@@ -895,9 +987,7 @@ fn sharedFailureFunctionIdFor(
 ) usize {
     var result = totalSourceFunctions(components);
     inline for (0..component_index) |index| {
-        result += @intFromBool(
-            componentDynamicFailureCountFor(components, handlers, index) != 0,
-        );
+        result += componentSharedFailureBlockCountFor(components, handlers, index);
     }
     return result;
 }
@@ -1167,13 +1257,18 @@ fn assertTerminatorMapping(
             .fail_value => |value| if (comptime failureTargetQuotientFor(Map).count == 1) {
                 try std.testing.expect(linked.terminator == .jump);
             } else {
+                const selector_owner = comptime failureSelectorOwnerFor(
+                    components,
+                    handlers,
+                    component_index,
+                ).?;
                 const suspension = linked.terminator.@"suspend";
                 try std.testing.expectEqual(boundary.ir.SuspensionKind.call, suspension.kind);
                 try std.testing.expectEqual(
                     @as(boundary.ir.FunctionId, @intCast(sharedFailureFunctionIdFor(
                         components,
                         handlers,
-                        component_index,
+                        selector_owner,
                     ))),
                     suspension.callee_function.?,
                 );
@@ -1181,7 +1276,7 @@ fn assertTerminatorMapping(
                     @as(boundary.ir.BlockId, @intCast(sharedFailureBlockBaseFor(
                         components,
                         handlers,
-                        component_index,
+                        selector_owner,
                     ))),
                     suspension.callee.?.target,
                 );
@@ -1232,9 +1327,7 @@ fn voidWrapperFunctionId(
 ) usize {
     var result = totalSourceFunctions(components);
     inline for (0..components.count) |index| {
-        result += @intFromBool(
-            componentDynamicFailureCountFor(components, handlers, index) != 0,
-        );
+        result += componentSharedFailureBlockCountFor(components, handlers, index);
     }
     inline for (1..provider_index) |index| {
         const Body = components.items[index].component();
@@ -1251,7 +1344,7 @@ fn assertSharedFailureMappings(comptime spec: anytype, comptime System: type) !v
     const components = componentSet(spec);
     const Linked = System.Program.component();
     inline for (0..components.count) |component_index| {
-        if (comptime componentDynamicFailureCountFor(
+        if (comptime componentSharedFailureBlockCountFor(
             components,
             spec.handlers,
             component_index,
@@ -1732,38 +1825,48 @@ fn assertElementMappings(comptime spec: anytype, comptime System: type) !void {
         }
     }
     comptime var handler_cursor: usize = 0;
-    inline for (spec.handlers) |Handler| {
-        if (comptime !handlerActive(components, Handler)) continue;
-        const consumer = comptime componentIndex(components, Handler.Consumer);
-        const source_id = comptime sourceOffsets(components, consumer).effects +
-            Handler.site_ordinal;
-        const linked = Linked.effect_handlers[handler_cursor];
-        try std.testing.expectEqual(@as(u32, @intCast(source_id)), linked.source_id);
-        const provider = comptime componentIndex(components, Handler.Provider);
-        const ProviderBody = Handler.Provider.component();
-        const expected_function = if (ProviderBody.InitialArgs == void and
-            ProviderBody.control_ir.blocks[
-                ProviderBody.control_ir.entry
-            ].parameters.len == 0)
-            voidWrapperFunctionId(components, spec.handlers, provider)
-        else
-            sourceOffsets(components, provider).functions;
-        try std.testing.expectEqual(
-            @as(boundary.ir.FunctionId, @intCast(expected_function)),
-            linked.function_id,
-        );
-        handler_cursor += 1;
+    inline for (0..components.count) |consumer| {
+        inline for (spec.handlers) |Handler| {
+            if (comptime components.items[consumer] != Handler.Consumer or
+                !sourceSiteReachable(Handler.Consumer, Handler.site_ordinal)) continue;
+            const source_id = comptime sourceOffsets(components, consumer).effects +
+                Handler.site_ordinal;
+            const linked = Linked.effect_handlers[handler_cursor];
+            try std.testing.expectEqual(@as(u32, @intCast(source_id)), linked.source_id);
+            const provider = comptime components.indexOf(
+                Handler.Provider,
+                handlerFailureMap(
+                    Handler,
+                    components.items[0].component().Failure,
+                ),
+            );
+            const ProviderBody = Handler.Provider.component();
+            const expected_function = if (ProviderBody.InitialArgs == void and
+                ProviderBody.control_ir.blocks[
+                    ProviderBody.control_ir.entry
+                ].parameters.len == 0)
+                voidWrapperFunctionId(components, spec.handlers, provider)
+            else
+                sourceOffsets(components, provider).functions;
+            try std.testing.expectEqual(
+                @as(boundary.ir.FunctionId, @intCast(expected_function)),
+                linked.function_id,
+            );
+            handler_cursor += 1;
+        }
     }
     comptime var morphism_cursor: usize = 0;
-    inline for (spec.morphisms) |Morphism| {
-        if (comptime !morphismActive(components, Morphism)) continue;
-        const consumer = comptime componentIndex(components, Morphism.Consumer);
-        const source_id = comptime sourceOffsets(components, consumer).effects +
-            Morphism.site_ordinal;
-        const linked = Linked.effect_morphisms[morphism_cursor];
-        try std.testing.expectEqual(@as(u32, @intCast(source_id)), linked.source_id);
-        try std.testing.expect(linked.Target == Morphism.Target);
-        morphism_cursor += 1;
+    inline for (0..components.count) |consumer| {
+        inline for (spec.morphisms) |Morphism| {
+            if (comptime components.items[consumer] != Morphism.Consumer or
+                !sourceSiteReachable(Morphism.Consumer, Morphism.site_ordinal)) continue;
+            const source_id = comptime sourceOffsets(components, consumer).effects +
+                Morphism.site_ordinal;
+            const linked = Linked.effect_morphisms[morphism_cursor];
+            try std.testing.expectEqual(@as(u32, @intCast(source_id)), linked.source_id);
+            try std.testing.expect(linked.Target == Morphism.Target);
+            morphism_cursor += 1;
+        }
     }
 }
 
@@ -1845,6 +1948,17 @@ test "source-derived topology closes empty Failure domains" {
 
 test "source-derived topology shares wide Failure maps across fail sites" {
     try assertTopology(fixtures.WideFailureSpec, fixtures.WideFailureSystem);
+}
+
+test "source-derived topology shares selectors by mapping identity across providers" {
+    try assertTopology(fixtures.SharedMapSpec, fixtures.SharedMapSystem);
+}
+
+test "source-derived topology preserves distinct maps for repeated providers" {
+    try assertTopology(
+        fixtures.RepeatedProviderMapSpec,
+        fixtures.RepeatedProviderMapSystem,
+    );
 }
 
 test "source-derived topology quotients repeated Failure targets" {

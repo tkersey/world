@@ -28,20 +28,25 @@ accept `site_ordinal` when one component repeats the same Site type. Bare
 external Site declarations are shorthand only when the Site type identifies
 one reachable occurrence across the linked graph.
 
-At rooted component discovery, Boundary authenticates each Program once and
-returns its owner-issued component projection: source identity, reachability,
-canonical mappings, residual analysis, effective costs, and digests. The Link
-Plan carries that admitted projection; it never trusts a structurally compatible
-caller declaration or recompiles admission through repeated body lookups. Bare
-external declarations are interpreted separately as morphism-target authority
-and, when unique, as a source-occurrence disposition. The plan materializes
-every reachable source-occurrence disposition, each per-site Failure-adapter
-kind, every shared direct-adapter owner, and every dynamic-selector owner before
-lowering.
+At rooted component discovery, Boundary authenticates each Program and returns
+its owner-issued component projection: source identity, reachability, canonical
+mappings, residual analysis, effective costs, and digests. World admits one
+component instance per `(Program, effective Failure map)` key: equal keys share
+one instance, while distinct handler-occurrence maps retain distinct instances.
+The Link Plan carries each admitted projection; it never trusts a structurally
+compatible caller declaration or recompiles admission through repeated body
+lookups. Bare external declarations are interpreted separately as
+morphism-target authority and, when unique, as a source-occurrence disposition.
+The plan materializes
+every reachable source-occurrence disposition, each effective Failure map and
+its quotient projection, each per-site Failure-adapter kind, every shared
+direct-adapter owner, and every dynamic-selector owner before lowering.
 `System.residual_effects.items` is sized to the exact active residual count, so
 inactive declarations do not survive as public capacity or undefined slots.
-Bare Sites are distinguished from World binding wrappers by World-owned nominal
-binding kind, so unrelated Site declarations cannot acquire wrapper meaning.
+Types satisfying Boundary's `Payload` / `Resume` / `semantic_identity` Site
+interface always follow the bare-Site path, regardless of extra declarations.
+Other external entries are occurrence wrappers only when they provide
+`Consumer`, `Site`, and `site_ordinal`.
 Distinct residual occurrences must also have distinct Boundary semantic
 identities; v1 rejects duplicate effective identities before BPI1 emission.
 
