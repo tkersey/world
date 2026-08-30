@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
+  __testOnlyReadRegularBoundaryAsset,
   acquireBoundaryProcessAssets,
   assertPhysicalBoundaryKernelDescendant,
   classifyLocalBoundaryAssetProvenance,
@@ -94,6 +95,28 @@ describe("Boundary development asset provenance", () => {
         kernelPath: kernel,
         sourceRoot: null,
       })).rejects.toThrow(/physically distinct/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("binds the admitted path generation to the opened descriptor and rechecks it after reading", async () => {
+    const root = await mkdtemp(join(tmpdir(), "world-boundary-descriptor-binding-"));
+    try {
+      const input = join(root, "kernel.wasm");
+      const replacement = join(root, "replacement.wasm");
+      await writeFile(input, "first");
+      await writeFile(replacement, "other");
+
+      await expect(__testOnlyReadRegularBoundaryAsset(input, 1024, "test Boundary kernel", {
+        afterPathStat: async () => rename(replacement, input),
+      })).rejects.toThrow(/path generation does not match opened descriptor/);
+
+      await writeFile(input, "first");
+      await writeFile(replacement, "other");
+      await expect(__testOnlyReadRegularBoundaryAsset(input, 1024, "test Boundary kernel", {
+        afterDescriptorRead: async () => rename(replacement, input),
+      })).rejects.toThrow(/path changed during read/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

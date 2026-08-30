@@ -276,6 +276,46 @@ describe("source-derived topology", () => {
     }
   });
 
+  test("rejects direct ambient network authority roots and their aliases", () => {
+    const roots = new Map([
+      ["fetch", 'fetch("https://example.invalid")'],
+      ["WebSocket", 'new WebSocket("wss://example.invalid")'],
+      ["navigator", "navigator.userAgent"],
+      ["XMLHttpRequest", "new XMLHttpRequest()"],
+      ["EventSource", 'new EventSource("https://example.invalid")'],
+      ["WebTransport", 'new WebTransport("https://example.invalid")'],
+    ]);
+
+    for (const [rootName, directUse] of roots) {
+      for (const source of [
+        directUse,
+        `const authority = ${rootName}; authority;`,
+        `const { apply: invoke } = ${rootName}; invoke;`,
+      ]) {
+        expect(() => validateModuleImportSyntax(
+          source,
+          "src/process_v1/a.mjs",
+        )).toThrow("forbidden ambient capability");
+      }
+    }
+  });
+
+  test("network authority names remain inert as data and property keys", () => {
+    const inert = [
+      'const quoted = "fetch WebSocket navigator XMLHttpRequest EventSource WebTransport";',
+      "// fetch WebSocket navigator XMLHttpRequest EventSource WebTransport",
+      "/* fetch WebSocket navigator XMLHttpRequest EventSource WebTransport */",
+      "const record = { fetch: 1, WebSocket: 2, navigator: 3, XMLHttpRequest: 4, EventSource: 5, WebTransport: 6 };",
+      "record.fetch; record.WebSocket; record.navigator; record.XMLHttpRequest; record.EventSource; record.WebTransport;",
+      "const data = { Request, Response, URL };",
+    ].join("\n");
+
+    expect(() => validateModuleImportSyntax(
+      inert,
+      "src/process_v1/a.mjs",
+    )).not.toThrow();
+  });
+
   test("admits only the runtime's exact ambient process property chains", () => {
     expect(() => validateModuleImportSyntax(`
       process.argv.slice(2);

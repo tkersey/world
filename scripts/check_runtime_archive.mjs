@@ -23,6 +23,7 @@ import {
   RUNTIME_FORMAT,
   RUNTIME_ROOT,
   WORLD_VERSION,
+  assertTrackedRepositoryMatchesCommit,
   buildRuntimeArchive,
   canonicalGzip,
   canonicalTarHeader,
@@ -397,6 +398,7 @@ export async function checkRuntimeArchive({
 
   let reproducible = false;
   if (verifyRebuild) {
+    await assertTrackedRepositoryMatchesCommit(root, admitted.manifest.sourceCommit);
     const temporary = await mkdtemp(join(tmpdir(), "world-runtime-rebuild-"));
     try {
       const firstPath = join(temporary, "first", RUNTIME_ARCHIVE_NAME);
@@ -413,6 +415,7 @@ export async function checkRuntimeArchive({
       const second = await readBoundedRegularFile(secondPath, RUNTIME_ARCHIVE_MAX_BYTES, "second rebuilt runtime archive");
       assert(first.equals(second), "two runtime archive rebuilds are not byte-identical");
       assert(first.equals(archive), "runtime archive differs from an exact source rebuild");
+      await assertTrackedRepositoryMatchesCommit(root, admitted.manifest.sourceCommit);
       reproducible = true;
     } finally {
       await rm(temporary, { recursive: true, force: true });

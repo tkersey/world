@@ -44,23 +44,41 @@ export async function readExactBoundaryLock(path = join(repositoryRoot, "conform
   return exactLock(JSON.parse(await readFile(path, "utf8")));
 }
 
-async function readRegular(path, maximum, label) {
+const REGULAR_FILE_GENERATION_FIELDS = Object.freeze(["dev", "ino", "size", "mtimeNs", "ctimeNs"]);
+
+function assertSameRegularFileGeneration(actual, expected, message) {
+  for (const field of REGULAR_FILE_GENERATION_FIELDS) {
+    assert.equal(actual[field], expected[field], message);
+  }
+}
+
+async function readRegular(path, maximum, label, testHooks = undefined) {
   assert(isAbsolute(path), `${label} path must be absolute`);
   const pathInfo = await lstat(path, { bigint: true });
   assert(pathInfo.isFile() && !pathInfo.isSymbolicLink(), `${label} is not a regular file`);
   assert(pathInfo.size <= BigInt(maximum), `${label} exceeds its size limit`);
+  await testHooks?.afterPathStat?.();
   const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
   try {
     const before = await handle.stat({ bigint: true });
     assert(before.isFile(), `${label} descriptor is not a regular file`);
+    assertSameRegularFileGeneration(before, pathInfo, `${label} path generation does not match opened descriptor`);
     const bytes = await handle.readFile();
     assert.equal(BigInt(bytes.length), before.size, `${label} changed during read`);
     const after = await handle.stat({ bigint: true });
-    for (const field of ["dev", "ino", "size", "mtimeNs", "ctimeNs"]) assert.equal(after[field], before[field], `${label} changed during read`);
+    assertSameRegularFileGeneration(after, before, `${label} descriptor changed during read`);
+    await testHooks?.afterDescriptorRead?.();
+    const pathAfter = await lstat(path, { bigint: true });
+    assert(pathAfter.isFile() && !pathAfter.isSymbolicLink(), `${label} path is no longer a regular file`);
+    assertSameRegularFileGeneration(pathAfter, before, `${label} path changed during read`);
     return Buffer.from(bytes);
   } finally {
     await handle.close();
   }
+}
+
+export async function __testOnlyReadRegularBoundaryAsset(path, maximum, label, testHooks) {
+  return readRegular(path, maximum, label, testHooks);
 }
 
 async function fetchBounded(url, maximum, label) {
@@ -143,6 +161,13 @@ export function classifyLocalBoundaryAssetProvenance(sourceRoot) {
   return sourceRoot === null ? "local-kernel-override" : "local-checkout-asset";
 }
 
+async function readLocalBoundaryKernel(path, sourceRoot) {
+  if (sourceRoot !== null) await assertPhysicalBoundaryKernelDescendant(sourceRoot, path);
+  const bytes = await readRegular(path, MAXIMUM_DOWNLOAD_BYTES, "local Boundary Process kernel");
+  if (sourceRoot !== null) await assertPhysicalBoundaryKernelDescendant(sourceRoot, path);
+  return bytes;
+}
+
 export async function acquireBoundaryProcessAssets({
   root = repositoryRoot,
   lockPath = join(root, "conformance", "boundary.lock.json"),
@@ -182,7 +207,7 @@ export async function acquireBoundaryProcessAssets({
     provenance = "public-release";
   } else if (kernelPath !== null || sourceRoot !== null) {
     if (resolvedSourceRoot !== null) exactBoundarySource(resolvedSourceRoot, lock);
-    bytes = admitKernel(await readRegular(resolvedKernel, MAXIMUM_DOWNLOAD_BYTES, "local Boundary Process kernel"), lock);
+    bytes = admitKernel(await readLocalBoundaryKernel(resolvedKernel, resolvedSourceRoot), lock);
     provenance = classifyLocalBoundaryAssetProvenance(sourceRoot);
   } else {
     bytes = admitKernel(await readRegular(outputPath, MAXIMUM_DOWNLOAD_BYTES, "bundled Boundary Process kernel"), lock);

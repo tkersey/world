@@ -92,7 +92,7 @@ describe("runtime archive source provenance", () => {
         ...paths,
         verifyRebuild: true,
         runInner: false,
-      })).rejects.toThrow(/sourceCommit differs from exact source rebuild/);
+      })).rejects.toThrow(/tracked repository HEAD differs from archive sourceCommit/);
     }
   });
 
@@ -147,4 +147,35 @@ describe("runtime archive source provenance", () => {
       outputPath: join(root, "dist", "release-receipt.json"),
     })).rejects.toThrow(/tracked working bytes differ from source commit: test\/process_kernel\.test\.mjs/);
   });
+
+  for (const proofPath of [
+    "scripts/build_runtime_archive.mjs",
+    "scripts/check_runtime_archive.mjs",
+    "scripts/run_clean_room_conformance.mjs",
+  ]) {
+    test(`rebuild verification rejects tracked drift in ${proofPath}`, async () => {
+      const root = await cloneRepository(`rebuild-proof-drift-${basename(proofPath, ".mjs")}`);
+      const archivePath = join(root, "dist", RUNTIME_ARCHIVE_NAME);
+      const checksumPath = `${archivePath}.sha256`;
+      await buildRuntimeArchive({ root, outputPath: archivePath, checksumPath });
+      await writeFile(join(root, proofPath), `tracked proof divergence in ${proofPath}\n`);
+
+      const structural = await checkRuntimeArchive({
+        root,
+        archivePath,
+        checksumPath,
+        verifyRebuild: false,
+        runInner: false,
+      });
+      expect(structural.reproducible).toBe(false);
+
+      await expect(checkRuntimeArchive({
+        root,
+        archivePath,
+        checksumPath,
+        verifyRebuild: true,
+        runInner: false,
+      })).rejects.toThrow(new RegExp(`tracked working bytes differ from source commit: ${proofPath.replaceAll(".", "\\.")}`));
+    });
+  }
 });
