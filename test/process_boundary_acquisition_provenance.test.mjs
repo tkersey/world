@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
   acquireBoundaryProcessAssets,
+  assertPhysicalBoundaryKernelDescendant,
   classifyLocalBoundaryAssetProvenance,
 } from "../scripts/acquire_boundary_process_assets.mjs";
 import {
@@ -21,6 +22,50 @@ describe("Boundary development asset provenance", () => {
   test("does not claim that an authenticated checkout asset was emitted by that checkout", () => {
     expect(classifyLocalBoundaryAssetProvenance(null)).toBe("local-kernel-override");
     expect(classifyLocalBoundaryAssetProvenance("/exact-boundary-checkout")).toBe("local-checkout-asset");
+  });
+
+  test("admits physical descendants, including paths through an internal symlink", async () => {
+    const root = await mkdtemp(join(tmpdir(), "world-boundary-physical-positive-"));
+    try {
+      const sourceRoot = join(root, "boundary");
+      const physicalKernel = join(sourceRoot, "artifacts", "kernel.wasm");
+      await mkdir(join(sourceRoot, "artifacts"), { recursive: true });
+      await writeFile(physicalKernel, "kernel");
+      await symlink(join(sourceRoot, "artifacts"), join(sourceRoot, "artifact-alias"));
+
+      await expect(assertPhysicalBoundaryKernelDescendant(sourceRoot, physicalKernel)).resolves.toBeUndefined();
+      await expect(assertPhysicalBoundaryKernelDescendant(
+        sourceRoot,
+        join(sourceRoot, "artifact-alias", "kernel.wasm"),
+      )).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects explicit and default kernels that escape through a parent symlink before Git or byte admission", async () => {
+    const root = await mkdtemp(join(tmpdir(), "world-boundary-physical-negative-"));
+    try {
+      const sourceRoot = join(root, "boundary");
+      const external = join(root, "external");
+      await mkdir(sourceRoot, { recursive: true });
+      await mkdir(external, { recursive: true });
+      await writeFile(join(external, "kernel.wasm"), "not wasm");
+      await writeFile(join(external, "boundary-process-kernel-v1.wasm"), "not wasm");
+      await symlink(external, join(sourceRoot, "external-alias"));
+      await symlink(external, join(sourceRoot, "zig-out"));
+
+      for (const kernelPath of [join(sourceRoot, "external-alias", "kernel.wasm"), null]) {
+        await expect(acquireBoundaryProcessAssets({
+          root: repositoryRoot,
+          sourceRoot,
+          kernelPath,
+          checkOnly: true,
+        })).rejects.toThrow(/physically located inside WORLD_BOUNDARY_SOURCE/);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("rejects case, symlink-parent, and local-input output aliases before writing", async () => {

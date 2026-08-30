@@ -161,8 +161,7 @@ function usageError() {
 
 function ensureSupportedRuntime() {
   if (!SUPPORTED_PLATFORMS.has(process.platform) ||
-      typeof globalThis.Bun !== "object" ||
-      !bunVersionAtLeast(globalThis.Bun.version, 1, 4)) {
+      !bunVersionAtLeast(process.versions.bun, 1, 4)) {
     throw worldError(
       "WORLD_PLATFORM_UNSUPPORTED",
       "world process step requires Bun 1.4 or newer on macOS or Linux",

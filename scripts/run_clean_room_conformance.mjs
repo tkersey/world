@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import {
   copyFile,
   cp,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -81,6 +82,25 @@ function safeRelativePath(value, label) {
     fail("WORLD_CONFORMANCE_LOCK_INVALID", `${label} is not a safe relative path`, { label, value });
   }
   return value;
+}
+
+async function requireRealProofRoot(path, label) {
+  let rootStat;
+  try {
+    rootStat = await lstat(path);
+  } catch (error) {
+    fail("WORLD_CONFORMANCE_PREREQUISITE_MISSING", `${label} root is missing`, {
+      path,
+      cause: error?.code ?? error?.message ?? String(error),
+    });
+  }
+  if (!rootStat.isDirectory()) {
+    fail("WORLD_CONFORMANCE_ASSET_INVALID", `${label} root must be a real directory`, {
+      path,
+      directory: rootStat.isDirectory(),
+      symbolicLink: rootStat.isSymbolicLink(),
+    });
+  }
 }
 
 async function regularFileIdentity(root, record, label) {
@@ -265,6 +285,10 @@ export async function requireLockedProofs({
   transcriptLockPath = DEFAULT_TRANSCRIPT_LOCK,
   transcriptRoot = DEFAULT_TRANSCRIPT_ROOT,
 } = {}) {
+  await Promise.all([
+    requireRealProofRoot(boundaryRoot, "Boundary Process proof"),
+    requireRealProofRoot(transcriptRoot, "repository-repair Process transcript"),
+  ]);
   const [boundaryLock, transcriptLock] = await Promise.all([
     readJson(boundaryLockPath, "Boundary Process proof lock", BOUNDARY_PROCESS_PROOF.lockSha256),
     readJson(transcriptLockPath, "repository-repair Process transcript lock", REPOSITORY_REPAIR_TRANSCRIPT.lockSha256),
@@ -565,6 +589,10 @@ export async function copyLockedProofSnapshot({
   if (afterCopy !== undefined && typeof afterCopy !== "function") {
     fail("WORLD_CONFORMANCE_USAGE", "afterCopy must be a function");
   }
+  await Promise.all([
+    requireRealProofRoot(boundaryRoot, "Boundary Process proof"),
+    requireRealProofRoot(transcriptRoot, "repository-repair Process transcript"),
+  ]);
   const copiedBoundaryRoot = join(destinationRoot, "boundary");
   const copiedTranscriptRoot = join(destinationRoot, "repository-repair");
   await mkdir(destinationRoot, { mode: 0o700 });

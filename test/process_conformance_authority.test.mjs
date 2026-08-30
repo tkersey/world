@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -79,6 +79,67 @@ describe("World conformance proof authority", () => {
     await writeFile(path, canonicalJsonBytes(mutated));
     await expect(requireLockedProofs({ boundaryLockPath, boundaryRoot, transcriptLockPath: path, transcriptRoot }))
       .rejects.toMatchObject({ code: "WORLD_CONFORMANCE_LOCK_INVALID" });
+  });
+
+  test("rejects symlinked proof roots before reading proof locks", async () => {
+    const symlinkedBoundaryRoot = join(temporaryRoot, `boundary-root-${crypto.randomUUID()}`);
+    const symlinkedTranscriptRoot = join(temporaryRoot, `transcript-root-${crypto.randomUUID()}`);
+    await symlink(boundaryRoot, symlinkedBoundaryRoot, "dir");
+    await symlink(transcriptRoot, symlinkedTranscriptRoot, "dir");
+    const missingLockPath = join(temporaryRoot, `missing-lock-${crypto.randomUUID()}.json`);
+
+    await expect(requireLockedProofs({
+      boundaryLockPath: missingLockPath,
+      boundaryRoot: symlinkedBoundaryRoot,
+      transcriptLockPath: missingLockPath,
+      transcriptRoot,
+    })).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_ASSET_INVALID" });
+    await expect(requireLockedProofs({
+      boundaryLockPath: missingLockPath,
+      boundaryRoot,
+      transcriptLockPath: missingLockPath,
+      transcriptRoot: symlinkedTranscriptRoot,
+    })).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_ASSET_INVALID" });
+  });
+
+  test("rejects symlinked proof roots before creating a copy destination", async () => {
+    const symlinkedBoundaryRoot = join(temporaryRoot, `copy-boundary-root-${crypto.randomUUID()}`);
+    const symlinkedTranscriptRoot = join(temporaryRoot, `copy-transcript-root-${crypto.randomUUID()}`);
+    await symlink(boundaryRoot, symlinkedBoundaryRoot, "dir");
+    await symlink(transcriptRoot, symlinkedTranscriptRoot, "dir");
+
+    for (const [candidateBoundaryRoot, candidateTranscriptRoot] of [
+      [symlinkedBoundaryRoot, transcriptRoot],
+      [boundaryRoot, symlinkedTranscriptRoot],
+    ]) {
+      const destinationRoot = join(temporaryRoot, `rejected-proof-copy-${crypto.randomUUID()}`);
+      await expect(copyLockedProofSnapshot({
+        boundaryLockPath,
+        boundaryRoot: candidateBoundaryRoot,
+        transcriptLockPath,
+        transcriptRoot: candidateTranscriptRoot,
+        destinationRoot,
+      })).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_ASSET_INVALID" });
+      await expect(lstat(destinationRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  test("copies admitted proof roots as real directories", async () => {
+    const copied = await copyLockedProofSnapshot({
+      boundaryLockPath,
+      boundaryRoot,
+      transcriptLockPath,
+      transcriptRoot,
+      destinationRoot: join(temporaryRoot, `valid-proof-copy-${crypto.randomUUID()}`),
+    });
+    const [copiedBoundaryStat, copiedTranscriptStat] = await Promise.all([
+      lstat(copied.boundaryRoot),
+      lstat(copied.transcriptRoot),
+    ]);
+    expect(copiedBoundaryStat.isDirectory()).toBe(true);
+    expect(copiedBoundaryStat.isSymbolicLink()).toBe(false);
+    expect(copiedTranscriptStat.isDirectory()).toBe(true);
+    expect(copiedTranscriptStat.isSymbolicLink()).toBe(false);
   });
 
   test("revalidates the private proof snapshot after copying", async () => {

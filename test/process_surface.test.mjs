@@ -202,15 +202,19 @@ describe("source-derived topology", () => {
     expect(() => validateModuleImportSyntax(
       "await import(candidate)",
       "src/process_v1/a.mjs",
-    )).toThrow("non-literal dynamic import");
+    )).toThrow("dynamic import");
     expect(() => validateModuleImportSyntax(
       "await import/* resolved at runtime */(candidate)",
       "src/process_v1/a.mjs",
-    )).toThrow("non-literal dynamic import");
+    )).toThrow("dynamic import");
     expect(() => validateModuleImportSyntax(
       "await import // resolved at runtime\n(candidate)",
       "src/process_v1/a.mjs",
-    )).toThrow("non-literal dynamic import");
+    )).toThrow("dynamic import");
+    expect(() => validateModuleImportSyntax(
+      'const inert = "import(\\"node:fs\\")"',
+      "src/process_v1/a.mjs",
+    )).toThrow("dynamic import");
     expect(() => validateModuleImportSyntax(
       'const fs = require("node:fs")',
       "src/process_v1/a.mjs",
@@ -253,9 +257,7 @@ describe("source-derived topology", () => {
       'new globalThis.Function("return import(\\"node:fs\\")")()',
       'const Constructor = Function; Constructor("return import(\\"node:fs\\")")()',
     ]) {
-      expect(() => validateModuleImportSyntax(source, "src/process_v1/a.mjs")).toThrow(
-        "eval or Function-generated code",
-      );
+      expect(() => validateModuleImportSyntax(source, "src/process_v1/a.mjs")).toThrow();
     }
   });
 
@@ -269,12 +271,83 @@ describe("source-derived topology", () => {
       'Bun?.spawnSync(["bun", "run", "payload.mjs"])',
     ]) {
       expect(() => validateModuleImportSyntax(source, "src/process_v1/a.mjs")).toThrow(
-        "Bun loader or spawn API",
+        "forbidden ambient capability",
       );
     }
   });
 
-  test("accepts and derives comment-separated literal imports after a hashbang", () => {
+  test("admits only the runtime's exact ambient process property chains", () => {
+    expect(() => validateModuleImportSyntax(`
+      process.argv.slice(2);
+      process.exitCode = 1;
+      process.platform;
+      process.pid;
+      process.versions.bun;
+    `, "src/process_v1/a.mjs")).not.toThrow();
+
+    for (const source of [
+      "process.cwd()",
+      "process.exitCodeAlias",
+      "process.versions.node",
+      'process["argv"]',
+      "const runtime = process",
+    ]) {
+      expect(() => validateModuleImportSyntax(source, "src/process_v1/a.mjs")).toThrow(
+        "outside the admitted runtime property chains",
+      );
+    }
+  });
+
+  test("rejects ambient capability aliases and Function constructor recovery", () => {
+    for (const source of [
+      'globalThis["pro" + "cess"]',
+      "global.Bun",
+      "self.Bun",
+      "window.Bun",
+      "const load = import.meta.require; load('left-pad')",
+      "const { require: load } = import.meta; load('left-pad')",
+      "helper(Bun)",
+      "Reflect.get(Bun, candidate)",
+      'Object.getOwnPropertyDescriptor(async function () {}, "constructor").value',
+      "const objectRoot = Object; objectRoot.getPrototypeOf(async function () {});",
+      "(async () => {}).constructor",
+      "handler?.constructor",
+      "handler['constructor']",
+      '(async () => {})["constructor"]',
+      "const { constructor: AsyncFunction } = async function () {};",
+      "const { constructor } = async function () {};",
+      "const registry = { constructor: async function () {} };",
+      "handler[`constructor`]",
+      "1n.constructor",
+      "const escaped = left / Bun / right;",
+    ]) {
+      expect(() => validateModuleImportSyntax(source, "src/process_v1/a.mjs")).toThrow();
+    }
+    expect(() => validateModuleImportSyntax(
+      "class Ordinary { constructor() {} }",
+      "src/process_v1/a.mjs",
+    )).not.toThrow();
+  });
+
+  test("the parser carrier distinguishes inert syntax from ambient references", () => {
+    const inert = [
+      'const quoted = "Bun globalThis Reflect eval Function Worker Deno process constructor";',
+      "// Bun globalThis Reflect eval Function Worker Deno process constructor",
+      "/* Bun globalThis Reflect eval Function Worker Deno process constructor */",
+      "const raw = `Bun globalThis Reflect eval Function Worker Deno process constructor`;",
+      "const expression = /Bun/.test(candidate);",
+      "const registry = { Bun: 1, globalThis: 2, Reflect: 3, eval: 4, Function: 5, Worker: 6, Deno: 7 };",
+    ].join("\n");
+    expect(() => validateModuleImportSyntax(inert, "src/process_v1/a.mjs")).not.toThrow();
+
+    const substitution = "const raw = `inert Bun ${Bun}`;";
+    expect(() => validateModuleImportSyntax(
+      substitution,
+      "src/process_v1/a.mjs",
+    )).toThrow("forbidden ambient capability");
+  });
+
+  test("derives but does not admit comment-separated dynamic imports after a hashbang", () => {
     const source = [
       "#!/usr/bin/env bun",
       'const block = import/* literal */("./block.mjs");',
@@ -282,7 +355,7 @@ describe("source-derived topology", () => {
       '("./line.mjs");',
     ].join("\n");
 
-    expect(() => validateModuleImportSyntax(source, "bin/world.mjs")).not.toThrow();
+    expect(() => validateModuleImportSyntax(source, "bin/world.mjs")).toThrow("dynamic import");
     expect([...scanModuleSpecifiers(source)].sort()).toEqual([
       "./block.mjs",
       "./line.mjs",
@@ -306,6 +379,7 @@ test("the current World tree is exactly the admitted thin-host surface", async (
     "node:fs",
     "node:path",
     "node:url",
+    "node:util",
   ]);
   expect(report.repositoryEvidence).toEqual([
     ".learnings.jsonl",

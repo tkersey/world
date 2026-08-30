@@ -120,6 +120,7 @@ export const EXPECTED_PRODUCTION_BUILTINS = Object.freeze([
   "node:fs",
   "node:path",
   "node:url",
+  "node:util",
 ]);
 
 function fail(message) {
@@ -323,11 +324,58 @@ export function derivePackageInventory(entries, manifest) {
 
 const moduleScanner = new Bun.Transpiler({ loader: "js" });
 
-function normalizeModuleSource(source) {
-  const parseableSource = source.startsWith("#!")
+const PROCESS_ROOT_SENTINEL = "__WORLD_PROCESS_ROOT_CAPABILITY_v1__";
+const FORBIDDEN_AMBIENT_SENTINELS = Object.freeze([
+  "__WORLD_FORBIDDEN_BUN_v1__",
+  "__WORLD_FORBIDDEN_DENO_v1__",
+  "__WORLD_FORBIDDEN_FUNCTION_v1__",
+  "__WORLD_FORBIDDEN_REFLECT_v1__",
+  "__WORLD_FORBIDDEN_WORKER_v1__",
+  "__WORLD_FORBIDDEN_EVAL_v1__",
+  "__WORLD_FORBIDDEN_GLOBAL_v1__",
+  "__WORLD_FORBIDDEN_GLOBAL_THIS_v1__",
+  "__WORLD_FORBIDDEN_OBJECT_v1__",
+  "__WORLD_FORBIDDEN_SELF_v1__",
+  "__WORLD_FORBIDDEN_WINDOW_v1__",
+]);
+
+const analysisScanner = new Bun.Transpiler({
+  loader: "js",
+  define: {
+    "process.argv": "__WORLD_ALLOWED_PROCESS_ARGV_v1__",
+    "process.platform": "__WORLD_ALLOWED_PROCESS_PLATFORM_v1__",
+    "process.pid": "__WORLD_ALLOWED_PROCESS_PID_v1__",
+    "process.versions.bun": "__WORLD_ALLOWED_PROCESS_BUN_VERSION_v1__",
+    "Object.freeze": "__WORLD_ALLOWED_OBJECT_FREEZE_v1__",
+    "Object.keys": "__WORLD_ALLOWED_OBJECT_KEYS_v1__",
+    "Object.entries": "__WORLD_ALLOWED_OBJECT_ENTRIES_v1__",
+    "Object.values": "__WORLD_ALLOWED_OBJECT_VALUES_v1__",
+    "Object.defineProperty": "__WORLD_ALLOWED_OBJECT_DEFINE_PROPERTY_v1__",
+    "Object.create": "__WORLD_ALLOWED_OBJECT_CREATE_v1__",
+    "Object.hasOwn": "__WORLD_ALLOWED_OBJECT_HAS_OWN_v1__",
+    process: PROCESS_ROOT_SENTINEL,
+    Bun: FORBIDDEN_AMBIENT_SENTINELS[0],
+    Deno: FORBIDDEN_AMBIENT_SENTINELS[1],
+    Function: FORBIDDEN_AMBIENT_SENTINELS[2],
+    Reflect: FORBIDDEN_AMBIENT_SENTINELS[3],
+    Worker: FORBIDDEN_AMBIENT_SENTINELS[4],
+    eval: FORBIDDEN_AMBIENT_SENTINELS[5],
+    global: FORBIDDEN_AMBIENT_SENTINELS[6],
+    globalThis: FORBIDDEN_AMBIENT_SENTINELS[7],
+    Object: FORBIDDEN_AMBIENT_SENTINELS[8],
+    self: FORBIDDEN_AMBIENT_SENTINELS[9],
+    window: FORBIDDEN_AMBIENT_SENTINELS[10],
+  },
+});
+
+function parseableModuleSource(source) {
+  return source.startsWith("#!")
     ? source.replace(/^#![^\r\n]*(?:\r?\n|$)/u, "\n")
     : source;
-  return moduleScanner.transformSync(parseableSource);
+}
+
+function normalizeModuleSource(source) {
+  return moduleScanner.transformSync(parseableModuleSource(source));
 }
 
 export function scanModuleSpecifiers(source) {
@@ -338,34 +386,42 @@ export function scanModuleSpecifiers(source) {
 }
 
 export function validateModuleImportSyntax(source, importer) {
-  const normalizedSource = normalizeModuleSource(source);
-  const dynamicCalls = [...normalizedSource.matchAll(/\bimport\s*\(/gu)].length;
-  const literalDynamicCalls = [
-    ...normalizedSource.matchAll(/\bimport\s*\(\s*["'][^"']+["']\s*\)/gu),
-  ].length;
+  const analyzedSource = analysisScanner.transformSync(parseableModuleSource(source));
   assert(
-    dynamicCalls === literalDynamicCalls,
-    `production module ${importer} contains a non-literal dynamic import`,
+    !/\bimport\s*\(/u.test(analyzedSource),
+    `production module ${importer} contains a dynamic import`,
   );
   assert(
-    !/\brequire\s*\(/u.test(normalizedSource),
-    `production module ${importer} contains CommonJS require`,
+    !/\brequire\b/u.test(analyzedSource),
+    `production module ${importer} contains CommonJS require capability`,
   );
   assert(
-    !/\bcreateRequire\b/u.test(normalizedSource),
+    !/\bcreateRequire\b/u.test(analyzedSource),
     `production module ${importer} acquires createRequire`,
   );
   assert(
-    !/\bgetBuiltinModule\b/u.test(normalizedSource),
+    !/\bgetBuiltinModule\b/u.test(analyzedSource),
     `production module ${importer} acquires process.getBuiltinModule`,
   );
-  assert(
-    !/\b(?:eval|Function)\b/u.test(normalizedSource),
-    `production module ${importer} contains eval or Function-generated code`,
+  for (const sentinel of FORBIDDEN_AMBIENT_SENTINELS) {
+    assert(
+      !analyzedSource.includes(sentinel),
+      `production module ${importer} contains a forbidden ambient capability`,
+    );
+  }
+  const withoutExitCode = analyzedSource.replace(
+    new RegExp(`\\b${PROCESS_ROOT_SENTINEL}\\.exitCode\\b`, "gu"),
+    "__WORLD_ALLOWED_PROCESS_EXIT_CODE_v1__",
   );
   assert(
-    !/(?:\bBun\s*(?:(?:\?\.|\.)\s*(?:build|plugin|resolve|resolveSync|spawn|spawnSync)\b|\[\s*["'](?:build|plugin|resolve|resolveSync|spawn|spawnSync)["']\s*\])|=\s*(?:globalThis\s*\.\s*)?Bun\b)/u.test(normalizedSource),
-    `production module ${importer} acquires a Bun loader or spawn API`,
+    !withoutExitCode.includes(PROCESS_ROOT_SENTINEL),
+    `production module ${importer} uses process outside the admitted runtime property chains`,
+  );
+  assert(
+    !/(?:\?\.|\.)constructor\b/u.test(analyzedSource) &&
+      !/\[\s*(?:["']constructor["']|`constructor`)\s*\]/u.test(analyzedSource) &&
+      !/[,{]\s*(?:constructor|["']constructor["']|`constructor`)\s*(?=[:,}])/u.test(analyzedSource),
+    `production module ${importer} recovers Function through constructor access`,
   );
 }
 

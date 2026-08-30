@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertPhysicalPathCustody } from "./build_runtime_archive.mjs";
@@ -120,14 +120,23 @@ function exactBoundarySource(sourceRoot, lock) {
 function resolveLocalKernel(sourceRoot, explicitKernel) {
   if (explicitKernel !== null) {
     assert(isAbsolute(explicitKernel), "WORLD_BOUNDARY_PROCESS_KERNEL must be an absolute path");
-    if (sourceRoot !== null) {
-      const inside = relative(sourceRoot, explicitKernel);
-      assert(inside !== "" && !inside.startsWith("..") && !isAbsolute(inside), "local Boundary kernel must be located inside WORLD_BOUNDARY_SOURCE");
-    }
     return explicitKernel;
   }
   assert(sourceRoot !== null, "local acquisition requires WORLD_BOUNDARY_PROCESS_KERNEL or WORLD_BOUNDARY_SOURCE");
   return join(sourceRoot, "zig-out", "boundary-process-kernel-v1.wasm");
+}
+
+export async function assertPhysicalBoundaryKernelDescendant(sourceRoot, kernelPath) {
+  assert(sourceRoot !== null, "Boundary source root is required for checkout-asset containment");
+  const [physicalSourceRoot, physicalKernelPath] = await Promise.all([
+    realpath(sourceRoot),
+    realpath(kernelPath),
+  ]);
+  const inside = relative(physicalSourceRoot, physicalKernelPath);
+  assert(
+    inside !== "" && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside),
+    "local Boundary kernel must be physically located inside WORLD_BOUNDARY_SOURCE",
+  );
 }
 
 export function classifyLocalBoundaryAssetProvenance(sourceRoot) {
@@ -150,6 +159,9 @@ export async function acquireBoundaryProcessAssets({
   const resolvedKernel = mode === "local" && (kernelPath !== null || sourceRoot !== null)
     ? resolveLocalKernel(resolvedSourceRoot, kernelPath === null ? null : resolve(kernelPath))
     : null;
+  if (resolvedSourceRoot !== null) {
+    await assertPhysicalBoundaryKernelDescendant(resolvedSourceRoot, resolvedKernel);
+  }
   await assertPhysicalPathCustody([
     { label: "Boundary lock", path: lockPath },
     { label: "Boundary kernel output", path: outputPath },
