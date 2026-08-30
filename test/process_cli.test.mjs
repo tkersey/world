@@ -162,6 +162,78 @@ describe("descriptor and output admission", () => {
     expect(text(result.stderr)).not.toContain(fifo);
   });
 
+  test("rejects mutation of every admitted input generation during read", async () => {
+    const scenarios = [
+      { target: "kernel", instanceKind: 0, instanceLabel: "initialArgs", withResult: false },
+      { target: "image", instanceKind: 0, instanceLabel: "initialArgs", withResult: false },
+      { target: "state", instanceKind: 1, instanceLabel: "state", withResult: false },
+      { target: "effectResult", instanceKind: 1, instanceLabel: "state", withResult: true },
+    ];
+
+    for (const scenario of scenarios) {
+      const directory = temporaryDirectory();
+      const kernel = path.join(directory, "kernel.wasm");
+      fs.copyFileSync(KERNEL, kernel);
+      const image = writeFile(directory, "image.bpi1", Uint8Array.of(1));
+      const instance = writeFile(directory, "instance.bin", Uint8Array.of(2));
+      const effectResult = writeFile(directory, "result.ers1", Uint8Array.of(3));
+      const target = {
+        kernel,
+        image,
+        state: instance,
+        effectResult,
+      }[scenario.target];
+
+      const descriptorPaths = new Map();
+      const originalOpenSync = fs.openSync;
+      const originalReadSync = fs.readSync;
+      let mutated = false;
+      fs.openSync = function patchedOpenSync(file, ...args) {
+        const descriptor = originalOpenSync.call(fs, file, ...args);
+        if (typeof file === "string") descriptorPaths.set(descriptor, path.resolve(file));
+        return descriptor;
+      };
+      fs.readSync = function patchedReadSync(descriptor, ...args) {
+        const count = originalReadSync.call(fs, descriptor, ...args);
+        if (!mutated && count > 0 && descriptorPaths.get(descriptor) === path.resolve(target)) {
+          mutated = true;
+          const writer = originalOpenSync.call(fs, target, fs.constants.O_WRONLY);
+          try {
+            fs.writeSync(writer, Uint8Array.of(0xff), 0, 1, 0);
+            fs.fsyncSync(writer);
+          } finally {
+            fs.closeSync(writer);
+          }
+        }
+        return count;
+      };
+
+      let failure;
+      try {
+        await executeProcessStep({
+          kernelPath: kernel,
+          imagePath: image,
+          instanceKind: scenario.instanceKind,
+          instancePath: instance,
+          instanceLabel: scenario.instanceLabel,
+          effectResultPath: scenario.withResult ? effectResult : null,
+          outputPath: path.join(directory, "must-not-exist.pko1"),
+        });
+      } catch (error) {
+        failure = error;
+      } finally {
+        fs.openSync = originalOpenSync;
+        fs.readSync = originalReadSync;
+      }
+
+      expect(mutated).toBe(true);
+      expect(failure).toBeInstanceOf(WorldProcessHostError);
+      expect(failure.code).toBe("WORLD_FILE_CHANGED");
+      expect(failure.details.artifact).toBe(scenario.target);
+      expect(fs.existsSync(path.join(directory, "must-not-exist.pko1"))).toBe(false);
+    }
+  });
+
   test("rejects an output inode that aliases any input", () => {
     const directory = temporaryDirectory();
     const image = writeFile(directory, "image.bpi1", new Uint8Array());

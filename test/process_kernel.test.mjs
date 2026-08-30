@@ -63,6 +63,7 @@ describe("Boundary Process kernel static admission", () => {
       { memoryFlags: 3 },
       { memoryCount: 2 },
       { maximumPages: 4097 },
+      { missingExport: "memory" },
       { missingExport: "boundary_process_kernel_execute" },
       { extraExport: true },
       { wrongExportKind: "boundary_process_kernel_error_len" },
@@ -123,6 +124,25 @@ describe("Boundary Process kernel static admission", () => {
       expect(instantiateCalls).toBe(0);
     } finally {
       WebAssembly.compile = originalCompile;
+      WebAssembly.instantiate = originalInstantiate;
+    }
+  });
+
+  test("rejects a wrong dynamic Process kernel ABI version", async () => {
+    const originalInstantiate = WebAssembly.instantiate;
+    WebAssembly.instantiate = async (...arguments_) => {
+      const instance = await originalInstantiate(...arguments_);
+      return {
+        exports: {
+          ...instance.exports,
+          boundary_process_kernel_abi_version: () => 2,
+        },
+      };
+    };
+    try {
+      await expect(admitProcessKernel(fs.readFileSync(KERNEL_URL))).rejects
+        .toMatchObject({ code: "WORLD_KERNEL_ABI_MISMATCH" });
+    } finally {
       WebAssembly.instantiate = originalInstantiate;
     }
   });
