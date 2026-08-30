@@ -81,6 +81,22 @@ describe("World Process Host runtime archive", () => {
     expect(admitted.parsed.find(({ path }) => path === "verify-runtime.mjs")?.mode).toBe(0o755);
     expect(admitted.parsed.find(({ path }) => path === "package.json")?.mode).toBe(0o644);
     expect(admitted.manifest.productionSourceSha256).toMatch(/^[0-9a-f]{64}$/);
+    const runtimeReadme = admitted.entries.get("README.md").toString("utf8");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.0.0/docs/process_host_v1.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.0.0/docs/security_model.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.0.0/docs/migration_from_world_3.md");
+    expect(runtimeReadme).not.toMatch(/\]\(docs\//);
+  });
+
+  test("rejects archive and checksum path aliasing before writing", async () => {
+    const samePath = join(temporaryRoot, "aliased-runtime-output");
+    await expect(buildRuntimeArchive({
+      root: repositoryRoot,
+      outputPath: samePath,
+      checksumPath: join(temporaryRoot, ".", "aliased-runtime-output"),
+      commit: "f".repeat(40),
+    })).rejects.toThrow(/archive and checksum paths must be distinct/);
+    await expect(readFile(samePath)).rejects.toThrow();
   });
 
   test("authenticates, manually extracts, and runs the embedded verifier with an empty PATH", async () => {
@@ -164,7 +180,7 @@ describe("World Process Host runtime archive", () => {
     await expect(admitRuntimeArchiveBytes(canonicalGzip(createCanonicalTar(withoutChecksums)), { lock })).rejects.toThrow(/missing: checksums.sha256/);
   });
 
-  test("binds the release receipt to exact semantic conformance", async () => {
+  test("binds the release receipt to exact published Process corpus parity", async () => {
     const releaseArchivePath = join(temporaryRoot, "release", RUNTIME_ARCHIVE_NAME);
     const releaseChecksumPath = `${releaseArchivePath}.sha256`;
     const outputPath = join(temporaryRoot, "release-receipt.json");
@@ -181,8 +197,8 @@ describe("World Process Host runtime archive", () => {
       checksumPath: releaseChecksumPath,
       outputPath,
     });
-    expect(result.receipt.semanticConformanceClaimed).toBe(true);
-    expect(result.receipt.semanticConformance).toEqual({
+    expect(result.receipt.publishedProcessCorpusParityClaimed).toBe(true);
+    expect(result.receipt.publishedProcessCorpusParity).toEqual({
       boundaryVectorCount: 20,
       boundaryByteIdenticalCount: 20,
       repositoryRepairReductionCount: 96,
@@ -192,10 +208,33 @@ describe("World Process Host runtime archive", () => {
       transferRecovered: true,
       terminalResultSha256: "6a473b2e74e2f8229d10061d1b613ad71ab2ad5b139c21bd9a898b7a2778f75c",
     });
+    expect(result.receipt.negativeGateCoverageClaimed).toBe(false);
+    expect(result.receipt).not.toHaveProperty("semanticConformanceClaimed");
+    expect(result.receipt).not.toHaveProperty("semanticConformance");
     const directConformance = JSON.parse(await readFile(conformanceOutputPath, "utf8"));
     expect(directConformance.result).toBe("passed");
     expect(directConformance.cleanRoom.runtimeArchiveSha256).toBe(result.receipt.archiveSha256);
   }, 120_000);
+
+  test("rejects aliased release custody paths before proof or writes", async () => {
+    const base = join(temporaryRoot, "release-path-aliases");
+    const distinct = {
+      archivePath: join(base, "runtime.tar.gz"),
+      checksumPath: join(base, "runtime.tar.gz.sha256"),
+      outputPath: join(base, "release-receipt.json"),
+    };
+    const cases = [
+      { ...distinct, checksumPath: join(base, ".", "runtime.tar.gz") },
+      { ...distinct, outputPath: join(base, ".", "runtime.tar.gz") },
+      { ...distinct, outputPath: join(base, ".", "runtime.tar.gz.sha256") },
+      { ...distinct, archivePath: join(base, DEFAULT_CONFORMANCE_RECEIPT) },
+      { ...distinct, checksumPath: join(base, DEFAULT_CONFORMANCE_RECEIPT) },
+      { ...distinct, outputPath: join(base, DEFAULT_CONFORMANCE_RECEIPT) },
+    ];
+    for (const paths of cases) {
+      await expect(writeReleaseReceipt({ root: repositoryRoot, ...paths })).rejects.toThrow(/must be pairwise distinct/);
+    }
+  });
 
   test("has no release-claim route for fabricated, missing, or malformed conformance receipt files", async () => {
     const paths = [

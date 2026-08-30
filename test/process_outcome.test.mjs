@@ -1,22 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import { WorldProcessHostError } from "../src/process_v1/errors.mjs";
 import { decodeProcessOutcome } from "../src/process_v1/outcome.mjs";
 
-const REQUEST = fromHex(
-  "41424c5f4552513101000000" +
-  "e64d11941d799a728a024fe33dce0950d8d3e7182a4a90d4ee1692d43ce07366" +
-  "68f82b4dc159dbabf9e87e0532a4bfe8e05d8868c582b789f47e72f4c3128174" +
-  "377e7f60b8a67f3b8d2a8a4d19a28d0662a43214484c7215676d2fd9feeb5229" +
-  "696bfeac6c5e64a4c055e5565235dd5520696a39cabfd6a79101c3a5efd1b487" +
-  "3aa996547334e2b5c79010988ccbefdddbc6e581170037b784665f76ce978350" +
-  "3aa996547334e2b5c79010988ccbefdddbc6e581170037b784665f76ce978350" +
-  "9267d1ce105276db8fbbbb306b34e8a73e6db7c536b8aa6dc77f065819469edf" +
-  "20" +
-  "70726f636573732e6b65726e656c2e666978747572652e6c6f6f6b75702e7631" +
-  "04" +
-  "11000000",
-);
+const REQUESTED_FIXTURE = readRequestedFixture("typed-effect-initial.outcome");
+const SPLICED_STATE = readRequestedFixture("effect-morphism.outcome").state;
+const REQUESTED_STATE = REQUESTED_FIXTURE.state;
+const REQUEST = REQUESTED_FIXTURE.request;
 
 describe("ABL_PKO1", () => {
   test("decodes every v1 outcome kind without interpreting opaque payloads", () => {
@@ -30,7 +21,7 @@ describe("ABL_PKO1", () => {
     ];
 
     for (const [tag, kind, field, expected] of cases) {
-      const primary = tag === 1 ? state : expected;
+      const primary = tag === 1 ? REQUESTED_STATE : expected;
       const secondary = tag === 1 ? REQUEST : new Uint8Array();
       const outcome = decodeProcessOutcome(
         encodeOutcome(tag, primary, secondary),
@@ -76,7 +67,7 @@ describe("ABL_PKO1", () => {
   });
 
   test("owns independent copies of the input and every exposed byte field", () => {
-    const input = encodeOutcome(1, Uint8Array.of(1, 2, 3), REQUEST);
+    const input = new Uint8Array(REQUESTED_FIXTURE.bytes);
     const outcome = decodeProcessOutcome(input);
     input.fill(0);
 
@@ -84,9 +75,12 @@ describe("ABL_PKO1", () => {
       "ABL_PKO1",
     );
     outcome.bytes[32] ^= 0xff;
-    expect([...outcome.state]).toEqual([1, 2, 3]);
+    expect(hex(outcome.state)).toBe(hex(REQUESTED_STATE));
     outcome.request[0] ^= 0xff;
-    expect(new TextDecoder().decode(outcome.bytes.subarray(35, 43))).toBe(
+    const requestOffset = 32 + REQUESTED_STATE.length;
+    expect(new TextDecoder().decode(
+      outcome.bytes.subarray(requestOffset, requestOffset + 8),
+    )).toBe(
       "ABL_ERQ1",
     );
   });
@@ -149,20 +143,46 @@ describe("ABL_PKO1", () => {
     forged[12] ^= 1;
     expectHostError(
       () => decodeProcessOutcome(
-        encodeOutcome(1, Uint8Array.of(1), forged),
+        encodeOutcome(1, REQUESTED_STATE, forged),
       ),
       "WORLD_EFFECT_REQUEST_INVALID",
       "request-identity-digest",
     );
 
-    const valid = decodeProcessOutcome(
-      encodeOutcome(1, Uint8Array.of(1), REQUEST),
-    );
+    const valid = decodeProcessOutcome(REQUESTED_FIXTURE.bytes);
     expect(valid.request).toBeInstanceOf(Uint8Array);
     expect(valid.request.effectSemanticIdentity).toBeUndefined();
     expect(hex(valid.request)).toBe(hex(REQUEST));
   });
+
+  test("binds a Requested ERQ1 to the exact opaque pre-request State", () => {
+    const mutatedState = new Uint8Array(REQUESTED_STATE);
+    mutatedState[mutatedState.length - 1] ^= 0x01;
+
+    for (const state of [mutatedState, SPLICED_STATE]) {
+      expectOutcomeError(
+        () => decodeProcessOutcome(encodeOutcome(1, state, REQUEST)),
+        "request-state-digest",
+      );
+    }
+  });
 });
+
+function readRequestedFixture(name) {
+  const bytes = new Uint8Array(readFileSync(new URL(
+    `../conformance/vectors/artifacts/${name}`,
+    import.meta.url,
+  )));
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const primaryLength = Number(view.getBigUint64(12, true));
+  const secondaryLength = Number(view.getBigUint64(20, true));
+  const stateEnd = 32 + primaryLength;
+  return {
+    bytes,
+    state: bytes.slice(32, stateEnd),
+    request: bytes.slice(stateEnd, stateEnd + secondaryLength),
+  };
+}
 
 function encodeOutcome(kind, primary, secondary = new Uint8Array()) {
   const result = new Uint8Array(32 + primary.length + secondary.length);
@@ -216,10 +236,6 @@ function concat(...parts) {
     offset += value.length;
   }
   return result;
-}
-
-function fromHex(value) {
-  return new Uint8Array(Buffer.from(value, "hex"));
 }
 
 function hex(value) {

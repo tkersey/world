@@ -15,6 +15,18 @@ const CLI = fileURLToPath(new URL("../bin/world.mjs", import.meta.url));
 const KERNEL = fileURLToPath(
   new URL("../boundary-process-kernel-v1.wasm", import.meta.url),
 );
+const REQUESTED_IMAGE = fileURLToPath(new URL(
+  "../conformance/vectors/artifacts/typed-effect-initial.image",
+  import.meta.url,
+));
+const REQUESTED_INITIAL_ARGS = fileURLToPath(new URL(
+  "../conformance/vectors/artifacts/typed-effect-initial.instance",
+  import.meta.url,
+));
+const REQUESTED_OUTCOME = fileURLToPath(new URL(
+  "../conformance/vectors/artifacts/typed-effect-initial.outcome",
+  import.meta.url,
+));
 const WIDE_LENGTH = 0x1_0000_0000;
 const temporaryDirectories = [];
 
@@ -257,6 +269,46 @@ describe("descriptor and output admission", () => {
     expect(text(result.stderr)).not.toContain(output);
   });
 
+  test("rejects append and read-write stdout aliases while allowing a pipe", () => {
+    const directory = temporaryDirectory();
+    const image = path.join(directory, "image.bpi1");
+    const initial = path.join(directory, "initial.bin");
+    fs.copyFileSync(REQUESTED_IMAGE, image);
+    fs.copyFileSync(REQUESTED_INITIAL_ARGS, initial);
+    const args = [
+      "process",
+      "step",
+      "--image",
+      image,
+      "--initial-args",
+      initial,
+    ];
+
+    const aliases = [
+      {
+        target: image,
+        flags: fs.constants.O_WRONLY | fs.constants.O_APPEND,
+      },
+      {
+        target: initial,
+        flags: fs.constants.O_RDWR,
+      },
+    ];
+    for (const { target, flags } of aliases) {
+      const before = fs.readFileSync(target);
+      const result = runCliWithStdoutDescriptor(args, target, flags);
+      expect(result.exitCode).toBe(1);
+      expect(text(result.stderr)).toContain("WORLD_FILE_ALIAS");
+      expect(text(result.stderr)).not.toContain(target);
+      expect(fs.readFileSync(target)).toEqual(before);
+    }
+
+    const piped = runCli(args);
+    expect(piped.exitCode).toBe(0);
+    expect(Buffer.from(piped.stderr)).toHaveLength(0);
+    expect(Buffer.from(piped.stdout)).toEqual(fs.readFileSync(REQUESTED_OUTCOME));
+  });
+
   test("rejects an output symlink rather than replacing through it", () => {
     const directory = temporaryDirectory();
     const image = writeFile(directory, "image.bpi1", new Uint8Array());
@@ -480,6 +532,20 @@ function runCli(args) {
     stdout: "pipe",
     stderr: "pipe",
   });
+}
+
+function runCliWithStdoutDescriptor(args, outputPath, flags) {
+  const descriptor = fs.openSync(outputPath, flags);
+  try {
+    return Bun.spawnSync({
+      cmd: [process.execPath, CLI, ...args],
+      env: process.env,
+      stdout: descriptor,
+      stderr: "pipe",
+    });
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }
 
 function expectNeedsCapacity(bytes, minimumInputBytes) {

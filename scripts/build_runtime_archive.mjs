@@ -473,6 +473,11 @@ export async function buildRuntimeArchive({
   checksumPath = `${outputPath}.sha256`,
   commit = null,
 } = {}) {
+  assert.notEqual(
+    resolve(outputPath),
+    resolve(checksumPath),
+    "runtime archive and checksum paths must be distinct",
+  );
   const boundary = await snapshotBoundaryLock(root);
   const lock = boundary.lock;
   const sourceEntries = await snapshotRuntimeSources(root);

@@ -93,7 +93,9 @@ export async function executeProcessStep(options) {
       ? null
       : openRegularInput(options.effectResultPath, "effectResult", files);
 
-    if (options.outputPath !== null) {
+    if (options.outputPath === null) {
+      inspectStdoutDestination(files);
+    } else {
       outputSnapshot = inspectOutputDestination(options.outputPath, files);
     }
 
@@ -378,6 +380,27 @@ function inspectOutputDestination(outputPath, inputFiles) {
     }
   }
   return outputGeneration;
+}
+
+function inspectStdoutDestination(inputFiles) {
+  let stat;
+  try {
+    stat = fs.fstatSync(fs.constants.STDOUT_FILENO ?? 1, { bigint: true });
+  } catch (error) {
+    throw outputOperationError("inspect", error);
+  }
+  if (!stat.isFile()) return;
+
+  const outputGeneration = generationOf(stat);
+  for (const input of inputFiles) {
+    if (sameFile(outputGeneration, input.generation)) {
+      throw worldError(
+        "WORLD_FILE_ALIAS",
+        `stdout aliases the ${input.label} input`,
+        { artifact: input.label },
+      );
+    }
+  }
 }
 
 function publishAtomic(outputPath, bytes, expectedOutput, inputFiles) {

@@ -119,12 +119,16 @@ function resolveLocalKernel(sourceRoot, explicitKernel) {
     assert(isAbsolute(explicitKernel), "WORLD_BOUNDARY_PROCESS_KERNEL must be an absolute path");
     if (sourceRoot !== null) {
       const inside = relative(sourceRoot, explicitKernel);
-      assert(inside !== "" && !inside.startsWith("..") && !isAbsolute(inside), "local Boundary kernel must be emitted inside WORLD_BOUNDARY_SOURCE");
+      assert(inside !== "" && !inside.startsWith("..") && !isAbsolute(inside), "local Boundary kernel must be located inside WORLD_BOUNDARY_SOURCE");
     }
     return explicitKernel;
   }
   assert(sourceRoot !== null, "local acquisition requires WORLD_BOUNDARY_PROCESS_KERNEL or WORLD_BOUNDARY_SOURCE");
   return join(sourceRoot, "zig-out", "boundary-process-kernel-v1.wasm");
+}
+
+export function classifyLocalBoundaryAssetProvenance(sourceRoot) {
+  return sourceRoot === null ? "local-kernel-override" : "local-checkout-asset";
 }
 
 export async function acquireBoundaryProcessAssets({
@@ -154,7 +158,7 @@ export async function acquireBoundaryProcessAssets({
     if (sourceRoot !== null) exactBoundarySource(resolve(sourceRoot), lock);
     const resolvedKernel = resolveLocalKernel(sourceRoot === null ? null : resolve(sourceRoot), kernelPath === null ? null : resolve(kernelPath));
     bytes = admitKernel(await readRegular(resolvedKernel, MAXIMUM_DOWNLOAD_BYTES, "local Boundary Process kernel"), lock);
-    provenance = sourceRoot === null ? "local-kernel-override" : "local-source-emission";
+    provenance = classifyLocalBoundaryAssetProvenance(sourceRoot);
   } else {
     bytes = admitKernel(await readRegular(outputPath, MAXIMUM_DOWNLOAD_BYTES, "bundled Boundary Process kernel"), lock);
     provenance = "bundled-check";

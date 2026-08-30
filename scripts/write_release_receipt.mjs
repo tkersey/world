@@ -43,6 +43,13 @@ export async function writeReleaseReceipt({
   checksumPath = `${archivePath}.sha256`,
   outputPath = join(root, "dist", DEFAULT_RELEASE_RECEIPT),
 } = {}) {
+  const conformanceReceiptPath = join(dirname(outputPath), DEFAULT_CONFORMANCE_RECEIPT);
+  const custodyPaths = [archivePath, checksumPath, outputPath, conformanceReceiptPath].map((path) => resolve(path));
+  assert.equal(
+    new Set(custodyPaths).size,
+    custodyPaths.length,
+    "archive, checksum, release receipt, and conformance receipt paths must be pairwise distinct",
+  );
   const admission = await checkRuntimeArchive({
     root,
     archivePath,
@@ -66,7 +73,7 @@ export async function writeReleaseReceipt({
     boundaryRoot: join(root, "conformance", "vectors"),
     transcriptLockPath: join(root, "conformance", "repository-repair-transcript", "lock.json"),
     transcriptRoot: join(root, "conformance", "repository-repair-transcript", "data"),
-    receiptPath: join(dirname(outputPath), DEFAULT_CONFORMANCE_RECEIPT),
+    receiptPath: conformanceReceiptPath,
     archivePath,
     checksumPath,
   });
@@ -96,8 +103,8 @@ export async function writeReleaseReceipt({
     archiveChecksumsVerified: true,
     byteReproducible: true,
     cleanRoomRuntimeVerified: true,
-    semanticConformanceClaimed: true,
-    semanticConformance: Object.freeze({
+    publishedProcessCorpusParityClaimed: true,
+    publishedProcessCorpusParity: Object.freeze({
       boundaryVectorCount: conformance.boundaryCorpus.vectorCount,
       boundaryByteIdenticalCount: conformance.boundaryCorpus.byteIdenticalCount,
       repositoryRepairReductionCount: conformance.repositoryRepair.reductionCount,
@@ -107,6 +114,7 @@ export async function writeReleaseReceipt({
       transferRecovered: conformance.repositoryRepair.transferRecovered,
       terminalResultSha256: conformance.repositoryRepair.terminalResultSha256,
     }),
+    negativeGateCoverageClaimed: false,
     publicReleaseClaimed: false,
     completionClaimed: false,
   });

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { worldError } from "./errors.mjs";
 import { decodeEffectRequest } from "./effect.mjs";
 
@@ -58,7 +60,15 @@ export function decodeProcessOutcome(input) {
         state: copy(primary),
       });
     case 1:
-      decodeEffectRequest(secondary);
+      {
+        const request = decodeEffectRequest(secondary);
+        const stateDigest = new Uint8Array(
+          createHash("sha256").update(primary).digest(),
+        );
+        if (!equalBytes(stateDigest, request.preRequestStateDigest)) {
+          invalidOutcome("request-state-digest");
+        }
+      }
       return Object.freeze({
         bytes,
         kind,
@@ -145,6 +155,15 @@ function readU64(bytes, offset) {
 
 function copy(bytes) {
   return new Uint8Array(bytes);
+}
+
+function equalBytes(left, right) {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index];
+  }
+  return difference === 0;
 }
 
 function ascii(value) {
