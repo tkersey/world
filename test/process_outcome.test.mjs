@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 
 import { WorldProcessHostError } from "../src/process_v1/errors.mjs";
 import { decodeProcessOutcome } from "../src/process_v1/outcome.mjs";
@@ -85,6 +86,29 @@ describe("ABL_PKO1", () => {
     );
   });
 
+  test("accepts genuine Uint8Array bytes from another realm", () => {
+    const outcome = decodeProcessOutcome(foreignBytes(REQUESTED_FIXTURE.bytes));
+    expect(outcome.kind).toBe("Requested");
+    expect(hex(outcome.state)).toBe(hex(REQUESTED_STATE));
+    expect(hex(outcome.request)).toBe(hex(REQUEST));
+  });
+
+  test("rejects non-Uint8Array views and spoofed objects", () => {
+    const spoofedTypedArray = new Uint16Array(1);
+    Object.defineProperty(spoofedTypedArray, Symbol.toStringTag, {
+      value: "Uint8Array",
+    });
+    for (const value of [
+      new DataView(new ArrayBuffer(8)),
+      new Uint16Array(1),
+      spoofedTypedArray,
+      {},
+      { [Symbol.toStringTag]: "Uint8Array" },
+    ]) {
+      expectOutcomeError(() => decodeProcessOutcome(value), "input-type");
+    }
+  });
+
   test("rejects malformed headers, lengths, reserved bytes, and kinds", () => {
     const valid = encodeOutcome(0, Uint8Array.of(1));
     const unsafe = new Uint8Array(valid);
@@ -167,6 +191,10 @@ describe("ABL_PKO1", () => {
     }
   });
 });
+
+function foreignBytes(bytes) {
+  return runInNewContext("(input) => new Uint8Array(input)")(bytes);
+}
 
 function readRequestedFixture(name) {
   const bytes = new Uint8Array(readFileSync(new URL(

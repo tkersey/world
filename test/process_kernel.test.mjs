@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
+import { runInNewContext } from "node:vm";
 
 import { WorldProcessHostError } from "../src/process_v1/errors.mjs";
 import {
@@ -172,6 +173,14 @@ describe("fixed-kernel admitted host", () => {
     await expect(admitProcessKernel(bytes, {
       expectedSha256: "0".repeat(64),
     })).rejects.toMatchObject({ code: "WORLD_KERNEL_DIGEST_MISMATCH" });
+  });
+
+  test("admits exact kernel bytes from another realm", async () => {
+    const admitted = await admitProcessKernel(
+      foreignBytes(fs.readFileSync(KERNEL_URL)),
+      { expectedSha256: BOUNDARY_PROCESS_KERNEL_V1.sha256 },
+    );
+    expect(admitted.sha256).toBe(BOUNDARY_PROCESS_KERNEL_V1.sha256);
   });
 
   test("returns typed NeedsCapacity without invoking the payload writer", async () => {
@@ -405,7 +414,54 @@ describe("fixed-kernel admitted host", () => {
       code: "WORLD_KERNEL_EXECUTION_FAILED",
     });
   });
+
+  test("accepts public advance bytes from another realm", async () => {
+    await expect(host.advance({
+      image: foreignBytes(new Uint8Array()),
+      instance: { initialArgs: foreignBytes(new Uint8Array()) },
+      effectResult: foreignBytes(new Uint8Array()),
+    })).rejects.toMatchObject({
+      code: "WORLD_KERNEL_EXECUTION_FAILED",
+    });
+  });
+
+  test("rejects other views and spoofed objects at kernel byte boundaries", async () => {
+    const spoofedTypedArray = new Uint16Array(1);
+    Object.defineProperty(spoofedTypedArray, Symbol.toStringTag, {
+      value: "Uint8Array",
+    });
+    const invalid = [
+      new DataView(new ArrayBuffer(8)),
+      new Uint16Array(1),
+      spoofedTypedArray,
+      {},
+      { [Symbol.toStringTag]: "Uint8Array" },
+    ];
+    for (const value of invalid) {
+      await expect(admitProcessKernel(value)).rejects.toMatchObject({
+        code: "WORLD_INPUT_INVALID",
+      });
+    }
+
+    await expect(host.advance({
+      image: new DataView(new ArrayBuffer(0)),
+      instance: { initialArgs: new Uint8Array() },
+    })).rejects.toMatchObject({ code: "WORLD_INPUT_INVALID" });
+    await expect(host.advance({
+      image: new Uint8Array(),
+      instance: { initialArgs: new Uint16Array() },
+    })).rejects.toMatchObject({ code: "WORLD_INPUT_INVALID" });
+    await expect(host.advance({
+      image: new Uint8Array(),
+      instance: { initialArgs: new Uint8Array() },
+      effectResult: {},
+    })).rejects.toMatchObject({ code: "WORLD_INPUT_INVALID" });
+  });
 });
+
+function foreignBytes(bytes) {
+  return runInNewContext("(input) => new Uint8Array(input)")(bytes);
+}
 
 async function capacityAdvance(writePayload) {
   return advancePrepared(host, {

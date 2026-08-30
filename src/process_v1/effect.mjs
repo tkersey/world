@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { worldError } from "./errors.mjs";
+import { isUint8Array, worldError } from "./errors.mjs";
 
 const REQUEST_MAGIC = ascii("ABL_ERQ1");
 const RESULT_MAGIC = ascii("ABL_ERS1");
@@ -215,7 +215,7 @@ function updateSemanticBytes(hash, bytes) {
 }
 
 function snapshotRequestBytes(request) {
-  if (request instanceof Uint8Array) return snapshotBytes(request, invalidRequest);
+  if (isUint8Array(request)) return snapshotBytes(request, invalidRequest);
   if (request === null || typeof request !== "object" || Array.isArray(request)) {
     invalidRequest("input-type");
   }
@@ -223,7 +223,7 @@ function snapshotRequestBytes(request) {
 }
 
 function snapshotBytes(value, invalid) {
-  if (!(value instanceof Uint8Array)) invalid("input-type");
+  if (!isUint8Array(value)) invalid("input-type");
   try {
     return new Uint8Array(value);
   } catch {

@@ -1,4 +1,18 @@
 const CODE_PATTERN = /^WORLD_[A-Z0-9]+(?:_[A-Z0-9]+)*$/;
+const TYPED_ARRAY_TAG = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype),
+  Symbol.toStringTag,
+).get;
+
+/** Realm-independent recognition of the exact Uint8Array intrinsic brand. */
+export function isUint8Array(value) {
+  if (!ArrayBuffer.isView(value)) return false;
+  try {
+    return TYPED_ARRAY_TAG.call(value) === "Uint8Array";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The single public error type produced by the Process host.

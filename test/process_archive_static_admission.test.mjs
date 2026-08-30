@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,10 +18,12 @@ import {
 } from "../scripts/build_runtime_archive.mjs";
 import {
   admitRuntimeArchiveBytes,
+  extractAdmittedRuntime,
   parseCanonicalGzip,
 } from "../scripts/check_runtime_archive.mjs";
 
 let temporaryRoot;
+let archive;
 let tar;
 let admitted;
 let lock;
@@ -33,7 +36,7 @@ beforeAll(async () => {
     outputPath: archivePath,
     checksumPath: `${archivePath}.sha256`,
   });
-  const archive = await readFile(archivePath);
+  archive = await readFile(archivePath);
   tar = parseCanonicalGzip(archive);
   lock = await readBoundaryLock(repositoryRoot);
   admitted = await admitRuntimeArchiveBytes(archive, { lock });
@@ -62,6 +65,39 @@ describe("runtime archive static admission", () => {
       const archive = canonicalGzip(createCanonicalTar(entries));
       await expect(admitRuntimeArchiveBytes(archive, { lock }))
         .rejects.toThrow("runtime package fields are not exact");
+    }
+  });
+
+  test("extracts only a private snapshot from a genuinely admitted archive", async () => {
+    const separatelyAdmitted = await admitRuntimeArchiveBytes(archive, { lock });
+    const readme = separatelyAdmitted.parsed.find(({ path }) => path === "README.md");
+    const expectedReadme = Buffer.from(readme.bytes);
+    readme.bytes[0] ^= 0xff;
+
+    const destination = join(temporaryRoot, "private-admission-snapshot");
+    await extractAdmittedRuntime(separatelyAdmitted, destination);
+    expect(await readFile(join(destination, "README.md"))).toEqual(expectedReadme);
+  });
+
+  test("rejects fabricated archive views before creating an extraction target", async () => {
+    const destination = join(temporaryRoot, "fabricated-admission");
+    await expect(extractAdmittedRuntime({ parsed: admitted.parsed }, destination))
+      .rejects.toThrow("runtime extraction requires an admitted archive");
+    await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("rejects public proof-bypass flags without printing a passing claim", () => {
+    for (const argument of ["--skip-rebuild", "--skip-inner"]) {
+      const result = spawnSync(process.execPath, [
+        join(repositoryRoot, "scripts", "check_runtime_archive.mjs"),
+        argument,
+      ], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`unknown check-runtime argument: ${argument}`);
+      expect(result.stdout).not.toContain("world_runtime_archive_check=pass");
     }
   });
 

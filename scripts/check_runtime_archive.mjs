@@ -40,6 +40,7 @@ import {
 } from "./build_runtime_archive.mjs";
 
 const MAXIMUM_SIDECAR_BYTES = 256;
+const admittedArchiveEntrySnapshots = new WeakMap();
 const EXPECTED_API_EXPORTS = Object.freeze([
   "WorldProcessHostError",
   "admitProcessKernel",
@@ -310,7 +311,7 @@ export async function admitRuntimeArchiveBytes(archive, {
   const module = await WebAssembly.compile(kernel);
   assert.equal(WebAssembly.Module.imports(module).length, boundaryLock.kernelImportCount, "runtime kernel import count differs");
   validatePackage(entries.get("package.json"));
-  return Object.freeze({
+  const admitted = Object.freeze({
     archiveSha256: actualDigest,
     archiveByteLength: archive.length,
     archiveEntryCount: entries.size,
@@ -320,6 +321,12 @@ export async function admitRuntimeArchiveBytes(archive, {
     manifest: Object.freeze(manifest),
     runtimeInventory: Object.freeze(paths),
   });
+  admittedArchiveEntrySnapshots.set(admitted, Object.freeze(parsed.map(({ path, bytes, mode }) => Object.freeze({
+    path,
+    bytes: Buffer.from(bytes),
+    mode,
+  }))));
+  return admitted;
 }
 
 async function requireFreshDirectory(path) {
@@ -336,9 +343,10 @@ async function requireFreshDirectory(path) {
 }
 
 export async function extractAdmittedRuntime(admitted, destination) {
-  assert(admitted?.parsed && Array.isArray(admitted.parsed), "runtime extraction requires an admitted archive");
+  const entries = admittedArchiveEntrySnapshots.get(admitted);
+  assert(entries !== undefined, "runtime extraction requires an admitted archive");
   await requireFreshDirectory(destination);
-  for (const entry of admitted.parsed) {
+  for (const entry of entries) {
     assert(isSafeRelativePath(entry.path), `unsafe admitted runtime path: ${entry.path}`);
     const target = join(destination, ...entry.path.split("/"));
     await mkdir(dirname(target), { recursive: true, mode: 0o700 });
@@ -458,9 +466,7 @@ function parseArguments(argv) {
     else if (argument === "--extract-to") {
       options.extractTo = resolve(argv[++index] ?? "");
       options.keepExtractedRoot = true;
-    } else if (argument === "--skip-rebuild") options.verifyRebuild = false;
-    else if (argument === "--skip-inner") options.runInner = false;
-    else throw new Error(`unknown check-runtime argument: ${argument}`);
+    } else throw new Error(`unknown check-runtime argument: ${argument}`);
   }
   if (options.archivePath && !options.checksumPath) options.checksumPath = `${options.archivePath}.sha256`;
   return options;

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { runInNewContext } from "node:vm";
 
 import {
   decodeEffectRequest,
@@ -88,6 +89,24 @@ describe("ABL_ERQ1", () => {
     expect(request.resumeSchemaDigest[0]).toBe(0x3a);
   });
 
+  test("accepts genuine Uint8Array bytes from another realm", () => {
+    const request = decodeEffectRequest(foreignBytes(REQUEST));
+    expect(hex(request.bytes)).toBe(hex(REQUEST));
+    expect(request.effectSemanticIdentity).toBe(
+      "process.kernel.fixture.lookup.v1",
+    );
+  });
+
+  test("rejects non-Uint8Array views and spoofed objects", () => {
+    for (const value of nonUint8ArrayValues()) {
+      expectHostError(
+        () => decodeEffectRequest(value),
+        "WORLD_EFFECT_REQUEST_INVALID",
+        "input-type",
+      );
+    }
+  });
+
   test("rejects malformed framing, UTF-8, naturals, and digests", () => {
     const cases = [
       [mutate(REQUEST, 0), "magic"],
@@ -165,6 +184,18 @@ describe("ABL_ERS1", () => {
 
     expect(hex(fromBytes)).toBe(hex(RESULT));
     expect(hex(fromView)).toBe(hex(RESULT));
+  });
+
+  test("relays request, resume, and result bytes from another realm", () => {
+    const encoded = encodeEffectResult({
+      request: foreignBytes(REQUEST),
+      resume: foreignBytes(fromHex("1d000000")),
+    });
+    expect(hex(encoded)).toBe(hex(RESULT));
+
+    const decoded = decodeEffectResult(foreignBytes(RESULT));
+    expect(hex(decoded.bytes)).toBe(hex(RESULT));
+    expect([...decoded.resume]).toEqual([29, 0, 0, 0]);
   });
 
   test("revalidates request bytes and derives digests from those bytes", () => {
@@ -248,8 +279,38 @@ describe("ABL_ERS1", () => {
       "WORLD_EFFECT_RESULT_INVALID",
       "input-type",
     );
+    for (const value of nonUint8ArrayValues()) {
+      expectHostError(
+        () => decodeEffectResult(value),
+        "WORLD_EFFECT_RESULT_INVALID",
+        "input-type",
+      );
+      expectHostError(
+        () => encodeEffectResult({ request: REQUEST, resume: value }),
+        "WORLD_EFFECT_RESULT_INVALID",
+        "input-type",
+      );
+    }
   });
 });
+
+function foreignBytes(bytes) {
+  return runInNewContext("(input) => new Uint8Array(input)")(bytes);
+}
+
+function nonUint8ArrayValues() {
+  const spoofedTypedArray = new Uint16Array(1);
+  Object.defineProperty(spoofedTypedArray, Symbol.toStringTag, {
+    value: "Uint8Array",
+  });
+  return [
+    new DataView(new ArrayBuffer(8)),
+    new Uint16Array(1),
+    spoofedTypedArray,
+    {},
+    { [Symbol.toStringTag]: "Uint8Array" },
+  ];
+}
 
 function expectHostError(run, code, reason) {
   let caught;

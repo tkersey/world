@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { worldError } from "./errors.mjs";
+import { isUint8Array, worldError } from "./errors.mjs";
 import { decodeEffectRequest } from "./effect.mjs";
 
 const OUTCOME_MAGIC = ascii("ABL_PKO1");
@@ -116,7 +116,7 @@ export function decodeProcessOutcome(input) {
 }
 
 function snapshotBytes(value) {
-  if (!(value instanceof Uint8Array)) invalidOutcome("input-type");
+  if (!isUint8Array(value)) invalidOutcome("input-type");
   try {
     return new Uint8Array(value);
   } catch {

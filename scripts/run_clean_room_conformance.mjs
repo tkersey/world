@@ -21,10 +21,16 @@ import { pathToFileURL } from "node:url";
 import {
   BOUNDARY_PROCESS_PROOF,
   ConformanceAcquisitionError,
+  assertConformanceAcquisitionCustody,
   conformanceErrorRecord,
   sha256Hex,
 } from "./acquire_process_conformance_assets.mjs";
 import { REPOSITORY_REPAIR_TRANSCRIPT } from "./acquire_repository_repair_transcript.mjs";
+import {
+  assertPhysicalPathCustody,
+  defaultArchivePath,
+  defaultChecksumPath,
+} from "./build_runtime_archive.mjs";
 
 const DEFAULT_BOUNDARY_LOCK = resolve("conformance/boundary-process-proof.lock.json");
 const DEFAULT_BOUNDARY_ROOT = resolve("conformance/vectors");
@@ -127,6 +133,53 @@ async function recursiveFiles(root, prefix = "") {
     else fail("WORLD_CONFORMANCE_ASSET_INVALID", "proof asset tree contains a non-regular entry", { path: name });
   }
   return entries.sort();
+}
+
+export async function assertConformanceReceiptCustody({
+  boundaryLockPath = DEFAULT_BOUNDARY_LOCK,
+  boundaryRoot = DEFAULT_BOUNDARY_ROOT,
+  transcriptLockPath = DEFAULT_TRANSCRIPT_LOCK,
+  transcriptRoot = DEFAULT_TRANSCRIPT_ROOT,
+  receiptPath = DEFAULT_RECEIPT,
+  archivePath = defaultArchivePath,
+  checksumPath = defaultChecksumPath,
+} = {}) {
+  await Promise.all([
+    assertConformanceAcquisitionCustody({
+      destination: boundaryRoot,
+      lockPath: receiptPath,
+      label: "conformance receipt custody",
+      outputLabel: "receipt output",
+    }),
+    assertConformanceAcquisitionCustody({
+      destination: transcriptRoot,
+      lockPath: receiptPath,
+      label: "conformance receipt custody",
+      outputLabel: "receipt output",
+    }),
+  ]);
+  const [boundaryArtifacts, transcriptArtifacts] = await Promise.all([
+    recursiveFiles(boundaryRoot),
+    recursiveFiles(transcriptRoot),
+  ]);
+  await assertPhysicalPathCustody(
+    [{ label: "conformance receipt", path: receiptPath }],
+    [
+      { label: "runtime archive", path: archivePath },
+      { label: "runtime checksum", path: checksumPath },
+      { label: "Boundary Process proof lock", path: boundaryLockPath },
+      { label: "repository-repair Process transcript lock", path: transcriptLockPath },
+      ...boundaryArtifacts.map((path) => ({
+        label: `Boundary Process proof artifact ${path}`,
+        path: join(boundaryRoot, ...path.split("/")),
+      })),
+      ...transcriptArtifacts.map((path) => ({
+        label: `repository-repair Process transcript artifact ${path}`,
+        path: join(transcriptRoot, ...path.split("/")),
+      })),
+    ],
+    "conformance receipt custody",
+  );
 }
 
 function assertBoundaryLockIdentity(lock) {
@@ -547,6 +600,15 @@ export async function runFullCleanRoomConformance({
   archivePath,
   checksumPath,
 } = {}) {
+  await assertConformanceReceiptCustody({
+    boundaryLockPath,
+    boundaryRoot,
+    transcriptLockPath,
+    transcriptRoot,
+    receiptPath,
+    archivePath: archivePath ?? defaultArchivePath,
+    checksumPath: checksumPath ?? defaultChecksumPath,
+  });
   await requireLockedProofs({ boundaryLockPath, boundaryRoot, transcriptLockPath, transcriptRoot });
   const cleanRoot = await mkdtemp(join(tmpdir(), "world-process-clean-room-"));
   try {

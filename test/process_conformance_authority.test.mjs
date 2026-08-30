@@ -11,6 +11,7 @@ import {
 } from "../scripts/acquire_process_conformance_assets.mjs";
 import { REPOSITORY_REPAIR_TRANSCRIPT } from "../scripts/acquire_repository_repair_transcript.mjs";
 import {
+  assertConformanceReceiptCustody,
   cleanRoomEnvironment,
   copyLockedProofSnapshot,
   requireLockedProofs,
@@ -98,6 +99,49 @@ describe("World conformance proof authority", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_ASSET_INVALID" });
+  });
+
+  test("rejects conformance receipt aliases of proof inputs before execution", async () => {
+    const base = join(temporaryRoot, `receipt-custody-${crypto.randomUUID()}`);
+    const archivePath = join(base, "runtime.tar.gz");
+    const checksumPath = join(base, "runtime.tar.gz.sha256");
+    const boundaryArtifact = boundaryLock.artifacts[0];
+    const transcriptArtifact = transcriptLock.artifacts[0];
+    const protectedAliases = [
+      archivePath,
+      checksumPath,
+      boundaryLockPath,
+      transcriptLockPath,
+      join(boundaryRoot, ...boundaryArtifact.path.split("/")),
+      join(transcriptRoot, ...transcriptArtifact.path.split("/")),
+      join(boundaryRoot, "new-receipt.json"),
+      join(transcriptRoot, "new-receipt.json"),
+    ];
+
+    for (const receiptPath of protectedAliases) {
+      await expect(assertConformanceReceiptCustody({
+        boundaryLockPath,
+        boundaryRoot,
+        transcriptLockPath,
+        transcriptRoot,
+        receiptPath,
+        archivePath,
+        checksumPath,
+      })).rejects.toThrow(/physically distinct/);
+    }
+  });
+
+  test("admits a distinct conformance receipt output", async () => {
+    const base = join(temporaryRoot, `valid-receipt-custody-${crypto.randomUUID()}`);
+    await expect(assertConformanceReceiptCustody({
+      boundaryLockPath,
+      boundaryRoot,
+      transcriptLockPath,
+      transcriptRoot,
+      receiptPath: join(base, "conformance-receipt.json"),
+      archivePath: join(base, "runtime.tar.gz"),
+      checksumPath: join(base, "runtime.tar.gz.sha256"),
+    })).resolves.toBeUndefined();
   });
 
   test("passes only PATH to the clean-room runner", () => {

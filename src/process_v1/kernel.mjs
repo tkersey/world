@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { decodeProcessOutcome } from "./outcome.mjs";
-import { worldError } from "./errors.mjs";
+import { isUint8Array, worldError } from "./errors.mjs";
 import { BOUNDARY_PROCESS_KERNEL_V1 } from "./kernel_identity.mjs";
 import {
   inspectProcessKernelWasm,
@@ -499,7 +499,7 @@ function readExpectedSha256(options) {
 }
 
 function snapshotBytes(value, label, limits = undefined) {
-  if (!(value instanceof Uint8Array)) {
+  if (!isUint8Array(value)) {
     throw worldError(
       "WORLD_INPUT_INVALID",
       `${label} must be a Uint8Array`,

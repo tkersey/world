@@ -10,8 +10,10 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+
+import { canonicalFuturePathIdentity } from "./build_runtime_archive.mjs";
 
 export const BOUNDARY_PROCESS_PROOF = Object.freeze({
   repository: "tkersey/boundary",
@@ -80,6 +82,60 @@ export function canonicalJsonBytes(value) {
 
 function fail(code, message, details = {}) {
   throw new ConformanceAcquisitionError(code, message, details);
+}
+
+function identityContains(root, candidate) {
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  return candidate === root || candidate.startsWith(prefix);
+}
+
+async function canonicalOutputPathIdentity(path) {
+  const resolved = resolve(path);
+  const parentIdentity = await canonicalFuturePathIdentity(dirname(resolved));
+  const prefix = parentIdentity.endsWith("/") ? parentIdentity : `${parentIdentity}/`;
+  return `${prefix}${basename(resolved).normalize("NFC").toLowerCase()}`;
+}
+
+export async function assertConformanceAcquisitionCustody({
+  destination,
+  lockPath,
+  label = "conformance acquisition",
+  outputLabel = "lock output",
+}) {
+  const destinationIdentity = await canonicalFuturePathIdentity(destination);
+  const lockIdentities = new Set([
+    await canonicalFuturePathIdentity(lockPath),
+    await canonicalOutputPathIdentity(lockPath),
+  ]);
+  if ([...lockIdentities].some((identity) => identityContains(destinationIdentity, identity))) {
+    fail(
+      "WORLD_CONFORMANCE_DESTINATION_CONFLICT",
+      `${label} ${outputLabel} must be physically distinct from the destination artifact namespace`,
+      { destination, lockPath },
+    );
+  }
+}
+
+export function validateBoundaryProcessReleaseIdentity(release) {
+  if (
+    release?.draft !== false ||
+    release?.tag_name !== BOUNDARY_PROCESS_PROOF.releaseTag ||
+    release?.html_url !== BOUNDARY_PROCESS_PROOF.releaseUrl
+  ) {
+    fail("WORLD_CONFORMANCE_RELEASE_INVALID", "Boundary Process corpus is not contained in the exact published v1.7.0 release", {
+      expected: {
+        draft: false,
+        tag: BOUNDARY_PROCESS_PROOF.releaseTag,
+        url: BOUNDARY_PROCESS_PROOF.releaseUrl,
+      },
+      observed: {
+        draft: release?.draft ?? null,
+        tag: release?.tag_name ?? null,
+        url: release?.html_url ?? null,
+      },
+    });
+  }
+  return release;
 }
 
 function isPlainObject(value) {
@@ -628,8 +684,13 @@ export async function acquireBoundaryProcessConformanceAssets({
   lockPath = resolve("conformance/boundary-process-proof.lock.json"),
   fetchImpl = fetch,
 } = {}) {
+  await assertConformanceAcquisitionCustody({
+    destination,
+    lockPath,
+    label: "Boundary Process corpus acquisition",
+  });
   const releaseApi = `https://api.github.com/repos/${BOUNDARY_PROCESS_PROOF.repository}/releases/tags/${BOUNDARY_PROCESS_PROOF.releaseTag}`;
-  const release = await fetchGitHubJson(fetchImpl, releaseApi);
+  const release = validateBoundaryProcessReleaseIdentity(await fetchGitHubJson(fetchImpl, releaseApi));
   const assets = Array.isArray(release.assets) ? release.assets : [];
   const manifestAsset = assets.find((asset) => asset.name === BOUNDARY_PROCESS_PROOF.manifestAssetName);
   if (!manifestAsset) {

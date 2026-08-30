@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   BOUNDARY_PROCESS_PROOF,
+  assertConformanceAcquisitionCustody,
   canonicalJsonBytes,
   ConformanceAcquisitionError,
   conformanceErrorRecord,
@@ -417,6 +418,11 @@ export async function acquireRepositoryRepairTranscript({
   lockPath = resolve("conformance/repository-repair-transcript/lock.json"),
   fetchImpl = fetch,
 } = {}) {
+  await assertConformanceAcquisitionCustody({
+    destination,
+    lockPath,
+    label: "repository-repair transcript acquisition",
+  });
   const release = await fetchGitHubJson(
     fetchImpl,
     `https://api.github.com/repos/${REPOSITORY_REPAIR_TRANSCRIPT.repository}/releases/tags/${REPOSITORY_REPAIR_TRANSCRIPT.releaseTag}`,
