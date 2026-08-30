@@ -14,8 +14,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const boundaryUrl = "https://github.com/tkersey/boundary/archive/b1fa211201361d1c8500f48ec92e7f60bc6d4f91.tar.gz";
-const boundaryHash = "boundary-1.6.1-flclaP5MIwA_ZGbWUVreRVr3wE2hBH203fDoor_5k1I0";
+const boundaryUrl = "https://github.com/tkersey/boundary/archive/34d0089e95fa7fe09ff535d2f46c65eb96c6f14a.tar.gz";
+const boundaryHash = "boundary-1.7.0-flclaMFhIwAro5wjfOoS9V6-wEo960SsgLMJRvKh6M1i";
 const options = parseArgs(process.argv.slice(2));
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const proofRoot = mkdtempSync(join(tmpdir(), "world-external-consumer-"));
@@ -143,7 +143,7 @@ function fetchPackage(zig, source, globalCache, cwd) {
 function assertSingleBoundaryDependency(worldRoot) {
   const zon = readFileSync(join(worldRoot, "build.zig.zon"), "utf8");
   if (!zon.includes(`.url = "${boundaryUrl}"`) || !zon.includes(`.hash = "${boundaryHash}"`)) {
-    throw new Error("materialized candidate does not retain exact Boundary v1.6.1 identity");
+    throw new Error("materialized candidate does not retain exact Boundary v1.7.0 identity");
   }
   const body = zon.match(/\.dependencies\s*=\s*\.\{([\s\S]*?)\n\s*\},\n\s*\.minimum_zig_version/)?.[1] ?? "";
   const names = [...body.matchAll(/^\s*\.([A-Za-z0-9_]+)\s*=\s*\.\{/gm)].map((match) => match[1]);

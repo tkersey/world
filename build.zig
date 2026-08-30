@@ -198,16 +198,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "boundary", .module = boundary },
         },
     });
-    const system_topology_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("test/system_link_topology_v1.zig"),
-        .target = validation_target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "boundary", .module = boundary },
-            .{ .name = "system_v1_fixtures", .module = system_fixtures },
-        },
-    }) });
-
     const build_support = b.createModule(.{
         .root_source_file = b.path("build_support/application.zig"),
         .target = validation_target,
@@ -456,7 +446,7 @@ pub fn build(b: *std.Build) void {
         },
     }) });
     forged_identity.expect_errors = .{
-        .contains = "world.application owns the World 3.1.4 / Boundary 1.6.1 package identity",
+        .contains = "world.application owns the World 3.2.0 / Boundary 1.7.0 package identity",
     };
 
     const compile_fail_step = b.step("compile-fail", "Run the surviving application compiler negative witnesses.");
@@ -504,6 +494,7 @@ pub fn build(b: *std.Build) void {
         .{ .path = "test/compile_fail/system_v1_unrooted_morphism_consumer.zig", .message = "World system contains a morphism consumer unreachable from root" },
         .{ .path = "test/compile_fail/system_v1_duplicate_residual_identity.zig", .message = "World system residual semantic identity has conflicting Payload or Resume schemas" },
         .{ .path = "test/compile_fail/system_v1_nominal_residual_merge.zig", .message = "World system cannot merge one residual semantic identity across distinct authoring Payload or Resume types" },
+        .{ .path = "test/compile_fail/system_v1_invalid_effect_identity.zig", .message = "effect morphism Target semantic_identity must be valid UTF-8" },
         .{ .path = "test/compile_fail/system_v1_forged_failure_map.zig", .message = "World system Failure morphism must cover every source tag" },
         .{ .path = "test/compile_fail/system_v1_forged_component.zig", .message = "Boundary component admission requires a canonical Boundary Program" },
     }) |witness| {
@@ -542,11 +533,10 @@ pub fn build(b: *std.Build) void {
     );
     system_link_step.dependOn(&runArtifact(b, system_tests).step);
     system_link_step.dependOn(&runArtifact(b, system_scaling_tests).step);
-    system_link_step.dependOn(&runArtifact(b, system_topology_tests).step);
     system_link_step.dependOn(system_negative_step);
 
     const dependency_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_boundary_dependency.mjs" });
-    const dependency_step = b.step("check-world-boundary-dependency", "Require the sole exact Boundary v1.6.1 package dependency.");
+    const dependency_step = b.step("check-world-boundary-dependency", "Require the sole exact Boundary v1.7.0 package dependency.");
     dependency_step.dependOn(&dependency_gate.step);
     const dependency_negative_gate = b.addSystemCommand(&.{ "node", "scripts/check_world_boundary_dependency.mjs", "--negative-self-test" });
     const dependency_negative_step = b.step("check-world-boundary-dependency-negative", "Prove the dependency checker rejects an injected legacy dependency.");

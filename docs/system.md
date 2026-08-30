@@ -46,7 +46,7 @@ authority owner for every residual source occurrence before lowering.
 count, so inactive declarations and repeated authorities do not survive as
 public capacity or undefined slots.
 Types whose `Payload` and `Resume` declarations are types and whose
-`semantic_identity` is a nonempty byte string follow the bare-Site path,
+`semantic_identity` is a nonempty valid UTF-8 byte string follow the bare-Site path,
 regardless of extra declarations. Bare authorities compare semantic identity
 plus Boundary portable-schema digests for `Payload` and `Resume`, not Zig type
 or constructor ordinal. Typed handler, morphism, and Failure-map endpoints keep
