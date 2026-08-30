@@ -6,10 +6,15 @@ import { join } from "node:path";
 import {
   BOUNDARY_PROCESS_PROOF,
   canonicalJsonBytes,
+  fetchGitHubAssetBytes,
   sha256Hex,
 } from "../scripts/acquire_process_conformance_assets.mjs";
 import { REPOSITORY_REPAIR_TRANSCRIPT } from "../scripts/acquire_repository_repair_transcript.mjs";
-import { requireLockedProofs } from "../scripts/run_clean_room_conformance.mjs";
+import {
+  cleanRoomEnvironment,
+  copyLockedProofSnapshot,
+  requireLockedProofs,
+} from "../scripts/run_clean_room_conformance.mjs";
 
 const repositoryRoot = new URL("../", import.meta.url).pathname.replace(/\/$/, "");
 const boundaryLockPath = join(repositoryRoot, "conformance", "boundary-process-proof.lock.json");
@@ -73,6 +78,88 @@ describe("World conformance proof authority", () => {
     await writeFile(path, canonicalJsonBytes(mutated));
     await expect(requireLockedProofs({ boundaryLockPath, boundaryRoot, transcriptLockPath: path, transcriptRoot }))
       .rejects.toMatchObject({ code: "WORLD_CONFORMANCE_LOCK_INVALID" });
+  });
+
+  test("revalidates the private proof snapshot after copying", async () => {
+    const destinationRoot = join(temporaryRoot, `proof-${crypto.randomUUID()}`);
+    await expect(
+      copyLockedProofSnapshot({
+        boundaryLockPath,
+        boundaryRoot,
+        transcriptLockPath,
+        transcriptRoot,
+        destinationRoot,
+        afterCopy: async ({ boundaryRoot: copiedBoundaryRoot }) => {
+          const artifact = boundaryLock.artifacts.find(({ byteLength }) => byteLength > 0);
+          const path = join(copiedBoundaryRoot, ...artifact.path.split("/"));
+          const bytes = new Uint8Array(await readFile(path));
+          bytes[0] ^= 0xff;
+          await writeFile(path, bytes);
+        },
+      }),
+    ).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_ASSET_INVALID" });
+  });
+
+  test("passes only PATH to the clean-room runner", () => {
+    const environment = cleanRoomEnvironment("/private/empty-path");
+    expect(environment).toEqual({ PATH: "/private/empty-path" });
+    expect(Object.keys(environment)).toEqual(["PATH"]);
+    expect(Object.isFrozen(environment)).toBe(true);
+    for (const poisoned of [
+      "BUN_OPTIONS",
+      "NODE_OPTIONS",
+      "DYLD_INSERT_LIBRARIES",
+      "DYLD_LIBRARY_PATH",
+      "LD_PRELOAD",
+      "LD_LIBRARY_PATH",
+    ]) {
+      expect(poisoned in environment).toBe(false);
+    }
+  });
+
+  test("enforces the release asset byte bound while streaming", async () => {
+    const admittedBytes = new Uint8Array([1, 2, 3, 4]);
+    const admitted = await fetchGitHubAssetBytes(
+      async () => ({
+        ok: true,
+        status: 200,
+        body: (async function* () {
+          yield admittedBytes.subarray(0, 2);
+          yield admittedBytes.subarray(2);
+        })(),
+      }),
+      {
+        name: "exact.bin",
+        browser_download_url: "https://example.invalid/exact.bin",
+        size: admittedBytes.byteLength,
+        digest: `sha256:${sha256Hex(admittedBytes)}`,
+      },
+      admittedBytes.byteLength,
+    );
+    expect(admitted).toEqual(admittedBytes);
+
+    let chunksRead = 0;
+    const response = {
+      ok: true,
+      status: 200,
+      body: (async function* () {
+        chunksRead += 1;
+        yield new Uint8Array([1, 2, 3, 4]);
+        chunksRead += 1;
+        yield new Uint8Array([5, 6, 7, 8]);
+      })(),
+    };
+    await expect(fetchGitHubAssetBytes(
+      async () => response,
+      {
+        name: "bounded.bin",
+        browser_download_url: "https://example.invalid/bounded.bin",
+        size: 4,
+        digest: `sha256:${"0".repeat(64)}`,
+      },
+      4,
+    )).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_RELEASE_INVALID" });
+    expect(chunksRead).toBe(2);
   });
 });
 

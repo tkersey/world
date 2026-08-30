@@ -195,9 +195,36 @@ describe("source-derived topology", () => {
       "src/process_v1/a.mjs",
     )).toThrow("non-literal dynamic import");
     expect(() => validateModuleImportSyntax(
+      "await import/* resolved at runtime */(candidate)",
+      "src/process_v1/a.mjs",
+    )).toThrow("non-literal dynamic import");
+    expect(() => validateModuleImportSyntax(
+      "await import // resolved at runtime\n(candidate)",
+      "src/process_v1/a.mjs",
+    )).toThrow("non-literal dynamic import");
+    expect(() => validateModuleImportSyntax(
       'const fs = require("node:fs")',
       "src/process_v1/a.mjs",
     )).toThrow("CommonJS require");
+    expect(() => validateModuleImportSyntax(
+      'const fs = require/* CommonJS */("node:fs")',
+      "src/process_v1/a.mjs",
+    )).toThrow("CommonJS require");
+  });
+
+  test("accepts and derives comment-separated literal imports after a hashbang", () => {
+    const source = [
+      "#!/usr/bin/env bun",
+      'const block = import/* literal */("./block.mjs");',
+      "const line = import // literal",
+      '("./line.mjs");',
+    ].join("\n");
+
+    expect(() => validateModuleImportSyntax(source, "bin/world.mjs")).not.toThrow();
+    expect([...scanModuleSpecifiers(source)].sort()).toEqual([
+      "./block.mjs",
+      "./line.mjs",
+    ]);
   });
 });
 

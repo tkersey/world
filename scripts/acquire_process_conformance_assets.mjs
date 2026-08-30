@@ -469,7 +469,27 @@ export async function fetchGitHubAssetBytes(fetchImpl, asset, maximumByteLength)
     });
   }
   const response = await fetchChecked(fetchImpl, asset.browser_download_url, { headers: { Accept: "application/octet-stream" } });
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (response.body === null || response.body === undefined) {
+    fail("WORLD_CONFORMANCE_NETWORK_FAILED", `release asset ${asset.name} response has no body`);
+  }
+  const chunks = [];
+  let observedByteLength = 0;
+  for await (const chunk of response.body) {
+    if (!(chunk instanceof Uint8Array)) {
+      fail("WORLD_CONFORMANCE_NETWORK_FAILED", `release asset ${asset.name} returned a non-byte body chunk`);
+    }
+    observedByteLength += chunk.byteLength;
+    if (observedByteLength > asset.size || observedByteLength > maximumByteLength) {
+      fail("WORLD_CONFORMANCE_RELEASE_INVALID", `release asset ${asset.name} exceeded its admitted byte length during download`, {
+        asset: asset.name,
+        expected: asset.size,
+        observed: observedByteLength,
+        maximumByteLength,
+      });
+    }
+    chunks.push(Buffer.from(chunk));
+  }
+  const bytes = new Uint8Array(Buffer.concat(chunks, observedByteLength));
   if (bytes.byteLength !== asset.size) {
     fail("WORLD_CONFORMANCE_RELEASE_INVALID", `release asset ${asset.name} changed byte length during download`, {
       asset: asset.name,

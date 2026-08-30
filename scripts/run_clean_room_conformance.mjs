@@ -250,10 +250,21 @@ export async function requireLockedProofs({
     verifyLockedTree(boundaryLock, boundaryRoot, "boundaryProof"),
     verifyLockedTree(transcriptLock, transcriptRoot, "repositoryRepairTranscript"),
   ]);
-  return Object.freeze({ boundaryLock, boundaryRoot, transcriptLock, transcriptRoot });
+  return Object.freeze({
+    boundaryLock,
+    boundaryLockPath,
+    boundaryRoot,
+    transcriptLock,
+    transcriptLockPath,
+    transcriptRoot,
+  });
 }
 
-async function runChild(command, args, { cwd, env = process.env } = {}) {
+async function runChild(command, args, { cwd, env } = {}) {
+  const environmentKeys = Object.keys(env ?? {});
+  if (environmentKeys.length !== 1 || environmentKeys[0] !== "PATH") {
+    throw new Error("clean-room child environment must contain only PATH");
+  }
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     const stdout = [];
@@ -345,6 +356,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [runtimeRoot, boundaryLockPath, boundaryRoot, transcriptLockPath, transcriptRoot] = process.argv.slice(2).map((value) => resolve(value));
+if (Object.keys(process.env).length !== 1 || !("PATH" in process.env)) throw new Error("clean_room_environment");
+const childEnvironment = Object.freeze({ PATH: process.env.PATH ?? "" });
 const runtimeModule = await import(pathToFileURL(join(runtimeRoot, "src/process_v1/index.mjs")).href);
 const { admitProcessKernel, decodeProcessOutcome } = runtimeModule;
 if (typeof admitProcessKernel !== "function" || typeof decodeProcessOutcome !== "function") throw new Error("clean_room_runtime_api");
@@ -393,7 +406,7 @@ const cliArgs = [
 ];
 if (cliVector.vector.effectResultPath !== null) cliArgs.push("--result", join(boundaryRoot, ...cliVector.vector.effectResultPath.split("/")));
 const cli = await new Promise((accept, reject) => {
-  const child = spawn(process.execPath, cliArgs, { cwd: runtimeRoot, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, cliArgs, { cwd: runtimeRoot, env: childEnvironment, stdio: ["ignore", "pipe", "pipe"] });
   const stdout = [];
   const stderr = [];
   child.stdout.on("data", (chunk) => stdout.push(chunk));
@@ -447,7 +460,7 @@ if (requestBoundary !== 17 || finalOutcome?.kind !== "Completed") throw new Erro
 if (digest(finalOutcome.result) !== transcriptLock.transcript.terminal.resultSha256) throw new Error("repository_repair_terminal_result");
 
 const commandUnavailable = async (name) => new Promise((accept) => {
-  const child = spawn(name, ["--version"], { cwd: runtimeRoot, env: process.env, stdio: "ignore" });
+  const child = spawn(name, ["--version"], { cwd: runtimeRoot, env: childEnvironment, stdio: "ignore" });
   child.once("error", (error) => accept(error.code === "ENOENT"));
   child.once("close", () => accept(false));
 });
@@ -483,12 +496,38 @@ process.stdout.write(JSON.stringify({
 }) + "\n");
 `;
 
-function sanitizedEnvironment(emptyPath) {
-  const env = { ...process.env, PATH: emptyPath };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith("GIT_") || key.startsWith("WORLD_BOUNDARY_") || key === "ZIG_GLOBAL_CACHE_DIR") delete env[key];
+export function cleanRoomEnvironment(emptyPath) {
+  return Object.freeze({ PATH: emptyPath });
+}
+
+export async function copyLockedProofSnapshot({
+  boundaryLockPath,
+  boundaryRoot,
+  transcriptLockPath,
+  transcriptRoot,
+  destinationRoot,
+  afterCopy,
+}) {
+  if (afterCopy !== undefined && typeof afterCopy !== "function") {
+    fail("WORLD_CONFORMANCE_USAGE", "afterCopy must be a function");
   }
-  return env;
+  const copiedBoundaryRoot = join(destinationRoot, "boundary");
+  const copiedTranscriptRoot = join(destinationRoot, "repository-repair");
+  await mkdir(destinationRoot, { mode: 0o700 });
+  await cp(boundaryRoot, copiedBoundaryRoot, { recursive: true, errorOnExist: true, force: false });
+  await cp(transcriptRoot, copiedTranscriptRoot, { recursive: true, errorOnExist: true, force: false });
+  const copiedBoundaryLock = join(destinationRoot, "boundary.lock.json");
+  const copiedTranscriptLock = join(destinationRoot, "repository-repair.lock.json");
+  await copyFile(boundaryLockPath, copiedBoundaryLock);
+  await copyFile(transcriptLockPath, copiedTranscriptLock);
+  const copiedProofPaths = Object.freeze({
+    boundaryLockPath: copiedBoundaryLock,
+    boundaryRoot: copiedBoundaryRoot,
+    transcriptLockPath: copiedTranscriptLock,
+    transcriptRoot: copiedTranscriptRoot,
+  });
+  if (afterCopy) await afterCopy(copiedProofPaths);
+  return requireLockedProofs(copiedProofPaths);
 }
 
 async function writeJsonAtomic(path, value) {
@@ -507,9 +546,17 @@ export async function runFullCleanRoomConformance({
   archivePath,
   checksumPath,
 } = {}) {
-  const proofs = await requireLockedProofs({ boundaryLockPath, boundaryRoot, transcriptLockPath, transcriptRoot });
+  await requireLockedProofs({ boundaryLockPath, boundaryRoot, transcriptLockPath, transcriptRoot });
   const cleanRoot = await mkdtemp(join(tmpdir(), "world-process-clean-room-"));
   try {
+    const proofRoot = join(cleanRoot, "proof");
+    const copiedProofs = await copyLockedProofSnapshot({
+      boundaryLockPath,
+      boundaryRoot,
+      transcriptLockPath,
+      transcriptRoot,
+      destinationRoot: proofRoot,
+    });
     const runtimeRoot = join(cleanRoot, "runtime");
     const smoke = await runRuntimeCleanRoomSmoke({
       archivePath,
@@ -517,16 +564,6 @@ export async function runFullCleanRoomConformance({
       extractTo: runtimeRoot,
       keepExtractedRoot: true,
     });
-    const proofRoot = join(cleanRoot, "proof");
-    const copiedBoundaryRoot = join(proofRoot, "boundary");
-    const copiedTranscriptRoot = join(proofRoot, "repository-repair");
-    await mkdir(proofRoot, { mode: 0o700 });
-    await cp(boundaryRoot, copiedBoundaryRoot, { recursive: true, errorOnExist: true, force: false });
-    await cp(transcriptRoot, copiedTranscriptRoot, { recursive: true, errorOnExist: true, force: false });
-    const copiedBoundaryLock = join(proofRoot, "boundary.lock.json");
-    const copiedTranscriptLock = join(proofRoot, "repository-repair.lock.json");
-    await copyFile(boundaryLockPath, copiedBoundaryLock);
-    await copyFile(transcriptLockPath, copiedTranscriptLock);
     const runnerPath = join(cleanRoot, "runner.mjs");
     const emptyPath = join(cleanRoot, "empty-path");
     await mkdir(emptyPath, { mode: 0o700 });
@@ -535,8 +572,15 @@ export async function runFullCleanRoomConformance({
     try {
       execution = await runChild(
         process.execPath,
-        [runnerPath, runtimeRoot, copiedBoundaryLock, copiedBoundaryRoot, copiedTranscriptLock, copiedTranscriptRoot],
-        { cwd: cleanRoot, env: sanitizedEnvironment(emptyPath) },
+        [
+          runnerPath,
+          runtimeRoot,
+          copiedProofs.boundaryLockPath,
+          copiedProofs.boundaryRoot,
+          copiedProofs.transcriptLockPath,
+          copiedProofs.transcriptRoot,
+        ],
+        { cwd: cleanRoot, env: cleanRoomEnvironment(emptyPath) },
       );
     } catch (error) {
       fail("WORLD_CLEAN_ROOM_CONFORMANCE_FAILED", "clean-room Process conformance execution failed", {
@@ -555,8 +599,8 @@ export async function runFullCleanRoomConformance({
     }
     if (
       result.format !== "world-process-host-clean-room-result/v1" ||
-      result.boundaryVectorCount !== proofs.boundaryLock.vectors.length ||
-      result.boundaryByteIdenticalCount !== proofs.boundaryLock.vectors.length ||
+      result.boundaryVectorCount !== copiedProofs.boundaryLock.vectors.length ||
+      result.boundaryByteIdenticalCount !== copiedProofs.boundaryLock.vectors.length ||
       result.repositoryRepairReductionCount !== 96 ||
       result.repositoryRepairResidualBoundaryCount !== 17 ||
       result.requestReconstructionCount !== 17 ||
@@ -577,20 +621,20 @@ export async function runFullCleanRoomConformance({
         kernelSha256: BOUNDARY_PROCESS_PROOF.kernelSha256,
       },
       boundaryCorpus: {
-        producerTag: proofs.boundaryLock.producer.releaseTag,
-        producerCommit: proofs.boundaryLock.producer.commit,
-        manifestSha256: proofs.boundaryLock.manifest.sha256,
-        payloadSha256: proofs.boundaryLock.payload.sha256,
+        producerTag: copiedProofs.boundaryLock.producer.releaseTag,
+        producerCommit: copiedProofs.boundaryLock.producer.commit,
+        manifestSha256: copiedProofs.boundaryLock.manifest.sha256,
+        payloadSha256: copiedProofs.boundaryLock.payload.sha256,
         vectorCount: result.boundaryVectorCount,
         byteIdenticalCount: result.boundaryByteIdenticalCount,
-        needsCapacityVectorId: proofs.boundaryLock.receipt.needsCapacityVectorId,
-        nonAgentVectorId: proofs.boundaryLock.receipt.nonAgentVectorId,
+        needsCapacityVectorId: copiedProofs.boundaryLock.receipt.needsCapacityVectorId,
+        nonAgentVectorId: copiedProofs.boundaryLock.receipt.nonAgentVectorId,
       },
       repositoryRepair: {
-        producerTag: proofs.transcriptLock.producer.releaseTag,
-        producerCommit: proofs.transcriptLock.producer.commit,
-        manifestSha256: proofs.transcriptLock.manifest.sha256,
-        payloadSha256: proofs.transcriptLock.payload.sha256,
+        producerTag: copiedProofs.transcriptLock.producer.releaseTag,
+        producerCommit: copiedProofs.transcriptLock.producer.commit,
+        manifestSha256: copiedProofs.transcriptLock.manifest.sha256,
+        payloadSha256: copiedProofs.transcriptLock.payload.sha256,
         programImageSha256: REPOSITORY_REPAIR_TRANSCRIPT.programImageSha256,
         reductionCount: result.repositoryRepairReductionCount,
         residualBoundaryCount: result.repositoryRepairResidualBoundaryCount,

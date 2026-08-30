@@ -21,6 +21,8 @@ export const RUNTIME_ARCHIVE_MAX_BYTES = 16 * 1024 * 1024;
 export const RUNTIME_EXPANDED_MAX_BYTES = 32 * 1024 * 1024;
 export const RUNTIME_ENTRY_MAX_BYTES = 16 * 1024 * 1024;
 export const RUNTIME_ENTRY_MAX_COUNT = 256;
+const TRACKED_FILE_MAX_BYTES = 64 * 1024 * 1024;
+const TRACKED_REPOSITORY_MAX_BYTES = 128 * 1024 * 1024;
 
 const scriptPath = fileURLToPath(import.meta.url);
 export const repositoryRoot = resolve(dirname(scriptPath), "..");
@@ -87,12 +89,12 @@ export async function runtimeSourcePaths(root = repositoryRoot) {
   return [...FIXED_SOURCE_PATHS, ...modules.map((name) => `src/process_v1/${name}`)].sort(compareUtf8);
 }
 
-async function snapshotRegularFile(root, path) {
+async function snapshotRegularFileGeneration(root, path, maximumBytes = RUNTIME_ENTRY_MAX_BYTES) {
   assert(isSafeRelativePath(path), `unsafe runtime input path: ${path}`);
   const absolute = join(root, ...path.split("/"));
   const beforePath = await lstat(absolute, { bigint: true });
   assert(beforePath.isFile() && !beforePath.isSymbolicLink(), `runtime input is not a regular file: ${path}`);
-  assert(beforePath.size <= BigInt(RUNTIME_ENTRY_MAX_BYTES), `runtime input exceeds the per-entry limit: ${path}`);
+  assert(beforePath.size <= BigInt(maximumBytes), `runtime input exceeds the per-entry limit: ${path}`);
   const handle = await open(absolute, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
   try {
     const before = await handle.stat({ bigint: true });
@@ -106,10 +108,20 @@ async function snapshotRegularFile(root, path) {
     for (const field of ["dev", "ino", "size", "mtimeNs", "ctimeNs"]) {
       assert.equal(after[field], before[field], `runtime input changed during snapshot: ${path}`);
     }
-    return Buffer.from(bytes);
+    return Object.freeze({
+      bytes: Buffer.from(bytes),
+      generation: Object.freeze(Object.fromEntries(
+        ["dev", "ino", "size", "mtimeNs", "ctimeNs"].map((field) => [field, after[field]]),
+      )),
+      executable: (after.mode & 0o111n) !== 0n,
+    });
   } finally {
     await handle.close();
   }
+}
+
+async function snapshotRegularFile(root, path, maximumBytes = RUNTIME_ENTRY_MAX_BYTES) {
+  return (await snapshotRegularFileGeneration(root, path, maximumBytes)).bytes;
 }
 
 export function productionSourceSha256(entries) {
@@ -163,7 +175,7 @@ function requireExactObject(value, expected, label) {
   for (const [key, expectedValue] of Object.entries(expected)) assert.deepEqual(value[key], expectedValue, `${label}.${key} differs`);
 }
 
-export async function readBoundaryLock(root = repositoryRoot) {
+async function snapshotBoundaryLock(root = repositoryRoot) {
   const bytes = await snapshotRegularFile(root, "conformance/boundary.lock.json");
   const lock = JSON.parse(bytes.toString("utf8"));
   const expected = {
@@ -182,23 +194,129 @@ export async function readBoundaryLock(root = repositoryRoot) {
     memoryMaximumPages: 4096,
   };
   requireExactObject(lock, expected, "Boundary lock");
-  return Object.freeze(lock);
+  return Object.freeze({ bytes, lock: Object.freeze(lock) });
 }
 
-export function cleanSourceCommit(root, paths) {
+export async function readBoundaryLock(root = repositoryRoot) {
+  return (await snapshotBoundaryLock(root)).lock;
+}
+
+function gitOutput(root, arguments_, options = {}) {
+  return execFileSync("git", arguments_, {
+    cwd: root,
+    encoding: options.encoding,
+    maxBuffer: options.maxBuffer ?? 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+}
+
+export function exactGitHeadCommit(root = repositoryRoot) {
   const commit = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
   assert(/^[0-9a-f]{40}$/.test(commit), "World source commit is not an exact Git commit");
-  const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", ...paths, "conformance/boundary.lock.json"], {
-    cwd: root,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  assert.equal(status, "", `runtime release inputs are not committed at ${commit}:\n${status}`);
   return commit;
+}
+
+function gitBlobAtPath(root, commit, path, maximumBytes) {
+  assert(/^[0-9a-f]{40}$/.test(commit), "Git blob commit is not exact");
+  assert(isSafeRelativePath(path), `unsafe Git blob path: ${path}`);
+  return Buffer.from(gitOutput(root, ["cat-file", "blob", `${commit}:${path}`], {
+    maxBuffer: maximumBytes + 1024,
+  }));
+}
+
+export function bindRetainedSnapshotsToGitHead(root, snapshots) {
+  assert(snapshots instanceof Map && snapshots.size > 0, "retained Git snapshots must be a nonempty Map");
+  const commit = exactGitHeadCommit(root);
+  const committedRuntimePaths = [
+    ...FIXED_SOURCE_PATHS,
+    ...[...commitTreeEntries(root, commit).keys()].filter((path) => path.startsWith("src/process_v1/")),
+  ].sort(compareUtf8);
+  const retainedRuntimePaths = [...snapshots.keys()]
+    .filter((path) => FIXED_SOURCE_PATHS.includes(path) || path.startsWith("src/process_v1/"))
+    .sort(compareUtf8);
+  assert.deepEqual(retainedRuntimePaths, committedRuntimePaths, "retained runtime inventory differs from Git tree at HEAD");
+  for (const [path, retainedBytes] of snapshots) {
+    assert(Buffer.isBuffer(retainedBytes), `retained runtime bytes are missing: ${path}`);
+    const committedBytes = gitBlobAtPath(root, commit, path, Math.max(retainedBytes.length, RUNTIME_ENTRY_MAX_BYTES));
+    assert(retainedBytes.equals(committedBytes), `retained runtime bytes differ from Git blob at HEAD: ${path}`);
+  }
+  assert.equal(exactGitHeadCommit(root), commit, "Git HEAD changed while binding retained runtime bytes");
+  return commit;
+}
+
+function parseZeroRecords(bytes) {
+  assert(Buffer.isBuffer(bytes) && bytes.length > 0 && bytes.at(-1) === 0, "Git record stream is not NUL terminated");
+  return bytes.subarray(0, -1).toString("utf8").split("\0");
+}
+
+function commitTreeEntries(root, commit) {
+  const records = parseZeroRecords(Buffer.from(gitOutput(root, ["ls-tree", "-r", "-z", "--full-tree", commit], {
+    maxBuffer: 16 * 1024 * 1024,
+  })));
+  const entries = new Map();
+  for (const record of records) {
+    const match = /^(100644|100755) blob ([0-9a-f]+)\t(.+)$/.exec(record);
+    assert(match, `tracked Git tree entry is not a regular blob: ${record}`);
+    const path = match[3];
+    assert(isSafeRelativePath(path), `tracked Git tree path is unsafe: ${path}`);
+    assert(!entries.has(path), `tracked Git tree path is duplicated: ${path}`);
+    entries.set(path, Object.freeze({ mode: match[1], object: match[2] }));
+  }
+  assert(entries.size > 0, "tracked Git tree is empty");
+  return entries;
+}
+
+function indexEntries(root) {
+  const records = parseZeroRecords(Buffer.from(gitOutput(root, ["ls-files", "--stage", "-z"], {
+    maxBuffer: 16 * 1024 * 1024,
+  })));
+  const entries = new Map();
+  for (const record of records) {
+    const match = /^(100644|100755) ([0-9a-f]+) ([0-3])\t(.+)$/.exec(record);
+    assert(match, `tracked Git index entry is invalid: ${record}`);
+    assert.equal(match[3], "0", `tracked Git index has an unmerged entry: ${match[4]}`);
+    assert(!entries.has(match[4]), `tracked Git index path is duplicated: ${match[4]}`);
+    entries.set(match[4], Object.freeze({ mode: match[1], object: match[2] }));
+  }
+  return entries;
+}
+
+function assertIndexMatchesTree(root, tree) {
+  const index = indexEntries(root);
+  assert.deepEqual([...index.keys()].sort(compareUtf8), [...tree.keys()].sort(compareUtf8), "tracked Git index inventory differs from source commit");
+  for (const [path, expected] of tree) assert.deepEqual(index.get(path), expected, `tracked Git index differs from source commit: ${path}`);
+}
+
+export async function assertTrackedRepositoryMatchesCommit(root, commit) {
+  assert(/^[0-9a-f]{40}$/.test(commit), "tracked repository source commit is invalid");
+  assert.equal(exactGitHeadCommit(root), commit, "tracked repository HEAD differs from archive sourceCommit");
+  const tree = commitTreeEntries(root, commit);
+  assertIndexMatchesTree(root, tree);
+  const generations = new Map();
+  let retainedByteLength = 0;
+  for (const [path, expected] of tree) {
+    const retained = await snapshotRegularFileGeneration(root, path, TRACKED_FILE_MAX_BYTES);
+    retainedByteLength += retained.bytes.length;
+    assert(retainedByteLength <= TRACKED_REPOSITORY_MAX_BYTES, "tracked repository exceeds its proof-state size limit");
+    assert.equal(retained.executable, expected.mode === "100755", `tracked working mode differs from source commit: ${path}`);
+    const committedBytes = gitBlobAtPath(root, commit, path, TRACKED_FILE_MAX_BYTES);
+    assert(retained.bytes.equals(committedBytes), `tracked working bytes differ from source commit: ${path}`);
+    generations.set(path, retained.generation);
+  }
+  for (const [path, expected] of generations) {
+    const after = await lstat(join(root, ...path.split("/")), { bigint: true });
+    assert(after.isFile() && !after.isSymbolicLink(), `tracked working path changed after proof-state snapshot: ${path}`);
+    for (const field of ["dev", "ino", "size", "mtimeNs", "ctimeNs"]) {
+      assert.equal(after[field], expected[field], `tracked working path changed after proof-state snapshot: ${path}`);
+    }
+  }
+  assertIndexMatchesTree(root, tree);
+  assert.equal(exactGitHeadCommit(root), commit, "tracked repository HEAD changed during proof-state verification");
+  return Object.freeze({ sourceCommit: commit, trackedFileCount: tree.size, trackedByteLength: retainedByteLength });
 }
 
 export function createRuntimeManifest({ lock, commit, entries }) {
@@ -355,10 +473,14 @@ export async function buildRuntimeArchive({
   checksumPath = `${outputPath}.sha256`,
   commit = null,
 } = {}) {
-  const lock = await readBoundaryLock(root);
-  const entries = await snapshotRuntimeSources(root);
+  const boundary = await snapshotBoundaryLock(root);
+  const lock = boundary.lock;
+  const sourceEntries = await snapshotRuntimeSources(root);
+  const entries = new Map(sourceEntries);
   entries.set("package.json", runtimePackageJson(entries.get("package.json")));
-  const resolvedCommit = commit ?? cleanSourceCommit(root, await runtimeSourcePaths(root));
+  const retainedSnapshots = new Map(sourceEntries);
+  retainedSnapshots.set("conformance/boundary.lock.json", boundary.bytes);
+  const resolvedCommit = commit ?? bindRetainedSnapshotsToGitHead(root, retainedSnapshots);
   const manifest = createRuntimeManifest({ lock, commit: resolvedCommit, entries });
   entries.set("runtime-manifest.json", Buffer.from(stableJson(manifest), "utf8"));
   entries.set("checksums.sha256", checksumsBytes(entries));

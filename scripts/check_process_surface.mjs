@@ -316,26 +316,32 @@ export function derivePackageInventory(entries, manifest) {
 
 const moduleScanner = new Bun.Transpiler({ loader: "js" });
 
-export function scanModuleSpecifiers(source) {
+function normalizeModuleSource(source) {
   const parseableSource = source.startsWith("#!")
     ? source.replace(/^#![^\r\n]*(?:\r?\n|$)/u, "\n")
     : source;
+  return moduleScanner.transformSync(parseableSource);
+}
+
+export function scanModuleSpecifiers(source) {
+  const normalizedSource = normalizeModuleSource(source);
   return Object.freeze([
-    ...new Set(moduleScanner.scanImports(parseableSource).map(({ path: specifier }) => specifier)),
+    ...new Set(moduleScanner.scanImports(normalizedSource).map(({ path: specifier }) => specifier)),
   ]);
 }
 
 export function validateModuleImportSyntax(source, importer) {
-  const dynamicCalls = [...source.matchAll(/\bimport\s*\(/gu)].length;
+  const normalizedSource = normalizeModuleSource(source);
+  const dynamicCalls = [...normalizedSource.matchAll(/\bimport\s*\(/gu)].length;
   const literalDynamicCalls = [
-    ...source.matchAll(/\bimport\s*\(\s*["'][^"']+["']\s*\)/gu),
+    ...normalizedSource.matchAll(/\bimport\s*\(\s*["'][^"']+["']\s*\)/gu),
   ].length;
   assert(
     dynamicCalls === literalDynamicCalls,
     `production module ${importer} contains a non-literal dynamic import`,
   );
   assert(
-    !/\brequire\s*\(/u.test(source),
+    !/\brequire\s*\(/u.test(normalizedSource),
     `production module ${importer} contains CommonJS require`,
   );
 }

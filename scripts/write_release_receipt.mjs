@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import {
   RUNTIME_ARCHIVE_NAME,
   WORLD_VERSION,
+  assertTrackedRepositoryMatchesCommit,
   repositoryRoot,
 } from "./build_runtime_archive.mjs";
 import {
@@ -42,6 +43,14 @@ export async function writeReleaseReceipt({
   checksumPath = `${archivePath}.sha256`,
   outputPath = join(root, "dist", DEFAULT_RELEASE_RECEIPT),
 } = {}) {
+  const admission = await checkRuntimeArchive({
+    root,
+    archivePath,
+    checksumPath,
+    verifyRebuild: false,
+    runInner: false,
+  });
+  await assertTrackedRepositoryMatchesCommit(root, admission.manifest.sourceCommit);
   const proof = await checkRuntimeArchive({
     root,
     archivePath,
@@ -50,6 +59,8 @@ export async function writeReleaseReceipt({
     runInner: true,
   });
   assert(proof.reproducible && proof.innerVerified, "release receipt requires a reproducible, internally verified runtime archive");
+  assert.equal(proof.manifest.sourceCommit, admission.manifest.sourceCommit, "runtime proof sourceCommit changed after repository preflight");
+  await assertTrackedRepositoryMatchesCommit(root, proof.manifest.sourceCommit);
   const conformance = await runFullCleanRoomConformance({
     boundaryLockPath: join(root, "conformance", "boundary-process-proof.lock.json"),
     boundaryRoot: join(root, "conformance", "vectors"),
@@ -60,6 +71,7 @@ export async function writeReleaseReceipt({
     checksumPath,
   });
   assert.equal(conformance.cleanRoom.runtimeArchiveSha256, proof.archiveSha256, "direct conformance runtime archive differs");
+  await assertTrackedRepositoryMatchesCommit(root, proof.manifest.sourceCommit);
   const receipt = Object.freeze({
     format: RELEASE_RECEIPT_FORMAT,
     worldVersion: WORLD_VERSION,
@@ -123,5 +135,5 @@ if (isMain()) {
   const result = await writeReleaseReceipt(parseArguments(process.argv.slice(2)));
   console.log(`world_release_receipt=${result.outputPath}`);
   console.log(`world_release_receipt_archive_sha256=${result.receipt.archiveSha256}`);
-  console.log("world_release_receipt=pass");
+  console.log("world_release_receipt_write=pass");
 }
