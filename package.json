@@ -1,0 +1,30 @@
+{
+  "name": "@tkersey/world",
+  "version": "4.0.0",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "exports": {
+    "./process-v1": "./src/process_v1/index.mjs"
+  },
+  "bin": {
+    "world": "./bin/world.mjs"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "bin/",
+    "src/process_v1/",
+    "boundary-process-kernel-v1.wasm"
+  ],
+  "scripts": {
+    "check": "bun run check:process-v1 && bun run check:runtime && bun run conformance:runtime",
+    "check:process-v1": "bun scripts/check_process_surface.mjs && bun test",
+    "build:runtime": "bun scripts/build_runtime_archive.mjs",
+    "check:runtime": "bun scripts/check_runtime_archive.mjs",
+    "conformance:runtime": "bun scripts/run_clean_room_conformance.mjs"
+  }
+}

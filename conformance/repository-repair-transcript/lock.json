@@ -1,0 +1,32 @@
+{
+  "format": "world-repository-repair-process-transcript-lock/v1",
+  "status": "missing",
+  "producer": {
+    "repository": "tkersey/agent",
+    "releaseTag": null,
+    "releaseUrl": null,
+    "commit": null
+  },
+  "boundary": {
+    "version": "1.7.0",
+    "commit": "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
+    "processKernelAbiVersion": 1,
+    "kernelSha256": "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0",
+    "kernelByteLength": 647473
+  },
+  "programImage": {
+    "sha256": "7440076a8078220d9d4000b871423d981bbbee19aedba499afaa4a86239fe6a6",
+    "byteLength": 23431
+  },
+  "requiredAssets": [
+    "agent-repository-repair-process-v1-transcript.json",
+    "agent-repository-repair-process-v1-transcript.bin"
+  ],
+  "requiredProof": {
+    "reductionCount": 96,
+    "residualBoundaryCount": 17,
+    "freshWasmInstanceCount": 97
+  },
+  "missingReason": "No published Agent release contains the exact Boundary-1.7-bound repository-repair Process transcript.",
+  "remedy": "Agent must publish the exact BPI1, InitialArgs, ordered PKO1 outcomes, ERQ1 requests, ERS1 results, and terminal result before World full conformance can run."
+}

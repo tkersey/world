@@ -1,0 +1,410 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import {
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  rename,
+  rm,
+} from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+export const WORLD_VERSION = "4.0.0";
+export const RUNTIME_FORMAT = "world-process-host-runtime/v1";
+export const RUNTIME_ROOT = `world-v${WORLD_VERSION}-process-host-runtime`;
+export const RUNTIME_ARCHIVE_NAME = `${RUNTIME_ROOT}.tar.gz`;
+export const RUNTIME_ARCHIVE_MAX_BYTES = 16 * 1024 * 1024;
+export const RUNTIME_EXPANDED_MAX_BYTES = 32 * 1024 * 1024;
+export const RUNTIME_ENTRY_MAX_BYTES = 16 * 1024 * 1024;
+export const RUNTIME_ENTRY_MAX_COUNT = 256;
+
+const scriptPath = fileURLToPath(import.meta.url);
+export const repositoryRoot = resolve(dirname(scriptPath), "..");
+export const defaultArchivePath = join(repositoryRoot, "dist", RUNTIME_ARCHIVE_NAME);
+export const defaultChecksumPath = `${defaultArchivePath}.sha256`;
+
+const FIXED_SOURCE_PATHS = Object.freeze([
+  "LICENSE",
+  "README.md",
+  "package.json",
+  "bin/world.mjs",
+  "boundary-process-kernel-v1.wasm",
+  "verify-runtime.mjs",
+]);
+
+const REQUIRED_PROCESS_MODULES = Object.freeze([
+  "effect.mjs",
+  "errors.mjs",
+  "file_input.mjs",
+  "index.mjs",
+  "kernel.mjs",
+  "kernel_identity.mjs",
+  "outcome.mjs",
+  "wasm.mjs",
+]);
+
+const GENERATED_PATHS = Object.freeze([
+  "checksums.sha256",
+  "runtime-manifest.json",
+]);
+
+export function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+export function runtimeMode(path) {
+  return path === "bin/world.mjs" || path === "verify-runtime.mjs" ? 0o755 : 0o644;
+}
+
+export function isSafeRelativePath(path) {
+  if (typeof path !== "string" || path.length === 0 || path.includes("\0") || path.includes("\\")) return false;
+  if (path.startsWith("/") || path.endsWith("/") || path.includes("//")) return false;
+  const components = path.split("/");
+  return components.every((component) => component !== "" && component !== "." && component !== "..");
+}
+
+function compareUtf8(left, right) {
+  return Buffer.from(left, "utf8").compare(Buffer.from(right, "utf8"));
+}
+
+export async function runtimeSourcePaths(root = repositoryRoot) {
+  const moduleRoot = join(root, "src", "process_v1");
+  const entries = await readdir(moduleRoot, { withFileTypes: true });
+  const modules = [];
+  for (const entry of entries) {
+    assert(entry.isFile() && !entry.isSymbolicLink(), `runtime source entry is not a regular file: src/process_v1/${entry.name}`);
+    assert(/^[a-z0-9_]+\.mjs$/.test(entry.name), `unexpected runtime source entry: src/process_v1/${entry.name}`);
+    modules.push(entry.name);
+  }
+  modules.sort(compareUtf8);
+  for (const required of REQUIRED_PROCESS_MODULES) {
+    assert(modules.includes(required), `required runtime module is missing: src/process_v1/${required}`);
+  }
+  return [...FIXED_SOURCE_PATHS, ...modules.map((name) => `src/process_v1/${name}`)].sort(compareUtf8);
+}
+
+async function snapshotRegularFile(root, path) {
+  assert(isSafeRelativePath(path), `unsafe runtime input path: ${path}`);
+  const absolute = join(root, ...path.split("/"));
+  const beforePath = await lstat(absolute, { bigint: true });
+  assert(beforePath.isFile() && !beforePath.isSymbolicLink(), `runtime input is not a regular file: ${path}`);
+  assert(beforePath.size <= BigInt(RUNTIME_ENTRY_MAX_BYTES), `runtime input exceeds the per-entry limit: ${path}`);
+  const handle = await open(absolute, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+  try {
+    const before = await handle.stat({ bigint: true });
+    assert(before.isFile(), `runtime input descriptor is not a regular file: ${path}`);
+    assert.equal(before.dev, beforePath.dev, `runtime input changed before snapshot: ${path}`);
+    assert.equal(before.ino, beforePath.ino, `runtime input changed before snapshot: ${path}`);
+    assert.equal(before.size, beforePath.size, `runtime input changed before snapshot: ${path}`);
+    const bytes = await handle.readFile();
+    assert.equal(BigInt(bytes.length), before.size, `runtime input changed during snapshot: ${path}`);
+    const after = await handle.stat({ bigint: true });
+    for (const field of ["dev", "ino", "size", "mtimeNs", "ctimeNs"]) {
+      assert.equal(after[field], before[field], `runtime input changed during snapshot: ${path}`);
+    }
+    return Buffer.from(bytes);
+  } finally {
+    await handle.close();
+  }
+}
+
+export function productionSourceSha256(entries) {
+  const sourcePaths = [...entries.keys()]
+    .filter((path) => path === "bin/world.mjs" || path.startsWith("src/process_v1/"))
+    .sort(compareUtf8);
+  assert(sourcePaths.includes("bin/world.mjs"), "production source digest is missing bin/world.mjs");
+  assert(sourcePaths.includes("src/process_v1/index.mjs"), "production source digest is missing the public module");
+  const digest = createHash("sha256");
+  digest.update("world-production-source/v1\0");
+  for (const path of sourcePaths) {
+    const bytes = entries.get(path);
+    assert(Buffer.isBuffer(bytes), `production source bytes are missing: ${path}`);
+    digest.update(path, "utf8");
+    digest.update("\0");
+    digest.update(bytes);
+    digest.update("\0");
+  }
+  return digest.digest("hex");
+}
+
+export function runtimePackageJson(sourceBytes) {
+  const source = JSON.parse(sourceBytes.toString("utf8"));
+  const runtime = {
+    name: "@tkersey/world",
+    version: WORLD_VERSION,
+    type: "module",
+    private: false,
+    license: "MIT",
+    exports: { "./process-v1": "./src/process_v1/index.mjs" },
+    bin: { world: "./bin/world.mjs" },
+    engines: { bun: ">=1.4.0" },
+  };
+  for (const [key, value] of Object.entries(runtime)) assert.deepEqual(source[key], value, `source package ${key} differs from the runtime contract`);
+  for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+    assert(source[field] === undefined || Object.keys(source[field]).length === 0, `source package ${field} must be empty`);
+  }
+  return Buffer.from(stableJson(runtime), "utf8");
+}
+
+export async function snapshotRuntimeSources(root = repositoryRoot) {
+  const paths = await runtimeSourcePaths(root);
+  const entries = new Map();
+  for (const path of paths) entries.set(path, await snapshotRegularFile(root, path));
+  return entries;
+}
+
+function requireExactObject(value, expected, label) {
+  assert(value !== null && typeof value === "object" && !Array.isArray(value), `${label} must be an object`);
+  assert.deepEqual(Object.keys(value).sort(), Object.keys(expected).sort(), `${label} fields are not exact`);
+  for (const [key, expectedValue] of Object.entries(expected)) assert.deepEqual(value[key], expectedValue, `${label}.${key} differs`);
+}
+
+export async function readBoundaryLock(root = repositoryRoot) {
+  const bytes = await snapshotRegularFile(root, "conformance/boundary.lock.json");
+  const lock = JSON.parse(bytes.toString("utf8"));
+  const expected = {
+    format: "world-boundary-process-lock/v1",
+    boundaryVersion: "1.7.0",
+    boundaryCommit: "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
+    sourceArchiveUrl: "https://github.com/tkersey/boundary/archive/refs/tags/v1.7.0.tar.gz",
+    sourceArchiveSha256: "a787f9838458d43e93aa7b955a36f69eb377b18036a05e3461ae3e7084f2e7d7",
+    kernelReleaseUrl: "https://github.com/tkersey/boundary/releases/download/v1.7.0/boundary-process-kernel-v1.wasm",
+    kernelSha256: "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0",
+    kernelByteLength: 647473,
+    processKernelAbiVersion: 1,
+    kernelImportCount: 0,
+    kernelExportCount: 13,
+    memoryInitialPages: 2457,
+    memoryMaximumPages: 4096,
+  };
+  requireExactObject(lock, expected, "Boundary lock");
+  return Object.freeze(lock);
+}
+
+function cleanSourceCommit(root, paths) {
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  assert(/^[0-9a-f]{40}$/.test(commit), "World source commit is not an exact Git commit");
+  const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", ...paths, "conformance/boundary.lock.json"], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.equal(status, "", `runtime release inputs are not committed at ${commit}:\n${status}`);
+  return commit;
+}
+
+export function createRuntimeManifest({ lock, commit, entries }) {
+  assert(/^[0-9a-f]{40}$/.test(commit), "runtime manifest source commit is invalid");
+  const kernel = entries.get("boundary-process-kernel-v1.wasm");
+  assert(Buffer.isBuffer(kernel), "runtime kernel bytes are missing");
+  assert.equal(kernel.length, lock.kernelByteLength, "runtime kernel byte length differs from Boundary lock");
+  assert.equal(sha256(kernel), lock.kernelSha256, "runtime kernel digest differs from Boundary lock");
+  return Object.freeze({
+    format: RUNTIME_FORMAT,
+    worldVersion: WORLD_VERSION,
+    processKernelAbiVersion: lock.processKernelAbiVersion,
+    boundaryVersion: lock.boundaryVersion,
+    boundaryCommit: lock.boundaryCommit,
+    kernelSha256: lock.kernelSha256,
+    kernelByteLength: lock.kernelByteLength,
+    kernelImportCount: lock.kernelImportCount,
+    sourceCommit: commit,
+    productionSourceSha256: productionSourceSha256(entries),
+  });
+}
+
+export function stableJson(value) {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+export function checksumsBytes(entries) {
+  const rows = [];
+  for (const path of [...entries.keys()].filter((path) => path !== "checksums.sha256").sort(compareUtf8)) {
+    rows.push(`${sha256(entries.get(path))}  ${path}`);
+  }
+  return Buffer.from(`${rows.join("\n")}\n`, "utf8");
+}
+
+function splitUstarPath(path) {
+  const bytes = Buffer.byteLength(path, "utf8");
+  assert(bytes <= 255, `USTAR path exceeds the portable limit: ${path}`);
+  if (bytes <= 100) return { name: path, prefix: "" };
+  for (let index = path.lastIndexOf("/"); index > 0; index = path.lastIndexOf("/", index - 1)) {
+    const prefix = path.slice(0, index);
+    const name = path.slice(index + 1);
+    if (Buffer.byteLength(prefix, "utf8") <= 155 && Buffer.byteLength(name, "utf8") <= 100) return { name, prefix };
+  }
+  throw new Error(`USTAR path cannot be represented: ${path}`);
+}
+
+function writeOctal(header, offset, width, value) {
+  assert(Number.isSafeInteger(value) && value >= 0, "USTAR numeric field is invalid");
+  const encoded = value.toString(8);
+  assert(encoded.length <= width - 1, "USTAR numeric field exceeds its width");
+  header.write(`${encoded.padStart(width - 1, "0")}\0`, offset, width, "ascii");
+}
+
+export function canonicalTarHeader(path, size, mode) {
+  assert(isSafeRelativePath(path), `unsafe USTAR path: ${path}`);
+  assert(/^[\x20-\x7e]+$/.test(path), `USTAR path is not portable ASCII: ${path}`);
+  assert(Number.isSafeInteger(size) && size >= 0 && size <= RUNTIME_ENTRY_MAX_BYTES, `USTAR entry size is invalid: ${path}`);
+  assert(mode === 0o644 || mode === 0o755, `USTAR mode is invalid: ${path}`);
+  const { name, prefix } = splitUstarPath(path);
+  const header = Buffer.alloc(512);
+  Buffer.from(name, "utf8").copy(header, 0);
+  writeOctal(header, 100, 8, mode);
+  writeOctal(header, 108, 8, 0);
+  writeOctal(header, 116, 8, 0);
+  writeOctal(header, 124, 12, size);
+  writeOctal(header, 136, 12, 0);
+  header.fill(0x20, 148, 156);
+  header[156] = 0x30;
+  Buffer.from("ustar\0", "ascii").copy(header, 257);
+  Buffer.from("00", "ascii").copy(header, 263);
+  Buffer.from(prefix, "utf8").copy(header, 345);
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  const encodedChecksum = checksum.toString(8).padStart(6, "0");
+  assert(encodedChecksum.length === 6, "USTAR checksum exceeds its width");
+  header.write(`${encodedChecksum}\0 `, 148, 8, "ascii");
+  return header;
+}
+
+export function createCanonicalTar(entries, root = RUNTIME_ROOT) {
+  assert(entries instanceof Map && entries.size > 0, "runtime archive entries must be a nonempty Map");
+  assert(entries.size <= RUNTIME_ENTRY_MAX_COUNT, "runtime archive has too many entries");
+  assert(isSafeRelativePath(root), "runtime archive root is invalid");
+  const paths = [...entries.keys()].sort(compareUtf8);
+  const chunks = [];
+  let expandedBytes = 1024;
+  for (const path of paths) {
+    assert(isSafeRelativePath(path), `unsafe runtime archive path: ${path}`);
+    const bytes = entries.get(path);
+    assert(Buffer.isBuffer(bytes), `runtime archive entry is not bytes: ${path}`);
+    assert(bytes.length <= RUNTIME_ENTRY_MAX_BYTES, `runtime archive entry exceeds its limit: ${path}`);
+    const archivePath = `${root}/${path}`;
+    chunks.push(canonicalTarHeader(archivePath, bytes.length, runtimeMode(path)), bytes);
+    const padding = (512 - (bytes.length % 512)) % 512;
+    if (padding > 0) chunks.push(Buffer.alloc(padding));
+    expandedBytes += 512 + bytes.length + padding;
+    assert(expandedBytes <= RUNTIME_EXPANDED_MAX_BYTES, "runtime archive expansion exceeds its limit");
+  }
+  chunks.push(Buffer.alloc(1024));
+  return Buffer.concat(chunks, expandedBytes);
+}
+
+export function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+export function canonicalGzip(bytes) {
+  assert(Buffer.isBuffer(bytes), "canonical gzip input must be bytes");
+  const blocks = [];
+  for (let offset = 0; offset < bytes.length || blocks.length === 0;) {
+    const length = Math.min(0xffff, bytes.length - offset);
+    const final = offset + length === bytes.length;
+    const header = Buffer.alloc(5);
+    header[0] = final ? 0x01 : 0x00;
+    header.writeUInt16LE(length, 1);
+    header.writeUInt16LE(length ^ 0xffff, 3);
+    blocks.push(header, bytes.subarray(offset, offset + length));
+    offset += length;
+  }
+  const trailer = Buffer.alloc(8);
+  trailer.writeUInt32LE(crc32(bytes), 0);
+  trailer.writeUInt32LE(bytes.length >>> 0, 4);
+  return Buffer.concat([
+    Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]),
+    ...blocks,
+    trailer,
+  ]);
+}
+
+async function atomicWrite(path, bytes, mode) {
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  let handle;
+  try {
+    handle = await open(temporary, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, mode);
+    await handle.writeFile(bytes);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporary, path);
+  } finally {
+    if (handle) await handle.close();
+    await rm(temporary, { force: true });
+  }
+}
+
+export async function buildRuntimeArchive({
+  root = repositoryRoot,
+  outputPath = join(root, "dist", RUNTIME_ARCHIVE_NAME),
+  checksumPath = `${outputPath}.sha256`,
+  commit = null,
+} = {}) {
+  const lock = await readBoundaryLock(root);
+  const entries = await snapshotRuntimeSources(root);
+  entries.set("package.json", runtimePackageJson(entries.get("package.json")));
+  const resolvedCommit = commit ?? cleanSourceCommit(root, await runtimeSourcePaths(root));
+  const manifest = createRuntimeManifest({ lock, commit: resolvedCommit, entries });
+  entries.set("runtime-manifest.json", Buffer.from(stableJson(manifest), "utf8"));
+  entries.set("checksums.sha256", checksumsBytes(entries));
+  const expectedPaths = [...await runtimeSourcePaths(root), ...GENERATED_PATHS].sort(compareUtf8);
+  assert.deepEqual([...entries.keys()].sort(compareUtf8), expectedPaths, "runtime archive inventory is not exact");
+  const archive = canonicalGzip(createCanonicalTar(entries));
+  assert(archive.length <= RUNTIME_ARCHIVE_MAX_BYTES, "runtime archive exceeds its compressed size limit");
+  const digest = sha256(archive);
+  await atomicWrite(outputPath, archive, 0o644);
+  await atomicWrite(checksumPath, Buffer.from(`${digest}  ${basename(outputPath)}\n`, "utf8"), 0o644);
+  return Object.freeze({
+    format: RUNTIME_FORMAT,
+    archivePath: outputPath,
+    checksumPath,
+    archiveName: RUNTIME_ARCHIVE_NAME,
+    archiveSha256: digest,
+    archiveByteLength: archive.length,
+    archiveEntryCount: entries.size,
+    runtimeInventory: [...entries.keys()].sort(compareUtf8),
+    productionSourceSha256: manifest.productionSourceSha256,
+    sourceCommit: manifest.sourceCommit,
+  });
+}
+
+function parseArguments(argv) {
+  const options = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--out") options.outputPath = resolve(argv[++index] ?? "");
+    else if (argument === "--checksum") options.checksumPath = resolve(argv[++index] ?? "");
+    else throw new Error(`unknown build-runtime argument: ${argument}`);
+  }
+  if (options.outputPath && !options.checksumPath) options.checksumPath = `${options.outputPath}.sha256`;
+  return options;
+}
+
+function isMain() {
+  return process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+}
+
+if (isMain()) {
+  const result = await buildRuntimeArchive(parseArguments(process.argv.slice(2)));
+  console.log(`world_runtime_archive=${result.archivePath}`);
+  console.log(`world_runtime_archive_sha256=${result.archiveSha256}`);
+  console.log(`world_runtime_archive_bytes=${result.archiveByteLength}`);
+  console.log(`world_runtime_archive_entries=${result.archiveEntryCount}`);
+  console.log(`world_runtime_production_source_sha256=${result.productionSourceSha256}`);
+  console.log("world_runtime_archive_build=pass");
+}

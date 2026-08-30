@@ -1,0 +1,23 @@
+{
+  "format": "world-boundary-process-proof-lock/v1",
+  "status": "missing",
+  "producer": {
+    "repository": "tkersey/boundary",
+    "releaseTag": "v1.7.0",
+    "releaseUrl": "https://github.com/tkersey/boundary/releases/tag/v1.7.0",
+    "commit": "4fd4cd959ea283a6b5af12a228f0d80a102683e3"
+  },
+  "boundary": {
+    "version": "1.7.0",
+    "commit": "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
+    "processKernelAbiVersion": 1,
+    "kernelSha256": "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0",
+    "kernelByteLength": 647473
+  },
+  "requiredAssets": [
+    "boundary-process-v1-conformance-corpus.json",
+    "boundary-process-v1-conformance-corpus.bin"
+  ],
+  "missingReason": "Boundary v1.7.0 publishes the fixed Process kernel and proof claims, but not a consumable immutable Process vector/outcome corpus covering the required scenarios.",
+  "remedy": "Boundary must publish the manifest and partitioned payload with native/fixed-kernel byte-identical outcomes before World full conformance can run."
+}
