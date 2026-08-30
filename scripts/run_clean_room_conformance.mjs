@@ -336,7 +336,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const [runtimeRoot, boundaryLockPath, boundaryRoot, transcriptLockPath, transcriptRoot] = process.argv.slice(2).map(resolve);
+const [runtimeRoot, boundaryLockPath, boundaryRoot, transcriptLockPath, transcriptRoot] = process.argv.slice(2).map((value) => resolve(value));
 const runtimeModule = await import(pathToFileURL(join(runtimeRoot, "src/process_v1/index.mjs")).href);
 const { admitProcessKernel, decodeProcessOutcome } = runtimeModule;
 if (typeof admitProcessKernel !== "function" || typeof decodeProcessOutcome !== "function") throw new Error("clean_room_runtime_api");
