@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { constants as fsConstants } from "node:fs";
-import { mkdir, open, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -16,6 +16,28 @@ import {
 
 export const RELEASE_RECEIPT_FORMAT = "world-process-host-release-receipt/v1";
 export const DEFAULT_RELEASE_RECEIPT = `world-v${WORLD_VERSION}-process-host-release-receipt.json`;
+export const DEFAULT_CONFORMANCE_RECEIPT = `world-v${WORLD_VERSION}-process-host-conformance-receipt.json`;
+
+async function readConformanceReceipt(path, proof) {
+  const info = await lstat(path);
+  assert(info.isFile() && !info.isSymbolicLink(), "conformance receipt must be a regular file");
+  assert(info.size > 0 && info.size <= 1024 * 1024, "conformance receipt has an invalid size");
+  const receipt = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readFile(path)));
+  assert.equal(receipt.format, "world-process-host-conformance-receipt/v1", "conformance receipt format differs");
+  assert.equal(receipt.result, "passed", "conformance receipt does not report success");
+  assert.equal(receipt.worldVersion, WORLD_VERSION, "conformance receipt World version differs");
+  assert.equal(receipt.boundary?.version, proof.manifest.boundaryVersion, "conformance receipt Boundary version differs");
+  assert.equal(receipt.boundary?.commit, proof.manifest.boundaryCommit, "conformance receipt Boundary commit differs");
+  assert.equal(receipt.boundary?.kernelSha256, proof.manifest.kernelSha256, "conformance receipt kernel differs");
+  assert.equal(receipt.cleanRoom?.runtimeArchiveSha256, proof.archiveSha256, "conformance receipt runtime archive differs");
+  assert.equal(receipt.boundaryCorpus?.vectorCount, 20, "conformance receipt vector count differs");
+  assert.equal(receipt.boundaryCorpus?.byteIdenticalCount, 20, "conformance receipt parity count differs");
+  assert.equal(receipt.repositoryRepair?.reductionCount, 96, "conformance receipt reduction count differs");
+  assert.equal(receipt.repositoryRepair?.residualBoundaryCount, 17, "conformance receipt boundary count differs");
+  assert.equal(receipt.repositoryRepair?.requestReconstructionCount, 17, "conformance receipt reconstruction count differs");
+  assert.equal(receipt.repositoryRepair?.transferRecovered, true, "conformance receipt transfer proof failed");
+  return receipt;
+}
 
 async function atomicWrite(path, bytes) {
   await mkdir(dirname(path), { recursive: true });
@@ -38,6 +60,7 @@ export async function writeReleaseReceipt({
   root = repositoryRoot,
   archivePath = join(root, "dist", RUNTIME_ARCHIVE_NAME),
   checksumPath = `${archivePath}.sha256`,
+  conformanceReceiptPath = join(root, "dist", DEFAULT_CONFORMANCE_RECEIPT),
   outputPath = join(root, "dist", DEFAULT_RELEASE_RECEIPT),
 } = {}) {
   const proof = await checkRuntimeArchive({
@@ -48,6 +71,7 @@ export async function writeReleaseReceipt({
     runInner: true,
   });
   assert(proof.reproducible && proof.innerVerified, "release receipt requires a reproducible, internally verified runtime archive");
+  const conformance = await readConformanceReceipt(conformanceReceiptPath, proof);
   const receipt = Object.freeze({
     format: RELEASE_RECEIPT_FORMAT,
     worldVersion: WORLD_VERSION,
@@ -72,7 +96,17 @@ export async function writeReleaseReceipt({
     archiveChecksumsVerified: true,
     byteReproducible: true,
     cleanRoomRuntimeVerified: true,
-    semanticConformanceClaimed: false,
+    semanticConformanceClaimed: true,
+    semanticConformance: Object.freeze({
+      boundaryVectorCount: conformance.boundaryCorpus.vectorCount,
+      boundaryByteIdenticalCount: conformance.boundaryCorpus.byteIdenticalCount,
+      repositoryRepairReductionCount: conformance.repositoryRepair.reductionCount,
+      repositoryRepairResidualBoundaryCount: conformance.repositoryRepair.residualBoundaryCount,
+      requestReconstructionCount: conformance.repositoryRepair.requestReconstructionCount,
+      transferAfterBoundary: conformance.repositoryRepair.transferAfterBoundary,
+      transferRecovered: conformance.repositoryRepair.transferRecovered,
+      terminalResultSha256: conformance.repositoryRepair.terminalResultSha256,
+    }),
     publicReleaseClaimed: false,
     completionClaimed: false,
   });
@@ -86,6 +120,7 @@ function parseArguments(argv) {
     const argument = argv[index];
     if (argument === "--archive") options.archivePath = resolve(argv[++index] ?? "");
     else if (argument === "--checksum") options.checksumPath = resolve(argv[++index] ?? "");
+    else if (argument === "--conformance-receipt") options.conformanceReceiptPath = resolve(argv[++index] ?? "");
     else if (argument === "--out") options.outputPath = resolve(argv[++index] ?? "");
     else throw new Error(`unknown release-receipt argument: ${argument}`);
   }

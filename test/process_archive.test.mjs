@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -26,6 +26,7 @@ import {
   acquireBoundaryProcessAssets,
   readExactBoundaryLock,
 } from "../scripts/acquire_boundary_process_assets.mjs";
+import { writeReleaseReceipt } from "../scripts/write_release_receipt.mjs";
 
 let temporaryRoot;
 let archivePath;
@@ -157,6 +158,60 @@ describe("World Process Host runtime archive", () => {
 
     const withoutChecksums = new Map([...admitted.entries].filter(([path]) => path !== "checksums.sha256"));
     await expect(admitRuntimeArchiveBytes(canonicalGzip(createCanonicalTar(withoutChecksums)), { lock })).rejects.toThrow(/missing: checksums.sha256/);
+  });
+
+  test("binds the release receipt to exact semantic conformance", async () => {
+    const conformancePath = join(temporaryRoot, "conformance-receipt.json");
+    const outputPath = join(temporaryRoot, "release-receipt.json");
+    const conformance = {
+      format: "world-process-host-conformance-receipt/v1",
+      result: "passed",
+      worldVersion: "4.0.0",
+      boundary: {
+        version: admitted.manifest.boundaryVersion,
+        commit: admitted.manifest.boundaryCommit,
+        kernelSha256: admitted.manifest.kernelSha256,
+      },
+      boundaryCorpus: { vectorCount: 20, byteIdenticalCount: 20 },
+      repositoryRepair: {
+        reductionCount: 96,
+        residualBoundaryCount: 17,
+        requestReconstructionCount: 17,
+        transferAfterBoundary: 8,
+        transferRecovered: true,
+        terminalResultSha256: "6a473b2e74e2f8229d10061d1b613ad71ab2ad5b139c21bd9a898b7a2778f75c",
+      },
+      cleanRoom: { runtimeArchiveSha256: sha256(archive) },
+    };
+    await writeFile(conformancePath, `${JSON.stringify(conformance)}\n`);
+    const result = await writeReleaseReceipt({
+      root: repositoryRoot,
+      archivePath,
+      checksumPath,
+      conformanceReceiptPath: conformancePath,
+      outputPath,
+    });
+    expect(result.receipt.semanticConformanceClaimed).toBe(true);
+    expect(result.receipt.semanticConformance).toEqual({
+      boundaryVectorCount: 20,
+      boundaryByteIdenticalCount: 20,
+      repositoryRepairReductionCount: 96,
+      repositoryRepairResidualBoundaryCount: 17,
+      requestReconstructionCount: 17,
+      transferAfterBoundary: 8,
+      transferRecovered: true,
+      terminalResultSha256: conformance.repositoryRepair.terminalResultSha256,
+    });
+
+    conformance.cleanRoom.runtimeArchiveSha256 = "0".repeat(64);
+    await writeFile(conformancePath, `${JSON.stringify(conformance)}\n`);
+    await expect(writeReleaseReceipt({
+      root: repositoryRoot,
+      archivePath,
+      checksumPath,
+      conformanceReceiptPath: conformancePath,
+      outputPath,
+    })).rejects.toThrow(/runtime archive differs/);
   });
 });
 
