@@ -27,6 +27,7 @@ import {
   canonicalGzip,
   canonicalTarHeader,
   checksumsBytes,
+  cleanSourceCommit,
   crc32,
   defaultArchivePath,
   defaultChecksumPath,
@@ -389,12 +390,19 @@ export async function checkRuntimeArchive({
 
   let reproducible = false;
   if (verifyRebuild) {
+    const sourcePaths = await runtimeSourcePaths(root);
+    const sourceCommit = cleanSourceCommit(root, sourcePaths);
+    assert.equal(
+      admitted.manifest.sourceCommit,
+      sourceCommit,
+      "runtime manifest sourceCommit differs from exact clean Git HEAD",
+    );
     const temporary = await mkdtemp(join(tmpdir(), "world-runtime-rebuild-"));
     try {
       const firstPath = join(temporary, "first", RUNTIME_ARCHIVE_NAME);
       const secondPath = join(temporary, "second", RUNTIME_ARCHIVE_NAME);
-      await buildRuntimeArchive({ root, outputPath: firstPath, checksumPath: `${firstPath}.sha256`, commit: admitted.manifest.sourceCommit });
-      await buildRuntimeArchive({ root, outputPath: secondPath, checksumPath: `${secondPath}.sha256`, commit: admitted.manifest.sourceCommit });
+      await buildRuntimeArchive({ root, outputPath: firstPath, checksumPath: `${firstPath}.sha256` });
+      await buildRuntimeArchive({ root, outputPath: secondPath, checksumPath: `${secondPath}.sha256` });
       const first = await readBoundedRegularFile(firstPath, RUNTIME_ARCHIVE_MAX_BYTES, "first rebuilt runtime archive");
       const second = await readBoundedRegularFile(secondPath, RUNTIME_ARCHIVE_MAX_BYTES, "second rebuilt runtime archive");
       assert(first.equals(second), "two runtime archive rebuilds are not byte-identical");

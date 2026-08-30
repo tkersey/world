@@ -23,7 +23,11 @@ export const BOUNDARY_PROCESS_PROOF = Object.freeze({
   kernelByteLength: 647_473,
   processKernelAbiVersion: 1,
   manifestAssetName: "boundary-process-v1-conformance-corpus.json",
+  manifestSha256: "5ef2fb9fc3667ce97eae74d5bf9b635da46596fd7f0b3e68a04a43b24b7bb331",
   payloadAssetName: "boundary-process-v1-conformance-corpus.bin",
+  payloadSha256: "17a74f8adfdd7fe9aced05d01fe0432f7ad6720b69cf353bc57a695378bb527f",
+  payloadByteLength: 33_578_193,
+  lockSha256: "74c1a2c1bb998499db4e85da04f2f8ea3d13a9422d81b7023ba0f6b9f44b5fcb",
 });
 
 export const BOUNDARY_REQUIRED_SCENARIOS = Object.freeze([
@@ -68,6 +72,10 @@ export class ConformanceAcquisitionError extends Error {
 
 export function sha256Hex(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+export function canonicalJsonBytes(value) {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 function fail(code, message, details = {}) {
@@ -246,6 +254,17 @@ export function validateBoundaryProcessCorpusManifest(manifest) {
   exactString(manifest.payload.assetName, BOUNDARY_PROCESS_PROOF.payloadAssetName, "manifest.payload.assetName");
   const payloadByteLength = safeInteger(manifest.payload.byteLength, 1, MAX_PAYLOAD_BYTES, "manifest.payload.byteLength");
   const payloadSha256 = digest(manifest.payload.sha256, "manifest.payload.sha256");
+  if (
+    payloadByteLength !== BOUNDARY_PROCESS_PROOF.payloadByteLength ||
+    payloadSha256 !== BOUNDARY_PROCESS_PROOF.payloadSha256
+  ) {
+    fail("WORLD_CONFORMANCE_MANIFEST_INVALID", "manifest.payload does not identify the exact Boundary v1.7.0 corpus", {
+      expectedByteLength: BOUNDARY_PROCESS_PROOF.payloadByteLength,
+      observedByteLength: payloadByteLength,
+      expectedSha256: BOUNDARY_PROCESS_PROOF.payloadSha256,
+      observedSha256: payloadSha256,
+    });
+  }
   const artifactTable = validateArtifactTable(manifest.artifacts, payloadByteLength);
 
   if (!Array.isArray(manifest.vectors) || manifest.vectors.length === 0 || manifest.vectors.length > MAX_VECTORS) {
@@ -548,7 +567,7 @@ export async function materializeExactFiles(destination, files) {
 export async function writeJsonAtomic(path, value) {
   const temporary = `${path}.tmp-${randomUUID()}`;
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o644 });
+  await writeFile(temporary, canonicalJsonBytes(value), { flag: "wx", mode: 0o644 });
   await rename(temporary, path);
 }
 
@@ -617,6 +636,12 @@ export async function acquireBoundaryProcessConformanceAssets({
   }
   const manifestBytes = await fetchGitHubAssetBytes(fetchImpl, manifestAsset, MAX_MANIFEST_BYTES);
   const manifestSha256 = sha256Hex(manifestBytes);
+  if (manifestSha256 !== BOUNDARY_PROCESS_PROOF.manifestSha256) {
+    fail("WORLD_CONFORMANCE_RELEASE_INVALID", "Boundary Process corpus manifest differs from the authenticated release asset", {
+      expected: BOUNDARY_PROCESS_PROOF.manifestSha256,
+      observed: manifestSha256,
+    });
+  }
   const validated = validateBoundaryProcessCorpusManifest(parseManifestBytes(manifestBytes, manifestAsset.name));
   const payloadAsset = assets.find((asset) => asset.name === validated.payload.assetName);
   if (!payloadAsset) {
@@ -639,6 +664,13 @@ export async function acquireBoundaryProcessConformanceAssets({
   const files = validateBundlePayload(validated, payloadBytes);
   await materializeExactFiles(destination, files);
   const lock = boundaryProofLock(validated, manifestSha256);
+  const lockSha256 = sha256Hex(canonicalJsonBytes(lock));
+  if (lockSha256 !== BOUNDARY_PROCESS_PROOF.lockSha256) {
+    fail("WORLD_CONFORMANCE_LOCK_INVALID", "Boundary Process proof lock projection differs from the checked-in lock", {
+      expected: BOUNDARY_PROCESS_PROOF.lockSha256,
+      observed: lockSha256,
+    });
+  }
   await writeJsonAtomic(lockPath, lock);
   return Object.freeze({
     status: "locked",

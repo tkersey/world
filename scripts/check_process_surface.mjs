@@ -29,7 +29,7 @@ export const EXPECTED_PACKAGE_FILES = Object.freeze([
 
 export const EXPECTED_SCRIPTS = Object.freeze({
   check:
-    "bun run check:process-v1 && bun run check:runtime && bun run conformance:runtime",
+    "bun run check:process-v1 && bun run build:runtime && bun run check:runtime && bun run conformance:runtime",
   "check:process-v1": "bun scripts/check_process_surface.mjs && bun test",
   "build:runtime": "bun scripts/build_runtime_archive.mjs",
   "check:runtime": "bun scripts/check_runtime_archive.mjs",
@@ -51,6 +51,8 @@ const EXPECTED_ENGINES = Object.freeze({
 const EVIDENCE_FILES = Object.freeze([
   ".learnings.jsonl",
   ".ledger/learnings/events.jsonl",
+  ".ledger/negative-ledger/events.jsonl",
+  ".ledger/review-fold/counterexamples/events.jsonl",
 ]);
 
 const REQUIRED_ROOT_FILES = Object.freeze([
@@ -312,17 +314,15 @@ export function derivePackageInventory(entries, manifest) {
   return Object.freeze([...members].sort());
 }
 
+const moduleScanner = new Bun.Transpiler({ loader: "js" });
+
 export function scanModuleSpecifiers(source) {
-  const specifiers = new Set();
-  const patterns = [
-    /\bimport\s+(?:[^"'();]*?\s+from\s*)?["']([^"']+)["']/gu,
-    /\bexport\s+(?:\*|\{[^}]*\})\s+from\s*["']([^"']+)["']/gu,
-    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/gu,
-  ];
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) specifiers.add(match[1]);
-  }
-  return Object.freeze([...specifiers]);
+  const parseableSource = source.startsWith("#!")
+    ? source.replace(/^#![^\r\n]*(?:\r?\n|$)/u, "\n")
+    : source;
+  return Object.freeze([
+    ...new Set(moduleScanner.scanImports(parseableSource).map(({ path: specifier }) => specifier)),
+  ]);
 }
 
 export function validateModuleImportSyntax(source, importer) {

@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   BOUNDARY_PROCESS_PROOF,
+  canonicalJsonBytes,
   ConformanceAcquisitionError,
   conformanceErrorRecord,
   fetchGitHubAssetBytes,
@@ -20,8 +21,15 @@ import {
 
 export const REPOSITORY_REPAIR_TRANSCRIPT = Object.freeze({
   repository: "tkersey/agent",
+  releaseTag: "v2.7.0",
+  releaseUrl: "https://github.com/tkersey/agent/releases/tag/v2.7.0",
+  commit: "f8609bc68f2a9c798df3511cfc3a2af60a359d41",
   manifestAssetName: "agent-repository-repair-process-v1-transcript.json",
+  manifestSha256: "c2e0e63192c19cbb8e5d0d1d3b6951fcd428f9496c015471f69524286cf236c1",
   payloadAssetName: "agent-repository-repair-process-v1-transcript.bin",
+  payloadSha256: "f0ddf27f8402168e76360178b532da37323ada5c97a4294ca9d1c98e1c4838dd",
+  payloadByteLength: 364_061,
+  lockSha256: "42c8d440c907bbccce50b5c98fcc686eeb425f3d21f56f1926292fde33f54fcc",
   programImageSha256: "7440076a8078220d9d4000b871423d981bbbee19aedba499afaa4a86239fe6a6",
   programImageByteLength: 23_431,
   reductionCount: 96,
@@ -30,8 +38,6 @@ export const REPOSITORY_REPAIR_TRANSCRIPT = Object.freeze({
 });
 
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
-const TAG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const OUTCOME_KINDS = new Set([
   "Progressed",
@@ -123,17 +129,9 @@ function validateBoundary(value) {
 function validateProducer(value) {
   exactKeys(value, ["repository", "releaseTag", "releaseUrl", "commit"], "manifest.producer");
   exactString(value.repository, REPOSITORY_REPAIR_TRANSCRIPT.repository, "manifest.producer.repository");
-  if (typeof value.releaseTag !== "string" || !TAG_PATTERN.test(value.releaseTag)) {
-    fail("WORLD_TRANSCRIPT_MANIFEST_INVALID", "manifest.producer.releaseTag is invalid");
-  }
-  exactString(
-    value.releaseUrl,
-    `https://github.com/${REPOSITORY_REPAIR_TRANSCRIPT.repository}/releases/tag/${value.releaseTag}`,
-    "manifest.producer.releaseUrl",
-  );
-  if (typeof value.commit !== "string" || !COMMIT_PATTERN.test(value.commit)) {
-    fail("WORLD_TRANSCRIPT_MANIFEST_INVALID", "manifest.producer.commit must be an exact commit SHA");
-  }
+  exactString(value.releaseTag, REPOSITORY_REPAIR_TRANSCRIPT.releaseTag, "manifest.producer.releaseTag");
+  exactString(value.releaseUrl, REPOSITORY_REPAIR_TRANSCRIPT.releaseUrl, "manifest.producer.releaseUrl");
+  exactString(value.commit, REPOSITORY_REPAIR_TRANSCRIPT.commit, "manifest.producer.commit");
 }
 
 export function validateRepositoryRepairTranscriptManifest(manifest) {
@@ -150,6 +148,17 @@ export function validateRepositoryRepairTranscriptManifest(manifest) {
   exactString(manifest.payload.assetName, REPOSITORY_REPAIR_TRANSCRIPT.payloadAssetName, "manifest.payload.assetName");
   const payloadByteLength = safeInteger(manifest.payload.byteLength, 1, MAX_PAYLOAD_BYTES, "manifest.payload.byteLength");
   const payloadSha256 = digest(manifest.payload.sha256, "manifest.payload.sha256");
+  if (
+    payloadByteLength !== REPOSITORY_REPAIR_TRANSCRIPT.payloadByteLength ||
+    payloadSha256 !== REPOSITORY_REPAIR_TRANSCRIPT.payloadSha256
+  ) {
+    fail("WORLD_TRANSCRIPT_MANIFEST_INVALID", "manifest.payload does not identify the exact Agent v2.7.0 transcript", {
+      expectedByteLength: REPOSITORY_REPAIR_TRANSCRIPT.payloadByteLength,
+      observedByteLength: payloadByteLength,
+      expectedSha256: REPOSITORY_REPAIR_TRANSCRIPT.payloadSha256,
+      observedSha256: payloadSha256,
+    });
+  }
   const artifactTable = validateArtifactTable(manifest.artifacts, payloadByteLength, "manifest.artifacts");
   const usedArtifacts = new Set();
 
@@ -408,19 +417,17 @@ export async function acquireRepositoryRepairTranscript({
   lockPath = resolve("conformance/repository-repair-transcript/lock.json"),
   fetchImpl = fetch,
 } = {}) {
-  const releases = await fetchGitHubJson(
+  const release = await fetchGitHubJson(
     fetchImpl,
-    `https://api.github.com/repos/${REPOSITORY_REPAIR_TRANSCRIPT.repository}/releases?per_page=100`,
+    `https://api.github.com/repos/${REPOSITORY_REPAIR_TRANSCRIPT.repository}/releases/tags/${REPOSITORY_REPAIR_TRANSCRIPT.releaseTag}`,
   );
-  if (!Array.isArray(releases)) fail("WORLD_CONFORMANCE_RELEASE_INVALID", "Agent releases response is not an array");
-  const release = releases.find(
-    (candidate) =>
-      candidate &&
-      candidate.draft === false &&
-      Array.isArray(candidate.assets) &&
-      candidate.assets.some((asset) => asset.name === REPOSITORY_REPAIR_TRANSCRIPT.manifestAssetName),
-  );
-  if (!release) {
+  const releaseAssets = Array.isArray(release?.assets) ? release.assets : [];
+  const releaseIdentityMatches =
+    release?.draft === false &&
+    release?.tag_name === REPOSITORY_REPAIR_TRANSCRIPT.releaseTag &&
+    release?.html_url === REPOSITORY_REPAIR_TRANSCRIPT.releaseUrl;
+  const hasManifestAsset = releaseAssets.some((asset) => asset.name === REPOSITORY_REPAIR_TRANSCRIPT.manifestAssetName);
+  if (!releaseIdentityMatches || !hasManifestAsset) {
     fail(
       "WORLD_REPOSITORY_REPAIR_TRANSCRIPT_MISSING",
       "Agent does not publish the immutable Boundary-1.7-bound repository-repair Process transcript required by World",
@@ -430,10 +437,11 @@ export async function acquireRepositoryRepairTranscript({
           REPOSITORY_REPAIR_TRANSCRIPT.manifestAssetName,
           REPOSITORY_REPAIR_TRANSCRIPT.payloadAssetName,
         ],
-        observedReleases: releases.slice(0, 20).map((candidate) => ({
-          tag: candidate.tag_name,
-          assets: Array.isArray(candidate.assets) ? candidate.assets.map((asset) => asset.name).sort() : [],
-        })),
+        observedRelease: {
+          tag: release?.tag_name ?? null,
+          url: release?.html_url ?? null,
+          assets: releaseAssets.map((asset) => asset.name).sort(),
+        },
         requiredProgramImageSha256: REPOSITORY_REPAIR_TRANSCRIPT.programImageSha256,
         requiredBoundaryKernelSha256: BOUNDARY_PROCESS_PROOF.kernelSha256,
         remedy:
@@ -441,10 +449,16 @@ export async function acquireRepositoryRepairTranscript({
       },
     );
   }
-  const assets = release.assets;
+  const assets = releaseAssets;
   const manifestAsset = assets.find((asset) => asset.name === REPOSITORY_REPAIR_TRANSCRIPT.manifestAssetName);
   const manifestBytes = await fetchGitHubAssetBytes(fetchImpl, manifestAsset, MAX_MANIFEST_BYTES);
   const manifestSha256 = sha256Hex(manifestBytes);
+  if (manifestSha256 !== REPOSITORY_REPAIR_TRANSCRIPT.manifestSha256) {
+    fail("WORLD_CONFORMANCE_RELEASE_INVALID", "Agent transcript manifest differs from the authenticated release asset", {
+      expected: REPOSITORY_REPAIR_TRANSCRIPT.manifestSha256,
+      observed: manifestSha256,
+    });
+  }
   const validated = validateRepositoryRepairTranscriptManifest(parseManifestBytes(manifestBytes, manifestAsset.name));
   if (release.tag_name !== validated.manifest.producer.releaseTag || release.html_url !== validated.manifest.producer.releaseUrl) {
     fail("WORLD_CONFORMANCE_RELEASE_INVALID", "Agent transcript manifest is not bound to its containing release", {
@@ -457,11 +471,11 @@ export async function acquireRepositoryRepairTranscript({
   const tagCommit = await resolveGitHubTagCommit(
     fetchImpl,
     REPOSITORY_REPAIR_TRANSCRIPT.repository,
-    validated.manifest.producer.releaseTag,
+    REPOSITORY_REPAIR_TRANSCRIPT.releaseTag,
   );
-  if (tagCommit !== validated.manifest.producer.commit) {
+  if (tagCommit !== REPOSITORY_REPAIR_TRANSCRIPT.commit) {
     fail("WORLD_CONFORMANCE_RELEASE_INVALID", "Agent transcript release tag does not resolve to its declared commit", {
-      expected: validated.manifest.producer.commit,
+      expected: REPOSITORY_REPAIR_TRANSCRIPT.commit,
       observed: tagCommit,
     });
   }
@@ -486,6 +500,13 @@ export async function acquireRepositoryRepairTranscript({
   const files = validateBundlePayload(validated, payloadBytes);
   await materializeExactFiles(destination, files);
   const lock = transcriptLock(validated, manifestSha256);
+  const lockSha256 = sha256Hex(canonicalJsonBytes(lock));
+  if (lockSha256 !== REPOSITORY_REPAIR_TRANSCRIPT.lockSha256) {
+    fail("WORLD_CONFORMANCE_LOCK_INVALID", "repository-repair transcript lock projection differs from the checked-in lock", {
+      expected: REPOSITORY_REPAIR_TRANSCRIPT.lockSha256,
+      observed: lockSha256,
+    });
+  }
   await writeJsonAtomic(lockPath, lock);
   return Object.freeze({
     status: "locked",

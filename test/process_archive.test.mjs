@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -26,7 +27,10 @@ import {
   acquireBoundaryProcessAssets,
   readExactBoundaryLock,
 } from "../scripts/acquire_boundary_process_assets.mjs";
-import { writeReleaseReceipt } from "../scripts/write_release_receipt.mjs";
+import {
+  DEFAULT_CONFORMANCE_RECEIPT,
+  writeReleaseReceipt,
+} from "../scripts/write_release_receipt.mjs";
 
 let temporaryRoot;
 let archivePath;
@@ -161,34 +165,20 @@ describe("World Process Host runtime archive", () => {
   });
 
   test("binds the release receipt to exact semantic conformance", async () => {
-    const conformancePath = join(temporaryRoot, "conformance-receipt.json");
+    const releaseArchivePath = join(temporaryRoot, "release", RUNTIME_ARCHIVE_NAME);
+    const releaseChecksumPath = `${releaseArchivePath}.sha256`;
     const outputPath = join(temporaryRoot, "release-receipt.json");
-    const conformance = {
-      format: "world-process-host-conformance-receipt/v1",
-      result: "passed",
-      worldVersion: "4.0.0",
-      boundary: {
-        version: admitted.manifest.boundaryVersion,
-        commit: admitted.manifest.boundaryCommit,
-        kernelSha256: admitted.manifest.kernelSha256,
-      },
-      boundaryCorpus: { vectorCount: 20, byteIdenticalCount: 20 },
-      repositoryRepair: {
-        reductionCount: 96,
-        residualBoundaryCount: 17,
-        requestReconstructionCount: 17,
-        transferAfterBoundary: 8,
-        transferRecovered: true,
-        terminalResultSha256: "6a473b2e74e2f8229d10061d1b613ad71ab2ad5b139c21bd9a898b7a2778f75c",
-      },
-      cleanRoom: { runtimeArchiveSha256: sha256(archive) },
-    };
-    await writeFile(conformancePath, `${JSON.stringify(conformance)}\n`);
+    const conformanceOutputPath = join(temporaryRoot, DEFAULT_CONFORMANCE_RECEIPT);
+    await buildRuntimeArchive({
+      root: repositoryRoot,
+      outputPath: releaseArchivePath,
+      checksumPath: releaseChecksumPath,
+    });
+    await writeFile(conformanceOutputPath, "fabricated stale conformance metadata\n");
     const result = await writeReleaseReceipt({
       root: repositoryRoot,
-      archivePath,
-      checksumPath,
-      conformanceReceiptPath: conformancePath,
+      archivePath: releaseArchivePath,
+      checksumPath: releaseChecksumPath,
       outputPath,
     });
     expect(result.receipt.semanticConformanceClaimed).toBe(true);
@@ -200,18 +190,30 @@ describe("World Process Host runtime archive", () => {
       requestReconstructionCount: 17,
       transferAfterBoundary: 8,
       transferRecovered: true,
-      terminalResultSha256: conformance.repositoryRepair.terminalResultSha256,
+      terminalResultSha256: "6a473b2e74e2f8229d10061d1b613ad71ab2ad5b139c21bd9a898b7a2778f75c",
     });
+    const directConformance = JSON.parse(await readFile(conformanceOutputPath, "utf8"));
+    expect(directConformance.result).toBe("passed");
+    expect(directConformance.cleanRoom.runtimeArchiveSha256).toBe(result.receipt.archiveSha256);
+  }, 120_000);
 
-    conformance.cleanRoom.runtimeArchiveSha256 = "0".repeat(64);
-    await writeFile(conformancePath, `${JSON.stringify(conformance)}\n`);
-    await expect(writeReleaseReceipt({
-      root: repositoryRoot,
-      archivePath,
-      checksumPath,
-      conformanceReceiptPath: conformancePath,
-      outputPath,
-    })).rejects.toThrow(/runtime archive differs/);
+  test("has no release-claim route for fabricated, missing, or malformed conformance receipt files", async () => {
+    const paths = [
+      join(temporaryRoot, "missing-conformance.json"),
+      join(temporaryRoot, "fabricated-conformance.json"),
+      join(temporaryRoot, "malformed-conformance.json"),
+    ];
+    await writeFile(paths[1], '{"result":"passed"}\n');
+    await writeFile(paths[2], "not json\n");
+    for (const path of paths) {
+      const execution = spawnSync(
+        process.execPath,
+        [join(repositoryRoot, "scripts", "write_release_receipt.mjs"), "--conformance-receipt", path],
+        { cwd: repositoryRoot, encoding: "utf8" },
+      );
+      expect(execution.status).not.toBe(0);
+      expect(execution.stderr).toContain("unknown release-receipt argument: --conformance-receipt");
+    }
   });
 });
 

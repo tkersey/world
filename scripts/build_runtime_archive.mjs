@@ -185,7 +185,7 @@ export async function readBoundaryLock(root = repositoryRoot) {
   return Object.freeze(lock);
 }
 
-function cleanSourceCommit(root, paths) {
+export function cleanSourceCommit(root, paths) {
   const commit = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: root,
     encoding: "utf8",

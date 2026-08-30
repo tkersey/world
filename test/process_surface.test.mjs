@@ -34,7 +34,7 @@ function manifest(overrides = {}) {
     ],
     scripts: {
       check:
-        "bun run check:process-v1 && bun run check:runtime && bun run conformance:runtime",
+        "bun run check:process-v1 && bun run build:runtime && bun run check:runtime && bun run conformance:runtime",
       "check:process-v1": "bun scripts/check_process_surface.mjs && bun test",
       "build:runtime": "bun scripts/build_runtime_archive.mjs",
       "check:runtime": "bun scripts/check_runtime_archive.mjs",
@@ -103,6 +103,8 @@ describe("source-derived topology", () => {
       ".gitignore",
       ".learnings.jsonl",
       ".ledger/learnings/events.jsonl",
+      ".ledger/negative-ledger/events.jsonl",
+      ".ledger/review-fold/counterexamples/events.jsonl",
       "README.md",
       "LICENSE",
       "package.json",
@@ -138,6 +140,8 @@ describe("source-derived topology", () => {
     const entries = [
       ".learnings.jsonl",
       ".ledger/learnings/events.jsonl",
+      ".ledger/negative-ledger/events.jsonl",
+      ".ledger/review-fold/counterexamples/events.jsonl",
       "package.json",
       "LICENSE",
       "README.md",
@@ -148,21 +152,33 @@ describe("source-derived topology", () => {
     const inventory = derivePackageInventory(entries, manifest());
     expect(inventory).not.toContain(".learnings.jsonl");
     expect(inventory).not.toContain(".ledger/learnings/events.jsonl");
+    expect(inventory).not.toContain(".ledger/negative-ledger/events.jsonl");
+    expect(inventory).not.toContain(".ledger/review-fold/counterexamples/events.jsonl");
   });
 
-  test("finds static, re-export, and dynamic imports", () => {
+  test("finds static, namespace re-export, and dynamic imports", () => {
     const imports = scanModuleSpecifiers(`
       import { x } from "./x.mjs";
       export { y } from "./y.mjs";
+      export * as ns from "./ns.mjs";
       const z = import("./z.mjs");
       import "node:crypto";
     `);
     expect([...imports].sort()).toEqual([
+      "./ns.mjs",
       "./x.mjs",
       "./y.mjs",
       "./z.mjs",
       "node:crypto",
     ]);
+  });
+
+  test("derives and rejects a namespace re-export from a bare package", () => {
+    const imports = scanModuleSpecifiers('export * as ns from "left-pad";');
+    expect(imports).toEqual(["left-pad"]);
+    expect(() => validateProductionSpecifier(imports[0], "src/process_v1/a.mjs")).toThrow(
+      "forbidden bare package",
+    );
   });
 
   test("rejects bare packages in production", () => {
@@ -199,5 +215,7 @@ test("the current World tree is exactly the admitted thin-host surface", async (
   expect(report.repositoryEvidence).toEqual([
     ".learnings.jsonl",
     ".ledger/learnings/events.jsonl",
+    ".ledger/negative-ledger/events.jsonl",
+    ".ledger/review-fold/counterexamples/events.jsonl",
   ]);
 });

@@ -37,7 +37,7 @@ function fail(code, message, details = {}) {
   throw new ConformanceAcquisitionError(code, message, details);
 }
 
-async function readJson(path, label) {
+async function readJson(path, label, expectedSha256) {
   let bytes;
   try {
     bytes = await readFile(path);
@@ -45,6 +45,14 @@ async function readJson(path, label) {
     fail("WORLD_CONFORMANCE_PREREQUISITE_MISSING", `${label} is missing`, {
       path,
       cause: error?.code ?? error?.message ?? String(error),
+    });
+  }
+  const observedSha256 = sha256Hex(bytes);
+  if (observedSha256 !== expectedSha256) {
+    fail("WORLD_CONFORMANCE_LOCK_INVALID", `${label} differs from the exact checked-in projection`, {
+      path,
+      expected: expectedSha256,
+      observed: observedSha256,
     });
   }
   try {
@@ -150,9 +158,9 @@ function assertTranscriptLockIdentity(lock) {
   }
   if (
     lock.producer?.repository !== REPOSITORY_REPAIR_TRANSCRIPT.repository ||
-    typeof lock.producer?.releaseTag !== "string" ||
-    typeof lock.producer?.commit !== "string" ||
-    !/^[0-9a-f]{40}$/.test(lock.producer.commit)
+    lock.producer?.releaseTag !== REPOSITORY_REPAIR_TRANSCRIPT.releaseTag ||
+    lock.producer?.releaseUrl !== REPOSITORY_REPAIR_TRANSCRIPT.releaseUrl ||
+    lock.producer?.commit !== REPOSITORY_REPAIR_TRANSCRIPT.commit
   ) {
     fail("WORLD_CONFORMANCE_LOCK_INVALID", "repository-repair transcript producer tuple is invalid");
   }
@@ -205,8 +213,8 @@ export async function requireLockedProofs({
   transcriptRoot = DEFAULT_TRANSCRIPT_ROOT,
 } = {}) {
   const [boundaryLock, transcriptLock] = await Promise.all([
-    readJson(boundaryLockPath, "Boundary Process proof lock"),
-    readJson(transcriptLockPath, "repository-repair Process transcript lock"),
+    readJson(boundaryLockPath, "Boundary Process proof lock", BOUNDARY_PROCESS_PROOF.lockSha256),
+    readJson(transcriptLockPath, "repository-repair Process transcript lock", REPOSITORY_REPAIR_TRANSCRIPT.lockSha256),
   ]);
   const missing = [];
   if (boundaryLock.status === "missing") {
