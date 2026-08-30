@@ -115,6 +115,13 @@ const LEGACY_ROOTS = Object.freeze([
   "templates/",
 ]);
 
+export const EXPECTED_PRODUCTION_BUILTINS = Object.freeze([
+  "node:crypto",
+  "node:fs",
+  "node:path",
+  "node:url",
+]);
+
 function fail(message) {
   throw new Error(`process surface: ${message}`);
 }
@@ -344,10 +351,33 @@ export function validateModuleImportSyntax(source, importer) {
     !/\brequire\s*\(/u.test(normalizedSource),
     `production module ${importer} contains CommonJS require`,
   );
+  assert(
+    !/\bcreateRequire\b/u.test(normalizedSource),
+    `production module ${importer} acquires createRequire`,
+  );
+  assert(
+    !/\bgetBuiltinModule\b/u.test(normalizedSource),
+    `production module ${importer} acquires process.getBuiltinModule`,
+  );
+  assert(
+    !/\b(?:eval|Function)\b/u.test(normalizedSource),
+    `production module ${importer} contains eval or Function-generated code`,
+  );
+  assert(
+    !/(?:\bBun\s*(?:(?:\?\.|\.)\s*(?:build|plugin|resolve|resolveSync|spawn|spawnSync)\b|\[\s*["'](?:build|plugin|resolve|resolveSync|spawn|spawnSync)["']\s*\])|=\s*(?:globalThis\s*\.\s*)?Bun\b)/u.test(normalizedSource),
+    `production module ${importer} acquires a Bun loader or spawn API`,
+  );
 }
 
 export function validateProductionSpecifier(specifier, importer) {
-  if (specifier.startsWith("node:") && isBuiltin(specifier)) return "builtin";
+  if (specifier.startsWith("node:")) {
+    assert(isBuiltin(specifier), `production module ${importer} imports unknown builtin ${JSON.stringify(specifier)}`);
+    assert(
+      EXPECTED_PRODUCTION_BUILTINS.includes(specifier),
+      `production module ${importer} imports forbidden builtin ${JSON.stringify(specifier)}`,
+    );
+    return "builtin";
+  }
   assert(
     specifier.startsWith("./") || specifier.startsWith("../"),
     `production module ${importer} imports forbidden bare package ${JSON.stringify(specifier)}`,
@@ -365,6 +395,7 @@ export function deriveReachableProduction(root, manifest, entries, packageMember
     ...Object.values(manifest.bin),
   ].map((entry) => entry.replace(/^\.\//u, ""));
   const reachable = new Set();
+  const builtinSpecifiers = new Set();
 
   while (queue.length > 0) {
     const relativePath = queue.shift();
@@ -377,7 +408,10 @@ export function deriveReachableProduction(root, manifest, entries, packageMember
     const source = readFileSync(path.join(root, relativePath), "utf8");
     validateModuleImportSyntax(source, relativePath);
     for (const specifier of scanModuleSpecifiers(source)) {
-      if (validateProductionSpecifier(specifier, relativePath) === "builtin") continue;
+      if (validateProductionSpecifier(specifier, relativePath) === "builtin") {
+        builtinSpecifiers.add(specifier);
+        continue;
+      }
       const absoluteTarget = path.resolve(path.dirname(path.join(root, relativePath)), specifier);
       const relativeTarget = path.relative(root, absoluteTarget).replaceAll(path.sep, "/");
       assert(
@@ -401,6 +435,11 @@ export function deriveReachableProduction(root, manifest, entries, packageMember
     .sort();
   const missing = productionModules.filter((relativePath) => !reachable.has(relativePath));
   assert(missing.length === 0, `unreachable production modules are forbidden: ${missing.join(", ")}`);
+  const actualBuiltins = [...builtinSpecifiers].sort();
+  assert(
+    JSON.stringify(actualBuiltins) === JSON.stringify(EXPECTED_PRODUCTION_BUILTINS),
+    `production builtin surface must be exactly ${EXPECTED_PRODUCTION_BUILTINS.join(", ")}; got ${actualBuiltins.join(", ") || "none"}`,
+  );
   return Object.freeze([...reachable].sort());
 }
 
@@ -468,6 +507,7 @@ export async function checkProcessSurface(root) {
     publicExports: EXPECTED_PUBLIC_EXPORTS,
     packageMembers,
     reachableProduction,
+    builtinModules: EXPECTED_PRODUCTION_BUILTINS,
     runtimeDependencyCount: 0,
     repositoryEvidence: EVIDENCE_FILES,
   });

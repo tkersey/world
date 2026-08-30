@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  EXPECTED_PRODUCTION_BUILTINS,
   checkProcessSurface,
   derivePackageInventory,
   scanModuleSpecifiers,
@@ -182,7 +183,15 @@ describe("source-derived topology", () => {
   });
 
   test("rejects bare packages in production", () => {
-    expect(() => validateProductionSpecifier("node:crypto", "src/process_v1/a.mjs")).not.toThrow();
+    for (const specifier of EXPECTED_PRODUCTION_BUILTINS) {
+      expect(() => validateProductionSpecifier(specifier, "src/process_v1/a.mjs")).not.toThrow();
+    }
+    expect(() => validateProductionSpecifier("node:module", "src/process_v1/a.mjs")).toThrow(
+      "forbidden builtin",
+    );
+    expect(() => validateProductionSpecifier("node:child_process", "src/process_v1/a.mjs")).toThrow(
+      "forbidden builtin",
+    );
     expect(() => validateProductionSpecifier("./b.mjs", "src/process_v1/a.mjs")).not.toThrow();
     expect(() => validateProductionSpecifier("left-pad", "src/process_v1/a.mjs")).toThrow(
       "forbidden bare package",
@@ -212,6 +221,59 @@ describe("source-derived topology", () => {
     )).toThrow("CommonJS require");
   });
 
+  test("rejects aliased createRequire at syntax and specifier admission", () => {
+    const source = [
+      'import { createRequire as load } from "node:module";',
+      "const requireFromHere = load(import.meta.url);",
+    ].join("\n");
+    expect(scanModuleSpecifiers(source)).toEqual(["node:module"]);
+    expect(() => validateProductionSpecifier(
+      scanModuleSpecifiers(source)[0],
+      "src/process_v1/a.mjs",
+    )).toThrow("forbidden builtin");
+    expect(() => validateModuleImportSyntax(source, "src/process_v1/a.mjs")).toThrow(
+      "createRequire",
+    );
+  });
+
+  test("rejects ambient builtin and generated-code loader escapes", () => {
+    for (const source of [
+      'process.getBuiltinModule("fs")',
+      'globalThis.process["getBuiltinModule"]("fs")',
+    ]) {
+      expect(() => validateModuleImportSyntax(source, "src/process_v1/a.mjs")).toThrow(
+        "getBuiltinModule",
+      );
+    }
+    for (const source of [
+      'eval("import(\\"node:fs\\")")',
+      'globalThis.eval("import(\\"node:fs\\")")',
+      'const evaluate = eval; evaluate("import(\\"node:fs\\")")',
+      'Function("return import(\\"node:fs\\")")()',
+      'new globalThis.Function("return import(\\"node:fs\\")")()',
+      'const Constructor = Function; Constructor("return import(\\"node:fs\\")")()',
+    ]) {
+      expect(() => validateModuleImportSyntax(source, "src/process_v1/a.mjs")).toThrow(
+        "eval or Function-generated code",
+      );
+    }
+  });
+
+  test("rejects Bun loader and spawn API acquisition", () => {
+    for (const source of [
+      'Bun.resolve("left-pad", import.meta.dir)',
+      'const plugin = Bun["plugin"]',
+      'const spawn = Bun.spawn',
+      'const { spawn: run } = Bun; run(["bun", "payload.mjs"])',
+      'const runtime = Bun; runtime.spawn(["bun", "payload.mjs"])',
+      'Bun?.spawnSync(["bun", "run", "payload.mjs"])',
+    ]) {
+      expect(() => validateModuleImportSyntax(source, "src/process_v1/a.mjs")).toThrow(
+        "Bun loader or spawn API",
+      );
+    }
+  });
+
   test("accepts and derives comment-separated literal imports after a hashbang", () => {
     const source = [
       "#!/usr/bin/env bun",
@@ -239,6 +301,12 @@ test("the current World tree is exactly the admitted thin-host surface", async (
     "encodeEffectResult",
   ]);
   expect(report.runtimeDependencyCount).toBe(0);
+  expect(report.builtinModules).toEqual([
+    "node:crypto",
+    "node:fs",
+    "node:path",
+    "node:url",
+  ]);
   expect(report.repositoryEvidence).toEqual([
     ".learnings.jsonl",
     ".ledger/learnings/events.jsonl",
