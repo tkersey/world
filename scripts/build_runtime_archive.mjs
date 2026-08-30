@@ -6,6 +6,7 @@ import {
   mkdir,
   open,
   readdir,
+  realpath,
   rename,
   rm,
 } from "node:fs/promises";
@@ -67,6 +68,39 @@ export function isSafeRelativePath(path) {
   if (path.startsWith("/") || path.endsWith("/") || path.includes("//")) return false;
   const components = path.split("/");
   return components.every((component) => component !== "" && component !== "." && component !== "..");
+}
+
+export async function canonicalFuturePathIdentity(path) {
+  assert(typeof path === "string" && path.length > 0, "custody path must be nonempty");
+  let ancestor = resolve(path);
+  const suffix = [];
+  for (;;) {
+    try {
+      await lstat(ancestor);
+      break;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = dirname(ancestor);
+      assert.notEqual(parent, ancestor, `custody path has no existing ancestor: ${path}`);
+      suffix.unshift(basename(ancestor));
+      ancestor = parent;
+    }
+  }
+  const physical = join(await realpath(ancestor), ...suffix);
+  return physical.replaceAll("\\", "/").normalize("NFC").toLowerCase();
+}
+
+export async function assertPhysicalPathCustody(paths, protectedPaths = [], label = "custody") {
+  const seen = new Map();
+  for (const entry of paths) {
+    const identity = await canonicalFuturePathIdentity(entry.path);
+    assert(!seen.has(identity), `${label} paths must be physically distinct: ${entry.label} aliases ${seen.get(identity)}`);
+    seen.set(identity, entry.label);
+  }
+  for (const entry of protectedPaths) {
+    const identity = await canonicalFuturePathIdentity(entry.path);
+    assert(!seen.has(identity), `${label} path must be physically distinct from protected input: ${seen.get(identity)} aliases ${entry.label}`);
+  }
 }
 
 function compareUtf8(left, right) {
@@ -270,6 +304,10 @@ function commitTreeEntries(root, commit) {
   return entries;
 }
 
+export function trackedRepositoryPaths(root = repositoryRoot, commit = exactGitHeadCommit(root)) {
+  return [...commitTreeEntries(root, commit).keys()].sort(compareUtf8);
+}
+
 function indexEntries(root) {
   const records = parseZeroRecords(Buffer.from(gitOutput(root, ["ls-files", "--stage", "-z"], {
     maxBuffer: 16 * 1024 * 1024,
@@ -471,12 +509,20 @@ export async function buildRuntimeArchive({
   root = repositoryRoot,
   outputPath = join(root, "dist", RUNTIME_ARCHIVE_NAME),
   checksumPath = `${outputPath}.sha256`,
-  commit = null,
 } = {}) {
-  assert.notEqual(
-    resolve(outputPath),
-    resolve(checksumPath),
-    "runtime archive and checksum paths must be distinct",
+  const archiveBasename = basename(outputPath);
+  assert(/^[A-Za-z0-9._-]+$/.test(archiveBasename), "runtime archive basename cannot be represented by the checksum sidecar grammar");
+  const sourcePaths = await runtimeSourcePaths(root);
+  await assertPhysicalPathCustody(
+    [
+      { label: "runtime archive", path: outputPath },
+      { label: "runtime checksum", path: checksumPath },
+    ],
+    [
+      ...sourcePaths.map((path) => ({ label: path, path: join(root, ...path.split("/")) })),
+      { label: "conformance/boundary.lock.json", path: join(root, "conformance", "boundary.lock.json") },
+    ],
+    "runtime build custody",
   );
   const boundary = await snapshotBoundaryLock(root);
   const lock = boundary.lock;
@@ -485,7 +531,7 @@ export async function buildRuntimeArchive({
   entries.set("package.json", runtimePackageJson(entries.get("package.json")));
   const retainedSnapshots = new Map(sourceEntries);
   retainedSnapshots.set("conformance/boundary.lock.json", boundary.bytes);
-  const resolvedCommit = commit ?? bindRetainedSnapshotsToGitHead(root, retainedSnapshots);
+  const resolvedCommit = bindRetainedSnapshotsToGitHead(root, retainedSnapshots);
   const manifest = createRuntimeManifest({ lock, commit: resolvedCommit, entries });
   entries.set("runtime-manifest.json", Buffer.from(stableJson(manifest), "utf8"));
   entries.set("checksums.sha256", checksumsBytes(entries));
@@ -495,7 +541,7 @@ export async function buildRuntimeArchive({
   assert(archive.length <= RUNTIME_ARCHIVE_MAX_BYTES, "runtime archive exceeds its compressed size limit");
   const digest = sha256(archive);
   await atomicWrite(outputPath, archive, 0o644);
-  await atomicWrite(checksumPath, Buffer.from(`${digest}  ${basename(outputPath)}\n`, "utf8"), 0o644);
+  await atomicWrite(checksumPath, Buffer.from(`${digest}  ${archiveBasename}\n`, "utf8"), 0o644);
   return Object.freeze({
     format: RUNTIME_FORMAT,
     archivePath: outputPath,

@@ -5,9 +5,11 @@ import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { assertPhysicalPathCustody } from "./build_runtime_archive.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MAXIMUM_DOWNLOAD_BYTES = 64 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 30_000;
 
 export const EXPECTED_BOUNDARY_LOCK = Object.freeze({
   format: "world-boundary-process-lock/v1",
@@ -62,7 +64,8 @@ async function readRegular(path, maximum, label) {
 }
 
 async function fetchBounded(url, maximum, label) {
-  const response = await fetch(url, { redirect: "follow", headers: { accept: "application/octet-stream" } });
+  const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
+  const response = await fetch(url, { redirect: "follow", headers: { accept: "application/octet-stream" }, signal });
   assert(response.ok, `${label} download failed with HTTP ${response.status}`);
   const declared = response.headers.get("content-length");
   if (declared !== null) {
@@ -142,11 +145,22 @@ export async function acquireBoundaryProcessAssets({
 } = {}) {
   assert(mode === "local" || mode === "release", "Boundary acquisition mode must be local or release");
   assert(isAbsolute(outputPath), "Boundary kernel output path must be absolute");
+  if (mode === "release") assert(kernelPath === null && sourceRoot === null, "release acquisition forbids local Boundary overrides");
+  const resolvedSourceRoot = sourceRoot === null ? null : resolve(sourceRoot);
+  const resolvedKernel = mode === "local" && (kernelPath !== null || sourceRoot !== null)
+    ? resolveLocalKernel(resolvedSourceRoot, kernelPath === null ? null : resolve(kernelPath))
+    : null;
+  await assertPhysicalPathCustody([
+    { label: "Boundary lock", path: lockPath },
+    { label: "Boundary kernel output", path: outputPath },
+    ...(!checkOnly && resolvedKernel !== null
+      ? [{ label: "local Boundary kernel input", path: resolvedKernel }]
+      : []),
+  ], [], "Boundary acquisition custody");
   const lock = await readExactBoundaryLock(lockPath);
   let bytes;
   let provenance;
   if (mode === "release") {
-    assert(kernelPath === null && sourceRoot === null, "release acquisition forbids local Boundary overrides");
     const [kernel, sourceArchive] = await Promise.all([
       fetchBounded(lock.kernelReleaseUrl, MAXIMUM_DOWNLOAD_BYTES, "Boundary Process kernel"),
       fetchBounded(lock.sourceArchiveUrl, MAXIMUM_DOWNLOAD_BYTES, "Boundary source archive"),
@@ -155,8 +169,7 @@ export async function acquireBoundaryProcessAssets({
     bytes = admitKernel(kernel, lock);
     provenance = "public-release";
   } else if (kernelPath !== null || sourceRoot !== null) {
-    if (sourceRoot !== null) exactBoundarySource(resolve(sourceRoot), lock);
-    const resolvedKernel = resolveLocalKernel(sourceRoot === null ? null : resolve(sourceRoot), kernelPath === null ? null : resolve(kernelPath));
+    if (resolvedSourceRoot !== null) exactBoundarySource(resolvedSourceRoot, lock);
     bytes = admitKernel(await readRegular(resolvedKernel, MAXIMUM_DOWNLOAD_BYTES, "local Boundary Process kernel"), lock);
     provenance = classifyLocalBoundaryAssetProvenance(sourceRoot);
   } else {

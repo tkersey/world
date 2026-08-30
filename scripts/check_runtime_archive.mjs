@@ -192,6 +192,7 @@ export function parseCanonicalTar(tar, { root = RUNTIME_ROOT } = {}) {
     priorPath = path;
     assert.equal(header[156], 0x30, `runtime USTAR entry is not a regular file: ${path}`);
     const mode = octalField(header.subarray(100, 108), "USTAR mode");
+    assert.equal(mode, runtimeMode(path), `runtime USTAR mode differs: ${path}`);
     const size = octalField(header.subarray(124, 136), "USTAR size");
     assert(size <= RUNTIME_ENTRY_MAX_BYTES, `runtime USTAR entry exceeds its size limit: ${path}`);
     assert(header.equals(canonicalTarHeader(archivePath, size, mode)), `runtime USTAR header is not canonical: ${path}`);
@@ -232,17 +233,16 @@ function exactObject(value, expected, label) {
 
 function validatePackage(bytes) {
   const value = JSON.parse(bytes.toString("utf8"));
-  assert.equal(value.name, "@tkersey/world", "runtime package name differs");
-  assert.equal(value.version, WORLD_VERSION, "runtime package version differs");
-  assert.equal(value.type, "module", "runtime package type differs");
-  assert.equal(value.private, false, "runtime package must be public");
-  assert.equal(value.license, "MIT", "runtime package license differs");
-  assert.deepEqual(value.exports, { "./process-v1": "./src/process_v1/index.mjs" }, "runtime package exports differ");
-  assert.deepEqual(value.bin, { world: "./bin/world.mjs" }, "runtime package executable differs");
-  assert.deepEqual(value.engines, { bun: ">=1.4.0" }, "runtime package engine floor differs");
-  for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-    assert(value[field] === undefined || Object.keys(value[field]).length === 0, `runtime package ${field} must be empty`);
-  }
+  exactObject(value, {
+    name: "@tkersey/world",
+    version: WORLD_VERSION,
+    type: "module",
+    private: false,
+    license: "MIT",
+    exports: { "./process-v1": "./src/process_v1/index.mjs" },
+    bin: { world: "./bin/world.mjs" },
+    engines: { bun: ">=1.4.0" },
+  }, "runtime package");
   return value;
 }
 

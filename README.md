@@ -45,7 +45,9 @@ WorldProcessHostError
 import { readFile, writeFile } from "node:fs/promises";
 import { admitProcessKernel } from "@tkersey/world/process-v1";
 
-const kernel = await readFile("boundary-process-kernel-v1.wasm");
+const processModuleUrl = import.meta.resolve("@tkersey/world/process-v1");
+const kernelUrl = new URL("../../boundary-process-kernel-v1.wasm", processModuleUrl);
+const kernel = await readFile(kernelUrl);
 const image = await readFile("system.bpi1");
 const initialArgs = await readFile("initial.bin");
 

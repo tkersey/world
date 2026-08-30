@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -48,7 +48,6 @@ beforeAll(async () => {
     root: repositoryRoot,
     outputPath: archivePath,
     checksumPath,
-    commit: "f".repeat(40),
   });
   archive = await readFile(archivePath);
   tar = parseCanonicalGzip(archive);
@@ -71,7 +70,6 @@ describe("World Process Host runtime archive", () => {
       root: repositoryRoot,
       outputPath: second,
       checksumPath: `${second}.sha256`,
-      commit: "f".repeat(40),
     });
     expect(await readFile(second)).toEqual(archive);
     expect(parseChecksumSidecar(await readFile(checksumPath))).toBe(sha256(archive));
@@ -94,9 +92,33 @@ describe("World Process Host runtime archive", () => {
       root: repositoryRoot,
       outputPath: samePath,
       checksumPath: join(temporaryRoot, ".", "aliased-runtime-output"),
-      commit: "f".repeat(40),
-    })).rejects.toThrow(/archive and checksum paths must be distinct/);
+    })).rejects.toThrow(/physically distinct/);
     await expect(readFile(samePath)).rejects.toThrow();
+  });
+
+  test("rejects portable case collisions, symlink-parent source aliases, and invalid sidecar names before writing", async () => {
+    const caseRoot = join(temporaryRoot, "portable-case");
+    await expect(buildRuntimeArchive({
+      root: repositoryRoot,
+      outputPath: join(caseRoot, "Runtime.tar.gz"),
+      checksumPath: join(caseRoot, "runtime.tar.gz"),
+    })).rejects.toThrow(/physically distinct/);
+
+    const aliasRoot = join(temporaryRoot, "repository-alias");
+    await symlink(repositoryRoot, aliasRoot);
+    await expect(buildRuntimeArchive({
+      root: repositoryRoot,
+      outputPath: join(aliasRoot, "README.md"),
+      checksumPath: join(temporaryRoot, "safe-checksum"),
+    })).rejects.toThrow(/protected input/);
+
+    const invalid = join(temporaryRoot, "runtime archive.tar.gz");
+    await expect(buildRuntimeArchive({
+      root: repositoryRoot,
+      outputPath: invalid,
+      checksumPath: `${invalid}.sha256`,
+    })).rejects.toThrow(/sidecar grammar/);
+    await expect(readFile(invalid)).rejects.toThrow();
   });
 
   test("authenticates, manually extracts, and runs the embedded verifier with an empty PATH", async () => {
@@ -232,8 +254,27 @@ describe("World Process Host runtime archive", () => {
       { ...distinct, outputPath: join(base, DEFAULT_CONFORMANCE_RECEIPT) },
     ];
     for (const paths of cases) {
-      await expect(writeReleaseReceipt({ root: repositoryRoot, ...paths })).rejects.toThrow(/must be pairwise distinct/);
+      await expect(writeReleaseReceipt({ root: repositoryRoot, ...paths })).rejects.toThrow(/physically distinct/);
     }
+  });
+
+  test("rejects release custody case and tracked-source aliases before proof", async () => {
+    const base = join(temporaryRoot, "release-physical-aliases");
+    await expect(writeReleaseReceipt({
+      root: repositoryRoot,
+      archivePath: join(base, "Runtime.tar.gz"),
+      checksumPath: join(base, "runtime.tar.gz"),
+      outputPath: join(base, "receipt.json"),
+    })).rejects.toThrow(/physically distinct/);
+
+    const aliasRoot = join(temporaryRoot, "release-repository-alias");
+    await symlink(repositoryRoot, aliasRoot);
+    await expect(writeReleaseReceipt({
+      root: repositoryRoot,
+      archivePath: join(base, "archive.tar.gz"),
+      checksumPath: join(base, "archive.tar.gz.sha256"),
+      outputPath: join(aliasRoot, "README.md"),
+    })).rejects.toThrow(/protected input/);
   });
 
   test("has no release-claim route for fabricated, missing, or malformed conformance receipt files", async () => {

@@ -371,7 +371,6 @@ let host = await admitProcessKernel(kernelBytes, { expectedSha256: boundaryLock.
 const equal = (left, right) => Buffer.from(left).equals(Buffer.from(right));
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const bytesAt = async (root, relativePath) => new Uint8Array(await readFile(join(root, ...relativePath.split("/"))));
-const outcomeRequestBytes = (outcome) => outcome.request?.bytes ?? outcome.request;
 const invocation = async (vector) => {
   const image = await bytesAt(boundaryRoot, vector.imagePath);
   const instanceBytes = await bytesAt(boundaryRoot, vector.instance.path);
@@ -439,13 +438,15 @@ for (const expectedEntry of transcriptLock.transcript.expectedOutcomes) {
       throw new Error("repository_repair_boundary_index:" + requestBoundary);
     }
     const expectedRequest = await bytesAt(transcriptRoot, requestEntry.path);
-    if (!equal(outcomeRequestBytes(actual), expectedRequest)) throw new Error("repository_repair_request_mismatch:" + requestBoundary);
+    if (!(actual.request instanceof Uint8Array)) throw new Error("repository_repair_request_shape:" + requestBoundary);
+    if (!equal(actual.request, expectedRequest)) throw new Error("repository_repair_request_mismatch:" + requestBoundary);
     let reconstructionHost = host;
     if (requestBoundary === transcriptLock.transcript.transferAfterBoundary) {
       reconstructionHost = await admitProcessKernel(kernelBytes, { expectedSha256: boundaryLock.boundary.kernelSha256 });
     }
     const reconstructed = await reconstructionHost.advance({ image, instance });
-    if (!equal(reconstructed.bytes, actual.bytes) || !equal(outcomeRequestBytes(reconstructed), expectedRequest)) {
+    if (!(reconstructed.request instanceof Uint8Array)) throw new Error("repository_repair_reconstruction_request_shape:" + requestBoundary);
+    if (!equal(reconstructed.bytes, actual.bytes) || !equal(reconstructed.request, expectedRequest)) {
       throw new Error("repository_repair_reconstruction_mismatch:" + requestBoundary);
     }
     if (requestBoundary === transcriptLock.transcript.transferAfterBoundary) {

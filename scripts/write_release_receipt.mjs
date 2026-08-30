@@ -7,14 +7,18 @@ import { pathToFileURL } from "node:url";
 import {
   RUNTIME_ARCHIVE_NAME,
   WORLD_VERSION,
+  assertPhysicalPathCustody,
   assertTrackedRepositoryMatchesCommit,
+  exactGitHeadCommit,
   repositoryRoot,
+  trackedRepositoryPaths,
 } from "./build_runtime_archive.mjs";
 import {
   checkRuntimeArchive,
   runtimeArchiveContract,
 } from "./check_runtime_archive.mjs";
 import { runFullCleanRoomConformance } from "./run_clean_room_conformance.mjs";
+import { checkProcessSurface } from "./check_process_surface.mjs";
 
 export const RELEASE_RECEIPT_FORMAT = "world-process-host-release-receipt/v1";
 export const DEFAULT_RELEASE_RECEIPT = `world-v${WORLD_VERSION}-process-host-release-receipt.json`;
@@ -44,12 +48,22 @@ export async function writeReleaseReceipt({
   outputPath = join(root, "dist", DEFAULT_RELEASE_RECEIPT),
 } = {}) {
   const conformanceReceiptPath = join(dirname(outputPath), DEFAULT_CONFORMANCE_RECEIPT);
-  const custodyPaths = [archivePath, checksumPath, outputPath, conformanceReceiptPath].map((path) => resolve(path));
-  assert.equal(
-    new Set(custodyPaths).size,
-    custodyPaths.length,
-    "archive, checksum, release receipt, and conformance receipt paths must be pairwise distinct",
+  const custodyCommit = exactGitHeadCommit(root);
+  await assertPhysicalPathCustody(
+    [
+      { label: "runtime archive", path: archivePath },
+      { label: "runtime checksum", path: checksumPath },
+      { label: "release receipt", path: outputPath },
+      { label: "conformance receipt", path: conformanceReceiptPath },
+    ],
+    trackedRepositoryPaths(root, custodyCommit).map((path) => ({
+      label: path,
+      path: join(root, ...path.split("/")),
+    })),
+    "release receipt custody",
   );
+  await checkProcessSurface(root);
+  assert.equal(exactGitHeadCommit(root), custodyCommit, "Git HEAD changed during release surface admission");
   const admission = await checkRuntimeArchive({
     root,
     archivePath,

@@ -1,19 +1,26 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import {
   RUNTIME_ARCHIVE_NAME,
   assertTrackedRepositoryMatchesCommit,
   bindRetainedSnapshotsToGitHead,
   buildRuntimeArchive,
+  canonicalGzip,
+  checksumsBytes,
+  createCanonicalTar,
   repositoryRoot,
+  sha256,
   snapshotRuntimeSources,
+  stableJson,
 } from "../scripts/build_runtime_archive.mjs";
-import { checkRuntimeArchive } from "../scripts/check_runtime_archive.mjs";
+import { checkRuntimeArchive, parseCanonicalGzip, parseCanonicalTar } from "../scripts/check_runtime_archive.mjs";
 import { writeReleaseReceipt } from "../scripts/write_release_receipt.mjs";
+
+setDefaultTimeout(30_000);
 
 let temporaryRoot;
 
@@ -25,16 +32,26 @@ afterAll(async () => {
   if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true });
 });
 
-async function buildArchive(name, commit) {
+async function buildArchive(name) {
   const archivePath = join(temporaryRoot, name, RUNTIME_ARCHIVE_NAME);
   const checksumPath = `${archivePath}.sha256`;
   await buildRuntimeArchive({
     root: repositoryRoot,
     outputPath: archivePath,
     checksumPath,
-    ...(commit === undefined ? {} : { commit }),
   });
   return { archivePath, checksumPath };
+}
+
+async function forgeArchiveSourceCommit(paths, commit) {
+  const parsed = parseCanonicalTar(parseCanonicalGzip(await readFile(paths.archivePath)));
+  const entries = new Map(parsed.map(({ path, bytes }) => [path, Buffer.from(bytes)]));
+  const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
+  entries.set("runtime-manifest.json", Buffer.from(stableJson({ ...manifest, sourceCommit: commit }), "utf8"));
+  entries.set("checksums.sha256", checksumsBytes(entries));
+  const archive = canonicalGzip(createCanonicalTar(entries));
+  await writeFile(paths.archivePath, archive);
+  await writeFile(paths.checksumPath, `${sha256(archive)}  ${basename(paths.archivePath)}\n`);
 }
 
 function git(root, arguments_) {
@@ -44,8 +61,8 @@ function git(root, arguments_) {
 async function cloneRepository(name) {
   const root = join(temporaryRoot, name);
   execFileSync("git", ["clone", "--quiet", "--no-local", repositoryRoot, root], { encoding: "utf8" });
-  const head = git(repositoryRoot, ["rev-parse", "HEAD"]);
-  execFileSync("git", ["checkout", "--quiet", "--detach", head], { cwd: root, encoding: "utf8" });
+  const head = git(root, ["rev-parse", "HEAD"]);
+  git(root, ["-c", "advice.detachedHead=false", "checkout", "--quiet", "--detach", head]);
   return root;
 }
 
@@ -68,7 +85,8 @@ describe("runtime archive source provenance", () => {
 
   test("rejects forged source labels during rebuild verification", async () => {
     for (const commit of ["0".repeat(40), "f".repeat(40)]) {
-      const paths = await buildArchive(`forged-${commit[0]}`, commit);
+      const paths = await buildArchive(`forged-${commit[0]}`);
+      await forgeArchiveSourceCommit(paths, commit);
       await expect(checkRuntimeArchive({
         root: repositoryRoot,
         ...paths,
