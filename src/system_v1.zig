@@ -286,6 +286,70 @@ fn PlanFor(
         }
         break :blk result;
     };
+    const residual_authority_owners = comptime blk: {
+        var result: [totalEffects(components_value)]usize = undefined;
+        for (0..components_value.count) |component_index| {
+            const Program = components_value.items[component_index];
+            for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
+                const source_id = effectOffset(components_value, component_index) +
+                    site_ordinal;
+                result[source_id] = source_id;
+                switch (dispositions[source_id]) {
+                    .inactive, .handler => continue,
+                    .morphism, .external => {},
+                }
+                const Effective = effectiveResidualSite(
+                    morphisms_value,
+                    Program,
+                    site_ordinal,
+                    Site,
+                );
+                var found = false;
+                for (0..component_index + 1) |prior_component_index| {
+                    const PriorProgram = components_value.items[prior_component_index];
+                    for (body(PriorProgram).effect_sites, 0..) |PriorSite, prior_site_ordinal| {
+                        const prior_source_id = effectOffset(
+                            components_value,
+                            prior_component_index,
+                        ) + prior_site_ordinal;
+                        if (prior_source_id >= source_id) break;
+                        switch (dispositions[prior_source_id]) {
+                            .inactive, .handler => continue,
+                            .morphism, .external => {},
+                        }
+                        const PriorEffective = effectiveResidualSite(
+                            morphisms_value,
+                            PriorProgram,
+                            prior_site_ordinal,
+                            PriorSite,
+                        );
+                        if (!std.mem.eql(
+                            u8,
+                            PriorEffective.semantic_identity,
+                            Effective.semantic_identity,
+                        )) continue;
+                        if (!siteContractsEqual(PriorEffective, Effective)) {
+                            @compileError(
+                                "World system residual semantic identity has conflicting Payload or Resume schemas",
+                            );
+                        }
+                        if (PriorEffective.Payload != Effective.Payload or
+                            PriorEffective.Resume != Effective.Resume)
+                        {
+                            @compileError(
+                                "World system cannot merge one residual semantic identity across distinct authoring Payload or Resume types",
+                            );
+                        }
+                        result[source_id] = result[prior_source_id];
+                        found = true;
+                        break;
+                    }
+                    if (found) break;
+                }
+            }
+        }
+        break :blk result;
+    };
     const failure_maps = comptime blk: {
         var result: [components_value.count]type = undefined;
         for (0..components_value.count) |component_index| {
@@ -381,6 +445,7 @@ fn PlanFor(
         pub const morphisms = morphisms_value;
         pub const externals = externals_value;
         pub const site_dispositions = dispositions;
+        pub const residual_authority_owner_sites = residual_authority_owners;
         pub const failure_map_types = failure_maps;
         pub const failure_quotient_projections = failure_quotients;
         pub const failure_selector_owner_components = failure_selector_owners;
@@ -400,6 +465,28 @@ fn PlanFor(
             return site_dispositions[
                 effectOffset(components, component_index) + site_ordinal
             ];
+        }
+
+        pub fn linkedEffectSiteId(
+            comptime component_index: usize,
+            comptime site_ordinal: usize,
+        ) u32 {
+            return @intCast(residual_authority_owner_sites[
+                effectOffset(components, component_index) + site_ordinal
+            ]);
+        }
+
+        pub fn ownsResidualAuthority(
+            comptime component_index: usize,
+            comptime site_ordinal: usize,
+        ) bool {
+            const source_id = effectOffset(components, component_index) +
+                site_ordinal;
+            return switch (siteDisposition(component_index, site_ordinal)) {
+                .morphism, .external => residual_authority_owner_sites[source_id] ==
+                    source_id,
+                .inactive, .handler => false,
+            };
         }
 
         pub fn failureLayout(
@@ -532,6 +619,11 @@ fn validateSystem(comptime Plan: type) void {
     validateExternalDeclarations(components, externals);
     inline for (handlers) |Handler| {
         requireHandler(Handler);
+        if (!components.contains(Handler.Consumer)) {
+            @compileError(
+                "World system contains a handler consumer unreachable from root",
+            );
+        }
         if (!handlerActive(components, Handler)) continue;
         validateHandler(Handler, RootBody.Failure);
         if (!components.contains(Handler.Provider)) {
@@ -540,6 +632,11 @@ fn validateSystem(comptime Plan: type) void {
     }
     inline for (morphisms) |Morphism| {
         requireMorphism(Morphism);
+        if (!components.contains(Morphism.Consumer)) {
+            @compileError(
+                "World system contains a morphism consumer unreachable from root",
+            );
+        }
         if (!morphismActive(components, Morphism)) continue;
         validateMorphism(Morphism);
         if (externalTargetCount(externals, Morphism.Target) != 1) {
@@ -2797,7 +2894,7 @@ fn remapBlockTerminator(
         .none => {},
     }
     return remapTerminator(
-        components,
+        Plan,
         schemas,
         component_index,
         source_block.function_id,
@@ -3205,12 +3302,13 @@ fn remapInstruction(
 }
 
 fn remapTerminator(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime schemas: anytype,
     comptime component_index: usize,
     comptime source_function: cir.FunctionId,
     comptime source: cir.Terminator,
 ) cir.Terminator {
+    const components = Plan.components;
     const value_offset = valueOffset(components, component_index);
     return switch (source) {
         .jump => |edge| .{ .jump = remapEdge(
@@ -3232,7 +3330,7 @@ fn remapTerminator(
             ),
         } },
         .@"suspend" => |suspension| .{ .@"suspend" = remapSuspension(
-            components,
+            Plan,
             schemas,
             component_index,
             suspension,
@@ -3303,11 +3401,12 @@ fn remapEdgeArguments(
 }
 
 fn remapSuspension(
-    comptime components: anytype,
+    comptime Plan: type,
     comptime schemas: anytype,
     comptime component_index: usize,
     comptime source: cir.Suspension,
 ) cir.Suspension {
+    const components = Plan.components;
     const Static = struct {
         const request_values = remapValueIds(
             source.request_values,
@@ -3317,7 +3416,7 @@ fn remapSuspension(
     return .{
         .kind = source.kind,
         .site_id = if (source.site_id) |id|
-            @intCast(effectOffset(components, component_index) + id)
+            Plan.linkedEffectSiteId(component_index, id)
         else
             null,
         .request_values = &Static.request_values,
@@ -3436,7 +3535,9 @@ fn activeResidualCount(comptime Plan: type) usize {
     inline for (0..Plan.components.count) |component_index| {
         inline for (body(Plan.components.items[component_index]).effect_sites, 0..) |_, site_ordinal| {
             switch (Plan.siteDisposition(component_index, site_ordinal)) {
-                .morphism, .external => result += 1,
+                .morphism, .external => result += @intFromBool(
+                    Plan.ownsResidualAuthority(component_index, site_ordinal),
+                ),
                 .inactive, .handler => {},
             }
         }
@@ -3451,6 +3552,9 @@ fn residualEffects(comptime Plan: type) ResidualCatalog(activeResidualCount(Plan
     inline for (0..components.count) |component_index| {
         const Program = components.items[component_index];
         inline for (body(Program).effect_sites, 0..) |Site, site_ordinal| {
+            if (!Plan.ownsResidualAuthority(component_index, site_ordinal)) {
+                continue;
+            }
             switch (Plan.siteDisposition(component_index, site_ordinal)) {
                 .inactive, .handler => {},
                 .morphism => result.add(morphismTargetFor(
@@ -3478,4 +3582,16 @@ fn morphismTargetFor(
         }
     }
     unreachable;
+}
+
+fn effectiveResidualSite(
+    comptime morphisms: anytype,
+    comptime Program: type,
+    comptime site_ordinal: usize,
+    comptime Site: type,
+) type {
+    return if (morphismCount(morphisms, Program, site_ordinal) == 1)
+        morphismTargetFor(morphisms, Program, site_ordinal)
+    else
+        Site;
 }

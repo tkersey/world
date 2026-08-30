@@ -1,10 +1,16 @@
 const boundary = @import("boundary");
 const world = @import("world");
 
-const SourceA = boundary.effect.site(0, "duplicate.source-a.v1", u32, u32);
-const SourceB = boundary.effect.site(1, "duplicate.source-b.v1", u32, u64);
-const TargetA = boundary.effect.site(0, "duplicate.target.v1", u32, u32);
-const TargetB = boundary.effect.site(1, "duplicate.target.v1", u32, u64);
+const ResumeA = struct { value: u32 };
+const ResumeB = struct { value: u32 };
+const SourceA = boundary.effect.site(0, "nominal.source-a.v1", u32, ResumeA);
+const SourceB = boundary.effect.site(1, "nominal.source-b.v1", u32, ResumeB);
+const TargetA = boundary.effect.site(0, "nominal.target.v1", u32, ResumeA);
+const TargetB = boundary.effect.site(1, "nominal.target.v1", u32, ResumeB);
+const resume_and_input = [_]boundary.ir.EdgeArgument{
+    .@"resume",
+    .{ .value = 0 },
+};
 const resume_arguments = [_]boundary.ir.EdgeArgument{.@"resume"};
 const blocks = [_]boundary.ir.Block{
     .{
@@ -14,48 +20,49 @@ const blocks = [_]boundary.ir.Block{
             .kind = .effect,
             .site_id = 0,
             .request_values = &.{0},
-            .continuation = .{ .target = 1, .arguments = &resume_arguments },
-            .resume_type = .{ .scalar = .u32 },
+            .continuation = .{ .target = 1, .arguments = &resume_and_input },
+            .resume_type = .{ .schema = 0 },
         } },
     },
     .{
         .id = 1,
-        .parameters = &.{1},
+        .parameters = &.{ 1, 2 },
         .terminator = .{ .@"suspend" = .{
             .kind = .effect,
             .site_id = 1,
-            .request_values = &.{1},
+            .request_values = &.{2},
             .continuation = .{ .target = 2, .arguments = &resume_arguments },
-            .resume_type = .{ .scalar = .u64 },
+            .resume_type = .{ .schema = 1 },
         } },
     },
     .{
         .id = 2,
-        .parameters = &.{2},
-        .terminator = .{ .return_value = 2 },
+        .parameters = &.{3},
+        .terminator = .{ .return_value = 3 },
     },
 };
 const Body = struct {
     pub const InitialArgs = u32;
-    pub const Result = u64;
+    pub const Result = ResumeB;
     pub const Failure = enum { rejected };
     pub const effect_sites = .{ SourceA, SourceB };
-    pub const schema_types = .{};
+    pub const schema_types = .{ ResumeA, ResumeB };
     pub const control_ir: boundary.ir.Program = .{
-        .label = "duplicate-residual-identity",
+        .label = "nominal-residual-merge",
         .value_types = &.{
             .{ .scalar = .u32 },
+            .{ .schema = 0 },
             .{ .scalar = .u32 },
-            .{ .scalar = .u64 },
+            .{ .schema = 1 },
         },
         .blocks = &blocks,
         .entry = 0,
-        .result_type = .{ .scalar = .u64 },
+        .result_type = .{ .schema = 1 },
     };
 };
-const Program = boundary.program("duplicate-residual-identity", Body);
+const Program = boundary.program("nominal-residual-merge", Body);
 const Invalid = world.system(.{
-    .name = "duplicate-residual-identity",
+    .name = "nominal-residual-merge",
     .root = Program,
     .handlers = .{},
     .morphisms = .{
@@ -70,7 +77,7 @@ const Invalid = world.system(.{
             .target = TargetB,
         }),
     },
-    .external = .{ TargetA, TargetB },
+    .external = .{TargetA},
 });
 
 comptime {

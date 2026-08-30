@@ -676,6 +676,18 @@ fn assertResidualEntries(comptime spec: anytype, comptime System: type) !void {
     try std.testing.expectEqual(cursor, System.residual_effects.count);
 }
 
+fn assertResidualIdentityUniqueness(comptime System: type) !void {
+    inline for (System.residual_effects.items, 0..) |Site, index| {
+        inline for (System.residual_effects.items[0..index]) |Prior| {
+            try std.testing.expect(!std.mem.eql(
+                u8,
+                Site.semantic_identity,
+                Prior.semantic_identity,
+            ));
+        }
+    }
+}
+
 fn failureSiteBlockCount(comptime Map: type, comptime terminator: boundary.ir.Terminator) usize {
     if (Map == void) return 0;
     return switch (terminator) {
@@ -1960,6 +1972,7 @@ fn assertTopology(comptime spec: anytype, comptime System: type) !void {
     );
     try assertDispositionClosure(spec);
     try assertResidualEntries(spec, System);
+    try assertResidualIdentityUniqueness(System);
     try assertElementMappings(spec, System);
     try assertDirectFailureMappings(spec, System);
     try assertSharedFailureMappings(spec, System);
@@ -1971,6 +1984,24 @@ test "source-derived topology closes void wrapper and unreachable syntax" {
 
 test "source-derived topology remaps provider effect sites" {
     try assertTopology(fixtures.GenericSpec, fixtures.System);
+}
+
+test "source-derived topology quotients repeated residual authority" {
+    const System = fixtures.DuplicateMorphSystem;
+    const Linked = System.Program.component();
+    try std.testing.expectEqual(@as(usize, 1), System.residual_effects.count);
+    try std.testing.expectEqual(
+        Linked.control_ir.blocks[0].terminator.@"suspend".site_id,
+        Linked.control_ir.blocks[1].terminator.@"suspend".site_id,
+    );
+    try assertResidualIdentityUniqueness(System);
+    const Image = System.Program.image();
+    var workspace: boundary.image.ValidationWorkspace = .{};
+    const validated = try boundary.image.validateImageView(
+        &Image.bytes,
+        &workspace,
+    );
+    try std.testing.expectEqual(@as(u32, 1), validated.catalogs.effect_count);
 }
 
 test "source-derived topology maps provider instruction failures" {

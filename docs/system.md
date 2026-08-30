@@ -40,9 +40,11 @@ morphism-target authority and, when unique, as a source-occurrence disposition.
 The plan materializes
 every reachable source-occurrence disposition, each effective Failure map and
 its quotient projection, each per-site Failure-adapter kind, every shared
-direct-adapter owner, and every dynamic-selector owner before lowering.
-`System.residual_effects.items` is sized to the exact active residual count, so
-inactive declarations do not survive as public capacity or undefined slots.
+direct-adapter owner, every dynamic-selector owner, and the canonical residual
+authority owner for every residual source occurrence before lowering.
+`System.residual_effects.items` is sized to the exact active residual-authority
+count, so inactive declarations and repeated authorities do not survive as
+public capacity or undefined slots.
 Types whose `Payload` and `Resume` declarations are types and whose
 `semantic_identity` is a nonempty byte string follow the bare-Site path,
 regardless of extra declarations. Bare authorities compare semantic identity
@@ -52,8 +54,13 @@ their exact source types; Boundary's BPI emitter structurally interns their
 portable runtime schemas. Other external entries are
 occurrence wrappers only when they provide `Consumer`, `Site`, and
 `site_ordinal`.
-Distinct residual occurrences must also have distinct Boundary semantic
-identities; v1 rejects duplicate effective identities before BPI1 emission.
+Residual occurrences with the same effective semantic identity, portable
+schemas, and exact authoring `Payload` and `Resume` types share the first rooted
+occurrence's linked site. Their continuations remain distinct while BPI1 and
+the host see one environmental authority. The same semantic identity with
+different portable schemas is rejected as a contract conflict. Schema-equal
+but nominally distinct authoring endpoint types are also rejected in v1 because
+Control IR has no implicit typed conversion.
 
 Internal handlers require exact `Payload == Provider.InitialArgs` and
 `Resume == Provider.Result`. Provider Failure either equals the root Failure or

@@ -500,6 +500,10 @@ pub fn build(b: *std.Build) void {
         .{ .path = "test/compile_fail/system_v1_morphism_mismatch.zig", .message = "World system effect morphism must preserve Payload and Resume" },
         .{ .path = "test/compile_fail/system_v1_handler_cycle.zig", .message = "World system internal handler graph contains a cycle" },
         .{ .path = "test/compile_fail/system_v1_unreachable_external.zig", .message = "World system has an unreachable external declaration" },
+        .{ .path = "test/compile_fail/system_v1_unrooted_handler_consumer.zig", .message = "World system contains a handler consumer unreachable from root" },
+        .{ .path = "test/compile_fail/system_v1_unrooted_morphism_consumer.zig", .message = "World system contains a morphism consumer unreachable from root" },
+        .{ .path = "test/compile_fail/system_v1_duplicate_residual_identity.zig", .message = "World system residual semantic identity has conflicting Payload or Resume schemas" },
+        .{ .path = "test/compile_fail/system_v1_nominal_residual_merge.zig", .message = "World system cannot merge one residual semantic identity across distinct authoring Payload or Resume types" },
         .{ .path = "test/compile_fail/system_v1_forged_failure_map.zig", .message = "World system Failure morphism must cover every source tag" },
         .{ .path = "test/compile_fail/system_v1_forged_component.zig", .message = "Boundary component admission requires a canonical Boundary Program" },
     }) |witness| {

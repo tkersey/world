@@ -1910,7 +1910,7 @@ const DuplicateMorphProgram = boundary.program(
     "duplicate-morph-root",
     DuplicateMorphBody,
 );
-const DuplicateMorphSystem = world.system(.{
+pub const DuplicateMorphSpec = .{
     .name = "duplicate-morph-system",
     .root = DuplicateMorphProgram,
     .handlers = .{},
@@ -1927,26 +1927,61 @@ const DuplicateMorphSystem = world.system(.{
         }),
     },
     .external = .{DuplicateTarget},
-});
+};
+pub const DuplicateMorphSystem = world.system(DuplicateMorphSpec);
 
-test "world.system retains every reachable residual source-site occurrence" {
+test "world.system quotients residual occurrences by one typed authority" {
     const DuplicateMachine = DuplicateMorphSystem.Program.compile(.{
         .maximum_frames = 4,
         .maximum_state_bytes = 4096,
-        .maximum_machine_fuel = 16,
+        .maximum_machine_fuel = 32,
     });
-    try std.testing.expectEqual(@as(usize, 2), DuplicateMorphSystem.residual_effects.count);
+    const Linked = DuplicateMorphSystem.Program.component();
+    try std.testing.expectEqual(
+        Linked.control_ir.blocks[0].terminator.@"suspend".site_id,
+        Linked.control_ir.blocks[1].terminator.@"suspend".site_id,
+    );
+    try std.testing.expectEqual(@as(usize, 1), DuplicateMorphSystem.residual_effects.count);
     try expectResidualSite(
         DuplicateMorphSystem.residual_effects.items[0],
         DuplicateTarget,
         0,
     );
-    try expectResidualSite(
-        DuplicateMorphSystem.residual_effects.items[1],
-        DuplicateTarget,
-        1,
-    );
-    try std.testing.expectEqual(@as(usize, 2), DuplicateMachine.EffectRow.operation_site_count);
+    const Image = DuplicateMorphSystem.Program.image();
+    try std.testing.expect(Image.bytes.len > 0);
+    var image_workspace: boundary.image.ValidationWorkspace = .{};
+    _ = try boundary.image.validateImageView(&Image.bytes, &image_workspace);
+    try std.testing.expectEqual(@as(usize, 1), DuplicateMachine.EffectRow.operation_site_count);
+
+    const state = try DuplicateMachine.initialState(std.testing.allocator, 41);
+    defer DuplicateMachine.deinitState(state);
+    var fuel: u64 = 24;
+    const first_request = switch (try DuplicateMachine.step(state, &fuel)) {
+        .request => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(@as(u32, 41), first_request.value.s0);
+    {
+        const prepared = try DuplicateMachine.prepareResume(state, first_request);
+        defer DuplicateMachine.deinitPreparedResume(prepared);
+        try DuplicateMachine.@"resume"(prepared, @as(u32, 50));
+    }
+    const second_request = switch (try DuplicateMachine.step(state, &fuel)) {
+        .request => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(@as(u32, 50), second_request.value.s0);
+    {
+        const prepared = try DuplicateMachine.prepareResume(state, second_request);
+        defer DuplicateMachine.deinitPreparedResume(prepared);
+        try DuplicateMachine.@"resume"(prepared, @as(u32, 99));
+    }
+    const completed = switch (try DuplicateMachine.step(state, &fuel)) {
+        .done => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    defer completed.deinit();
+    try std.testing.expectEqual(@as(u32, 99), completed.value().*);
 }
 
 const CollidingExternalSite = struct {
