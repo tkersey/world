@@ -75,7 +75,6 @@ export async function executeProcessStep(options) {
   ensureSupportedRuntime();
 
   const files = [];
-  let outputSnapshot = null;
   try {
     const kernel = openRegularInput(
       options.kernelPath,
@@ -96,7 +95,7 @@ export async function executeProcessStep(options) {
     if (options.outputPath === null) {
       inspectStdoutDestination(files);
     } else {
-      outputSnapshot = inspectOutputDestination(options.outputPath, files);
+      inspectOutputDestination(options.outputPath, files);
     }
 
     const kernelBytes = readExactFile(kernel);
@@ -145,8 +144,6 @@ export async function executeProcessStep(options) {
       publishAtomic(
         options.outputPath,
         outcome.bytes,
-        outputSnapshot,
-        files,
       );
     }
     return outcome;
@@ -402,7 +399,7 @@ function inspectStdoutDestination(inputFiles) {
   }
 }
 
-function publishAtomic(outputPath, bytes, expectedOutput, inputFiles) {
+function publishAtomic(outputPath, bytes) {
   const directory = path.dirname(path.resolve(outputPath));
   let temporaryPath = null;
   let descriptor = null;
@@ -414,18 +411,6 @@ function publishAtomic(outputPath, bytes, expectedOutput, inputFiles) {
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = null;
-
-    const currentOutput = inspectOutputDestination(outputPath, inputFiles);
-    const unchanged = expectedOutput === null
-      ? currentOutput === null
-      : currentOutput !== null && sameGeneration(expectedOutput, currentOutput);
-    if (!unchanged) {
-      throw worldError(
-        "WORLD_OUTPUT_PUBLISH_FAILED",
-        "output changed before atomic publication",
-        { artifact: "output" },
-      );
-    }
 
     fs.renameSync(temporaryPath, outputPath);
     renamed = true;
