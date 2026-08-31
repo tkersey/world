@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import {
   RUNTIME_ARCHIVE_NAME,
   RUNTIME_ROOT,
+  assertRepositoryOutputNamespaces,
   buildRuntimeArchive,
   canonicalGzip,
   createCanonicalTar,
@@ -110,7 +111,7 @@ describe("World Process Host runtime archive", () => {
       root: repositoryRoot,
       outputPath: join(aliasRoot, "README.md"),
       checksumPath: join(temporaryRoot, "safe-checksum"),
-    })).rejects.toThrow(/protected input/);
+    })).rejects.toThrow(/outside the repository or a file beneath dist/);
 
     const invalid = join(temporaryRoot, "runtime archive.tar.gz");
     await expect(buildRuntimeArchive({
@@ -119,6 +120,23 @@ describe("World Process Host runtime archive", () => {
       checksumPath: `${invalid}.sha256`,
     })).rejects.toThrow(/sidecar grammar/);
     await expect(readFile(invalid)).rejects.toThrow();
+  });
+
+  test("rejects archive outputs inside repository source namespaces", async () => {
+    await expect(buildRuntimeArchive({
+      root: repositoryRoot,
+      outputPath: join(repositoryRoot, "src", "process_v1", "runtime.tar.gz"),
+      checksumPath: join(repositoryRoot, "src", "process_v1", "runtime.tar.gz.sha256"),
+    })).rejects.toThrow(/outside the repository or a file beneath dist/);
+  });
+
+  test("rejects a dist symlink as the in-repository output namespace", async () => {
+    const root = join(temporaryRoot, "symlinked-dist-namespace");
+    await mkdir(join(root, "src", "process_v1"), { recursive: true });
+    await symlink(join(root, "src", "process_v1"), join(root, "dist"), "dir");
+    await expect(assertRepositoryOutputNamespaces(root, [
+      { label: "release receipt", path: join(root, "dist", "release-receipt.json") },
+    ], "release receipt")).rejects.toThrow(/dist namespace must be a real directory/);
   });
 
   test("authenticates, manually extracts, and runs the embedded verifier with an empty PATH", async () => {

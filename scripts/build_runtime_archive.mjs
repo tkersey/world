@@ -136,6 +136,42 @@ export async function canonicalFuturePathIdentity(path) {
   return physical.replaceAll("\\", "/").normalize("NFC").toLowerCase();
 }
 
+function identityContains(rootIdentity, candidateIdentity) {
+  const prefix = rootIdentity.endsWith("/") ? rootIdentity : `${rootIdentity}/`;
+  return candidateIdentity === rootIdentity || candidateIdentity.startsWith(prefix);
+}
+
+async function canonicalRenameTargetIdentity(path) {
+  const parentIdentity = await canonicalFuturePathIdentity(dirname(resolve(path)));
+  return join(parentIdentity, basename(path))
+    .replaceAll("\\", "/")
+    .normalize("NFC")
+    .toLowerCase();
+}
+
+export async function assertRepositoryOutputNamespaces(root, outputs, label = "repository output") {
+  const distPath = join(root, "dist");
+  try {
+    const dist = await lstat(distPath);
+    assert(dist.isDirectory() && !dist.isSymbolicLink(), `${label} dist namespace must be a real directory`);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const [rootIdentity, distIdentity] = await Promise.all([
+    canonicalFuturePathIdentity(root),
+    canonicalFuturePathIdentity(distPath),
+  ]);
+  for (const output of outputs) {
+    const identity = await canonicalRenameTargetIdentity(output.path);
+    if (identityContains(rootIdentity, identity)) {
+      assert(
+        identity !== distIdentity && identityContains(distIdentity, identity),
+        `${output.label} must be outside the repository or a file beneath dist`,
+      );
+    }
+  }
+}
+
 export async function assertPhysicalPathCustody(paths, protectedPaths = [], label = "custody") {
   const seen = new Map();
   for (const entry of paths) {
@@ -533,6 +569,10 @@ export async function buildRuntimeArchive({
   const archiveBasename = basename(outputPath);
   assert(/^[A-Za-z0-9._-]+$/.test(archiveBasename), "runtime archive basename cannot be represented by the checksum sidecar grammar");
   const sourcePaths = await runtimeSourcePaths(root);
+  await assertRepositoryOutputNamespaces(root, [
+    { label: "runtime archive", path: outputPath },
+    { label: "runtime checksum", path: checksumPath },
+  ], "runtime build");
   await assertPhysicalPathCustody(
     [
       { label: "runtime archive", path: outputPath },

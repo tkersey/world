@@ -14,31 +14,6 @@ export const RELEASE_RECEIPT_FORMAT = "world-process-host-release-receipt/v1";
 export const DEFAULT_RELEASE_RECEIPT = `world-v${WORLD_VERSION}-process-host-release-receipt.json`;
 export const DEFAULT_CONFORMANCE_RECEIPT = `world-v${WORLD_VERSION}-process-host-conformance-receipt.json`;
 
-function identityContains(rootIdentity, candidateIdentity) {
-  const prefix = rootIdentity.endsWith("/") ? rootIdentity : `${rootIdentity}/`;
-  return candidateIdentity === rootIdentity || candidateIdentity.startsWith(prefix);
-}
-
-async function assertReleaseOutputNamespaces(root, outputs, canonicalFuturePathIdentity) {
-  const [rootIdentity, distIdentity] = await Promise.all([
-    canonicalFuturePathIdentity(root),
-    canonicalFuturePathIdentity(join(root, "dist")),
-  ]);
-  for (const { label, path } of outputs) {
-    const parentIdentity = await canonicalFuturePathIdentity(dirname(resolve(path)));
-    const identity = join(parentIdentity, basename(path))
-      .replaceAll("\\", "/")
-      .normalize("NFC")
-      .toLowerCase();
-    if (identityContains(rootIdentity, identity)) {
-      assert(
-        identity !== distIdentity && identityContains(distIdentity, identity),
-        `${label} must be outside the repository or a file beneath dist`,
-      );
-    }
-  }
-}
-
 async function atomicWrite(path, bytes) {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -81,8 +56,8 @@ async function writeReleaseReceiptInternal({
   assert.equal(buildModule.RUNTIME_ARCHIVE_NAME, RUNTIME_ARCHIVE_NAME, "release writer archive name differs from build authority");
   const {
     assertPhysicalPathCustody,
+    assertRepositoryOutputNamespaces,
     assertTrackedRepositoryMatchesCommit,
-    canonicalFuturePathIdentity,
     exactGitHeadCommit,
     trackedRepositoryPaths,
   } = buildModule;
@@ -91,10 +66,10 @@ async function writeReleaseReceiptInternal({
   const { checkProcessSurface } = surfaceModule;
   const conformanceReceiptPath = join(dirname(outputPath), DEFAULT_CONFORMANCE_RECEIPT);
   const custodyCommit = exactGitHeadCommit(root);
-  await assertReleaseOutputNamespaces(root, [
+  await assertRepositoryOutputNamespaces(root, [
     { label: "release receipt", path: outputPath },
     { label: "conformance receipt", path: conformanceReceiptPath },
-  ], canonicalFuturePathIdentity);
+  ], "release receipt");
   await assertPhysicalPathCustody(
     [
       { label: "runtime archive", path: archivePath },

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -7,6 +8,7 @@ import {
   acquireBoundaryProcessAssets,
   assertPhysicalBoundaryKernelDescendant,
   classifyLocalBoundaryAssetProvenance,
+  exactBoundarySource,
 } from "../scripts/acquire_boundary_process_assets.mjs";
 import { readBoundedRegularFileSnapshot } from "../scripts/build_runtime_archive.mjs";
 import {
@@ -119,6 +121,37 @@ describe("Boundary development asset provenance", () => {
         afterDescriptorRead: async () => rename(replacement, input),
       })).rejects.toThrow(/path changed during read/);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores ambient Git repository selection and binds the selected checkout root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "world-boundary-selected-checkout-"));
+    const sourceRoot = join(root, "selected");
+    const ambientRoot = join(root, "ambient");
+    await mkdir(sourceRoot, { recursive: true });
+    await mkdir(ambientRoot, { recursive: true });
+    execFileSync("git", ["init", "--quiet"], { cwd: ambientRoot });
+    await writeFile(join(ambientRoot, "fixture"), "ambient\n");
+    execFileSync("git", ["add", "fixture"], { cwd: ambientRoot });
+    execFileSync("git", [
+      "-c", "user.name=World Test",
+      "-c", "user.email=world-test@example.invalid",
+      "commit", "--quiet", "-m", "ambient checkout",
+    ], { cwd: ambientRoot });
+    const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ambientRoot, encoding: "utf8" }).trim();
+    const priorGitDir = process.env.GIT_DIR;
+    const priorGitWorkTree = process.env.GIT_WORK_TREE;
+    process.env.GIT_DIR = join(ambientRoot, ".git");
+    process.env.GIT_WORK_TREE = sourceRoot;
+    try {
+      await expect(exactBoundarySource(sourceRoot, { boundaryCommit: commit }))
+        .rejects.toThrow();
+    } finally {
+      if (priorGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = priorGitDir;
+      if (priorGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+      else process.env.GIT_WORK_TREE = priorGitWorkTree;
       await rm(root, { recursive: true, force: true });
     }
   });

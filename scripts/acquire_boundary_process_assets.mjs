@@ -95,13 +95,32 @@ async function atomicWrite(path, bytes) {
   }
 }
 
-function exactBoundarySource(sourceRoot, lock) {
+function gitEnvironment() {
+  const environment = { ...process.env };
+  for (const key of Object.keys(environment)) {
+    if (key.startsWith("GIT_")) delete environment[key];
+  }
+  environment.GIT_NO_REPLACE_OBJECTS = "1";
+  return environment;
+}
+
+export async function exactBoundarySource(sourceRoot, lock) {
   assert(isAbsolute(sourceRoot), "WORLD_BOUNDARY_SOURCE must be an absolute path");
+  const environment = gitEnvironment();
   const commit = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: sourceRoot,
     encoding: "utf8",
+    env: environment,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
+  const topLevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: sourceRoot,
+    encoding: "utf8",
+    env: environment,
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  const physicalSourceRoot = await realpath(sourceRoot);
+  assert.equal(await realpath(topLevel), physicalSourceRoot, "WORLD_BOUNDARY_SOURCE is not the selected Git checkout root");
   assert.equal(commit, lock.boundaryCommit, "local Boundary source is not the exact landed v1.7.0 commit");
 }
 
@@ -176,7 +195,7 @@ export async function acquireBoundaryProcessAssets({
     bytes = admitKernel(kernel, lock);
     provenance = "public-release";
   } else if (kernelPath !== null || sourceRoot !== null) {
-    if (resolvedSourceRoot !== null) exactBoundarySource(resolvedSourceRoot, lock);
+    if (resolvedSourceRoot !== null) await exactBoundarySource(resolvedSourceRoot, lock);
     bytes = admitKernel(await readLocalBoundaryKernel(resolvedKernel, resolvedSourceRoot), lock);
     provenance = classifyLocalBoundaryAssetProvenance(sourceRoot);
   } else {
