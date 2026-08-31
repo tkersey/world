@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   RUNTIME_ARCHIVE_NAME,
@@ -17,7 +18,12 @@ import {
   snapshotRuntimeSources,
   stableJson,
 } from "../scripts/build_runtime_archive.mjs";
-import { checkRuntimeArchive, parseCanonicalGzip, parseCanonicalTar } from "../scripts/check_runtime_archive.mjs";
+import {
+  __testOnlyReadBoundedRuntimeFile,
+  checkRuntimeArchive,
+  parseCanonicalGzip,
+  parseCanonicalTar,
+} from "../scripts/check_runtime_archive.mjs";
 import { writeReleaseReceipt } from "../scripts/write_release_receipt.mjs";
 
 setDefaultTimeout(30_000);
@@ -127,6 +133,45 @@ describe("runtime archive source provenance", () => {
     await writeFile(readmePath, committed);
     expect(git(root, ["status", "--porcelain=v1", "--", "README.md"])).toBe("");
     expect(() => bindRetainedSnapshotsToGitHead(root, retained)).toThrow(/retained runtime bytes differ from Git blob at HEAD: README\.md/);
+  });
+
+  test("bounds descriptor reads when the file grows after admission", async () => {
+    const path = join(temporaryRoot, "bounded-growth.bin");
+    await writeFile(path, Buffer.from("seed"));
+    await expect(__testOnlyReadBoundedRuntimeFile(path, 16, "bounded growth fixture", {
+      afterDescriptorStat: async () => writeFile(path, Buffer.alloc(64), { flag: "a" }),
+    })).rejects.toThrow(/changed during read/);
+  });
+
+  test("executes rebuilds from the authenticated on-disk builder generation", async () => {
+    const root = await cloneRepository("cached-dirty-builder");
+    const builderPath = join(root, "scripts", "build_runtime_archive.mjs");
+    const checkerPath = join(root, "scripts", "check_runtime_archive.mjs");
+    const committedBuilder = await readFile(builderPath, "utf8");
+    const dirtyBuilder = committedBuilder.replace(
+      "const entries = new Map(sourceEntries);",
+      "const entries = new Map(sourceEntries);\n  entries.set(\"README.md\", Buffer.concat([entries.get(\"README.md\"), Buffer.from(\"\\n\")]));",
+    );
+    expect(dirtyBuilder).not.toBe(committedBuilder);
+    await writeFile(builderPath, dirtyBuilder);
+
+    const checker = await import(`${pathToFileURL(checkerPath).href}?cached-dirty-builder`);
+    const cachedBuilder = await import(pathToFileURL(builderPath).href);
+    const archivePath = join(root, "dist", RUNTIME_ARCHIVE_NAME);
+    const checksumPath = `${archivePath}.sha256`;
+    try {
+      await cachedBuilder.buildRuntimeArchive({ root, outputPath: archivePath, checksumPath });
+    } finally {
+      await writeFile(builderPath, committedBuilder);
+    }
+
+    await expect(checker.checkRuntimeArchive({
+      root,
+      archivePath,
+      checksumPath,
+      verifyRebuild: true,
+      runInner: false,
+    })).rejects.toThrow(/runtime archive differs from an exact source rebuild/);
   });
 
   test("release receipt preflight rejects hidden drift in any tracked proof input", async () => {

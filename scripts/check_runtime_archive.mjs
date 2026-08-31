@@ -24,7 +24,6 @@ import {
   RUNTIME_ROOT,
   WORLD_VERSION,
   assertTrackedRepositoryMatchesCommit,
-  buildRuntimeArchive,
   canonicalGzip,
   canonicalTarHeader,
   checksumsBytes,
@@ -55,7 +54,7 @@ function compareUtf8(left, right) {
   return Buffer.from(left, "utf8").compare(Buffer.from(right, "utf8"));
 }
 
-async function readBoundedRegularFile(path, maximumBytes, label) {
+async function readBoundedRegularFile(path, maximumBytes, label, testHooks = undefined) {
   const pathInfo = await lstat(path, { bigint: true });
   assert(pathInfo.isFile() && !pathInfo.isSymbolicLink(), `${label} is not a regular file`);
   assert(pathInfo.size <= BigInt(maximumBytes), `${label} exceeds its size limit`);
@@ -66,9 +65,19 @@ async function readBoundedRegularFile(path, maximumBytes, label) {
     assert.equal(before.dev, pathInfo.dev, `${label} changed before read`);
     assert.equal(before.ino, pathInfo.ino, `${label} changed before read`);
     assert.equal(before.size, pathInfo.size, `${label} changed before read`);
-    const bytes = await handle.readFile();
-    assert(bytes.length <= maximumBytes, `${label} exceeds its size limit`);
-    assert.equal(BigInt(bytes.length), before.size, `${label} changed during read`);
+    assert(before.size <= BigInt(maximumBytes), `${label} exceeds its size limit`);
+    await testHooks?.afterDescriptorStat?.();
+    const byteLength = Number(before.size);
+    const bytes = Buffer.allocUnsafe(byteLength);
+    let offset = 0;
+    while (offset < byteLength) {
+      const { bytesRead } = await handle.read(bytes, offset, byteLength - offset, offset);
+      assert(bytesRead !== 0, `${label} changed during read`);
+      offset += bytesRead;
+    }
+    const growthProbe = Buffer.allocUnsafe(1);
+    const { bytesRead: growthBytes } = await handle.read(growthProbe, 0, 1, byteLength);
+    assert.equal(growthBytes, 0, `${label} changed during read`);
     const after = await handle.stat({ bigint: true });
     for (const field of ["dev", "ino", "size", "mtimeNs", "ctimeNs"]) {
       assert.equal(after[field], before[field], `${label} changed during read`);
@@ -77,6 +86,35 @@ async function readBoundedRegularFile(path, maximumBytes, label) {
   } finally {
     await handle.close();
   }
+}
+
+export async function __testOnlyReadBoundedRuntimeFile(path, maximumBytes, label, testHooks) {
+  return readBoundedRegularFile(path, maximumBytes, label, testHooks);
+}
+
+function runCommittedRuntimeBuilder(root, outputPath, checksumPath) {
+  const result = spawnSync(process.execPath, [
+    join(root, "scripts", "build_runtime_archive.mjs"),
+    "--out",
+    outputPath,
+    "--checksum",
+    checksumPath,
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+    env: {
+      PATH: process.env.PATH ?? "",
+      LANG: "C",
+      LC_ALL: "C",
+    },
+  });
+  assert.equal(
+    result.status,
+    0,
+    `committed runtime builder failed:\n${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+  );
+  assert.match(result.stdout, /^world_runtime_archive_build=pass$/m, "committed runtime builder did not report success");
 }
 
 export function parseChecksumSidecar(bytes, expectedName = RUNTIME_ARCHIVE_NAME) {
@@ -403,16 +441,16 @@ export async function checkRuntimeArchive({
     try {
       const firstPath = join(temporary, "first", RUNTIME_ARCHIVE_NAME);
       const secondPath = join(temporary, "second", RUNTIME_ARCHIVE_NAME);
-      const firstBuild = await buildRuntimeArchive({ root, outputPath: firstPath, checksumPath: `${firstPath}.sha256` });
-      const secondBuild = await buildRuntimeArchive({ root, outputPath: secondPath, checksumPath: `${secondPath}.sha256` });
-      assert.equal(firstBuild.sourceCommit, secondBuild.sourceCommit, "two exact runtime rebuilds bind different source commits");
-      assert.equal(
-        admitted.manifest.sourceCommit,
-        firstBuild.sourceCommit,
-        "runtime manifest sourceCommit differs from exact source rebuild",
-      );
+      runCommittedRuntimeBuilder(root, firstPath, `${firstPath}.sha256`);
+      runCommittedRuntimeBuilder(root, secondPath, `${secondPath}.sha256`);
       const first = await readBoundedRegularFile(firstPath, RUNTIME_ARCHIVE_MAX_BYTES, "first rebuilt runtime archive");
       const second = await readBoundedRegularFile(secondPath, RUNTIME_ARCHIVE_MAX_BYTES, "second rebuilt runtime archive");
+      const [firstAdmission, secondAdmission] = await Promise.all([
+        admitRuntimeArchiveBytes(first, { expectedInventory, lock }),
+        admitRuntimeArchiveBytes(second, { expectedInventory, lock }),
+      ]);
+      assert.equal(firstAdmission.manifest.sourceCommit, secondAdmission.manifest.sourceCommit, "two exact runtime rebuilds bind different source commits");
+      assert.equal(admitted.manifest.sourceCommit, firstAdmission.manifest.sourceCommit, "runtime manifest sourceCommit differs from exact source rebuild");
       assert(first.equals(second), "two runtime archive rebuilds are not byte-identical");
       assert(first.equals(archive), "runtime archive differs from an exact source rebuild");
       await assertTrackedRepositoryMatchesCommit(root, admitted.manifest.sourceCommit);

@@ -274,7 +274,20 @@ describe("World Process Host runtime archive", () => {
       archivePath: join(base, "archive.tar.gz"),
       checksumPath: join(base, "archive.tar.gz.sha256"),
       outputPath: join(aliasRoot, "README.md"),
-    })).rejects.toThrow(/protected input/);
+    })).rejects.toThrow(/outside the repository or a file beneath dist/);
+
+    for (const outputPath of [
+      join(repositoryRoot, "src", "process_v1", "generated-release-receipt.json"),
+      join(repositoryRoot, "scripts", "generated-release-receipt.json"),
+      join(repositoryRoot, "generated-release-receipt.json"),
+    ]) {
+      await expect(writeReleaseReceipt({
+        root: repositoryRoot,
+        archivePath: join(base, "archive.tar.gz"),
+        checksumPath: join(base, "archive.tar.gz.sha256"),
+        outputPath,
+      })).rejects.toThrow(/outside the repository or a file beneath dist/);
+    }
   });
 
   test("has no release-claim route for fabricated, missing, or malformed conformance receipt files", async () => {

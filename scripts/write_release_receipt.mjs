@@ -9,6 +9,7 @@ import {
   WORLD_VERSION,
   assertPhysicalPathCustody,
   assertTrackedRepositoryMatchesCommit,
+  canonicalFuturePathIdentity,
   exactGitHeadCommit,
   repositoryRoot,
   trackedRepositoryPaths,
@@ -23,6 +24,27 @@ import { checkProcessSurface } from "./check_process_surface.mjs";
 export const RELEASE_RECEIPT_FORMAT = "world-process-host-release-receipt/v1";
 export const DEFAULT_RELEASE_RECEIPT = `world-v${WORLD_VERSION}-process-host-release-receipt.json`;
 export const DEFAULT_CONFORMANCE_RECEIPT = `world-v${WORLD_VERSION}-process-host-conformance-receipt.json`;
+
+function identityContains(rootIdentity, candidateIdentity) {
+  const prefix = rootIdentity.endsWith("/") ? rootIdentity : `${rootIdentity}/`;
+  return candidateIdentity === rootIdentity || candidateIdentity.startsWith(prefix);
+}
+
+async function assertReleaseOutputNamespaces(root, outputs) {
+  const [rootIdentity, distIdentity] = await Promise.all([
+    canonicalFuturePathIdentity(root),
+    canonicalFuturePathIdentity(join(root, "dist")),
+  ]);
+  for (const { label, path } of outputs) {
+    const identity = await canonicalFuturePathIdentity(path);
+    if (identityContains(rootIdentity, identity)) {
+      assert(
+        identity !== distIdentity && identityContains(distIdentity, identity),
+        `${label} must be outside the repository or a file beneath dist`,
+      );
+    }
+  }
+}
 
 async function atomicWrite(path, bytes) {
   await mkdir(dirname(path), { recursive: true });
@@ -49,6 +71,10 @@ export async function writeReleaseReceipt({
 } = {}) {
   const conformanceReceiptPath = join(dirname(outputPath), DEFAULT_CONFORMANCE_RECEIPT);
   const custodyCommit = exactGitHeadCommit(root);
+  await assertReleaseOutputNamespaces(root, [
+    { label: "release receipt", path: outputPath },
+    { label: "conformance receipt", path: conformanceReceiptPath },
+  ]);
   await assertPhysicalPathCustody(
     [
       { label: "runtime archive", path: archivePath },
