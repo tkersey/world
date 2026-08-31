@@ -144,8 +144,6 @@ export function encodeEffectResult(input) {
   cursor = append(bytes, cursor, natural);
   append(bytes, cursor, resume);
 
-  // Keep the encoder and decoder in exact agreement before publishing bytes.
-  decodeEffectResult(bytes);
   return bytes;
 }
 
