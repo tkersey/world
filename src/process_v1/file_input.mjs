@@ -39,7 +39,7 @@ export function parseProcessStepArguments(argv, bundledKernelPath) {
     const flag = argv[index];
     const value = argv[index + 1];
     if (!FLAG_NAMES.has(flag) || typeof value !== "string" ||
-        value.length === 0 || value.startsWith("--") || options.has(flag)) {
+        value.length === 0 || options.has(flag)) {
       throw usageError();
     }
     options.set(flag, value);

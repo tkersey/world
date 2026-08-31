@@ -77,6 +77,23 @@ describe("world process step argument grammar", () => {
       effectResultPath: "result.ers1",
       outputPath: "out.pko1",
     });
+
+    expect(parseProcessStepArguments([
+      "process",
+      "step",
+      "--image",
+      "--image.bin",
+      "--state",
+      "--checkpoint",
+    ], "/bundled/kernel.wasm")).toEqual({
+      kernelPath: "/bundled/kernel.wasm",
+      imagePath: "--image.bin",
+      instanceKind: 1,
+      instancePath: "--checkpoint",
+      instanceLabel: "state",
+      effectResultPath: null,
+      outputPath: null,
+    });
   });
 
   test("rejects every token outside the exact grammar", () => {
@@ -106,14 +123,6 @@ describe("world process step argument grammar", () => {
         "initial",
         "--image",
         "again",
-      ],
-      [
-        "process",
-        "step",
-        "--image",
-        "--state",
-        "--initial-args",
-        "initial",
       ],
       [
         "process",
