@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import {
   lstatSync,
+  readdirSync,
   readFileSync,
   realpathSync,
 } from "node:fs";
@@ -201,11 +202,26 @@ function gitPaths(root, args) {
     .map((entry) => entry.replaceAll(path.sep, "/"));
 }
 
+export function derivePackageFilesystemPaths(root) {
+  const paths = [];
+  const visit = (relativeRoot) => {
+    for (const entry of readdirSync(path.join(root, relativeRoot), { withFileTypes: true })) {
+      const relativePath = `${relativeRoot}/${entry.name}`;
+      if (entry.isDirectory() && !entry.isSymbolicLink()) visit(relativePath);
+      else paths.push(relativePath);
+    }
+  };
+  visit("bin");
+  visit("src/process_v1");
+  return Object.freeze(paths.sort());
+}
+
 export function deriveGitWorkingInventory(root) {
   const tracked = new Set(gitPaths(root, ["ls-files", "--cached"]));
   const candidates = new Set([
     ...tracked,
     ...gitPaths(root, ["ls-files", "--others", "--exclude-standard"]),
+    ...derivePackageFilesystemPaths(root),
   ]);
 
   const entries = [];

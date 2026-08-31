@@ -14,12 +14,12 @@ import {
   checksumsBytes,
   createCanonicalTar,
   repositoryRoot,
+  readBoundedRegularFileSnapshot,
   sha256,
   snapshotRuntimeSources,
   stableJson,
 } from "../scripts/build_runtime_archive.mjs";
 import {
-  __testOnlyReadBoundedRuntimeFile,
   checkRuntimeArchive,
   parseCanonicalGzip,
   parseCanonicalTar,
@@ -138,7 +138,7 @@ describe("runtime archive source provenance", () => {
   test("bounds descriptor reads when the file grows after admission", async () => {
     const path = join(temporaryRoot, "bounded-growth.bin");
     await writeFile(path, Buffer.from("seed"));
-    await expect(__testOnlyReadBoundedRuntimeFile(path, 16, "bounded growth fixture", {
+    await expect(readBoundedRegularFileSnapshot(path, 16, "bounded growth fixture", {
       afterDescriptorStat: async () => writeFile(path, Buffer.alloc(64), { flag: "a" }),
     })).rejects.toThrow(/changed during read/);
   });
@@ -173,6 +173,35 @@ describe("runtime archive source provenance", () => {
       runInner: false,
     })).rejects.toThrow(/runtime archive differs from an exact source rebuild/);
   });
+
+  test("loads release proof modules only inside the fresh receipt process", async () => {
+    const root = await cloneRepository("cached-dirty-release-proof");
+    const archivePath = join(root, "dist", RUNTIME_ARCHIVE_NAME);
+    const checksumPath = `${archivePath}.sha256`;
+    await buildRuntimeArchive({ root, outputPath: archivePath, checksumPath });
+
+    const checkerPath = join(root, "scripts", "check_runtime_archive.mjs");
+    const writerPath = join(root, "scripts", "write_release_receipt.mjs");
+    const committedChecker = await readFile(checkerPath, "utf8");
+    await writeFile(checkerPath, `throw new Error("dirty proof module loaded in parent");\n${committedChecker}`);
+    let writer;
+    try {
+      writer = await import(`${pathToFileURL(writerPath).href}?cached-dirty-release-proof`);
+    } finally {
+      await writeFile(checkerPath, committedChecker);
+    }
+
+    const outputPath = join(root, "dist", "fresh-release-receipt.json");
+    const result = await writer.writeReleaseReceipt({
+      root,
+      archivePath,
+      checksumPath,
+      outputPath,
+    });
+    expect(result.receipt.sourceCommit).toBe(git(root, ["rev-parse", "HEAD"]));
+    expect(result.receipt.byteReproducible).toBe(true);
+    expect(result.receipt.cleanRoomRuntimeVerified).toBe(true);
+  }, 120_000);
 
   test("release receipt preflight rejects hidden drift in any tracked proof input", async () => {
     const root = await cloneRepository("proof-state");

@@ -32,6 +32,7 @@ import {
   defaultChecksumPath,
   isSafeRelativePath,
   productionSourceSha256,
+  readBoundedRegularFileSnapshot,
   readBoundaryLock,
   repositoryRoot,
   runtimeMode,
@@ -54,42 +55,8 @@ function compareUtf8(left, right) {
   return Buffer.from(left, "utf8").compare(Buffer.from(right, "utf8"));
 }
 
-async function readBoundedRegularFile(path, maximumBytes, label, testHooks = undefined) {
-  const pathInfo = await lstat(path, { bigint: true });
-  assert(pathInfo.isFile() && !pathInfo.isSymbolicLink(), `${label} is not a regular file`);
-  assert(pathInfo.size <= BigInt(maximumBytes), `${label} exceeds its size limit`);
-  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
-  try {
-    const before = await handle.stat({ bigint: true });
-    assert(before.isFile(), `${label} descriptor is not a regular file`);
-    assert.equal(before.dev, pathInfo.dev, `${label} changed before read`);
-    assert.equal(before.ino, pathInfo.ino, `${label} changed before read`);
-    assert.equal(before.size, pathInfo.size, `${label} changed before read`);
-    assert(before.size <= BigInt(maximumBytes), `${label} exceeds its size limit`);
-    await testHooks?.afterDescriptorStat?.();
-    const byteLength = Number(before.size);
-    const bytes = Buffer.allocUnsafe(byteLength);
-    let offset = 0;
-    while (offset < byteLength) {
-      const { bytesRead } = await handle.read(bytes, offset, byteLength - offset, offset);
-      assert(bytesRead !== 0, `${label} changed during read`);
-      offset += bytesRead;
-    }
-    const growthProbe = Buffer.allocUnsafe(1);
-    const { bytesRead: growthBytes } = await handle.read(growthProbe, 0, 1, byteLength);
-    assert.equal(growthBytes, 0, `${label} changed during read`);
-    const after = await handle.stat({ bigint: true });
-    for (const field of ["dev", "ino", "size", "mtimeNs", "ctimeNs"]) {
-      assert.equal(after[field], before[field], `${label} changed during read`);
-    }
-    return Buffer.from(bytes);
-  } finally {
-    await handle.close();
-  }
-}
-
-export async function __testOnlyReadBoundedRuntimeFile(path, maximumBytes, label, testHooks) {
-  return readBoundedRegularFile(path, maximumBytes, label, testHooks);
+async function readBoundedRegularFile(path, maximumBytes, label) {
+  return (await readBoundedRegularFileSnapshot(path, maximumBytes, label)).bytes;
 }
 
 function runCommittedRuntimeBuilder(root, outputPath, checksumPath) {

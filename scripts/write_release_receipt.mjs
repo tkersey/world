@@ -1,25 +1,14 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { mkdir, open, rename, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import {
-  RUNTIME_ARCHIVE_NAME,
-  WORLD_VERSION,
-  assertPhysicalPathCustody,
-  assertTrackedRepositoryMatchesCommit,
-  canonicalFuturePathIdentity,
-  exactGitHeadCommit,
-  repositoryRoot,
-  trackedRepositoryPaths,
-} from "./build_runtime_archive.mjs";
-import {
-  checkRuntimeArchive,
-  runtimeArchiveContract,
-} from "./check_runtime_archive.mjs";
-import { runFullCleanRoomConformance } from "./run_clean_room_conformance.mjs";
-import { checkProcessSurface } from "./check_process_surface.mjs";
+const WORLD_VERSION = "4.0.0";
+const RUNTIME_ARCHIVE_NAME = `world-v${WORLD_VERSION}-process-host-runtime.tar.gz`;
+const scriptPath = fileURLToPath(import.meta.url);
+const defaultRepositoryRoot = resolve(dirname(scriptPath), "..");
 
 export const RELEASE_RECEIPT_FORMAT = "world-process-host-release-receipt/v1";
 export const DEFAULT_RELEASE_RECEIPT = `world-v${WORLD_VERSION}-process-host-release-receipt.json`;
@@ -30,7 +19,7 @@ function identityContains(rootIdentity, candidateIdentity) {
   return candidateIdentity === rootIdentity || candidateIdentity.startsWith(prefix);
 }
 
-async function assertReleaseOutputNamespaces(root, outputs) {
+async function assertReleaseOutputNamespaces(root, outputs, canonicalFuturePathIdentity) {
   const [rootIdentity, distIdentity] = await Promise.all([
     canonicalFuturePathIdentity(root),
     canonicalFuturePathIdentity(join(root, "dist")),
@@ -63,18 +52,36 @@ async function atomicWrite(path, bytes) {
   }
 }
 
-export async function writeReleaseReceipt({
-  root = repositoryRoot,
+async function writeReleaseReceiptInternal({
+  root = defaultRepositoryRoot,
   archivePath = join(root, "dist", RUNTIME_ARCHIVE_NAME),
   checksumPath = `${archivePath}.sha256`,
   outputPath = join(root, "dist", DEFAULT_RELEASE_RECEIPT),
 } = {}) {
+  const [buildModule, checkModule, conformanceModule, surfaceModule] = await Promise.all([
+    import("./build_runtime_archive.mjs"),
+    import("./check_runtime_archive.mjs"),
+    import("./run_clean_room_conformance.mjs"),
+    import("./check_process_surface.mjs"),
+  ]);
+  assert.equal(buildModule.WORLD_VERSION, WORLD_VERSION, "release writer World version differs from build authority");
+  assert.equal(buildModule.RUNTIME_ARCHIVE_NAME, RUNTIME_ARCHIVE_NAME, "release writer archive name differs from build authority");
+  const {
+    assertPhysicalPathCustody,
+    assertTrackedRepositoryMatchesCommit,
+    canonicalFuturePathIdentity,
+    exactGitHeadCommit,
+    trackedRepositoryPaths,
+  } = buildModule;
+  const { checkRuntimeArchive, runtimeArchiveContract } = checkModule;
+  const { runFullCleanRoomConformance } = conformanceModule;
+  const { checkProcessSurface } = surfaceModule;
   const conformanceReceiptPath = join(dirname(outputPath), DEFAULT_CONFORMANCE_RECEIPT);
   const custodyCommit = exactGitHeadCommit(root);
   await assertReleaseOutputNamespaces(root, [
     { label: "release receipt", path: outputPath },
     { label: "conformance receipt", path: conformanceReceiptPath },
-  ]);
+  ], canonicalFuturePathIdentity);
   await assertPhysicalPathCustody(
     [
       { label: "runtime archive", path: archivePath },
@@ -162,11 +169,49 @@ export async function writeReleaseReceipt({
   return Object.freeze({ outputPath, receipt });
 }
 
+export async function writeReleaseReceipt({
+  root = defaultRepositoryRoot,
+  archivePath = join(root, "dist", RUNTIME_ARCHIVE_NAME),
+  checksumPath = `${archivePath}.sha256`,
+  outputPath = join(root, "dist", DEFAULT_RELEASE_RECEIPT),
+} = {}) {
+  const childScript = join(root, "scripts", "write_release_receipt.mjs");
+  const result = spawnSync(process.execPath, [
+    childScript,
+    "--root",
+    root,
+    "--archive",
+    archivePath,
+    "--checksum",
+    checksumPath,
+    "--out",
+    outputPath,
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+    env: {
+      PATH: process.env.PATH ?? "",
+      LANG: "C",
+      LC_ALL: "C",
+    },
+  });
+  assert.equal(
+    result.status,
+    0,
+    `fresh release receipt process failed:\n${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+  );
+  assert.match(result.stdout, /^world_release_receipt_write=pass$/m, "fresh release receipt process did not report success");
+  const receipt = Object.freeze(JSON.parse(await readFile(outputPath, "utf8")));
+  return Object.freeze({ outputPath, receipt });
+}
+
 function parseArguments(argv) {
   const options = {};
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === "--archive") options.archivePath = resolve(argv[++index] ?? "");
+    if (argument === "--root") options.root = resolve(argv[++index] ?? "");
+    else if (argument === "--archive") options.archivePath = resolve(argv[++index] ?? "");
     else if (argument === "--checksum") options.checksumPath = resolve(argv[++index] ?? "");
     else if (argument === "--out") options.outputPath = resolve(argv[++index] ?? "");
     else throw new Error(`unknown release-receipt argument: ${argument}`);
@@ -180,7 +225,7 @@ function isMain() {
 }
 
 if (isMain()) {
-  const result = await writeReleaseReceipt(parseArguments(process.argv.slice(2)));
+  const result = await writeReleaseReceiptInternal(parseArguments(process.argv.slice(2)));
   console.log(`world_release_receipt=${result.outputPath}`);
   console.log(`world_release_receipt_archive_sha256=${result.receipt.archiveSha256}`);
   console.log("world_release_receipt_write=pass");

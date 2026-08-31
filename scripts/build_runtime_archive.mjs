@@ -10,7 +10,7 @@ import {
   rename,
   rm,
 } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -70,6 +70,52 @@ export function isSafeRelativePath(path) {
   return components.every((component) => component !== "" && component !== "." && component !== "..");
 }
 
+const FILE_GENERATION_FIELDS = Object.freeze(["dev", "ino", "size", "mtimeNs", "ctimeNs"]);
+
+function assertSameFileGeneration(actual, expected, message) {
+  for (const field of FILE_GENERATION_FIELDS) assert.equal(actual[field], expected[field], message);
+}
+
+export async function readBoundedRegularFileSnapshot(path, maximumBytes, label, testHooks = undefined) {
+  assert(isAbsolute(path), `${label} path must be absolute`);
+  const pathBefore = await lstat(path, { bigint: true });
+  assert(pathBefore.isFile() && !pathBefore.isSymbolicLink(), `${label} is not a regular file`);
+  assert(pathBefore.size <= BigInt(maximumBytes), `${label} exceeds its size limit`);
+  await testHooks?.afterPathStat?.();
+  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+  try {
+    const before = await handle.stat({ bigint: true });
+    assert(before.isFile(), `${label} descriptor is not a regular file`);
+    assertSameFileGeneration(before, pathBefore, `${label} path generation does not match opened descriptor`);
+    assert(before.size <= BigInt(maximumBytes), `${label} exceeds its size limit`);
+    await testHooks?.afterDescriptorStat?.();
+    const byteLength = Number(before.size);
+    const bytes = Buffer.allocUnsafe(byteLength);
+    let offset = 0;
+    while (offset < byteLength) {
+      const { bytesRead } = await handle.read(bytes, offset, byteLength - offset, offset);
+      assert(bytesRead !== 0, `${label} changed during read`);
+      offset += bytesRead;
+    }
+    const growthProbe = Buffer.allocUnsafe(1);
+    const { bytesRead: growthBytes } = await handle.read(growthProbe, 0, 1, byteLength);
+    assert.equal(growthBytes, 0, `${label} changed during read`);
+    const after = await handle.stat({ bigint: true });
+    assertSameFileGeneration(after, before, `${label} descriptor changed during read`);
+    await testHooks?.afterDescriptorRead?.();
+    const pathAfter = await lstat(path, { bigint: true });
+    assert(pathAfter.isFile() && !pathAfter.isSymbolicLink(), `${label} path is no longer a regular file`);
+    assertSameFileGeneration(pathAfter, before, `${label} path changed during read`);
+    return Object.freeze({
+      bytes: Buffer.from(bytes),
+      generation: Object.freeze(Object.fromEntries(FILE_GENERATION_FIELDS.map((field) => [field, after[field]]))),
+      executable: (after.mode & 0o111n) !== 0n,
+    });
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function canonicalFuturePathIdentity(path) {
   assert(typeof path === "string" && path.length > 0, "custody path must be nonempty");
   let ancestor = resolve(path);
@@ -126,32 +172,7 @@ export async function runtimeSourcePaths(root = repositoryRoot) {
 async function snapshotRegularFileGeneration(root, path, maximumBytes = RUNTIME_ENTRY_MAX_BYTES) {
   assert(isSafeRelativePath(path), `unsafe runtime input path: ${path}`);
   const absolute = join(root, ...path.split("/"));
-  const beforePath = await lstat(absolute, { bigint: true });
-  assert(beforePath.isFile() && !beforePath.isSymbolicLink(), `runtime input is not a regular file: ${path}`);
-  assert(beforePath.size <= BigInt(maximumBytes), `runtime input exceeds the per-entry limit: ${path}`);
-  const handle = await open(absolute, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
-  try {
-    const before = await handle.stat({ bigint: true });
-    assert(before.isFile(), `runtime input descriptor is not a regular file: ${path}`);
-    assert.equal(before.dev, beforePath.dev, `runtime input changed before snapshot: ${path}`);
-    assert.equal(before.ino, beforePath.ino, `runtime input changed before snapshot: ${path}`);
-    assert.equal(before.size, beforePath.size, `runtime input changed before snapshot: ${path}`);
-    const bytes = await handle.readFile();
-    assert.equal(BigInt(bytes.length), before.size, `runtime input changed during snapshot: ${path}`);
-    const after = await handle.stat({ bigint: true });
-    for (const field of ["dev", "ino", "size", "mtimeNs", "ctimeNs"]) {
-      assert.equal(after[field], before[field], `runtime input changed during snapshot: ${path}`);
-    }
-    return Object.freeze({
-      bytes: Buffer.from(bytes),
-      generation: Object.freeze(Object.fromEntries(
-        ["dev", "ino", "size", "mtimeNs", "ctimeNs"].map((field) => [field, after[field]]),
-      )),
-      executable: (after.mode & 0o111n) !== 0n,
-    });
-  } finally {
-    await handle.close();
-  }
+  return readBoundedRegularFileSnapshot(absolute, maximumBytes, `runtime input ${path}`);
 }
 
 async function snapshotRegularFile(root, path, maximumBytes = RUNTIME_ENTRY_MAX_BYTES) {

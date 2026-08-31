@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
-  __testOnlyReadRegularBoundaryAsset,
   acquireBoundaryProcessAssets,
   assertPhysicalBoundaryKernelDescendant,
   classifyLocalBoundaryAssetProvenance,
 } from "../scripts/acquire_boundary_process_assets.mjs";
+import { readBoundedRegularFileSnapshot } from "../scripts/build_runtime_archive.mjs";
 import {
   BOUNDARY_PROCESS_PROOF,
   acquireBoundaryProcessConformanceAssets,
@@ -108,13 +108,13 @@ describe("Boundary development asset provenance", () => {
       await writeFile(input, "first");
       await writeFile(replacement, "other");
 
-      await expect(__testOnlyReadRegularBoundaryAsset(input, 1024, "test Boundary kernel", {
+      await expect(readBoundedRegularFileSnapshot(input, 1024, "test Boundary kernel", {
         afterPathStat: async () => rename(replacement, input),
       })).rejects.toThrow(/path generation does not match opened descriptor/);
 
       await writeFile(input, "first");
       await writeFile(replacement, "other");
-      await expect(__testOnlyReadRegularBoundaryAsset(input, 1024, "test Boundary kernel", {
+      await expect(readBoundedRegularFileSnapshot(input, 1024, "test Boundary kernel", {
         afterDescriptorRead: async () => rename(replacement, input),
       })).rejects.toThrow(/path changed during read/);
     } finally {

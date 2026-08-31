@@ -5,7 +5,10 @@ import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/prom
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { assertPhysicalPathCustody } from "./build_runtime_archive.mjs";
+import {
+  assertPhysicalPathCustody,
+  readBoundedRegularFileSnapshot,
+} from "./build_runtime_archive.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MAXIMUM_DOWNLOAD_BYTES = 64 * 1024 * 1024;
@@ -44,41 +47,8 @@ export async function readExactBoundaryLock(path = join(repositoryRoot, "conform
   return exactLock(JSON.parse(await readFile(path, "utf8")));
 }
 
-const REGULAR_FILE_GENERATION_FIELDS = Object.freeze(["dev", "ino", "size", "mtimeNs", "ctimeNs"]);
-
-function assertSameRegularFileGeneration(actual, expected, message) {
-  for (const field of REGULAR_FILE_GENERATION_FIELDS) {
-    assert.equal(actual[field], expected[field], message);
-  }
-}
-
 async function readRegular(path, maximum, label, testHooks = undefined) {
-  assert(isAbsolute(path), `${label} path must be absolute`);
-  const pathInfo = await lstat(path, { bigint: true });
-  assert(pathInfo.isFile() && !pathInfo.isSymbolicLink(), `${label} is not a regular file`);
-  assert(pathInfo.size <= BigInt(maximum), `${label} exceeds its size limit`);
-  await testHooks?.afterPathStat?.();
-  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
-  try {
-    const before = await handle.stat({ bigint: true });
-    assert(before.isFile(), `${label} descriptor is not a regular file`);
-    assertSameRegularFileGeneration(before, pathInfo, `${label} path generation does not match opened descriptor`);
-    const bytes = await handle.readFile();
-    assert.equal(BigInt(bytes.length), before.size, `${label} changed during read`);
-    const after = await handle.stat({ bigint: true });
-    assertSameRegularFileGeneration(after, before, `${label} descriptor changed during read`);
-    await testHooks?.afterDescriptorRead?.();
-    const pathAfter = await lstat(path, { bigint: true });
-    assert(pathAfter.isFile() && !pathAfter.isSymbolicLink(), `${label} path is no longer a regular file`);
-    assertSameRegularFileGeneration(pathAfter, before, `${label} path changed during read`);
-    return Buffer.from(bytes);
-  } finally {
-    await handle.close();
-  }
-}
-
-export async function __testOnlyReadRegularBoundaryAsset(path, maximum, label, testHooks) {
-  return readRegular(path, maximum, label, testHooks);
+  return (await readBoundedRegularFileSnapshot(path, maximum, label, testHooks)).bytes;
 }
 
 async function fetchBounded(url, maximum, label) {

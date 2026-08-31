@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   EXPECTED_PRODUCTION_BUILTINS,
   checkProcessSurface,
+  derivePackageFilesystemPaths,
   derivePackageInventory,
   scanModuleSpecifiers,
   validateModuleImportSyntax,
@@ -99,6 +102,24 @@ describe("World 4 package identity", () => {
 });
 
 describe("source-derived topology", () => {
+  test("derives package directory contents from the filesystem even when Git may ignore them", async () => {
+    const packageRoot = await mkdtemp(path.join(tmpdir(), "world-package-filesystem-"));
+    try {
+      await mkdir(path.join(packageRoot, "bin"), { recursive: true });
+      await mkdir(path.join(packageRoot, "src", "process_v1", "nested"), { recursive: true });
+      await writeFile(path.join(packageRoot, "bin", "world.mjs"), "");
+      await writeFile(path.join(packageRoot, "src", "process_v1", "index.mjs"), "");
+      await writeFile(path.join(packageRoot, "src", "process_v1", "nested", "ignored.mjs"), "");
+      expect(derivePackageFilesystemPaths(packageRoot)).toEqual([
+        "bin/world.mjs",
+        "src/process_v1/index.mjs",
+        "src/process_v1/nested/ignored.mjs",
+      ]);
+    } finally {
+      await rm(packageRoot, { recursive: true, force: true });
+    }
+  });
+
   test("rejects retired Zig and SDK paths", () => {
     const required = [
       ".gitignore",
