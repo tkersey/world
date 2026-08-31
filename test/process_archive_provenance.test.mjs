@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -225,6 +225,20 @@ describe("runtime archive source provenance", () => {
     expect(result.receipt.byteReproducible).toBe(true);
     expect(result.receipt.cleanRoomRuntimeVerified).toBe(true);
   }, 120_000);
+
+  test("rejects a direct receipt CLI root that differs from its executing checkout", async () => {
+    const root = await cloneRepository("cross-checkout-release-root");
+    const result = spawnSync(process.execPath, [
+      join(repositoryRoot, "scripts", "write_release_receipt.mjs"),
+      "--root",
+      root,
+    ], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("release receipt root must match the executing World checkout");
+  });
 
   test("release receipt preflight rejects hidden drift in any tracked proof input", async () => {
     const root = await cloneRepository("proof-state");

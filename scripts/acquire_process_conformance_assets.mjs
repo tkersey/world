@@ -8,6 +8,7 @@ import {
   readFile,
   readdir,
   rename,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -644,6 +645,8 @@ export async function materializeExactFiles(destination, files) {
       staging,
       cause: error?.message ?? String(error),
     });
+  } finally {
+    await rm(staging, { recursive: true, force: true });
   }
 }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -58,6 +58,15 @@ async function writeReleaseReceiptInternal({
   checksumPath = `${archivePath}.sha256`,
   outputPath = join(root, "dist", DEFAULT_RELEASE_RECEIPT),
 } = {}) {
+  const [selectedRoot, executingRoot] = await Promise.all([
+    realpath(root),
+    realpath(defaultRepositoryRoot),
+  ]);
+  assert.equal(
+    selectedRoot,
+    executingRoot,
+    "release receipt root must match the executing World checkout",
+  );
   const [buildModule, checkModule, conformanceModule, surfaceModule] = await Promise.all([
     import("./build_runtime_archive.mjs"),
     import("./check_runtime_archive.mjs"),

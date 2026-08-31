@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -139,6 +139,20 @@ describe("published conformance acquisition provenance", () => {
         destination,
         new Map([["fixture.bin", bytes]]),
       )).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_DESTINATION_CONFLICT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("removes its owned staging tree when materialization fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "world-conformance-materialization-cleanup-"));
+    try {
+      const destination = join(root, "destination");
+      await expect(materializeExactFiles(
+        destination,
+        new Map([["missing/fixture.bin", Buffer.from("fixture")]]),
+      )).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_WRITE_FAILED" });
+      expect((await readdir(root)).filter((name) => name.startsWith("destination.tmp-"))).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
