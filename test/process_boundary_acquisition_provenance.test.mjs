@@ -191,6 +191,21 @@ describe("published conformance acquisition provenance", () => {
     }
   });
 
+  test("bounds an oversized preexisting artifact by its exact expected length", async () => {
+    const root = await mkdtemp(join(tmpdir(), "world-conformance-existing-bound-"));
+    try {
+      const destination = join(root, "destination");
+      await mkdir(join(destination, "artifacts"), { recursive: true });
+      await writeFile(join(destination, "artifacts", "fixture.bin"), Buffer.alloc(4096));
+      await expect(materializeExactFiles(
+        destination,
+        new Map([["fixture.bin", Buffer.from("x")]]),
+      )).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_DESTINATION_CONFLICT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("admits a lock output that is physically outside the destination namespace", async () => {
     const root = await mkdtemp(join(tmpdir(), "world-conformance-custody-positive-"));
     try {

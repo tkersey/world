@@ -11,6 +11,11 @@ import { isBuiltin } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import {
+  assertSelectedGitCheckoutRoot,
+  gitProvenanceEnvironment,
+} from "./build_runtime_archive.mjs";
+
 export const EXPECTED_PUBLIC_EXPORTS = Object.freeze([
   "WorldProcessHostError",
   "admitProcessKernel",
@@ -193,6 +198,7 @@ function gitPaths(root, args) {
   const bytes = execFileSync("git", [...args, "-z"], {
     cwd: root,
     encoding: "buffer",
+    env: gitProvenanceEnvironment(),
     stdio: ["ignore", "pipe", "pipe"],
   });
   return bytes
@@ -217,6 +223,7 @@ export function derivePackageFilesystemPaths(root) {
 }
 
 export function deriveGitWorkingInventory(root) {
+  assertSelectedGitCheckoutRoot(root);
   const tracked = new Set(gitPaths(root, ["ls-files", "--cached"]));
   const candidates = new Set([
     ...tracked,

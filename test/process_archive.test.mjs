@@ -137,6 +137,9 @@ describe("World Process Host runtime archive", () => {
     await expect(assertRepositoryOutputNamespaces(root, [
       { label: "release receipt", path: join(root, "dist", "release-receipt.json") },
     ], "release receipt")).rejects.toThrow(/dist namespace must be a real directory/);
+    await expect(assertRepositoryOutputNamespaces(root, [
+      { label: "external receipt", path: join(temporaryRoot, "external-receipt.json") },
+    ], "release receipt")).resolves.toBeUndefined();
   });
 
   test("authenticates, manually extracts, and runs the embedded verifier with an empty PATH", async () => {

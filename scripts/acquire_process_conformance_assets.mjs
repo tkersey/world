@@ -15,7 +15,10 @@ import {
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { canonicalFuturePathIdentity } from "./build_runtime_archive.mjs";
+import {
+  canonicalFuturePathIdentity,
+  readBoundedRegularFileSnapshot,
+} from "./build_runtime_archive.mjs";
 
 export const BOUNDARY_PROCESS_PROOF = Object.freeze({
   repository: "tkersey/boundary",
@@ -625,7 +628,20 @@ export async function materializeExactFiles(destination, files) {
       });
     }
     for (const [id, bytes] of files) {
-      const observed = new Uint8Array(await readFile(join(destination, "artifacts", id)));
+      let observed;
+      try {
+        observed = (await readBoundedRegularFileSnapshot(
+          join(destination, "artifacts", id),
+          bytes.byteLength,
+          `existing conformance artifact ${id}`,
+        )).bytes;
+      } catch (error) {
+        fail("WORLD_CONFORMANCE_DESTINATION_CONFLICT", `existing artifact ${id} cannot be admitted`, {
+          destination,
+          artifact: id,
+          cause: error?.message ?? String(error),
+        });
+      }
       if (observed.byteLength !== bytes.byteLength || sha256Hex(observed) !== sha256Hex(bytes)) {
         fail("WORLD_CONFORMANCE_DESTINATION_CONFLICT", `existing artifact ${id} differs`, { destination, artifact: id });
       }

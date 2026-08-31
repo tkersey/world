@@ -163,9 +163,8 @@ export async function writeReleaseReceipt({
   checksumPath = `${archivePath}.sha256`,
   outputPath = join(root, "dist", DEFAULT_RELEASE_RECEIPT),
 } = {}) {
-  const childScript = join(root, "scripts", "write_release_receipt.mjs");
   const result = spawnSync(process.execPath, [
-    childScript,
+    scriptPath,
     "--root",
     root,
     "--archive",
@@ -175,7 +174,7 @@ export async function writeReleaseReceipt({
     "--out",
     outputPath,
   ], {
-    cwd: root,
+    cwd: defaultRepositoryRoot,
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
     env: {

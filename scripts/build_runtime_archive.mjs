@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, realpathSync } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -150,6 +150,14 @@ async function canonicalRenameTargetIdentity(path) {
 }
 
 export async function assertRepositoryOutputNamespaces(root, outputs, label = "repository output") {
+  const rootIdentity = await canonicalFuturePathIdentity(root);
+  const identities = await Promise.all(outputs.map(async (output) => Object.freeze({
+    ...output,
+    identity: await canonicalRenameTargetIdentity(output.path),
+  })));
+  const repositoryOutputs = identities.filter((output) => identityContains(rootIdentity, output.identity));
+  if (repositoryOutputs.length === 0) return;
+
   const distPath = join(root, "dist");
   try {
     const dist = await lstat(distPath);
@@ -157,18 +165,12 @@ export async function assertRepositoryOutputNamespaces(root, outputs, label = "r
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
-  const [rootIdentity, distIdentity] = await Promise.all([
-    canonicalFuturePathIdentity(root),
-    canonicalFuturePathIdentity(distPath),
-  ]);
-  for (const output of outputs) {
-    const identity = await canonicalRenameTargetIdentity(output.path);
-    if (identityContains(rootIdentity, identity)) {
-      assert(
-        identity !== distIdentity && identityContains(distIdentity, identity),
-        `${output.label} must be outside the repository or a file beneath dist`,
-      );
-    }
+  const distIdentity = await canonicalFuturePathIdentity(distPath);
+  for (const output of repositoryOutputs) {
+    assert(
+      output.identity !== distIdentity && identityContains(distIdentity, output.identity),
+      `${output.label} must be outside the repository or a file beneath dist`,
+    );
   }
 }
 
@@ -292,17 +294,32 @@ export async function readBoundaryLock(root = repositoryRoot) {
   return (await snapshotBoundaryLock(root)).lock;
 }
 
+export function gitProvenanceEnvironment(environment = process.env) {
+  const sanitized = { ...environment };
+  for (const key of Object.keys(sanitized)) {
+    if (key.startsWith("GIT_")) delete sanitized[key];
+  }
+  sanitized.GIT_NO_REPLACE_OBJECTS = "1";
+  return sanitized;
+}
+
+export function assertSelectedGitCheckoutRoot(root) {
+  const selected = gitOutput(root, ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  assert.equal(realpathSync(selected), realpathSync(root), "selected Git checkout root differs from the requested root");
+}
+
 function gitOutput(root, arguments_, options = {}) {
   return execFileSync("git", arguments_, {
     cwd: root,
     encoding: options.encoding,
-    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
+    env: gitProvenanceEnvironment(),
     maxBuffer: options.maxBuffer ?? 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
 
 export function exactGitHeadCommit(root = repositoryRoot) {
+  assertSelectedGitCheckoutRoot(root);
   const commit = gitOutput(root, ["rev-parse", "HEAD"], {
     encoding: "utf8",
   }).trim();

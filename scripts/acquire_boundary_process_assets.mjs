@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   assertPhysicalPathCustody,
+  gitProvenanceEnvironment,
   readBoundedRegularFileSnapshot,
 } from "./build_runtime_archive.mjs";
 
@@ -95,18 +96,9 @@ async function atomicWrite(path, bytes) {
   }
 }
 
-function gitEnvironment() {
-  const environment = { ...process.env };
-  for (const key of Object.keys(environment)) {
-    if (key.startsWith("GIT_")) delete environment[key];
-  }
-  environment.GIT_NO_REPLACE_OBJECTS = "1";
-  return environment;
-}
-
 export async function exactBoundarySource(sourceRoot, lock) {
   assert(isAbsolute(sourceRoot), "WORLD_BOUNDARY_SOURCE must be an absolute path");
-  const environment = gitEnvironment();
+  const environment = gitProvenanceEnvironment();
   const commit = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: sourceRoot,
     encoding: "utf8",

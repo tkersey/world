@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,6 +13,7 @@ import {
   canonicalGzip,
   checksumsBytes,
   createCanonicalTar,
+  exactGitHeadCommit,
   repositoryRoot,
   readBoundedRegularFileSnapshot,
   sha256,
@@ -25,6 +26,7 @@ import {
   parseCanonicalTar,
 } from "../scripts/check_runtime_archive.mjs";
 import { writeReleaseReceipt } from "../scripts/write_release_receipt.mjs";
+import { deriveGitWorkingInventory } from "../scripts/check_process_surface.mjs";
 
 setDefaultTimeout(30_000);
 
@@ -140,6 +142,21 @@ describe("runtime archive source provenance", () => {
       root,
       outputPath: join(root, "dist", RUNTIME_ARCHIVE_NAME),
     })).rejects.toThrow(/retained runtime bytes differ from Git blob at HEAD: README\.md/);
+  });
+
+  test("ignores ambient Git selectors for archive and surface provenance", async () => {
+    const root = await cloneRepository("ambient-git-selector");
+    const expectedHead = git(root, ["rev-parse", "HEAD"]);
+    const priorGitDir = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(root, "missing-ambient.git");
+    try {
+      expect(exactGitHeadCommit(root)).toBe(expectedHead);
+      expect(deriveGitWorkingInventory(root).some((entry) => entry.path === "package.json"))
+        .toBe(true);
+    } finally {
+      if (priorGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = priorGitDir;
+    }
   });
 
   test("binds retained snapshots rather than a later restored worktree", async () => {
@@ -258,6 +275,21 @@ describe("runtime archive source provenance", () => {
     expect(result.stderr).toContain("release receipt root must match the executing World checkout");
   });
 
+  test("programmatic receipt generation never executes a caller-selected checkout script", async () => {
+    const root = join(temporaryRoot, "caller-selected-receipt-script");
+    const outputPath = join(root, "fake-receipt.json");
+    await mkdir(join(root, "scripts"), { recursive: true });
+    await writeFile(join(root, "scripts", "write_release_receipt.mjs"), [
+      'import { writeFileSync } from "node:fs";',
+      'const out = process.argv[process.argv.indexOf("--out") + 1];',
+      'writeFileSync(out, "{}\\n");',
+      'console.log("world_release_receipt_write=pass");',
+      "",
+    ].join("\n"));
+    await expect(writeReleaseReceipt({ root, outputPath }))
+      .rejects.toThrow(/release receipt root must match the executing World checkout/);
+  });
+
   test("release receipt preflight rejects hidden drift in any tracked proof input", async () => {
     const root = await cloneRepository("proof-state");
     const archivePath = join(root, "dist", RUNTIME_ARCHIVE_NAME);
@@ -269,7 +301,8 @@ describe("runtime archive source provenance", () => {
     expect(git(root, ["status", "--porcelain=v1", "--", proofPath])).toBe("");
     const sourceCommit = git(root, ["rev-parse", "HEAD"]);
     await expect(assertTrackedRepositoryMatchesCommit(root, sourceCommit)).rejects.toThrow(/tracked working bytes differ from source commit: test\/process_kernel\.test\.mjs/);
-    await expect(writeReleaseReceipt({
+    const writer = await import(`${pathToFileURL(join(root, "scripts", "write_release_receipt.mjs")).href}?proof-state`);
+    await expect(writer.writeReleaseReceipt({
       root,
       archivePath,
       checksumPath,
