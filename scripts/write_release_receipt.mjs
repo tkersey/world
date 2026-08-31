@@ -25,7 +25,11 @@ async function assertReleaseOutputNamespaces(root, outputs, canonicalFuturePathI
     canonicalFuturePathIdentity(join(root, "dist")),
   ]);
   for (const { label, path } of outputs) {
-    const identity = await canonicalFuturePathIdentity(path);
+    const parentIdentity = await canonicalFuturePathIdentity(dirname(resolve(path)));
+    const identity = join(parentIdentity, basename(path))
+      .replaceAll("\\", "/")
+      .normalize("NFC")
+      .toLowerCase();
     if (identityContains(rootIdentity, identity)) {
       assert(
         identity !== distIdentity && identityContains(distIdentity, identity),

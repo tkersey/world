@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -287,6 +287,29 @@ describe("World Process Host runtime archive", () => {
         checksumPath: join(base, "archive.tar.gz.sha256"),
         outputPath,
       })).rejects.toThrow(/outside the repository or a file beneath dist/);
+    }
+  });
+
+  test("classifies rename targets by their parent and leaf rather than following leaf symlinks", async () => {
+    const inRepository = join(repositoryRoot, ".cache", `release-leaf-symlink-${process.pid}`);
+    const externalReceipt = join(temporaryRoot, "external-release-receipt.json");
+    const externalConformance = join(temporaryRoot, "external-conformance-receipt.json");
+    await mkdir(inRepository, { recursive: true });
+    await writeFile(externalReceipt, "external\n");
+    await writeFile(externalConformance, "external\n");
+    const outputPath = join(inRepository, "release-receipt.json");
+    const conformancePath = join(inRepository, DEFAULT_CONFORMANCE_RECEIPT);
+    await symlink(externalReceipt, outputPath);
+    await symlink(externalConformance, conformancePath);
+    try {
+      await expect(writeReleaseReceipt({
+        root: repositoryRoot,
+        archivePath,
+        checksumPath,
+        outputPath,
+      })).rejects.toThrow(/outside the repository or a file beneath dist/);
+    } finally {
+      await rm(inRepository, { recursive: true, force: true });
     }
   });
 

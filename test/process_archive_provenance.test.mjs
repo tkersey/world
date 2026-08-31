@@ -124,6 +124,24 @@ describe("runtime archive source provenance", () => {
     })).rejects.toThrow(/retained runtime bytes differ from Git blob at HEAD: README\.md/);
   });
 
+  test("disables Git replacement objects while binding source provenance", async () => {
+    const root = await cloneRepository("replacement-object");
+    const original = git(root, ["rev-parse", "HEAD"]);
+    const replacementReadme = "replacement-object runtime divergence\n";
+    await writeFile(join(root, "README.md"), replacementReadme);
+    git(root, ["add", "README.md"]);
+    git(root, ["-c", "user.name=World Test", "-c", "user.email=world-test@example.invalid", "commit", "-m", "replacement tree"]);
+    const replacement = git(root, ["rev-parse", "HEAD"]);
+    git(root, ["-c", "advice.detachedHead=false", "checkout", "--quiet", "--detach", original]);
+    git(root, ["replace", original, replacement]);
+    await writeFile(join(root, "README.md"), replacementReadme);
+
+    await expect(buildRuntimeArchive({
+      root,
+      outputPath: join(root, "dist", RUNTIME_ARCHIVE_NAME),
+    })).rejects.toThrow(/retained runtime bytes differ from Git blob at HEAD: README\.md/);
+  });
+
   test("binds retained snapshots rather than a later restored worktree", async () => {
     const root = await cloneRepository("snapshot-restore");
     const readmePath = join(root, "README.md");

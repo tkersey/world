@@ -260,16 +260,15 @@ function gitOutput(root, arguments_, options = {}) {
   return execFileSync("git", arguments_, {
     cwd: root,
     encoding: options.encoding,
+    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" },
     maxBuffer: options.maxBuffer ?? 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
 
 export function exactGitHeadCommit(root = repositoryRoot) {
-  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: root,
+  const commit = gitOutput(root, ["rev-parse", "HEAD"], {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
   }).trim();
   assert(/^[0-9a-f]{40}$/.test(commit), "World source commit is not an exact Git commit");
   return commit;
