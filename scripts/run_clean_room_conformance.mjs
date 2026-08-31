@@ -12,7 +12,6 @@ import {
   readdir,
   rename,
   rm,
-  stat,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, posix, resolve, sep } from "node:path";
@@ -31,6 +30,7 @@ import {
   assertPhysicalPathCustody,
   defaultArchivePath,
   defaultChecksumPath,
+  readBoundedRegularFileSnapshot,
 } from "./build_runtime_archive.mjs";
 
 const DEFAULT_BOUNDARY_LOCK = resolve("conformance/boundary-process-proof.lock.json");
@@ -103,7 +103,7 @@ async function requireRealProofRoot(path, label) {
   }
 }
 
-async function regularFileIdentity(root, record, label) {
+export async function regularFileIdentity(root, record, label) {
   if (!record || typeof record !== "object" || Array.isArray(record)) {
     fail("WORLD_CONFORMANCE_LOCK_INVALID", `${label} must be an artifact record`);
   }
@@ -115,24 +115,31 @@ async function regularFileIdentity(root, record, label) {
     fail("WORLD_CONFORMANCE_LOCK_INVALID", `${label}.sha256 is invalid`);
   }
   const path = join(root, ...relativePath.split("/"));
-  let fileStat;
+  let bytes;
   try {
-    fileStat = await stat(path);
-  } catch (error) {
-    fail("WORLD_CONFORMANCE_PREREQUISITE_MISSING", `${label} file is missing`, {
+    bytes = (await readBoundedRegularFileSnapshot(
       path,
-      cause: error?.code ?? error?.message ?? String(error),
-    });
+      record.byteLength,
+      label,
+    )).bytes;
+  } catch (error) {
+    const missing = error?.code === "ENOENT";
+    fail(
+      missing ? "WORLD_CONFORMANCE_PREREQUISITE_MISSING" : "WORLD_CONFORMANCE_ASSET_INVALID",
+      missing ? `${label} file is missing` : `${label} cannot be admitted as the locked regular file`,
+      {
+        path,
+        cause: error?.code ?? error?.message ?? String(error),
+      },
+    );
   }
-  if (!fileStat.isFile() || fileStat.size !== record.byteLength) {
-    fail("WORLD_CONFORMANCE_ASSET_INVALID", `${label} is not the locked regular file`, {
+  if (bytes.byteLength !== record.byteLength) {
+    fail("WORLD_CONFORMANCE_ASSET_INVALID", `${label} byte length differs`, {
       path,
       expectedByteLength: record.byteLength,
-      observedByteLength: fileStat.size,
-      regular: fileStat.isFile(),
+      observedByteLength: bytes.byteLength,
     });
   }
-  const bytes = new Uint8Array(await readFile(path));
   const observedDigest = sha256Hex(bytes);
   if (observedDigest !== record.sha256) {
     fail("WORLD_CONFORMANCE_ASSET_INVALID", `${label} digest mismatch`, {

@@ -14,6 +14,7 @@ import {
   assertConformanceReceiptCustody,
   cleanRoomEnvironment,
   copyLockedProofSnapshot,
+  regularFileIdentity,
   requireLockedProofs,
 } from "../scripts/run_clean_room_conformance.mjs";
 
@@ -265,6 +266,18 @@ describe("World conformance proof authority", () => {
       4,
     )).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_RELEASE_INVALID" });
     expect(chunksRead).toBe(2);
+  });
+
+  test("bounds proof artifacts by the locked byte length on one descriptor", async () => {
+    const root = join(temporaryRoot, "bounded-proof-artifact");
+    await writeFile(root, Buffer.alloc(4096));
+    await expect(regularFileIdentity(temporaryRoot, {
+      path: "bounded-proof-artifact",
+      byteLength: 1,
+      sha256: "0".repeat(64),
+    }, "bounded proof artifact")).rejects.toMatchObject({
+      code: "WORLD_CONFORMANCE_ASSET_INVALID",
+    });
   });
 });
 
