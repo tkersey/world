@@ -2,8 +2,7 @@
 .ledger/*
 .step/*
 
-# Zig generated state
-.zig-cache/
-zig-cache/
-zig-out/
-zig-pkg/
+# JavaScript build and package state
+dist/
+node_modules/
+.cache/

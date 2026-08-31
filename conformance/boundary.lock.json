@@ -1,0 +1,15 @@
+{
+  "format": "world-boundary-process-lock/v1",
+  "boundaryVersion": "1.7.0",
+  "boundaryCommit": "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
+  "sourceArchiveUrl": "https://github.com/tkersey/boundary/archive/refs/tags/v1.7.0.tar.gz",
+  "sourceArchiveSha256": "a787f9838458d43e93aa7b955a36f69eb377b18036a05e3461ae3e7084f2e7d7",
+  "kernelReleaseUrl": "https://github.com/tkersey/boundary/releases/download/v1.7.0/boundary-process-kernel-v1.wasm",
+  "kernelSha256": "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0",
+  "kernelByteLength": 647473,
+  "processKernelAbiVersion": 1,
+  "kernelImportCount": 0,
+  "kernelExportCount": 13,
+  "memoryInitialPages": 2457,
+  "memoryMaximumPages": 4096
+}

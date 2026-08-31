@@ -1,36 +1,95 @@
-World is a Zig comptime application compiler for Boundary Machines.
+# World
+
+World is the minimal reference host for Boundary Process ABI programs.
 
 ```text
-Boundary Machine -> world.application -> application.world.wasm -> world-host -> Effect v1 capabilities
+BPI1 + InitialArgs or ABL_PST1 [+ ABL_ERS1]
+                         |
+                         v
+        fixed Boundary Process kernel WASM
+                         |
+                         v
+             World one-reduction host
+                         |
+                         v
+              canonical ABL_PKO1
+                         |
+                         +-- Requested: typed ABL_ERQ1
 ```
 
-World closes one comptime-known Boundary Machine graph into one import-free,
-bounded-memory WebAssembly application. The generated artifact carries its
-canonical manifest and Application ABI v1 exports; a Frame remains the complete
-portable semantic state between calls.
+World authenticates the fixed Boundary 1.7.0 Process kernel, creates a fresh
+WebAssembly instance, performs exactly one finite reduction, copies the
+canonical outcome bytes out of guest memory, and discards the instance. A
+caller may answer a residual request by supplying typed resume bytes in an
+`ABL_ERS1` record on a later call.
 
-```zig
-const world = @import("world");
+World does not compile programs. It does not define Agent semantics, interpret
+BPI1 or Process State in JavaScript, drive a process loop, persist runs, or
+resolve effects. The surrounding environment decides whether another reduction
+occurs and holds all effect authority.
 
-pub const Application = world.application(.{
-    .name = "example",
-    .version = "1.0.0",
-    .root = RootMachine,
-    .handlers = .{world.handle(RootMachine, 0, "example.local.v1", ProviderMachine)},
-    .external = .{world.external(ProviderMachine, 0, .{
-        .site_identity = "example.lookup.v1",
-        .interface = "example.lookup.v1",
-        .authority = world.Authority.network,
-    })},
+## JavaScript API
+
+The single public module is `@tkersey/world/process-v1`. It exports exactly:
+
+```text
+admitProcessKernel
+decodeProcessOutcome
+decodeEffectRequest
+encodeEffectResult
+decodeEffectResult
+WorldProcessHostError
+```
+
+```javascript
+import { readFile, writeFile } from "node:fs/promises";
+import { admitProcessKernel } from "@tkersey/world/process-v1";
+
+const processModuleUrl = import.meta.resolve("@tkersey/world/process-v1");
+const kernelUrl = new URL("../../boundary-process-kernel-v1.wasm", processModuleUrl);
+const kernel = await readFile(kernelUrl);
+const image = await readFile("system.bpi1");
+const initialArgs = await readFile("initial.bin");
+
+const host = await admitProcessKernel(kernel);
+const outcome = await host.advance({
+  image,
+  instance: { initialArgs },
 });
+
+await writeFile("outcome.pko1", outcome.bytes);
 ```
 
-Package it from a dependent build with `world.addApplicationWasm`. The helper
-targets `wasm32-freestanding`, supplies only the public `world` and `boundary`
-modules, emits the canonical manifest, rejects imports and incompatible memory,
-and installs `<name>.world.wasm`.
+`advance` accepts byte arrays, snapshots them before asynchronous work, and
+requires exactly one of `instance.initialArgs` or `instance.state`. An optional
+`effectResult` supplies an exact `ABL_ERS1` record. Returned byte fields are
+independent copies and never expose mutable guest memory.
 
-Wire records are under `world.protocol.v1`; the WASM constructor is
-`world.ApplicationAbiV1`. Start with [Application](docs/application.md),
-[zero to application](docs/zero_to_world_application.md), and the normative
-[Application ABI v1](docs/application_abi_v1.md).
+## CLI
+
+World exposes one command and never loops automatically:
+
+```bash
+world process step \
+  --image system.bpi1 \
+  --initial-args initial.bin \
+  > outcome.pko1
+```
+
+Resume a portable state with an environmental result:
+
+```bash
+world process step \
+  --image system.bpi1 \
+  --state process.pst1 \
+  --result effect-result.ers1 \
+  --out outcome.pko1
+```
+
+Without `--kernel`, the command uses the exact kernel bundled with World 4.
+Input paths are admitted as coherent regular-file generations. `--out` publishes
+through a sibling temporary file and an atomic rename.
+
+See [Process Host v1](https://github.com/tkersey/world/blob/v4.0.0/docs/process_host_v1.md), the
+[security model](https://github.com/tkersey/world/blob/v4.0.0/docs/security_model.md), and
+[migration from World 3](https://github.com/tkersey/world/blob/v4.0.0/docs/migration_from_world_3.md).

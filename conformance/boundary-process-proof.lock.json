@@ -1,0 +1,713 @@
+{
+  "format": "world-boundary-process-proof-lock/v1",
+  "status": "locked",
+  "producer": {
+    "repository": "tkersey/boundary",
+    "releaseTag": "v1.7.0",
+    "releaseUrl": "https://github.com/tkersey/boundary/releases/tag/v1.7.0",
+    "commit": "4fd4cd959ea283a6b5af12a228f0d80a102683e3"
+  },
+  "boundary": {
+    "version": "1.7.0",
+    "commit": "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
+    "processKernelAbiVersion": 1,
+    "kernelSha256": "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0",
+    "kernelByteLength": 647473
+  },
+  "manifest": {
+    "assetName": "boundary-process-v1-conformance-corpus.json",
+    "sha256": "5ef2fb9fc3667ce97eae74d5bf9b635da46596fd7f0b3e68a04a43b24b7bb331"
+  },
+  "payload": {
+    "assetName": "boundary-process-v1-conformance-corpus.bin",
+    "sha256": "17a74f8adfdd7fe9aced05d01fe0432f7ad6720b69cf353bc57a695378bb527f",
+    "byteLength": 33578193
+  },
+  "receipt": {
+    "vectorCount": 20,
+    "nativeKernelParityCount": 20,
+    "needsCapacityVectorId": "needs-capacity",
+    "nonAgentVectorId": "typed-effect-initial"
+  },
+  "artifacts": [
+    {
+      "id": "typed-effect-initial.image",
+      "path": "artifacts/typed-effect-initial.image",
+      "byteLength": 746,
+      "sha256": "b62f6ea3a307fc600be79894ebd242fa07d8972e90c34194dd4219ecfc427d00"
+    },
+    {
+      "id": "typed-effect-initial.instance",
+      "path": "artifacts/typed-effect-initial.instance",
+      "byteLength": 4,
+      "sha256": "84fc05949dc1e486652a4ed316afb6434e9437eb30b714594a1d0b4205776602"
+    },
+    {
+      "id": "typed-effect-initial.outcome",
+      "path": "artifacts/typed-effect-initial.outcome",
+      "byteLength": 357,
+      "sha256": "ae484cef5493014835c8dfee6907905f7f3ebcb3030c81e270843b510ab7694c"
+    },
+    {
+      "id": "pending-request-reconstruction.image",
+      "path": "artifacts/pending-request-reconstruction.image",
+      "byteLength": 746,
+      "sha256": "b62f6ea3a307fc600be79894ebd242fa07d8972e90c34194dd4219ecfc427d00"
+    },
+    {
+      "id": "pending-request-reconstruction.instance",
+      "path": "artifacts/pending-request-reconstruction.instance",
+      "byteLength": 51,
+      "sha256": "377e7f60b8a67f3b8d2a8a4d19a28d0662a43214484c7215676d2fd9feeb5229"
+    },
+    {
+      "id": "pending-request-reconstruction.outcome",
+      "path": "artifacts/pending-request-reconstruction.outcome",
+      "byteLength": 357,
+      "sha256": "ae484cef5493014835c8dfee6907905f7f3ebcb3030c81e270843b510ab7694c"
+    },
+    {
+      "id": "typed-resume.image",
+      "path": "artifacts/typed-resume.image",
+      "byteLength": 746,
+      "sha256": "b62f6ea3a307fc600be79894ebd242fa07d8972e90c34194dd4219ecfc427d00"
+    },
+    {
+      "id": "typed-resume.instance",
+      "path": "artifacts/typed-resume.instance",
+      "byteLength": 51,
+      "sha256": "377e7f60b8a67f3b8d2a8a4d19a28d0662a43214484c7215676d2fd9feeb5229"
+    },
+    {
+      "id": "typed-resume.effect-result",
+      "path": "artifacts/typed-resume.effect-result",
+      "byteLength": 81,
+      "sha256": "cc591af200c4a2dc3215366b7e131a45d4a934cff9836bd1a7b1b7c4282f26b7"
+    },
+    {
+      "id": "typed-resume.outcome",
+      "path": "artifacts/typed-resume.outcome",
+      "byteLength": 36,
+      "sha256": "492ae5bfc7f2f9c9a39a722719c56f5357feae66b3a12e8734ac315174622ba9"
+    },
+    {
+      "id": "initial-progress.image",
+      "path": "artifacts/initial-progress.image",
+      "byteLength": 576,
+      "sha256": "4d72e7a8b315cfe892763f49b70511fa63c32ba1cbbcaf6cc65f08953d66d931"
+    },
+    {
+      "id": "initial-progress.instance",
+      "path": "artifacts/initial-progress.instance",
+      "byteLength": 4,
+      "sha256": "84fc05949dc1e486652a4ed316afb6434e9437eb30b714594a1d0b4205776602"
+    },
+    {
+      "id": "initial-progress.outcome",
+      "path": "artifacts/initial-progress.outcome",
+      "byteLength": 83,
+      "sha256": "1c70b5cac1ccdfc3e4b89dd00b70a5ce9f4f779b6afbb59b2cae8b54a26d14ad"
+    },
+    {
+      "id": "explicit-yield.image",
+      "path": "artifacts/explicit-yield.image",
+      "byteLength": 596,
+      "sha256": "88f2519a28941a2097947487e7b65741b08d763a81d7e750bc39e52d3643ddba"
+    },
+    {
+      "id": "explicit-yield.instance",
+      "path": "artifacts/explicit-yield.instance",
+      "byteLength": 4,
+      "sha256": "84fc05949dc1e486652a4ed316afb6434e9437eb30b714594a1d0b4205776602"
+    },
+    {
+      "id": "explicit-yield.outcome",
+      "path": "artifacts/explicit-yield.outcome",
+      "byteLength": 83,
+      "sha256": "db831736e9d28dfcceb82917ba53f3bbfb46c02c561966c6eedd49bbfd708b69"
+    },
+    {
+      "id": "authored-failure-v1.image",
+      "path": "artifacts/authored-failure-v1.image",
+      "byteLength": 480,
+      "sha256": "478bb722ffd63680d20be827cf32b553b0d3089401be474321898ab6af4be630"
+    },
+    {
+      "id": "authored-failure-v1.instance",
+      "path": "artifacts/authored-failure-v1.instance",
+      "byteLength": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "authored-failure-v1.outcome",
+      "path": "artifacts/authored-failure-v1.outcome",
+      "byteLength": 36,
+      "sha256": "899b609eb81ceb59934b5f68ef3a62cce424c2a08e407aa352b9236c7a93976b"
+    },
+    {
+      "id": "authored-failure-v2-bad-math-progress.image",
+      "path": "artifacts/authored-failure-v2-bad-math-progress.image",
+      "byteLength": 952,
+      "sha256": "f8d41102fbe7e78bc2d7f39674c851ea6035cad8be9156a14aae8903a9526913"
+    },
+    {
+      "id": "authored-failure-v2-bad-math-progress.instance",
+      "path": "artifacts/authored-failure-v2-bad-math-progress.instance",
+      "byteLength": 1,
+      "sha256": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a"
+    },
+    {
+      "id": "authored-failure-v2-bad-math-progress.outcome",
+      "path": "artifacts/authored-failure-v2-bad-math-progress.outcome",
+      "byteLength": 80,
+      "sha256": "a1155a39f917d19b0e0fe489d52f4cae56ee212737fa05173fc15376d518b7b9"
+    },
+    {
+      "id": "authored-failure-v2-bad-math.image",
+      "path": "artifacts/authored-failure-v2-bad-math.image",
+      "byteLength": 952,
+      "sha256": "f8d41102fbe7e78bc2d7f39674c851ea6035cad8be9156a14aae8903a9526913"
+    },
+    {
+      "id": "authored-failure-v2-bad-math.instance",
+      "path": "artifacts/authored-failure-v2-bad-math.instance",
+      "byteLength": 48,
+      "sha256": "0eb0b97090b4f4f56faa7685ad96222910c6e1fac4827da9ea599dcb48728fc5"
+    },
+    {
+      "id": "authored-failure-v2-bad-math.outcome",
+      "path": "artifacts/authored-failure-v2-bad-math.outcome",
+      "byteLength": 36,
+      "sha256": "899b609eb81ceb59934b5f68ef3a62cce424c2a08e407aa352b9236c7a93976b"
+    },
+    {
+      "id": "authored-failure-v2-bad-position-progress.image",
+      "path": "artifacts/authored-failure-v2-bad-position-progress.image",
+      "byteLength": 952,
+      "sha256": "f8d41102fbe7e78bc2d7f39674c851ea6035cad8be9156a14aae8903a9526913"
+    },
+    {
+      "id": "authored-failure-v2-bad-position-progress.instance",
+      "path": "artifacts/authored-failure-v2-bad-position-progress.instance",
+      "byteLength": 1,
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+    },
+    {
+      "id": "authored-failure-v2-bad-position-progress.outcome",
+      "path": "artifacts/authored-failure-v2-bad-position-progress.outcome",
+      "byteLength": 80,
+      "sha256": "a2aa7a5c1e5c6ff325b252b4741e4b16c2e19f27fe65450c5dcf1f62f590dcef"
+    },
+    {
+      "id": "authored-failure-v2-bad-position.image",
+      "path": "artifacts/authored-failure-v2-bad-position.image",
+      "byteLength": 952,
+      "sha256": "f8d41102fbe7e78bc2d7f39674c851ea6035cad8be9156a14aae8903a9526913"
+    },
+    {
+      "id": "authored-failure-v2-bad-position.instance",
+      "path": "artifacts/authored-failure-v2-bad-position.instance",
+      "byteLength": 48,
+      "sha256": "37aa5e87d47f0c04d39c9cb30dd0dbcd4a216e7867e0555738fca1ca3d8602fb"
+    },
+    {
+      "id": "authored-failure-v2-bad-position.outcome",
+      "path": "artifacts/authored-failure-v2-bad-position.outcome",
+      "byteLength": 36,
+      "sha256": "5a5415e06027bf79bf27c856f8551b7d4d75cb79c6af7cc183fc9575e087ddac"
+    },
+    {
+      "id": "authored-failure-v2-success.image",
+      "path": "artifacts/authored-failure-v2-success.image",
+      "byteLength": 674,
+      "sha256": "87e30b32bb40925b6c04e01402a1cff97aba5bae3528f52c0a61ad27f05167be"
+    },
+    {
+      "id": "authored-failure-v2-success.instance",
+      "path": "artifacts/authored-failure-v2-success.instance",
+      "byteLength": 2,
+      "sha256": "7a53cc5deb60512f3dacacc7695dd5072077c6f4984dbedbff76e27092393b1c"
+    },
+    {
+      "id": "authored-failure-v2-success.outcome",
+      "path": "artifacts/authored-failure-v2-success.outcome",
+      "byteLength": 33,
+      "sha256": "d8adfffbf0114ed07b811d467338662c808afad2ddf7d69520d7d295fe8eed44"
+    },
+    {
+      "id": "effect-morphism.image",
+      "path": "artifacts/effect-morphism.image",
+      "byteLength": 732,
+      "sha256": "a4cc542e5a63b0f865b080337415736d1c8dbfa38022b6c685649df802ed57b5"
+    },
+    {
+      "id": "effect-morphism.instance",
+      "path": "artifacts/effect-morphism.instance",
+      "byteLength": 4,
+      "sha256": "e8613f5a5bc9f9feeda32a8e7c80b69dd4878e47b6a91723fb15eb84236b6a2b"
+    },
+    {
+      "id": "effect-morphism.outcome",
+      "path": "artifacts/effect-morphism.outcome",
+      "byteLength": 343,
+      "sha256": "084fd38afededc9ad737bcc439b00585b715b049e3f66cf0936b0e4e49d10e9b"
+    },
+    {
+      "id": "recursion-call.image",
+      "path": "artifacts/recursion-call.image",
+      "byteLength": 1635,
+      "sha256": "2402616bc23ec1d4f969bd8843571c1e2e6023d74145bde8ce6e593178bf42cb"
+    },
+    {
+      "id": "recursion-call.instance",
+      "path": "artifacts/recursion-call.instance",
+      "byteLength": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450"
+    },
+    {
+      "id": "recursion-call.outcome",
+      "path": "artifacts/recursion-call.outcome",
+      "byteLength": 109,
+      "sha256": "58e0ba5ba33464de3cc4495449f3c7fd4362279e4e04627c7d4c760080518a1b"
+    },
+    {
+      "id": "recursion-branch.image",
+      "path": "artifacts/recursion-branch.image",
+      "byteLength": 1635,
+      "sha256": "2402616bc23ec1d4f969bd8843571c1e2e6023d74145bde8ce6e593178bf42cb"
+    },
+    {
+      "id": "recursion-branch.instance",
+      "path": "artifacts/recursion-branch.instance",
+      "byteLength": 77,
+      "sha256": "06edcb8275746390694b48f65b1f3b6a58e51ed8004208ce149bd538e286bed4"
+    },
+    {
+      "id": "recursion-branch.outcome",
+      "path": "artifacts/recursion-branch.outcome",
+      "byteLength": 121,
+      "sha256": "a7f2b945c94638e64e1a7096cd9cafbc7ef53a7b3eb86208a018c884baba7d86"
+    },
+    {
+      "id": "recursion-recur.image",
+      "path": "artifacts/recursion-recur.image",
+      "byteLength": 1635,
+      "sha256": "2402616bc23ec1d4f969bd8843571c1e2e6023d74145bde8ce6e593178bf42cb"
+    },
+    {
+      "id": "recursion-recur.instance",
+      "path": "artifacts/recursion-recur.instance",
+      "byteLength": 89,
+      "sha256": "f0008cdd4b39701dffa86e6099ea3f854cd9c311bad12f33266f6258fe03ea10"
+    },
+    {
+      "id": "recursion-recur.outcome",
+      "path": "artifacts/recursion-recur.outcome",
+      "byteLength": 151,
+      "sha256": "a87d24743df05ba4de32b512df3854bb11c63fce8b34e88b06ec0b48e97c511b"
+    },
+    {
+      "id": "recursion-base-branch.image",
+      "path": "artifacts/recursion-base-branch.image",
+      "byteLength": 1635,
+      "sha256": "2402616bc23ec1d4f969bd8843571c1e2e6023d74145bde8ce6e593178bf42cb"
+    },
+    {
+      "id": "recursion-base-branch.instance",
+      "path": "artifacts/recursion-base-branch.instance",
+      "byteLength": 119,
+      "sha256": "be720da539d49fab9bc06bb588677a4887d4dd0ff87aa82928cf17b7a64f1ce6"
+    },
+    {
+      "id": "recursion-base-branch.outcome",
+      "path": "artifacts/recursion-base-branch.outcome",
+      "byteLength": 163,
+      "sha256": "69c23969d21e4d59f6e8086cfbccb99bf28b79b83a37f4f894604a3bd084f763"
+    },
+    {
+      "id": "recursion-return-inner.image",
+      "path": "artifacts/recursion-return-inner.image",
+      "byteLength": 1635,
+      "sha256": "2402616bc23ec1d4f969bd8843571c1e2e6023d74145bde8ce6e593178bf42cb"
+    },
+    {
+      "id": "recursion-return-inner.instance",
+      "path": "artifacts/recursion-return-inner.instance",
+      "byteLength": 131,
+      "sha256": "3e63fdf8f9e2dc80167ad4be66d9b53d6648bc7dd7b22ddf04b1bf24b7ed1249"
+    },
+    {
+      "id": "recursion-return-inner.outcome",
+      "path": "artifacts/recursion-return-inner.outcome",
+      "byteLength": 113,
+      "sha256": "fcd03adc3cfb532c4e52885a2ace3f641768b43160eb8363d24e07f0394f8b8e"
+    },
+    {
+      "id": "recursion-return-root.image",
+      "path": "artifacts/recursion-return-root.image",
+      "byteLength": 1635,
+      "sha256": "2402616bc23ec1d4f969bd8843571c1e2e6023d74145bde8ce6e593178bf42cb"
+    },
+    {
+      "id": "recursion-return-root.instance",
+      "path": "artifacts/recursion-return-root.instance",
+      "byteLength": 81,
+      "sha256": "a6c255e85ffda2e70647607450ac7392a13101fb8bcfe881a3c3d1e0cf9a68bb"
+    },
+    {
+      "id": "recursion-return-root.outcome",
+      "path": "artifacts/recursion-return-root.outcome",
+      "byteLength": 83,
+      "sha256": "983e586d9590cb5f5ad3f3625d4384da5bd617bee341147c845e949b4d66fa79"
+    },
+    {
+      "id": "recursion-complete.image",
+      "path": "artifacts/recursion-complete.image",
+      "byteLength": 1635,
+      "sha256": "2402616bc23ec1d4f969bd8843571c1e2e6023d74145bde8ce6e593178bf42cb"
+    },
+    {
+      "id": "recursion-complete.instance",
+      "path": "artifacts/recursion-complete.instance",
+      "byteLength": 51,
+      "sha256": "916660ae367264b2ae09e0447fda1940a16485d91649ba52a2980f06dde00048"
+    },
+    {
+      "id": "recursion-complete.outcome",
+      "path": "artifacts/recursion-complete.outcome",
+      "byteLength": 36,
+      "sha256": "e39691a5fc975e63a391e009d80f1aec7d2ebdbd894c7501875541392f395779"
+    },
+    {
+      "id": "needs-capacity.image",
+      "path": "artifacts/needs-capacity.image",
+      "byteLength": 746,
+      "sha256": "b62f6ea3a307fc600be79894ebd242fa07d8972e90c34194dd4219ecfc427d00"
+    },
+    {
+      "id": "needs-capacity.instance",
+      "path": "artifacts/needs-capacity.instance",
+      "byteLength": 33553647,
+      "sha256": "c039e4fb3ff6b2f59a9cc823a84e56c4db7cdf21033ce6496d04d6cbd1e9da28"
+    },
+    {
+      "id": "needs-capacity.outcome",
+      "path": "artifacts/needs-capacity.outcome",
+      "byteLength": 64,
+      "sha256": "d39288fd5bd8184a3edd7b69d4681d5908f05433664794090287af348a7b305a"
+    }
+  ],
+  "vectors": [
+    {
+      "id": "typed-effect-initial",
+      "scenarios": [
+        "typed-residual-effect",
+        "non-agent"
+      ],
+      "imagePath": "artifacts/typed-effect-initial.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/typed-effect-initial.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/typed-effect-initial.outcome",
+      "expectedKind": "Requested",
+      "expectedOutcomeSha256": "ae484cef5493014835c8dfee6907905f7f3ebcb3030c81e270843b510ab7694c"
+    },
+    {
+      "id": "pending-request-reconstruction",
+      "scenarios": [
+        "pending-request-reconstruction"
+      ],
+      "imagePath": "artifacts/pending-request-reconstruction.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/pending-request-reconstruction.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/pending-request-reconstruction.outcome",
+      "expectedKind": "Requested",
+      "expectedOutcomeSha256": "ae484cef5493014835c8dfee6907905f7f3ebcb3030c81e270843b510ab7694c"
+    },
+    {
+      "id": "typed-resume",
+      "scenarios": [
+        "typed-resume",
+        "completion"
+      ],
+      "imagePath": "artifacts/typed-resume.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/typed-resume.instance"
+      },
+      "effectResultPath": "artifacts/typed-resume.effect-result",
+      "expectedOutcomePath": "artifacts/typed-resume.outcome",
+      "expectedKind": "Completed",
+      "expectedOutcomeSha256": "492ae5bfc7f2f9c9a39a722719c56f5357feae66b3a12e8734ac315174622ba9"
+    },
+    {
+      "id": "initial-progress",
+      "scenarios": [
+        "initial-progress"
+      ],
+      "imagePath": "artifacts/initial-progress.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/initial-progress.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/initial-progress.outcome",
+      "expectedKind": "Progressed",
+      "expectedOutcomeSha256": "1c70b5cac1ccdfc3e4b89dd00b70a5ce9f4f779b6afbb59b2cae8b54a26d14ad"
+    },
+    {
+      "id": "explicit-yield",
+      "scenarios": [
+        "explicit-yield"
+      ],
+      "imagePath": "artifacts/explicit-yield.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/explicit-yield.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/explicit-yield.outcome",
+      "expectedKind": "ExplicitlyYielded",
+      "expectedOutcomeSha256": "db831736e9d28dfcceb82917ba53f3bbfb46c02c561966c6eedd49bbfd708b69"
+    },
+    {
+      "id": "authored-failure-v1",
+      "scenarios": [
+        "authored-failure-v1"
+      ],
+      "imagePath": "artifacts/authored-failure-v1.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/authored-failure-v1.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/authored-failure-v1.outcome",
+      "expectedKind": "AuthoredFailure",
+      "expectedOutcomeSha256": "899b609eb81ceb59934b5f68ef3a62cce424c2a08e407aa352b9236c7a93976b"
+    },
+    {
+      "id": "authored-failure-v2-bad-math-progress",
+      "scenarios": [
+        "authored-failure-v2"
+      ],
+      "imagePath": "artifacts/authored-failure-v2-bad-math-progress.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/authored-failure-v2-bad-math-progress.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/authored-failure-v2-bad-math-progress.outcome",
+      "expectedKind": "Progressed",
+      "expectedOutcomeSha256": "a1155a39f917d19b0e0fe489d52f4cae56ee212737fa05173fc15376d518b7b9"
+    },
+    {
+      "id": "authored-failure-v2-bad-math",
+      "scenarios": [
+        "authored-failure-v2"
+      ],
+      "imagePath": "artifacts/authored-failure-v2-bad-math.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/authored-failure-v2-bad-math.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/authored-failure-v2-bad-math.outcome",
+      "expectedKind": "AuthoredFailure",
+      "expectedOutcomeSha256": "899b609eb81ceb59934b5f68ef3a62cce424c2a08e407aa352b9236c7a93976b"
+    },
+    {
+      "id": "authored-failure-v2-bad-position-progress",
+      "scenarios": [
+        "authored-failure-v2"
+      ],
+      "imagePath": "artifacts/authored-failure-v2-bad-position-progress.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/authored-failure-v2-bad-position-progress.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/authored-failure-v2-bad-position-progress.outcome",
+      "expectedKind": "Progressed",
+      "expectedOutcomeSha256": "a2aa7a5c1e5c6ff325b252b4741e4b16c2e19f27fe65450c5dcf1f62f590dcef"
+    },
+    {
+      "id": "authored-failure-v2-bad-position",
+      "scenarios": [
+        "authored-failure-v2"
+      ],
+      "imagePath": "artifacts/authored-failure-v2-bad-position.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/authored-failure-v2-bad-position.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/authored-failure-v2-bad-position.outcome",
+      "expectedKind": "AuthoredFailure",
+      "expectedOutcomeSha256": "5a5415e06027bf79bf27c856f8551b7d4d75cb79c6af7cc183fc9575e087ddac"
+    },
+    {
+      "id": "authored-failure-v2-success",
+      "scenarios": [
+        "authored-failure-v2",
+        "completion"
+      ],
+      "imagePath": "artifacts/authored-failure-v2-success.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/authored-failure-v2-success.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/authored-failure-v2-success.outcome",
+      "expectedKind": "Completed",
+      "expectedOutcomeSha256": "d8adfffbf0114ed07b811d467338662c808afad2ddf7d69520d7d295fe8eed44"
+    },
+    {
+      "id": "effect-morphism",
+      "scenarios": [
+        "effect-morphism",
+        "typed-residual-effect"
+      ],
+      "imagePath": "artifacts/effect-morphism.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/effect-morphism.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/effect-morphism.outcome",
+      "expectedKind": "Requested",
+      "expectedOutcomeSha256": "084fd38afededc9ad737bcc439b00585b715b049e3f66cf0936b0e4e49d10e9b"
+    },
+    {
+      "id": "recursion-call",
+      "scenarios": [
+        "recursive-call-return",
+        "initial-progress"
+      ],
+      "imagePath": "artifacts/recursion-call.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/recursion-call.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/recursion-call.outcome",
+      "expectedKind": "Progressed",
+      "expectedOutcomeSha256": "58e0ba5ba33464de3cc4495449f3c7fd4362279e4e04627c7d4c760080518a1b"
+    },
+    {
+      "id": "recursion-branch",
+      "scenarios": [
+        "recursive-call-return",
+        "ordinary-progress"
+      ],
+      "imagePath": "artifacts/recursion-branch.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/recursion-branch.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/recursion-branch.outcome",
+      "expectedKind": "Progressed",
+      "expectedOutcomeSha256": "a7f2b945c94638e64e1a7096cd9cafbc7ef53a7b3eb86208a018c884baba7d86"
+    },
+    {
+      "id": "recursion-recur",
+      "scenarios": [
+        "recursive-call-return",
+        "ordinary-progress"
+      ],
+      "imagePath": "artifacts/recursion-recur.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/recursion-recur.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/recursion-recur.outcome",
+      "expectedKind": "Progressed",
+      "expectedOutcomeSha256": "a87d24743df05ba4de32b512df3854bb11c63fce8b34e88b06ec0b48e97c511b"
+    },
+    {
+      "id": "recursion-base-branch",
+      "scenarios": [
+        "recursive-call-return",
+        "ordinary-progress"
+      ],
+      "imagePath": "artifacts/recursion-base-branch.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/recursion-base-branch.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/recursion-base-branch.outcome",
+      "expectedKind": "Progressed",
+      "expectedOutcomeSha256": "69c23969d21e4d59f6e8086cfbccb99bf28b79b83a37f4f894604a3bd084f763"
+    },
+    {
+      "id": "recursion-return-inner",
+      "scenarios": [
+        "recursive-call-return",
+        "ordinary-progress"
+      ],
+      "imagePath": "artifacts/recursion-return-inner.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/recursion-return-inner.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/recursion-return-inner.outcome",
+      "expectedKind": "Progressed",
+      "expectedOutcomeSha256": "fcd03adc3cfb532c4e52885a2ace3f641768b43160eb8363d24e07f0394f8b8e"
+    },
+    {
+      "id": "recursion-return-root",
+      "scenarios": [
+        "recursive-call-return",
+        "ordinary-progress"
+      ],
+      "imagePath": "artifacts/recursion-return-root.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/recursion-return-root.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/recursion-return-root.outcome",
+      "expectedKind": "Progressed",
+      "expectedOutcomeSha256": "983e586d9590cb5f5ad3f3625d4384da5bd617bee341147c845e949b4d66fa79"
+    },
+    {
+      "id": "recursion-complete",
+      "scenarios": [
+        "recursive-call-return",
+        "completion"
+      ],
+      "imagePath": "artifacts/recursion-complete.image",
+      "instance": {
+        "kind": "state",
+        "path": "artifacts/recursion-complete.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/recursion-complete.outcome",
+      "expectedKind": "Completed",
+      "expectedOutcomeSha256": "e39691a5fc975e63a391e009d80f1aec7d2ebdbd894c7501875541392f395779"
+    },
+    {
+      "id": "needs-capacity",
+      "scenarios": [
+        "needs-capacity"
+      ],
+      "imagePath": "artifacts/needs-capacity.image",
+      "instance": {
+        "kind": "initialArgs",
+        "path": "artifacts/needs-capacity.instance"
+      },
+      "effectResultPath": null,
+      "expectedOutcomePath": "artifacts/needs-capacity.outcome",
+      "expectedKind": "NeedsCapacity",
+      "expectedOutcomeSha256": "d39288fd5bd8184a3edd7b69d4681d5908f05433664794090287af348a7b305a"
+    }
+  ]
+}

@@ -1,1 +1,0 @@
-pub const NotTheApplication = struct {};
