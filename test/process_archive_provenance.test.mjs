@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -172,6 +172,29 @@ describe("runtime archive source provenance", () => {
       verifyRebuild: true,
       runInner: false,
     })).rejects.toThrow(/runtime archive differs from an exact source rebuild/);
+  });
+
+  test("cleans an owned extraction root when the embedded verifier fails", async () => {
+    const paths = await buildArchive("failing-inner-verifier");
+    const parsed = parseCanonicalTar(parseCanonicalGzip(await readFile(paths.archivePath)));
+    const entries = new Map(parsed.map(({ path, bytes }) => [path, Buffer.from(bytes)]));
+    entries.set("verify-runtime.mjs", Buffer.from("throw new Error(\"expected verifier failure\");\n", "utf8"));
+    entries.set("checksums.sha256", checksumsBytes(entries));
+    const archive = canonicalGzip(createCanonicalTar(entries));
+    await writeFile(paths.archivePath, archive);
+    await writeFile(paths.checksumPath, `${sha256(archive)}  ${basename(paths.archivePath)}\n`);
+
+    const ownedRoots = async () => (await readdir(tmpdir()))
+      .filter((name) => name.startsWith("world-runtime-admitted-"))
+      .sort();
+    const before = await ownedRoots();
+    await expect(checkRuntimeArchive({
+      root: repositoryRoot,
+      ...paths,
+      verifyRebuild: false,
+      runInner: true,
+    })).rejects.toThrow(/embedded runtime verifier failed/);
+    expect(await ownedRoots()).toEqual(before);
   });
 
   test("loads release proof modules only inside the fresh receipt process", async () => {

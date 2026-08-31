@@ -3,6 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   access,
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -608,6 +609,12 @@ async function recursiveFiles(root, prefix = "") {
 export async function materializeExactFiles(destination, files) {
   const desiredNames = [...files.keys()].map((id) => `artifacts/${id}`).sort();
   if (await pathExists(destination)) {
+    const destinationStat = await lstat(destination);
+    if (!destinationStat.isDirectory()) {
+      fail("WORLD_CONFORMANCE_DESTINATION_CONFLICT", "existing conformance destination is not a real directory", {
+        destination,
+      });
+    }
     const observedNames = await recursiveFiles(destination);
     if (JSON.stringify(observedNames) !== JSON.stringify(desiredNames)) {
       fail("WORLD_CONFORMANCE_DESTINATION_CONFLICT", "existing conformance destination inventory differs", {

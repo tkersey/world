@@ -13,6 +13,7 @@ import {
   BOUNDARY_PROCESS_PROOF,
   acquireBoundaryProcessConformanceAssets,
   assertConformanceAcquisitionCustody,
+  materializeExactFiles,
   validateBoundaryProcessReleaseIdentity,
 } from "../scripts/acquire_process_conformance_assets.mjs";
 import { acquireRepositoryRepairTranscript } from "../scripts/acquire_repository_repair_transcript.mjs";
@@ -124,6 +125,25 @@ describe("Boundary development asset provenance", () => {
 });
 
 describe("published conformance acquisition provenance", () => {
+  test("rejects a symlinked existing destination even when its bytes match", async () => {
+    const root = await mkdtemp(join(tmpdir(), "world-conformance-materialization-carrier-"));
+    try {
+      const physical = join(root, "physical");
+      const destination = join(root, "destination");
+      const bytes = Buffer.from("exact fixture");
+      await mkdir(join(physical, "artifacts"), { recursive: true });
+      await writeFile(join(physical, "artifacts", "fixture.bin"), bytes);
+      await symlink(physical, destination, "dir");
+
+      await expect(materializeExactFiles(
+        destination,
+        new Map([["fixture.bin", bytes]]),
+      )).rejects.toMatchObject({ code: "WORLD_CONFORMANCE_DESTINATION_CONFLICT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("admits a lock output that is physically outside the destination namespace", async () => {
     const root = await mkdtemp(join(tmpdir(), "world-conformance-custody-positive-"));
     try {

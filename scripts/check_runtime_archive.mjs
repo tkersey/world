@@ -430,39 +430,46 @@ export async function checkRuntimeArchive({
   let temporaryRoot = null;
   let extractedRoot = extractTo;
   let inner = null;
-  if (runInner || extractTo !== null) {
-    if (extractedRoot === null) {
-      temporaryRoot = await mkdtemp(join(tmpdir(), "world-runtime-admitted-"));
-      extractedRoot = join(temporaryRoot, RUNTIME_ROOT);
-    }
-    await extractAdmittedRuntime(admitted, extractedRoot);
-    if (runInner) {
-      const pathRoot = await mkdtemp(join(tmpdir(), "world-runtime-empty-path-"));
-      try {
-        inner = runInnerVerifier(extractedRoot, pathRoot);
-      } finally {
-        await rm(pathRoot, { recursive: true, force: true });
+  let completed = false;
+  try {
+    if (runInner || extractTo !== null) {
+      if (extractedRoot === null) {
+        temporaryRoot = await mkdtemp(join(tmpdir(), "world-runtime-admitted-"));
+        extractedRoot = join(temporaryRoot, RUNTIME_ROOT);
+      }
+      await extractAdmittedRuntime(admitted, extractedRoot);
+      if (runInner) {
+        const pathRoot = await mkdtemp(join(tmpdir(), "world-runtime-empty-path-"));
+        try {
+          inner = runInnerVerifier(extractedRoot, pathRoot);
+        } finally {
+          await rm(pathRoot, { recursive: true, force: true });
+        }
       }
     }
-  }
 
-  const result = Object.freeze({
-    format: RUNTIME_FORMAT,
-    archivePath,
-    checksumPath,
-    archiveSha256: admitted.archiveSha256,
-    archiveByteLength: admitted.archiveByteLength,
-    archiveEntryCount: admitted.archiveEntryCount,
-    expandedByteLength: admitted.expandedByteLength,
-    runtimeInventory: admitted.runtimeInventory,
-    manifest: admitted.manifest,
-    reproducible,
-    innerVerified: inner !== null,
-    innerStdout: inner?.stdout ?? "",
-    extractedRoot: keepExtractedRoot || extractTo !== null ? extractedRoot : null,
-  });
-  if (temporaryRoot !== null && !keepExtractedRoot) await rm(temporaryRoot, { recursive: true, force: true });
-  return result;
+    const result = Object.freeze({
+      format: RUNTIME_FORMAT,
+      archivePath,
+      checksumPath,
+      archiveSha256: admitted.archiveSha256,
+      archiveByteLength: admitted.archiveByteLength,
+      archiveEntryCount: admitted.archiveEntryCount,
+      expandedByteLength: admitted.expandedByteLength,
+      runtimeInventory: admitted.runtimeInventory,
+      manifest: admitted.manifest,
+      reproducible,
+      innerVerified: inner !== null,
+      innerStdout: inner?.stdout ?? "",
+      extractedRoot: keepExtractedRoot || extractTo !== null ? extractedRoot : null,
+    });
+    completed = true;
+    return result;
+  } finally {
+    if (temporaryRoot !== null && (!completed || !keepExtractedRoot)) {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  }
 }
 
 function parseArguments(argv) {
