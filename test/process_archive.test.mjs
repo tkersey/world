@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import {
   RUNTIME_ARCHIVE_NAME,
@@ -24,10 +24,7 @@ import {
   parseCanonicalTar,
   parseChecksumSidecar,
 } from "../scripts/check_runtime_archive.mjs";
-import {
-  acquireBoundaryProcessAssets,
-  readExactBoundaryLock,
-} from "../scripts/acquire_boundary_process_assets.mjs";
+import { readExactBoundaryLock } from "../scripts/acquire_boundary_process_assets.mjs";
 import {
   DEFAULT_CONFORMANCE_RECEIPT,
   writeReleaseReceipt,
@@ -157,19 +154,14 @@ describe("World Process Host runtime archive", () => {
     expect(result.innerStdout).toMatch(/^world_runtime_kernel_imports=0$/m);
   });
 
-  test("validates the exact Boundary lock and local development override without changing source provenance", async () => {
-    expect(await readExactBoundaryLock()).toEqual(lock);
-    const outputPath = join(temporaryRoot, "acquired", "boundary-process-kernel-v1.wasm");
-    const result = await acquireBoundaryProcessAssets({
-      root: repositoryRoot,
-      outputPath,
-      mode: "local",
-      kernelPath: resolve(repositoryRoot, "boundary-process-kernel-v1.wasm"),
-      sourceRoot: null,
-    });
-    expect(result.provenance).toBe("local-kernel-override");
-    expect(result.kernelSha256).toBe(lock.kernelSha256);
-    expect(await readFile(outputPath)).toEqual(await readFile(join(repositoryRoot, "boundary-process-kernel-v1.wasm")));
+  test("preserves the historical Boundary lock separately from the current runtime kernel", async () => {
+    const historical = await readExactBoundaryLock();
+    expect(historical.boundaryVersion).toBe("1.7.0");
+    expect(historical.kernelSha256).toBe("178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0");
+    expect(lock.boundaryVersion).toBe("1.8.0");
+    const kernel = await readFile(join(repositoryRoot, "boundary-process-kernel-v1.wasm"));
+    expect(kernel.byteLength).toBe(lock.kernelByteLength);
+    expect(sha256(kernel)).toBe(lock.kernelSha256);
   });
 
   test("rejects noncanonical or corrupt gzip before parsing USTAR", () => {

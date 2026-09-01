@@ -8,9 +8,9 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
 const WORLD_VERSION = "4.1.0";
-const KERNEL_SHA256 = "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0";
-const KERNEL_BYTE_LENGTH = 647473;
-const BOUNDARY_COMMIT = "4fd4cd959ea283a6b5af12a228f0d80a102683e3";
+const KERNEL_SHA256 = "ef47af44d072003b1affa435b6061e01b8c9fd73c56b6d1dd0b61b0e1ec79df3";
+const KERNEL_BYTE_LENGTH = 900823;
+const BOUNDARY_COMMIT = "d8f29fccf886675b62dfdc71e588e831742e58b1";
 const API_EXPORTS = Object.freeze([
   "WorldProcessHostError",
   "admitProcessKernel",
@@ -143,7 +143,7 @@ exactObject(manifest, {
   format: "world-process-host-runtime/v1",
   worldVersion: WORLD_VERSION,
   processKernelAbiVersion: 1,
-  boundaryVersion: "1.7.0",
+  boundaryVersion: "1.8.0",
   boundaryCommit: BOUNDARY_COMMIT,
   kernelSha256: KERNEL_SHA256,
   kernelByteLength: KERNEL_BYTE_LENGTH,
