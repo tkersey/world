@@ -162,7 +162,7 @@ function assertExactObject(actual, expected, label) {
 export function validatePackageManifest(manifest) {
   assert(manifest && typeof manifest === "object" && !Array.isArray(manifest), "package.json must contain an object");
   assert(manifest.name === "@tkersey/world", "package name must be @tkersey/world");
-  assert(manifest.version === "4.0.0", "package version must be 4.0.0");
+  assert(manifest.version === "4.1.0", "package version must be 4.1.0");
   assert(manifest.type === "module", "package type must be module");
   assert(manifest.private === false, "package private must be false");
   assert(manifest.license === "MIT", "package license must be MIT");

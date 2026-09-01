@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
-const WORLD_VERSION = "4.0.0";
+const WORLD_VERSION = "4.1.0";
 const KERNEL_SHA256 = "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0";
 const KERNEL_BYTE_LENGTH = 647473;
 const BOUNDARY_COMMIT = "4fd4cd959ea283a6b5af12a228f0d80a102683e3";

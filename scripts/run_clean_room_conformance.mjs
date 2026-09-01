@@ -37,7 +37,7 @@ const DEFAULT_BOUNDARY_LOCK = resolve("conformance/boundary-process-proof.lock.j
 const DEFAULT_BOUNDARY_ROOT = resolve("conformance/vectors");
 const DEFAULT_TRANSCRIPT_LOCK = resolve("conformance/repository-repair-transcript/lock.json");
 const DEFAULT_TRANSCRIPT_ROOT = resolve("conformance/repository-repair-transcript/data");
-const DEFAULT_RECEIPT = resolve("dist/world-v4.0.0-process-host-conformance-receipt.json");
+const DEFAULT_RECEIPT = resolve("dist/world-v4.1.0-process-host-conformance-receipt.json");
 const MAX_CHILD_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 function fail(code, message, details = {}) {
@@ -712,7 +712,7 @@ export async function runFullCleanRoomConformance({
     const receipt = {
       format: "world-process-host-conformance-receipt/v1",
       result: "passed",
-      worldVersion: "4.0.0",
+      worldVersion: "4.1.0",
       boundary: {
         version: BOUNDARY_PROCESS_PROOF.version,
         commit: BOUNDARY_PROCESS_PROOF.commit,

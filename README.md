@@ -90,6 +90,6 @@ Without `--kernel`, the command uses the exact kernel bundled with World 4.
 Input paths are admitted as coherent regular-file generations. `--out` publishes
 through a sibling temporary file and an atomic rename.
 
-See [Process Host v1](https://github.com/tkersey/world/blob/v4.0.0/docs/process_host_v1.md), the
-[security model](https://github.com/tkersey/world/blob/v4.0.0/docs/security_model.md), and
-[migration from World 3](https://github.com/tkersey/world/blob/v4.0.0/docs/migration_from_world_3.md).
+See [Process Host v1](https://github.com/tkersey/world/blob/v4.1.0/docs/process_host_v1.md), the
+[security model](https://github.com/tkersey/world/blob/v4.1.0/docs/security_model.md), and
+[migration from World 3](https://github.com/tkersey/world/blob/v4.1.0/docs/migration_from_world_3.md).
