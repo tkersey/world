@@ -7,10 +7,10 @@
  */
 export const BOUNDARY_PROCESS_KERNEL_V1 = Object.freeze({
   boundaryVersion: "1.8.0",
-  boundaryCommit: "e63fb5588112b74ba89a5a4b32a9edacff0c2006",
+  boundaryCommit: "f1c8b6ac982741a73c78c727d2e718c3060911e6",
   abiVersion: 1,
   byteLength: 1355389,
-  sha256: "028b3044a2a94b694b1868d9d0a444caf645aa0e87ea599c937d7f8d2d96c1e2",
+  sha256: "3d0802bd521988b0dd53ab0f5b5a2cab99e997bfeb00f6ff39fa98eebdff4598",
   importCount: 0,
   exportCount: 13,
   memoryInitialPages: 2516,
