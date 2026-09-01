@@ -7,12 +7,12 @@
  */
 export const BOUNDARY_PROCESS_KERNEL_V1 = Object.freeze({
   boundaryVersion: "1.8.0",
-  boundaryCommit: "68c046b6e328265a8b276c62455b4ffde5b823b4",
+  boundaryCommit: "e63fb5588112b74ba89a5a4b32a9edacff0c2006",
   abiVersion: 1,
-  byteLength: 900823,
-  sha256: "ef47af44d072003b1affa435b6061e01b8c9fd73c56b6d1dd0b61b0e1ec79df3",
+  byteLength: 1355389,
+  sha256: "028b3044a2a94b694b1868d9d0a444caf645aa0e87ea599c937d7f8d2d96c1e2",
   importCount: 0,
   exportCount: 13,
-  memoryInitialPages: 2461,
+  memoryInitialPages: 2516,
   memoryMaximumPages: 4096,
 });
