@@ -81,9 +81,9 @@ describe("World Process Host runtime archive", () => {
     expect(admitted.parsed.find(({ path }) => path === "package.json")?.mode).toBe(0o644);
     expect(admitted.manifest.productionSourceSha256).toMatch(/^[0-9a-f]{64}$/);
     const runtimeReadme = admitted.entries.get("README.md").toString("utf8");
-    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.0.0/docs/process_host_v1.md");
-    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.0.0/docs/security_model.md");
-    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.0.0/docs/migration_from_world_3.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/process_host_v1.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/security_model.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/migration_from_world_3.md");
     expect(runtimeReadme).not.toMatch(/\]\(docs\//);
   });
 

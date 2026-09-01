@@ -14,7 +14,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export const WORLD_VERSION = "4.0.0";
+export const WORLD_VERSION = "4.1.0";
 export const RUNTIME_FORMAT = "world-process-host-runtime/v1";
 export const RUNTIME_ROOT = `world-v${WORLD_VERSION}-process-host-runtime`;
 export const RUNTIME_ARCHIVE_NAME = `${RUNTIME_ROOT}.tar.gz`;
