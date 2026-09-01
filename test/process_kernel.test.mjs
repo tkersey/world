@@ -42,7 +42,7 @@ describe("Boundary Process kernel static admission", () => {
       exportCount: 13,
       hasStart: false,
       memory: {
-        initialPages: 2516,
+        initialPages: 176,
         maximumPages: 4096,
         shared: false,
         memory64: false,
@@ -159,7 +159,7 @@ describe("fixed-kernel admitted host", () => {
       "sha256",
     ]);
     expect(host.abiVersion).toBe(1);
-    expect(host.byteLength).toBe(1355389);
+    expect(host.byteLength).toBe(1390550);
     expect(host.sha256).toBe(BOUNDARY_PROCESS_KERNEL_V1.sha256);
     expect(Object.isFrozen(host)).toBe(true);
     expect(Object.isFrozen(host.inspection)).toBe(true);
