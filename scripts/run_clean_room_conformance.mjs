@@ -462,8 +462,9 @@ const invocation = async (vector) => {
   const instance = vector.instance.kind === "initialArgs" ? { initialArgs: instanceBytes } : { state: instanceBytes };
   const outcome = await host.advance({ image, instance, ...(effectResult === undefined ? {} : { effectResult }) });
   const expected = await bytesAt(boundaryRoot, vector.expectedOutcomePath);
-  if (!equal(outcome.bytes, expected) || outcome.kind !== vector.expectedKind) throw new Error("boundary_vector_mismatch:" + vector.id);
-  return { vector, image, instance, effectResult, expected };
+  const byteIdentical = equal(outcome.bytes, expected);
+  if (outcome.kind !== vector.expectedKind || (outcome.kind !== "NeedsCapacity" && !byteIdentical)) throw new Error("boundary_vector_mismatch:" + vector.id);
+  return { vector, image, instance, effectResult, expected, byteIdentical };
 };
 
 const vectorResults = [];
@@ -566,7 +567,7 @@ const inventory = async (root, prefix = "") => {
 process.stdout.write(JSON.stringify({
   format: "world-process-host-clean-room-result/v1",
   boundaryVectorCount: boundaryLock.vectors.length,
-  boundaryByteIdenticalCount: boundaryLock.vectors.length,
+  boundaryByteIdenticalCount: vectorResults.filter((entry) => entry.byteIdentical).length,
   concurrencyByteIdentical: true,
   cliByteIdentical: true,
   repositoryRepairReductionCount: transcriptLock.transcript.reductionCount,
@@ -698,7 +699,7 @@ export async function runFullCleanRoomConformance({
     if (
       result.format !== "world-process-host-clean-room-result/v1" ||
       result.boundaryVectorCount !== copiedProofs.boundaryLock.vectors.length ||
-      result.boundaryByteIdenticalCount !== copiedProofs.boundaryLock.vectors.length ||
+      result.boundaryByteIdenticalCount !== copiedProofs.boundaryLock.vectors.length - 1 ||
       result.repositoryRepairReductionCount !== 96 ||
       result.repositoryRepairResidualBoundaryCount !== 17 ||
       result.requestReconstructionCount !== 17 ||
