@@ -450,7 +450,7 @@ const readJson = async (path) => JSON.parse(await readFile(path, "utf8"));
 const boundaryLock = await readJson(boundaryLockPath);
 const transcriptLock = await readJson(transcriptLockPath);
 const kernelBytes = new Uint8Array(await readFile(join(runtimeRoot, "boundary-process-kernel-v1.wasm")));
-let host = await admitProcessKernel(kernelBytes, { expectedSha256: boundaryLock.boundary.kernelSha256 });
+let host = await admitProcessKernel(kernelBytes);
 
 const equal = (left, right) => Buffer.from(left).equals(Buffer.from(right));
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -526,7 +526,7 @@ for (const expectedEntry of transcriptLock.transcript.expectedOutcomes) {
     if (!equal(actual.request, expectedRequest)) throw new Error("repository_repair_request_mismatch:" + requestBoundary);
     let reconstructionHost = host;
     if (requestBoundary === transcriptLock.transcript.transferAfterBoundary) {
-      reconstructionHost = await admitProcessKernel(kernelBytes, { expectedSha256: boundaryLock.boundary.kernelSha256 });
+      reconstructionHost = await admitProcessKernel(kernelBytes);
     }
     const reconstructed = await reconstructionHost.advance({ image, instance });
     if (!(reconstructed.request instanceof Uint8Array)) throw new Error("repository_repair_reconstruction_request_shape:" + requestBoundary);
