@@ -13,6 +13,7 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { BOUNDARY_PROCESS_KERNEL_V1 } from "../src/process_v1/kernel_identity.mjs";
 
 export const WORLD_VERSION = "4.1.0";
 export const RUNTIME_FORMAT = "world-process-host-runtime/v1";
@@ -290,8 +291,15 @@ async function snapshotBoundaryLock(root = repositoryRoot) {
   return Object.freeze({ bytes, lock: Object.freeze(lock) });
 }
 
-export async function readBoundaryLock(root = repositoryRoot) {
-  return (await snapshotBoundaryLock(root)).lock;
+export async function readBoundaryLock() {
+  return Object.freeze({
+    boundaryVersion: BOUNDARY_PROCESS_KERNEL_V1.boundaryVersion,
+    boundaryCommit: BOUNDARY_PROCESS_KERNEL_V1.boundaryCommit,
+    kernelSha256: BOUNDARY_PROCESS_KERNEL_V1.sha256,
+    kernelByteLength: BOUNDARY_PROCESS_KERNEL_V1.byteLength,
+    processKernelAbiVersion: BOUNDARY_PROCESS_KERNEL_V1.abiVersion,
+    kernelImportCount: BOUNDARY_PROCESS_KERNEL_V1.importCount,
+  });
 }
 
 export function gitProvenanceEnvironment(environment = process.env) {
@@ -602,7 +610,7 @@ export async function buildRuntimeArchive({
     "runtime build custody",
   );
   const boundary = await snapshotBoundaryLock(root);
-  const lock = boundary.lock;
+  const lock = await readBoundaryLock();
   const sourceEntries = await snapshotRuntimeSources(root);
   const entries = new Map(sourceEntries);
   entries.set("package.json", runtimePackageJson(entries.get("package.json")));
