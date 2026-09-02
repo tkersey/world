@@ -8,9 +8,9 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
 const WORLD_VERSION = "4.1.0";
-const KERNEL_SHA256 = "ef47af44d072003b1affa435b6061e01b8c9fd73c56b6d1dd0b61b0e1ec79df3";
-const KERNEL_BYTE_LENGTH = 900823;
-const BOUNDARY_COMMIT = "d8f29fccf886675b62dfdc71e588e831742e58b1";
+const KERNEL_SHA256 = "97a29a3eae3d5ed55ddd2f0dcf45a798d4813911e1d1c5bd33720c25d7f20f6b";
+const KERNEL_BYTE_LENGTH = 648639;
+const BOUNDARY_COMMIT = "a312d95c3cc7947437252f3431b9f05fd30165ee";
 const API_EXPORTS = Object.freeze([
   "WorldProcessHostError",
   "admitProcessKernel",
