@@ -38,6 +38,14 @@ describe("Boundary development asset provenance", () => {
     expect(classifyLocalBoundaryAssetProvenance("/exact-boundary-checkout")).toBe("local-checkout-asset");
   });
 
+  test("rejects historical lock selection in local mode", async () => {
+    await expect(acquireBoundaryProcessAssets({
+      root: repositoryRoot,
+      lockPath: "/definitely/missing-boundary.lock.json",
+      checkOnly: true,
+    })).rejects.toThrow(/local acquisition forbids a historical Boundary lock/);
+  });
+
   test("admits physical descendants, including paths through an internal symlink", async () => {
     const root = await mkdtemp(join(tmpdir(), "world-boundary-physical-positive-"));
     try {

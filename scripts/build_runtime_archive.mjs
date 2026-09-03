@@ -13,7 +13,6 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { BOUNDARY_PROCESS_KERNEL_V1 } from "../src/process_v1/kernel_identity.mjs";
 
 export const WORLD_VERSION = "4.1.0";
 export const RUNTIME_FORMAT = "world-process-host-runtime/v1";
@@ -263,42 +262,37 @@ export async function snapshotRuntimeSources(root = repositoryRoot) {
   return entries;
 }
 
-function requireExactObject(value, expected, label) {
-  assert(value !== null && typeof value === "object" && !Array.isArray(value), `${label} must be an object`);
-  assert.deepEqual(Object.keys(value).sort(), Object.keys(expected).sort(), `${label} fields are not exact`);
-  for (const [key, expectedValue] of Object.entries(expected)) assert.deepEqual(value[key], expectedValue, `${label}.${key} differs`);
-}
-
-async function snapshotBoundaryLock(root = repositoryRoot) {
-  const bytes = await snapshotRegularFile(root, "conformance/boundary.lock.json");
-  const lock = JSON.parse(bytes.toString("utf8"));
-  const expected = {
-    format: "world-boundary-process-lock/v1",
-    boundaryVersion: "1.7.0",
-    boundaryCommit: "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
-    sourceArchiveUrl: "https://github.com/tkersey/boundary/archive/refs/tags/v1.7.0.tar.gz",
-    sourceArchiveSha256: "a787f9838458d43e93aa7b955a36f69eb377b18036a05e3461ae3e7084f2e7d7",
-    kernelReleaseUrl: "https://github.com/tkersey/boundary/releases/download/v1.7.0/boundary-process-kernel-v1.wasm",
-    kernelSha256: "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0",
-    kernelByteLength: 647473,
-    processKernelAbiVersion: 1,
-    kernelImportCount: 0,
-    kernelExportCount: 13,
-    memoryInitialPages: 2457,
-    memoryMaximumPages: 4096,
-  };
-  requireExactObject(lock, expected, "Boundary lock");
-  return Object.freeze({ bytes, lock: Object.freeze(lock) });
-}
-
-export async function readBoundaryLock() {
+export async function readBoundaryLock(root = repositoryRoot, sourceEntries = null) {
+  const source = sourceEntries?.get("src/process_v1/kernel_identity.mjs")
+    ?? await snapshotRegularFile(root, "src/process_v1/kernel_identity.mjs");
+  assert(Buffer.isBuffer(source), "runtime kernel identity source must be bytes");
+  const module = await import(`data:text/javascript;base64,${source.toString("base64")}`);
+  const identity = module.BOUNDARY_PROCESS_KERNEL_V1;
+  assert(identity !== null && typeof identity === "object" && !Array.isArray(identity), "runtime kernel identity must be an object");
+  assert.deepEqual(Object.keys(identity).sort(), [
+    "abiVersion",
+    "boundaryCommit",
+    "boundaryVersion",
+    "byteLength",
+    "exportCount",
+    "importCount",
+    "memoryInitialPages",
+    "memoryMaximumPages",
+    "sha256",
+  ], "runtime kernel identity fields are not exact");
+  assert(/^\d+\.\d+\.\d+$/.test(identity.boundaryVersion), "runtime Boundary version is invalid");
+  assert(/^[0-9a-f]{40}$/.test(identity.boundaryCommit), "runtime Boundary commit is invalid");
+  assert(/^[0-9a-f]{64}$/.test(identity.sha256), "runtime kernel digest is invalid");
+  for (const field of ["abiVersion", "byteLength", "importCount", "exportCount", "memoryInitialPages", "memoryMaximumPages"]) {
+    assert(Number.isSafeInteger(identity[field]) && identity[field] >= 0, `runtime kernel ${field} is invalid`);
+  }
   return Object.freeze({
-    boundaryVersion: BOUNDARY_PROCESS_KERNEL_V1.boundaryVersion,
-    boundaryCommit: BOUNDARY_PROCESS_KERNEL_V1.boundaryCommit,
-    kernelSha256: BOUNDARY_PROCESS_KERNEL_V1.sha256,
-    kernelByteLength: BOUNDARY_PROCESS_KERNEL_V1.byteLength,
-    processKernelAbiVersion: BOUNDARY_PROCESS_KERNEL_V1.abiVersion,
-    kernelImportCount: BOUNDARY_PROCESS_KERNEL_V1.importCount,
+    boundaryVersion: identity.boundaryVersion,
+    boundaryCommit: identity.boundaryCommit,
+    kernelSha256: identity.sha256,
+    kernelByteLength: identity.byteLength,
+    processKernelAbiVersion: identity.abiVersion,
+    kernelImportCount: identity.importCount,
   });
 }
 
@@ -605,18 +599,15 @@ export async function buildRuntimeArchive({
     ],
     [
       ...sourcePaths.map((path) => ({ label: path, path: join(root, ...path.split("/")) })),
-      { label: "conformance/boundary.lock.json", path: join(root, "conformance", "boundary.lock.json") },
     ],
     "runtime build custody",
   );
-  const boundary = await snapshotBoundaryLock(root);
-  const lock = await readBoundaryLock();
   const sourceEntries = await snapshotRuntimeSources(root);
   const entries = new Map(sourceEntries);
   entries.set("package.json", runtimePackageJson(entries.get("package.json")));
   const retainedSnapshots = new Map(sourceEntries);
-  retainedSnapshots.set("conformance/boundary.lock.json", boundary.bytes);
   const resolvedCommit = bindRetainedSnapshotsToGitHead(root, retainedSnapshots);
+  const lock = await readBoundaryLock(root, sourceEntries);
   const manifest = createRuntimeManifest({ lock, commit: resolvedCommit, entries });
   entries.set("runtime-manifest.json", Buffer.from(stableJson(manifest), "utf8"));
   entries.set("checksums.sha256", checksumsBytes(entries));

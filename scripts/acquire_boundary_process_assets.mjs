@@ -174,7 +174,7 @@ async function readLocalBoundaryKernel(path, sourceRoot) {
 
 export async function acquireBoundaryProcessAssets({
   root = repositoryRoot,
-  lockPath = join(root, "conformance", "boundary.lock.json"),
+  lockPath = null,
   outputPath = null,
   mode = "local",
   kernelPath = process.env.WORLD_BOUNDARY_PROCESS_KERNEL ?? null,
@@ -184,7 +184,9 @@ export async function acquireBoundaryProcessAssets({
   assert(mode === "local" || mode === "release", "Boundary acquisition mode must be local or release");
   const resolvedOutput = outputPath ?? defaultBoundaryKernelOutput(root, mode);
   assert(isAbsolute(resolvedOutput), "Boundary kernel output path must be absolute");
+  if (mode === "local") assert(lockPath === null, "local acquisition forbids a historical Boundary lock");
   if (mode === "release") assert(kernelPath === null && sourceRoot === null, "release acquisition forbids local Boundary overrides");
+  const resolvedLock = lockPath ?? join(root, "conformance", "boundary.lock.json");
   const resolvedSourceRoot = sourceRoot === null ? null : resolve(sourceRoot);
   const resolvedKernel = mode === "local" && (kernelPath !== null || sourceRoot !== null)
     ? resolveLocalKernel(resolvedSourceRoot, kernelPath === null ? null : resolve(kernelPath))
@@ -193,14 +195,14 @@ export async function acquireBoundaryProcessAssets({
     await assertPhysicalBoundaryKernelDescendant(resolvedSourceRoot, resolvedKernel);
   }
   await assertPhysicalPathCustody([
-    ...(mode === "release" ? [{ label: "Boundary lock", path: lockPath }] : []),
+    ...(mode === "release" ? [{ label: "Boundary lock", path: resolvedLock }] : []),
     { label: "Boundary kernel output", path: resolvedOutput },
     ...(!checkOnly && resolvedKernel !== null
       ? [{ label: "local Boundary kernel input", path: resolvedKernel }]
       : []),
   ], [], "Boundary acquisition custody");
   const lock = mode === "release"
-    ? await readExactBoundaryLock(lockPath)
+    ? await readExactBoundaryLock(resolvedLock)
     : currentRuntimeLock();
   let bytes;
   let provenance;

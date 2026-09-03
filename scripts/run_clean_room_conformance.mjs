@@ -449,8 +449,10 @@ if (typeof admitProcessKernel !== "function" || typeof decodeProcessOutcome !== 
 const readJson = async (path) => JSON.parse(await readFile(path, "utf8"));
 const boundaryLock = await readJson(boundaryLockPath);
 const transcriptLock = await readJson(transcriptLockPath);
+const runtimeManifest = await readJson(join(runtimeRoot, "runtime-manifest.json"));
 const kernelBytes = new Uint8Array(await readFile(join(runtimeRoot, "boundary-process-kernel-v1.wasm")));
 let host = await admitProcessKernel(kernelBytes);
+if (host.sha256 !== runtimeManifest.kernelSha256) throw new Error("runtime_kernel_manifest_mismatch");
 
 const equal = (left, right) => Buffer.from(left).equals(Buffer.from(right));
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -566,6 +568,11 @@ const inventory = async (root, prefix = "") => {
 };
 process.stdout.write(JSON.stringify({
   format: "world-process-host-clean-room-result/v1",
+  runtimeBoundary: {
+    version: runtimeManifest.boundaryVersion,
+    commit: runtimeManifest.boundaryCommit,
+    kernelSha256: runtimeManifest.kernelSha256,
+  },
   boundaryVectorCount: boundaryLock.vectors.length,
   boundaryByteIdenticalCount: vectorResults.filter((entry) => entry.byteIdentical).length,
   concurrencyByteIdentical: true,
@@ -696,8 +703,15 @@ export async function runFullCleanRoomConformance({
         stdout: execution.stdout.toString("utf8").slice(0, 16_384),
       });
     }
+    const runtimeManifest = JSON.parse(await readFile(join(runtimeRoot, "runtime-manifest.json"), "utf8"));
+    const expectedRuntimeBoundary = {
+      version: runtimeManifest.boundaryVersion,
+      commit: runtimeManifest.boundaryCommit,
+      kernelSha256: runtimeManifest.kernelSha256,
+    };
     if (
       result.format !== "world-process-host-clean-room-result/v1" ||
+      JSON.stringify(result.runtimeBoundary) !== JSON.stringify(expectedRuntimeBoundary) ||
       result.boundaryVectorCount !== copiedProofs.boundaryLock.vectors.length ||
       result.boundaryByteIdenticalCount !== copiedProofs.boundaryLock.vectors.length ||
       result.repositoryRepairReductionCount !== 96 ||
@@ -715,9 +729,7 @@ export async function runFullCleanRoomConformance({
       result: "passed",
       worldVersion: "4.1.0",
       boundary: {
-        version: BOUNDARY_PROCESS_PROOF.version,
-        commit: BOUNDARY_PROCESS_PROOF.commit,
-        kernelSha256: BOUNDARY_PROCESS_PROOF.kernelSha256,
+        ...result.runtimeBoundary,
       },
       boundaryCorpus: {
         producerTag: copiedProofs.boundaryLock.producer.releaseTag,

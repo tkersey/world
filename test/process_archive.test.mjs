@@ -248,6 +248,12 @@ describe("World Process Host runtime archive", () => {
     expect(result.receipt).not.toHaveProperty("semanticConformance");
     const directConformance = JSON.parse(await readFile(conformanceOutputPath, "utf8"));
     expect(directConformance.result).toBe("passed");
+    expect(directConformance.boundary).toEqual({
+      version: lock.boundaryVersion,
+      commit: lock.boundaryCommit,
+      kernelSha256: lock.kernelSha256,
+    });
+    expect(directConformance.boundaryCorpus.producerTag).toBe("v1.7.0");
     expect(directConformance.cleanRoom.runtimeArchiveSha256).toBe(result.receipt.archiveSha256);
   }, 120_000);
 

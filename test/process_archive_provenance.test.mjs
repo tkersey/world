@@ -15,6 +15,7 @@ import {
   createCanonicalTar,
   exactGitHeadCommit,
   repositoryRoot,
+  readBoundaryLock,
   readBoundedRegularFileSnapshot,
   sha256,
   snapshotRuntimeSources,
@@ -75,6 +76,20 @@ async function cloneRepository(name) {
 }
 
 describe("runtime archive source provenance", () => {
+  test("derives runtime kernel identity from the selected root snapshot", async () => {
+    const root = await cloneRepository("selected-root-kernel-identity");
+    const identityPath = join(root, "src", "process_v1", "kernel_identity.mjs");
+    const alternateCommit = "a".repeat(40);
+    const source = await readFile(identityPath, "utf8");
+    await writeFile(identityPath, source.replace(
+      /boundaryCommit: "[0-9a-f]{40}"/,
+      `boundaryCommit: "${alternateCommit}"`,
+    ));
+    git(root, ["add", "src/process_v1/kernel_identity.mjs"]);
+    git(root, ["-c", "user.name=World Test", "-c", "user.email=world-test@example.invalid", "commit", "-m", "alternate kernel identity"]);
+    expect((await readBoundaryLock(root)).boundaryCommit).toBe(alternateCommit);
+  });
+
   test("reproduces an archive labeled with the exact clean Git HEAD", async () => {
     const paths = await buildArchive("exact");
     const result = await checkRuntimeArchive({
