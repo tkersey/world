@@ -10,12 +10,15 @@ import {
   assertRepositoryOutputNamespaces,
   buildRuntimeArchive,
   canonicalGzip,
+  checksumsBytes,
   createCanonicalTar,
   crc32,
+  productionSourceSha256,
   readBoundaryLock,
   repositoryRoot,
   runtimeSourcePaths,
   sha256,
+  stableJson,
 } from "../scripts/build_runtime_archive.mjs";
 import {
   admitRuntimeArchiveBytes,
@@ -29,7 +32,6 @@ import {
   DEFAULT_CONFORMANCE_RECEIPT,
   writeReleaseReceipt,
 } from "../scripts/write_release_receipt.mjs";
-import { runFullCleanRoomConformance } from "../scripts/run_clean_room_conformance.mjs";
 
 let temporaryRoot;
 let archivePath;
@@ -165,6 +167,21 @@ describe("World Process Host runtime archive", () => {
     expect(sha256(kernel)).toBe(lock.kernelSha256);
   });
 
+  test("rejects an archived canonical identity that contradicts the selected lock", async () => {
+    const entries = new Map([...admitted.entries].map(([path, bytes]) => [path, Buffer.from(bytes)]));
+    const identityPath = "src/process_v1/kernel_identity.json";
+    const identity = JSON.parse(entries.get(identityPath).toString("utf8"));
+    entries.set(identityPath, Buffer.from(stableJson({ ...identity, boundaryCommit: "a".repeat(40) }), "utf8"));
+    const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
+    entries.set("runtime-manifest.json", Buffer.from(stableJson({
+      ...manifest,
+      productionSourceSha256: productionSourceSha256(entries),
+    }), "utf8"));
+    entries.set("checksums.sha256", checksumsBytes(entries));
+    await expect(admitRuntimeArchiveBytes(canonicalGzip(createCanonicalTar(entries)), { lock }))
+      .rejects.toThrow(/runtime kernel identity differs from the selected Boundary lock/);
+  });
+
   test("rejects noncanonical or corrupt gzip before parsing USTAR", () => {
     const metadata = Buffer.from(archive);
     metadata[9] = 3;
@@ -256,23 +273,6 @@ describe("World Process Host runtime archive", () => {
     });
     expect(directConformance.boundaryCorpus.producerTag).toBe("v1.7.0");
     expect(directConformance.cleanRoom.runtimeArchiveSha256).toBe(result.receipt.archiveSha256);
-  }, 120_000);
-
-  test("rejects a runtime manifest generation replaced after archive admission", async () => {
-    const receiptPath = join(temporaryRoot, "replaced-manifest-receipt.json");
-    await expect(runFullCleanRoomConformance({
-      archivePath,
-      checksumPath,
-      receiptPath,
-      testHooks: {
-        afterRuntimeAdmission: async ({ runtimeRoot }) => {
-          const manifestPath = join(runtimeRoot, "runtime-manifest.json");
-          const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-          await writeFile(manifestPath, `${JSON.stringify({ ...manifest, boundaryCommit: "b".repeat(40) }, null, 2)}\n`);
-        },
-      },
-    })).rejects.toMatchObject({ code: "WORLD_CLEAN_ROOM_CONFORMANCE_FAILED" });
-    await expect(readFile(receiptPath)).rejects.toMatchObject({ code: "ENOENT" });
   }, 120_000);
 
   test("rejects aliased release custody paths before proof or writes", async () => {

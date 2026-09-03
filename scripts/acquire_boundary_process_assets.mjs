@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  assertBoundaryProcessKernelMatchesLock,
   assertPhysicalPathCustody,
   gitProvenanceEnvironment,
   readBoundaryLock,
@@ -73,10 +74,8 @@ async function fetchBounded(url, maximum, label) {
   return Buffer.concat(chunks, total);
 }
 
-function admitKernel(bytes, lock) {
-  assert.equal(bytes.length, lock.kernelByteLength, "Boundary Process kernel byte length differs from the lock");
-  assert.equal(sha256(bytes), lock.kernelSha256, "Boundary Process kernel digest differs from the lock");
-  assert.equal(WebAssembly.validate(bytes), true, "Boundary Process kernel is not valid WebAssembly");
+async function admitKernel(bytes, lock) {
+  await assertBoundaryProcessKernelMatchesLock(bytes, lock);
   return bytes;
 }
 
@@ -202,14 +201,14 @@ export async function acquireBoundaryProcessAssets({
       fetchBounded(lock.sourceArchiveUrl, MAXIMUM_DOWNLOAD_BYTES, "Boundary source archive"),
     ]);
     assert.equal(sha256(sourceArchive), lock.sourceArchiveSha256, "Boundary source archive digest differs from the lock");
-    bytes = admitKernel(kernel, lock);
+    bytes = await admitKernel(kernel, lock);
     provenance = "public-release";
   } else if (kernelPath !== null || sourceRoot !== null) {
     if (resolvedSourceRoot !== null) await exactBoundarySource(resolvedSourceRoot, lock);
-    bytes = admitKernel(await readLocalBoundaryKernel(resolvedKernel, resolvedSourceRoot), lock);
+    bytes = await admitKernel(await readLocalBoundaryKernel(resolvedKernel, resolvedSourceRoot), lock);
     provenance = classifyLocalBoundaryAssetProvenance(sourceRoot);
   } else {
-    bytes = admitKernel(await readRegular(resolvedOutput, MAXIMUM_DOWNLOAD_BYTES, "bundled Boundary Process kernel"), lock);
+    bytes = await admitKernel(await readRegular(resolvedOutput, MAXIMUM_DOWNLOAD_BYTES, "bundled Boundary Process kernel"), lock);
     provenance = "bundled-check";
   }
   if (!checkOnly) await atomicWrite(resolvedOutput, bytes);

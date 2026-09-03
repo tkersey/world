@@ -101,6 +101,22 @@ describe("runtime archive source provenance", () => {
     expect(await readdir(root)).not.toContain("identity-side-effect");
   });
 
+  test("rejects a declared kernel profile that differs from the selected Wasm", async () => {
+    const root = await cloneRepository("selected-root-kernel-profile");
+    const identityPath = join(root, "src", "process_v1", "kernel_identity.json");
+    const identity = JSON.parse(await readFile(identityPath, "utf8"));
+    await writeFile(identityPath, stableJson({ ...identity, abiVersion: identity.abiVersion + 1 }));
+    git(root, ["add", "src/process_v1/kernel_identity.json"]);
+    git(root, ["-c", "user.name=World Test", "-c", "user.email=world-test@example.invalid", "commit", "-m", "mismatched kernel profile"]);
+    await expect(acquireBoundaryProcessAssets({ root, checkOnly: true }))
+      .rejects.toThrow(/ABI version differs from the lock/);
+    await expect(buildRuntimeArchive({
+      root,
+      outputPath: join(root, "dist", RUNTIME_ARCHIVE_NAME),
+      checksumPath: join(root, "dist", `${RUNTIME_ARCHIVE_NAME}.sha256`),
+    })).rejects.toThrow(/ABI version differs from the lock/);
+  });
+
   test("reproduces an archive labeled with the exact clean Git HEAD", async () => {
     const paths = await buildArchive("exact");
     const result = await checkRuntimeArchive({

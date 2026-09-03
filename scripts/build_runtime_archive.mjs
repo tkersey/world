@@ -15,6 +15,10 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseBoundaryProcessKernelIdentityV1 } from
   "../src/process_v1/kernel_identity.mjs";
+import {
+  inspectProcessKernelWasm,
+  PROCESS_KERNEL_EXPORT_NAMES,
+} from "../src/process_v1/wasm.mjs";
 
 export const WORLD_VERSION = "4.1.0";
 export const RUNTIME_FORMAT = "world-process-host-runtime/v1";
@@ -274,10 +278,8 @@ export async function snapshotRuntimeSources(root = repositoryRoot) {
   return entries;
 }
 
-export async function readBoundaryLock(root = repositoryRoot, sourceEntries = null) {
-  const source = sourceEntries?.get("src/process_v1/kernel_identity.json")
-    ?? await snapshotRegularFile(root, "src/process_v1/kernel_identity.json");
-  const identity = parseBoundaryProcessKernelIdentityV1(source);
+export function boundaryProcessKernelLockFromIdentityBytes(bytes) {
+  const identity = parseBoundaryProcessKernelIdentityV1(bytes);
   return Object.freeze({
     boundaryVersion: identity.boundaryVersion,
     boundaryCommit: identity.boundaryCommit,
@@ -289,6 +291,41 @@ export async function readBoundaryLock(root = repositoryRoot, sourceEntries = nu
     memoryInitialPages: identity.memoryInitialPages,
     memoryMaximumPages: identity.memoryMaximumPages,
   });
+}
+
+export async function readBoundaryLock(root = repositoryRoot, sourceEntries = null) {
+  const source = sourceEntries?.get("src/process_v1/kernel_identity.json")
+    ?? await snapshotRegularFile(root, "src/process_v1/kernel_identity.json");
+  return boundaryProcessKernelLockFromIdentityBytes(source);
+}
+
+export async function assertBoundaryProcessKernelMatchesLock(bytes, lock) {
+  assert(bytes instanceof Uint8Array, "Boundary Process kernel must be bytes");
+  assert.equal(bytes.byteLength, lock.kernelByteLength, "Boundary Process kernel byte length differs from the lock");
+  assert.equal(sha256(bytes), lock.kernelSha256, "Boundary Process kernel digest differs from the lock");
+  assert.equal(WebAssembly.validate(bytes), true, "Boundary Process kernel is not valid WebAssembly");
+  const inspection = inspectProcessKernelWasm(bytes);
+  assert.equal(inspection.importCount, lock.kernelImportCount, "Boundary Process kernel import count differs from the lock");
+  assert.equal(inspection.exportCount, lock.kernelExportCount, "Boundary Process kernel export count differs from the lock");
+  assert.equal(inspection.memory.initialPages, lock.memoryInitialPages, "Boundary Process kernel initial memory differs from the lock");
+  assert.equal(inspection.memory.maximumPages, lock.memoryMaximumPages, "Boundary Process kernel maximum memory differs from the lock");
+
+  const module = await WebAssembly.compile(bytes);
+  assert.equal(WebAssembly.Module.imports(module).length, lock.kernelImportCount, "Boundary Process kernel compiled imports differ from the lock");
+  const exports = WebAssembly.Module.exports(module);
+  assert.equal(exports.length, lock.kernelExportCount, "Boundary Process kernel compiled exports differ from the lock");
+  const actualExports = new Map(exports.map((entry) => [entry.name, entry.kind]));
+  for (const name of PROCESS_KERNEL_EXPORT_NAMES) {
+    assert.equal(actualExports.get(name), name === "memory" ? "memory" : "function", `Boundary Process kernel export differs: ${name}`);
+  }
+
+  const instance = await WebAssembly.instantiate(module, {});
+  assert.equal(
+    instance.exports.boundary_process_kernel_abi_version(),
+    lock.processKernelAbiVersion,
+    "Boundary Process kernel ABI version differs from the lock",
+  );
+  return Object.freeze({ inspection });
 }
 
 export function gitProvenanceEnvironment(environment = process.env) {
@@ -603,6 +640,7 @@ export async function buildRuntimeArchive({
   const retainedSnapshots = new Map(sourceEntries);
   const resolvedCommit = bindRetainedSnapshotsToGitHead(root, retainedSnapshots);
   const lock = await readBoundaryLock(root, sourceEntries);
+  await assertBoundaryProcessKernelMatchesLock(entries.get("boundary-process-kernel-v1.wasm"), lock);
   const manifest = createRuntimeManifest({ lock, commit: resolvedCommit, entries });
   entries.set("runtime-manifest.json", Buffer.from(stableJson(manifest), "utf8"));
   entries.set("checksums.sha256", checksumsBytes(entries));

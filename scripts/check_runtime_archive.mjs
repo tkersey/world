@@ -23,7 +23,9 @@ import {
   RUNTIME_FORMAT,
   RUNTIME_ROOT,
   WORLD_VERSION,
+  assertBoundaryProcessKernelMatchesLock,
   assertTrackedRepositoryMatchesCommit,
+  boundaryProcessKernelLockFromIdentityBytes,
   canonicalGzip,
   canonicalTarHeader,
   checksumsBytes,
@@ -295,6 +297,10 @@ export async function admitRuntimeArchiveBytes(archive, {
   for (const path of covered) assert.equal(sha256(entries.get(path)), checksums.get(path), `runtime checksum differs: ${path}`);
   assert(entries.get("checksums.sha256").equals(checksumsBytes(entries)), "runtime checksums file is not canonical");
   const boundaryLock = lock ?? await readBoundaryLock(repositoryRoot);
+  const archivedBoundaryLock = boundaryProcessKernelLockFromIdentityBytes(
+    entries.get("src/process_v1/kernel_identity.json"),
+  );
+  assert.deepEqual(archivedBoundaryLock, boundaryLock, "runtime kernel identity differs from the selected Boundary lock");
   const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
   exactObject(manifest, {
     format: RUNTIME_FORMAT,
@@ -312,11 +318,7 @@ export async function admitRuntimeArchiveBytes(archive, {
   assert(/^[0-9a-f]{64}$/.test(manifest.productionSourceSha256), "runtime manifest productionSourceSha256 is invalid");
   assert.equal(productionSourceSha256(entries), manifest.productionSourceSha256, "runtime production source digest differs");
   const kernel = entries.get("boundary-process-kernel-v1.wasm");
-  assert.equal(kernel.length, boundaryLock.kernelByteLength, "runtime kernel byte length differs");
-  assert.equal(sha256(kernel), boundaryLock.kernelSha256, "runtime kernel digest differs");
-  assert.equal(WebAssembly.validate(kernel), true, "runtime kernel is not valid WebAssembly");
-  const module = await WebAssembly.compile(kernel);
-  assert.equal(WebAssembly.Module.imports(module).length, boundaryLock.kernelImportCount, "runtime kernel import count differs");
+  await assertBoundaryProcessKernelMatchesLock(kernel, boundaryLock);
   validatePackage(entries.get("package.json"));
   const admitted = Object.freeze({
     archiveSha256: actualDigest,

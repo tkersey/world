@@ -424,11 +424,7 @@ export async function runRuntimeCleanRoomSmoke({ archivePath, checksumPath, extr
       archiveSha256: checked.archiveSha256,
       archiveByteLength: checked.archiveByteLength,
       runtimeInventory: Object.freeze([...checked.runtimeInventory]),
-      runtimeBoundary: Object.freeze({
-        version: checked.manifest.boundaryVersion,
-        commit: checked.manifest.boundaryCommit,
-        kernelSha256: checked.manifest.kernelSha256,
-      }),
+      runtimeManifest: checked.manifest,
       extractedRoot: keepExtractedRoot || !ownsTemporaryRoot ? checked.extractedRoot : null,
       reproducible: checked.reproducible,
       innerVerified: checked.innerVerified,
@@ -573,11 +569,7 @@ const inventory = async (root, prefix = "") => {
 };
 process.stdout.write(JSON.stringify({
   format: "world-process-host-clean-room-result/v1",
-  runtimeBoundary: {
-    version: runtimeManifest.boundaryVersion,
-    commit: runtimeManifest.boundaryCommit,
-    kernelSha256: runtimeManifest.kernelSha256,
-  },
+  runtimeManifest,
   boundaryVectorCount: boundaryLock.vectors.length,
   boundaryByteIdenticalCount: vectorResults.filter((entry) => entry.byteIdentical).length,
   concurrencyByteIdentical: true,
@@ -647,7 +639,6 @@ export async function runFullCleanRoomConformance({
   receiptPath = DEFAULT_RECEIPT,
   archivePath,
   checksumPath,
-  testHooks = undefined,
 } = {}) {
   await assertConformanceReceiptCustody({
     boundaryLockPath,
@@ -676,7 +667,6 @@ export async function runFullCleanRoomConformance({
       extractTo: runtimeRoot,
       keepExtractedRoot: true,
     });
-    await testHooks?.afterRuntimeAdmission?.({ runtimeRoot, runtimeBoundary: smoke.runtimeBoundary });
     const runnerPath = join(cleanRoot, "runner.mjs");
     const emptyPath = join(cleanRoot, "empty-path");
     await mkdir(emptyPath, { mode: 0o700 });
@@ -712,7 +702,7 @@ export async function runFullCleanRoomConformance({
     }
     if (
       result.format !== "world-process-host-clean-room-result/v1" ||
-      JSON.stringify(result.runtimeBoundary) !== JSON.stringify(smoke.runtimeBoundary) ||
+      JSON.stringify(result.runtimeManifest) !== JSON.stringify(smoke.runtimeManifest) ||
       result.boundaryVectorCount !== copiedProofs.boundaryLock.vectors.length ||
       result.boundaryByteIdenticalCount !== copiedProofs.boundaryLock.vectors.length ||
       result.repositoryRepairReductionCount !== 96 ||
@@ -730,7 +720,9 @@ export async function runFullCleanRoomConformance({
       result: "passed",
       worldVersion: "4.1.0",
       boundary: {
-        ...result.runtimeBoundary,
+        version: result.runtimeManifest.boundaryVersion,
+        commit: result.runtimeManifest.boundaryCommit,
+        kernelSha256: result.runtimeManifest.kernelSha256,
       },
       boundaryCorpus: {
         producerTag: copiedProofs.boundaryLock.producer.releaseTag,
