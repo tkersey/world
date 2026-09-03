@@ -699,7 +699,7 @@ export async function runFullCleanRoomConformance({
     if (
       result.format !== "world-process-host-clean-room-result/v1" ||
       result.boundaryVectorCount !== copiedProofs.boundaryLock.vectors.length ||
-      result.boundaryByteIdenticalCount !== copiedProofs.boundaryLock.vectors.length - 1 ||
+      result.boundaryByteIdenticalCount !== copiedProofs.boundaryLock.vectors.length ||
       result.repositoryRepairReductionCount !== 96 ||
       result.repositoryRepairResidualBoundaryCount !== 17 ||
       result.requestReconstructionCount !== 17 ||

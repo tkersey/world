@@ -235,7 +235,7 @@ describe("World Process Host runtime archive", () => {
     expect(result.receipt.publishedProcessCorpusParityClaimed).toBe(true);
     expect(result.receipt.publishedProcessCorpusParity).toEqual({
       boundaryVectorCount: 20,
-      boundaryByteIdenticalCount: 19,
+      boundaryByteIdenticalCount: 20,
       repositoryRepairReductionCount: 96,
       repositoryRepairResidualBoundaryCount: 17,
       requestReconstructionCount: 17,
