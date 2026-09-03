@@ -1,11 +1,11 @@
 # Security model
 
 World's trust boundary is deliberately narrow. Boundary owns Process semantics.
-World authenticates the fixed Boundary 1.7.0 kernel, admits its WebAssembly
+World authenticates the fixed Boundary 1.8.0 candidate kernel, admits its WebAssembly
 shape, creates a fresh instance for one reduction, validates host-facing record
 framing and memory ranges, and copies bytes across the embedding boundary.
 
-The kernel is executable trusted release material identified by an exact
+The kernel is executable trusted runtime material identified by an exact
 SHA-256 digest. The digest identifies bytes; it is not a signature or a general
 supply-chain trust decision. Release provenance and the locked source/kernel
 tuple provide the surrounding authentication policy.

@@ -1,11 +1,13 @@
 # Boundary Process Host v1
 
-World 4 embeds one fixed semantic engine: the Boundary 1.7.0 Process kernel at
-commit `4fd4cd959ea283a6b5af12a228f0d80a102683e3`. The kernel is 647,473 bytes,
-has SHA-256 `178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0`,
-declares ABI 1 and a 4,096-page memory maximum, and imports nothing. The release
-lock in `conformance/boundary.lock.json` binds the complete public source/kernel
-tuple. Boundary owns program meaning; World owns only artifact admission,
+World 4.1 embeds one fixed semantic engine: the Boundary 1.8.0 candidate Process
+kernel at commit `186e0555ca00ffeffbcecfc8a16a8c29ac37c4e1`. The kernel is
+682,943 bytes, has SHA-256
+`4da38268f12e8a2749a266480748da5460b5030dadfc10804f79ba3a3bb8013e`,
+declares ABI 1, 2,457 initial memory pages, a 4,096-page maximum, and no imports.
+The lock in `conformance/boundary.lock.json` remains the historical published
+Boundary 1.7.0 conformance tuple; it does not identify the embedded runtime
+kernel. Boundary owns program meaning; World owns only artifact admission,
 WebAssembly instantiation, host-facing record framing, and byte transport.
 
 ## Kernel admission

@@ -463,7 +463,7 @@ const invocation = async (vector) => {
   const outcome = await host.advance({ image, instance, ...(effectResult === undefined ? {} : { effectResult }) });
   const expected = await bytesAt(boundaryRoot, vector.expectedOutcomePath);
   const byteIdentical = equal(outcome.bytes, expected);
-  if (outcome.kind !== vector.expectedKind || (outcome.kind !== "NeedsCapacity" && !byteIdentical)) throw new Error("boundary_vector_mismatch:" + vector.id);
+  if (outcome.kind !== vector.expectedKind || !byteIdentical) throw new Error("boundary_vector_mismatch:" + vector.id);
   return { vector, image, instance, effectResult, expected, byteIdentical };
 };
 

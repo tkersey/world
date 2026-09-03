@@ -8,6 +8,7 @@ import {
   acquireBoundaryProcessAssets,
   assertPhysicalBoundaryKernelDescendant,
   classifyLocalBoundaryAssetProvenance,
+  defaultBoundaryKernelOutput,
   exactBoundarySource,
 } from "../scripts/acquire_boundary_process_assets.mjs";
 import { readBoundedRegularFileSnapshot } from "../scripts/build_runtime_archive.mjs";
@@ -23,6 +24,15 @@ import { acquireRepositoryRepairTranscript } from "../scripts/acquire_repository
 const repositoryRoot = resolve(import.meta.dir, "..");
 
 describe("Boundary development asset provenance", () => {
+  test("separates the current runtime kernel from historical release acquisition", () => {
+    expect(defaultBoundaryKernelOutput(repositoryRoot, "local")).toBe(
+      join(repositoryRoot, "boundary-process-kernel-v1.wasm"),
+    );
+    expect(defaultBoundaryKernelOutput(repositoryRoot, "release")).toBe(
+      join(repositoryRoot, "dist", "boundary-v1.7.0-process-kernel-v1.wasm"),
+    );
+  });
+
   test("does not claim that an authenticated checkout asset was emitted by that checkout", () => {
     expect(classifyLocalBoundaryAssetProvenance(null)).toBe("local-kernel-override");
     expect(classifyLocalBoundaryAssetProvenance("/exact-boundary-checkout")).toBe("local-checkout-asset");
@@ -77,6 +87,7 @@ describe("Boundary development asset provenance", () => {
     try {
       await expect(acquireBoundaryProcessAssets({
         root: repositoryRoot,
+        mode: "release",
         lockPath: join(root, "Boundary.lock.json"),
         outputPath: join(root, "boundary.lock.json"),
         checkOnly: true,
@@ -86,6 +97,7 @@ describe("Boundary development asset provenance", () => {
       await symlink(join(repositoryRoot, "conformance"), conformanceAlias);
       await expect(acquireBoundaryProcessAssets({
         root: repositoryRoot,
+        mode: "release",
         lockPath: join(repositoryRoot, "conformance", "boundary.lock.json"),
         outputPath: join(conformanceAlias, "boundary.lock.json"),
         checkOnly: true,
