@@ -267,6 +267,7 @@ function isAllowedRepositoryPath(relativePath) {
   if (relativePath === "verify-runtime.mjs") return true;
   if (REQUIRED_DOCS.has(relativePath)) return true;
   if (relativePath === "bin/world.mjs") return true;
+  if (relativePath === "src/process_v1/kernel_identity.json") return true;
   if (relativePath.startsWith("src/process_v1/") && relativePath.endsWith(".mjs")) return true;
   if (REQUIRED_SCRIPTS.has(relativePath)) return true;
   if (relativePath.startsWith("test/")) return true;
@@ -335,6 +336,7 @@ export function derivePackageInventory(entries, manifest) {
     "README.md",
     "bin/world.mjs",
     "src/process_v1/index.mjs",
+    "src/process_v1/kernel_identity.json",
     "boundary-process-kernel-v1.wasm",
   ]) {
     assert(members.has(required), `required package member is missing: ${required}`);

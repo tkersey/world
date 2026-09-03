@@ -424,6 +424,11 @@ export async function runRuntimeCleanRoomSmoke({ archivePath, checksumPath, extr
       archiveSha256: checked.archiveSha256,
       archiveByteLength: checked.archiveByteLength,
       runtimeInventory: Object.freeze([...checked.runtimeInventory]),
+      runtimeBoundary: Object.freeze({
+        version: checked.manifest.boundaryVersion,
+        commit: checked.manifest.boundaryCommit,
+        kernelSha256: checked.manifest.kernelSha256,
+      }),
       extractedRoot: keepExtractedRoot || !ownsTemporaryRoot ? checked.extractedRoot : null,
       reproducible: checked.reproducible,
       innerVerified: checked.innerVerified,
@@ -642,6 +647,7 @@ export async function runFullCleanRoomConformance({
   receiptPath = DEFAULT_RECEIPT,
   archivePath,
   checksumPath,
+  testHooks = undefined,
 } = {}) {
   await assertConformanceReceiptCustody({
     boundaryLockPath,
@@ -670,6 +676,7 @@ export async function runFullCleanRoomConformance({
       extractTo: runtimeRoot,
       keepExtractedRoot: true,
     });
+    await testHooks?.afterRuntimeAdmission?.({ runtimeRoot, runtimeBoundary: smoke.runtimeBoundary });
     const runnerPath = join(cleanRoot, "runner.mjs");
     const emptyPath = join(cleanRoot, "empty-path");
     await mkdir(emptyPath, { mode: 0o700 });
@@ -703,15 +710,9 @@ export async function runFullCleanRoomConformance({
         stdout: execution.stdout.toString("utf8").slice(0, 16_384),
       });
     }
-    const runtimeManifest = JSON.parse(await readFile(join(runtimeRoot, "runtime-manifest.json"), "utf8"));
-    const expectedRuntimeBoundary = {
-      version: runtimeManifest.boundaryVersion,
-      commit: runtimeManifest.boundaryCommit,
-      kernelSha256: runtimeManifest.kernelSha256,
-    };
     if (
       result.format !== "world-process-host-clean-room-result/v1" ||
-      JSON.stringify(result.runtimeBoundary) !== JSON.stringify(expectedRuntimeBoundary) ||
+      JSON.stringify(result.runtimeBoundary) !== JSON.stringify(smoke.runtimeBoundary) ||
       result.boundaryVectorCount !== copiedProofs.boundaryLock.vectors.length ||
       result.boundaryByteIdenticalCount !== copiedProofs.boundaryLock.vectors.length ||
       result.repositoryRepairReductionCount !== 96 ||

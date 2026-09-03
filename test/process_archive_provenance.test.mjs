@@ -28,6 +28,7 @@ import {
 } from "../scripts/check_runtime_archive.mjs";
 import { writeReleaseReceipt } from "../scripts/write_release_receipt.mjs";
 import { deriveGitWorkingInventory } from "../scripts/check_process_surface.mjs";
+import { acquireBoundaryProcessAssets } from "../scripts/acquire_boundary_process_assets.mjs";
 
 setDefaultTimeout(30_000);
 
@@ -78,16 +79,26 @@ async function cloneRepository(name) {
 describe("runtime archive source provenance", () => {
   test("derives runtime kernel identity from the selected root snapshot", async () => {
     const root = await cloneRepository("selected-root-kernel-identity");
-    const identityPath = join(root, "src", "process_v1", "kernel_identity.mjs");
+    const identityPath = join(root, "src", "process_v1", "kernel_identity.json");
     const alternateCommit = "a".repeat(40);
-    const source = await readFile(identityPath, "utf8");
-    await writeFile(identityPath, source.replace(
-      /boundaryCommit: "[0-9a-f]{40}"/,
-      `boundaryCommit: "${alternateCommit}"`,
-    ));
-    git(root, ["add", "src/process_v1/kernel_identity.mjs"]);
+    const identity = JSON.parse(await readFile(identityPath, "utf8"));
+    await writeFile(identityPath, stableJson({ ...identity, boundaryCommit: alternateCommit }));
+    git(root, ["add", "src/process_v1/kernel_identity.json"]);
     git(root, ["-c", "user.name=World Test", "-c", "user.email=world-test@example.invalid", "commit", "-m", "alternate kernel identity"]);
     expect((await readBoundaryLock(root)).boundaryCommit).toBe(alternateCommit);
+    expect((await acquireBoundaryProcessAssets({ root, checkOnly: true })).boundaryCommit).toBe(alternateCommit);
+  });
+
+  test("does not execute the selected root's identity projection", async () => {
+    const root = await cloneRepository("selected-root-inert-identity");
+    const projectionPath = join(root, "src", "process_v1", "kernel_identity.mjs");
+    const markerPath = join(root, "identity-side-effect");
+    await writeFile(
+      projectionPath,
+      `await Bun.write(${JSON.stringify(markerPath)}, "executed");\n${await readFile(projectionPath, "utf8")}`,
+    );
+    await expect(readBoundaryLock(root)).resolves.toMatchObject({ boundaryVersion: "1.8.0" });
+    expect(await readdir(root)).not.toContain("identity-side-effect");
   });
 
   test("reproduces an archive labeled with the exact clean Git HEAD", async () => {

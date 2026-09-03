@@ -69,6 +69,7 @@ function admitInventory(files) {
     "checksums.sha256",
     "package.json",
     "runtime-manifest.json",
+    "src/process_v1/kernel_identity.json",
     "verify-runtime.mjs",
   ]);
   let processModules = 0;

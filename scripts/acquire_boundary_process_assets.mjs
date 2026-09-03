@@ -8,10 +8,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   assertPhysicalPathCustody,
   gitProvenanceEnvironment,
+  readBoundaryLock,
   readBoundedRegularFileSnapshot,
 } from "./build_runtime_archive.mjs";
-import { BOUNDARY_PROCESS_KERNEL_V1 } from
-  "../src/process_v1/kernel_identity.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MAXIMUM_DOWNLOAD_BYTES = 64 * 1024 * 1024;
@@ -151,20 +150,6 @@ export function defaultBoundaryKernelOutput(root, mode) {
     : join(root, "boundary-process-kernel-v1.wasm");
 }
 
-function currentRuntimeLock() {
-  return Object.freeze({
-    boundaryVersion: BOUNDARY_PROCESS_KERNEL_V1.boundaryVersion,
-    boundaryCommit: BOUNDARY_PROCESS_KERNEL_V1.boundaryCommit,
-    kernelSha256: BOUNDARY_PROCESS_KERNEL_V1.sha256,
-    kernelByteLength: BOUNDARY_PROCESS_KERNEL_V1.byteLength,
-    processKernelAbiVersion: BOUNDARY_PROCESS_KERNEL_V1.abiVersion,
-    kernelImportCount: BOUNDARY_PROCESS_KERNEL_V1.importCount,
-    kernelExportCount: BOUNDARY_PROCESS_KERNEL_V1.exportCount,
-    memoryInitialPages: BOUNDARY_PROCESS_KERNEL_V1.memoryInitialPages,
-    memoryMaximumPages: BOUNDARY_PROCESS_KERNEL_V1.memoryMaximumPages,
-  });
-}
-
 async function readLocalBoundaryKernel(path, sourceRoot) {
   if (sourceRoot !== null) await assertPhysicalBoundaryKernelDescendant(sourceRoot, path);
   const bytes = await readRegular(path, MAXIMUM_DOWNLOAD_BYTES, "local Boundary Process kernel");
@@ -200,10 +185,15 @@ export async function acquireBoundaryProcessAssets({
     ...(!checkOnly && resolvedKernel !== null
       ? [{ label: "local Boundary kernel input", path: resolvedKernel }]
       : []),
-  ], [], "Boundary acquisition custody");
+  ], [
+    { label: "current Boundary kernel identity", path: join(root, "src", "process_v1", "kernel_identity.json") },
+    ...(mode === "local"
+      ? [{ label: "historical Boundary lock", path: resolvedLock }]
+      : [{ label: "current Boundary kernel", path: join(root, "boundary-process-kernel-v1.wasm") }]),
+  ], "Boundary acquisition custody");
   const lock = mode === "release"
     ? await readExactBoundaryLock(resolvedLock)
-    : currentRuntimeLock();
+    : await readBoundaryLock(root);
   let bytes;
   let provenance;
   if (mode === "release") {

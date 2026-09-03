@@ -1,18 +1,37 @@
-/**
- * Exact minimized Boundary v1.8.0 candidate Process kernel identity.
- *
- * This is a production admission constant, not a development default. The
- * acquisition check must keep it identical to conformance/boundary.lock.json
- * and boundary-process-kernel-v1.wasm.
- */
-export const BOUNDARY_PROCESS_KERNEL_V1 = Object.freeze({
-  boundaryVersion: "1.8.0",
-  boundaryCommit: "186e0555ca00ffeffbcecfc8a16a8c29ac37c4e1",
-  abiVersion: 1,
-  byteLength: 682943,
-  sha256: "4da38268f12e8a2749a266480748da5460b5030dadfc10804f79ba3a3bb8013e",
-  importCount: 0,
-  exportCount: 13,
-  memoryInitialPages: 2457,
-  memoryMaximumPages: 4096,
-});
+import { readFileSync } from "node:fs";
+
+const IDENTITY_FIELDS = Object.freeze([
+  "abiVersion",
+  "boundaryCommit",
+  "boundaryVersion",
+  "byteLength",
+  "exportCount",
+  "importCount",
+  "memoryInitialPages",
+  "memoryMaximumPages",
+  "sha256",
+]);
+
+function requireIdentity(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+/** Decode the exact inert Boundary Process kernel identity record. */
+export function parseBoundaryProcessKernelIdentityV1(bytes) {
+  requireIdentity(bytes instanceof Uint8Array, "runtime kernel identity must be bytes");
+  const identity = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  requireIdentity(identity !== null && typeof identity === "object" && !Array.isArray(identity), "runtime kernel identity must be an object");
+  requireIdentity(JSON.stringify(Object.keys(identity).sort()) === JSON.stringify(IDENTITY_FIELDS), "runtime kernel identity fields are not exact");
+  requireIdentity(/^\d+\.\d+\.\d+$/.test(identity.boundaryVersion), "runtime Boundary version is invalid");
+  requireIdentity(/^[0-9a-f]{40}$/.test(identity.boundaryCommit), "runtime Boundary commit is invalid");
+  requireIdentity(/^[0-9a-f]{64}$/.test(identity.sha256), "runtime kernel digest is invalid");
+  for (const field of ["abiVersion", "byteLength", "importCount", "exportCount", "memoryInitialPages", "memoryMaximumPages"]) {
+    requireIdentity(Number.isSafeInteger(identity[field]) && identity[field] >= 0, `runtime kernel ${field} is invalid`);
+  }
+  return Object.freeze(identity);
+}
+
+/** Exact minimized Boundary v1.8.0 candidate Process kernel identity. */
+export const BOUNDARY_PROCESS_KERNEL_V1 = parseBoundaryProcessKernelIdentityV1(
+  readFileSync(new URL("./kernel_identity.json", import.meta.url)),
+);

@@ -29,6 +29,7 @@ import {
   DEFAULT_CONFORMANCE_RECEIPT,
   writeReleaseReceipt,
 } from "../scripts/write_release_receipt.mjs";
+import { runFullCleanRoomConformance } from "../scripts/run_clean_room_conformance.mjs";
 
 let temporaryRoot;
 let archivePath;
@@ -255,6 +256,23 @@ describe("World Process Host runtime archive", () => {
     });
     expect(directConformance.boundaryCorpus.producerTag).toBe("v1.7.0");
     expect(directConformance.cleanRoom.runtimeArchiveSha256).toBe(result.receipt.archiveSha256);
+  }, 120_000);
+
+  test("rejects a runtime manifest generation replaced after archive admission", async () => {
+    const receiptPath = join(temporaryRoot, "replaced-manifest-receipt.json");
+    await expect(runFullCleanRoomConformance({
+      archivePath,
+      checksumPath,
+      receiptPath,
+      testHooks: {
+        afterRuntimeAdmission: async ({ runtimeRoot }) => {
+          const manifestPath = join(runtimeRoot, "runtime-manifest.json");
+          const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+          await writeFile(manifestPath, `${JSON.stringify({ ...manifest, boundaryCommit: "b".repeat(40) }, null, 2)}\n`);
+        },
+      },
+    })).rejects.toMatchObject({ code: "WORLD_CLEAN_ROOM_CONFORMANCE_FAILED" });
+    await expect(readFile(receiptPath)).rejects.toMatchObject({ code: "ENOENT" });
   }, 120_000);
 
   test("rejects aliased release custody paths before proof or writes", async () => {

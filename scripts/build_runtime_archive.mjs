@@ -13,6 +13,8 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseBoundaryProcessKernelIdentityV1 } from
+  "../src/process_v1/kernel_identity.mjs";
 
 export const WORLD_VERSION = "4.1.0";
 export const RUNTIME_FORMAT = "world-process-host-runtime/v1";
@@ -48,6 +50,10 @@ const REQUIRED_PROCESS_MODULES = Object.freeze([
   "kernel_identity.mjs",
   "outcome.mjs",
   "wasm.mjs",
+]);
+
+const REQUIRED_PROCESS_ASSETS = Object.freeze([
+  "kernel_identity.json",
 ]);
 
 const GENERATED_PATHS = Object.freeze([
@@ -195,16 +201,22 @@ export async function runtimeSourcePaths(root = repositoryRoot) {
   const moduleRoot = join(root, "src", "process_v1");
   const entries = await readdir(moduleRoot, { withFileTypes: true });
   const modules = [];
+  const assets = [];
   for (const entry of entries) {
     assert(entry.isFile() && !entry.isSymbolicLink(), `runtime source entry is not a regular file: src/process_v1/${entry.name}`);
-    assert(/^[a-z0-9_]+\.mjs$/.test(entry.name), `unexpected runtime source entry: src/process_v1/${entry.name}`);
-    modules.push(entry.name);
+    if (/^[a-z0-9_]+\.mjs$/.test(entry.name)) modules.push(entry.name);
+    else if (REQUIRED_PROCESS_ASSETS.includes(entry.name)) assets.push(entry.name);
+    else assert.fail(`unexpected runtime source entry: src/process_v1/${entry.name}`);
   }
   modules.sort(compareUtf8);
+  assets.sort(compareUtf8);
   for (const required of REQUIRED_PROCESS_MODULES) {
     assert(modules.includes(required), `required runtime module is missing: src/process_v1/${required}`);
   }
-  return [...FIXED_SOURCE_PATHS, ...modules.map((name) => `src/process_v1/${name}`)].sort(compareUtf8);
+  assert.deepEqual(assets, [...REQUIRED_PROCESS_ASSETS], "required runtime assets are not exact");
+  return [...FIXED_SOURCE_PATHS, ...modules, ...assets].map((name) =>
+    FIXED_SOURCE_PATHS.includes(name) ? name : `src/process_v1/${name}`
+  ).sort(compareUtf8);
 }
 
 async function snapshotRegularFileGeneration(root, path, maximumBytes = RUNTIME_ENTRY_MAX_BYTES) {
@@ -263,29 +275,9 @@ export async function snapshotRuntimeSources(root = repositoryRoot) {
 }
 
 export async function readBoundaryLock(root = repositoryRoot, sourceEntries = null) {
-  const source = sourceEntries?.get("src/process_v1/kernel_identity.mjs")
-    ?? await snapshotRegularFile(root, "src/process_v1/kernel_identity.mjs");
-  assert(Buffer.isBuffer(source), "runtime kernel identity source must be bytes");
-  const module = await import(`data:text/javascript;base64,${source.toString("base64")}`);
-  const identity = module.BOUNDARY_PROCESS_KERNEL_V1;
-  assert(identity !== null && typeof identity === "object" && !Array.isArray(identity), "runtime kernel identity must be an object");
-  assert.deepEqual(Object.keys(identity).sort(), [
-    "abiVersion",
-    "boundaryCommit",
-    "boundaryVersion",
-    "byteLength",
-    "exportCount",
-    "importCount",
-    "memoryInitialPages",
-    "memoryMaximumPages",
-    "sha256",
-  ], "runtime kernel identity fields are not exact");
-  assert(/^\d+\.\d+\.\d+$/.test(identity.boundaryVersion), "runtime Boundary version is invalid");
-  assert(/^[0-9a-f]{40}$/.test(identity.boundaryCommit), "runtime Boundary commit is invalid");
-  assert(/^[0-9a-f]{64}$/.test(identity.sha256), "runtime kernel digest is invalid");
-  for (const field of ["abiVersion", "byteLength", "importCount", "exportCount", "memoryInitialPages", "memoryMaximumPages"]) {
-    assert(Number.isSafeInteger(identity[field]) && identity[field] >= 0, `runtime kernel ${field} is invalid`);
-  }
+  const source = sourceEntries?.get("src/process_v1/kernel_identity.json")
+    ?? await snapshotRegularFile(root, "src/process_v1/kernel_identity.json");
+  const identity = parseBoundaryProcessKernelIdentityV1(source);
   return Object.freeze({
     boundaryVersion: identity.boundaryVersion,
     boundaryCommit: identity.boundaryCommit,
@@ -293,6 +285,9 @@ export async function readBoundaryLock(root = repositoryRoot, sourceEntries = nu
     kernelByteLength: identity.byteLength,
     processKernelAbiVersion: identity.abiVersion,
     kernelImportCount: identity.importCount,
+    kernelExportCount: identity.exportCount,
+    memoryInitialPages: identity.memoryInitialPages,
+    memoryMaximumPages: identity.memoryMaximumPages,
   });
 }
 

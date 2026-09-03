@@ -46,6 +46,25 @@ describe("Boundary development asset provenance", () => {
     })).rejects.toThrow(/local acquisition forbids a historical Boundary lock/);
   });
 
+  test("reserves the opposite current and historical identity paths", async () => {
+    await expect(acquireBoundaryProcessAssets({
+      root: repositoryRoot,
+      outputPath: join(repositoryRoot, "conformance", "boundary.lock.json"),
+      checkOnly: true,
+    })).rejects.toThrow(/protected input/);
+    await expect(acquireBoundaryProcessAssets({
+      root: repositoryRoot,
+      mode: "release",
+      outputPath: join(repositoryRoot, "boundary-process-kernel-v1.wasm"),
+      checkOnly: true,
+    })).rejects.toThrow(/protected input/);
+    await expect(acquireBoundaryProcessAssets({
+      root: repositoryRoot,
+      outputPath: join(repositoryRoot, "src", "process_v1", "kernel_identity.json"),
+      checkOnly: true,
+    })).rejects.toThrow(/protected input/);
+  });
+
   test("admits physical descendants, including paths through an internal symlink", async () => {
     const root = await mkdtemp(join(tmpdir(), "world-boundary-physical-positive-"));
     try {
