@@ -169,6 +169,7 @@ describe("source-derived topology", () => {
       "README.md",
       "bin/world.mjs",
       "src/process_v1/index.mjs",
+      "src/process_v1/kernel_identity.json",
       "boundary-process-kernel-v1.wasm",
     ].map((entry) => ({ path: entry, tracked: true, regular: true, symlink: false, mode: 0o100644 }));
     const inventory = derivePackageInventory(entries, manifest());

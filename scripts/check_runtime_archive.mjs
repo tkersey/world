@@ -262,6 +262,7 @@ function allowedInventory(paths) {
     "checksums.sha256",
     "package.json",
     "runtime-manifest.json",
+    "src/process_v1/kernel_identity.json",
     "verify-runtime.mjs",
   ]);
   let moduleCount = 0;
