@@ -11,7 +11,7 @@ import {
   rm,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseBoundaryProcessKernelIdentityV1 } from
   "../src/process_v1/kernel_identity.mjs";
@@ -30,6 +30,20 @@ export const RUNTIME_ENTRY_MAX_BYTES = 16 * 1024 * 1024;
 export const RUNTIME_ENTRY_MAX_COUNT = 256;
 const TRACKED_FILE_MAX_BYTES = 64 * 1024 * 1024;
 const TRACKED_REPOSITORY_MAX_BYTES = 128 * 1024 * 1024;
+const KERNEL_ABI_PROBE_TIMEOUT_MS = 5_000;
+const SUPPORTED_PROCESS_KERNEL_ABI_VERSION = 1;
+const KERNEL_ABI_PROBE_SOURCE = String.raw`
+(async () => {
+  const { readFileSync } = await import("node:fs");
+  const bytes = readFileSync(0);
+  const module = await WebAssembly.compile(bytes);
+  const instance = await WebAssembly.instantiate(module, {});
+  process.stdout.write(String(instance.exports.boundary_process_kernel_abi_version()) + "\n");
+})().catch((error) => {
+  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\n");
+  process.exitCode = 1;
+});
+`;
 
 const scriptPath = fileURLToPath(import.meta.url);
 export const repositoryRoot = resolve(dirname(scriptPath), "..");
@@ -319,13 +333,32 @@ export async function assertBoundaryProcessKernelMatchesLock(bytes, lock) {
     assert.equal(actualExports.get(name), name === "memory" ? "memory" : "function", `Boundary Process kernel export differs: ${name}`);
   }
 
-  const instance = await WebAssembly.instantiate(module, {});
+  const abiVersion = probeBoundaryProcessKernelAbi(bytes);
   assert.equal(
-    instance.exports.boundary_process_kernel_abi_version(),
+    abiVersion,
     lock.processKernelAbiVersion,
     "Boundary Process kernel ABI version differs from the lock",
   );
+  assert.equal(abiVersion, SUPPORTED_PROCESS_KERNEL_ABI_VERSION, "Boundary Process kernel ABI version is not supported");
   return Object.freeze({ inspection });
+}
+
+export function probeBoundaryProcessKernelAbi(bytes, timeoutMs = KERNEL_ABI_PROBE_TIMEOUT_MS) {
+  assert(bytes instanceof Uint8Array, "Boundary Process ABI probe input must be bytes");
+  assert(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= KERNEL_ABI_PROBE_TIMEOUT_MS, "Boundary Process ABI probe timeout is invalid");
+  const result = spawnSync(process.execPath, ["--eval", KERNEL_ABI_PROBE_SOURCE], {
+    input: Buffer.from(bytes),
+    encoding: "utf8",
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+    maxBuffer: 4096,
+    env: {},
+  });
+  if (result.error?.code === "ETIMEDOUT") assert.fail("Boundary Process kernel ABI probe timed out");
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, `Boundary Process kernel ABI probe failed: ${result.stderr.trim()}`);
+  assert(/^\d+\n$/.test(result.stdout), "Boundary Process kernel ABI probe returned invalid output");
+  return Number(result.stdout.trim());
 }
 
 export function gitProvenanceEnvironment(environment = process.env) {

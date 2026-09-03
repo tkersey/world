@@ -14,6 +14,7 @@ import {
   checksumsBytes,
   createCanonicalTar,
   exactGitHeadCommit,
+  probeBoundaryProcessKernelAbi,
   repositoryRoot,
   readBoundaryLock,
   readBoundedRegularFileSnapshot,
@@ -29,6 +30,7 @@ import {
 import { writeReleaseReceipt } from "../scripts/write_release_receipt.mjs";
 import { deriveGitWorkingInventory } from "../scripts/check_process_surface.mjs";
 import { acquireBoundaryProcessAssets } from "../scripts/acquire_boundary_process_assets.mjs";
+import { processKernelWasmFixture } from "./wasm_fixture.mjs";
 
 setDefaultTimeout(30_000);
 
@@ -109,12 +111,19 @@ describe("runtime archive source provenance", () => {
     git(root, ["add", "src/process_v1/kernel_identity.json"]);
     git(root, ["-c", "user.name=World Test", "-c", "user.email=world-test@example.invalid", "commit", "-m", "mismatched kernel profile"]);
     await expect(acquireBoundaryProcessAssets({ root, checkOnly: true }))
-      .rejects.toThrow(/ABI version differs from the lock/);
+      .rejects.toThrow(/ABI version is not supported/);
     await expect(buildRuntimeArchive({
       root,
       outputPath: join(root, "dist", RUNTIME_ARCHIVE_NAME),
       checksumPath: join(root, "dist", `${RUNTIME_ARCHIVE_NAME}.sha256`),
-    })).rejects.toThrow(/ABI version differs from the lock/);
+    })).rejects.toThrow(/ABI version is not supported/);
+  });
+
+  test("bounds dynamic execution of the selected kernel ABI probe", () => {
+    expect(() => probeBoundaryProcessKernelAbi(
+      processKernelWasmFixture({ abiLoop: true }),
+      100,
+    )).toThrow(/ABI probe timed out/);
   });
 
   test("reproduces an archive labeled with the exact clean Git HEAD", async () => {

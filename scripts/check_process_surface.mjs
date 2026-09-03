@@ -476,6 +476,13 @@ export function validateProductionSpecifier(specifier, importer) {
     `production module ${importer} imports forbidden bare package ${JSON.stringify(specifier)}`,
   );
   assert(!specifier.includes("?") && !specifier.includes("#"), `production import must not contain query or fragment: ${specifier}`);
+  if (specifier.endsWith(".json")) {
+    assert(
+      importer === "src/process_v1/kernel_identity.mjs" && specifier === "./kernel_identity.json",
+      `production JSON import is not the canonical kernel identity: ${importer} -> ${specifier}`,
+    );
+    return "asset";
+  }
   assert(specifier.endsWith(".mjs"), `production relative import must name an .mjs file exactly: ${specifier}`);
   return "relative";
 }
@@ -501,7 +508,8 @@ export function deriveReachableProduction(root, manifest, entries, packageMember
     const source = readFileSync(path.join(root, relativePath), "utf8");
     validateModuleImportSyntax(source, relativePath);
     for (const specifier of scanModuleSpecifiers(source)) {
-      if (validateProductionSpecifier(specifier, relativePath) === "builtin") {
+      const specifierKind = validateProductionSpecifier(specifier, relativePath);
+      if (specifierKind === "builtin") {
         builtinSpecifiers.add(specifier);
         continue;
       }
@@ -515,7 +523,14 @@ export function deriveReachableProduction(root, manifest, entries, packageMember
         relativeTarget === "bin/world.mjs" || relativeTarget.startsWith("src/process_v1/"),
         `production import escapes the admitted source roots: ${relativePath} -> ${relativeTarget}`,
       );
-      queue.push(relativeTarget);
+      if (specifierKind === "asset") {
+        const target = entryByPath.get(relativeTarget);
+        assert(target?.regular && !target.symlink, `production asset is not a regular file: ${relativeTarget}`);
+        assert(packaged.has(relativeTarget), `reachable production asset is absent from package inventory: ${relativeTarget}`);
+        reachable.add(relativeTarget);
+      } else {
+        queue.push(relativeTarget);
+      }
     }
   }
 

@@ -99,6 +99,41 @@ describe("World 4 package identity", () => {
       validatePackageManifest(manifest({ main: "./src/process_v1/index.mjs" })),
     ).toThrow("main");
   });
+
+  test("keeps the public Process v1 module self-contained when bundled by Bun", async () => {
+    const temporaryRoot = await mkdtemp(path.join(tmpdir(), "world-process-bundle-"));
+    try {
+      const entryPath = path.join(temporaryRoot, "entry.mjs");
+      const outputRoot = path.join(temporaryRoot, "out");
+      await writeFile(entryPath, [
+        `import { admitProcessKernel } from ${JSON.stringify(path.join(root, "src", "process_v1", "index.mjs"))};`,
+        `console.log(typeof admitProcessKernel);`,
+      ].join("\n"));
+      const build = await Bun.build({
+        entrypoints: [entryPath],
+        outdir: outputRoot,
+        target: "bun",
+        format: "esm",
+      });
+      expect(build.success).toBe(true);
+      expect(build.outputs).toHaveLength(1);
+      const child = Bun.spawn([process.execPath, build.outputs[0].path], {
+        env: {},
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect(stderr).toBe("");
+      expect(exitCode).toBe(0);
+      expect(stdout).toBe("function\n");
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("source-derived topology", () => {

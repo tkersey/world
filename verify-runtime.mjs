@@ -154,6 +154,7 @@ assert(/^[0-9a-f]{64}$/.test(identity.sha256), "runtime kernel digest is invalid
 for (const field of ["abiVersion", "byteLength", "importCount", "exportCount", "memoryInitialPages", "memoryMaximumPages"]) {
   assert(Number.isSafeInteger(identity[field]) && identity[field] >= 0, `runtime kernel ${field} is invalid`);
 }
+assert.equal(identity.abiVersion, 1, "runtime kernel ABI version is not supported");
 
 const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
 exactObject(manifest, {
