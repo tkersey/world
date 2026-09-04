@@ -171,6 +171,33 @@ describe("World Process Host runtime archive", () => {
     expect(result.stdout).not.toMatch(/internal_consistency=pass/);
   });
 
+  test("rejects an external World version or commit that differs from the archive", async () => {
+    const extractedRoot = join(temporaryRoot, "standalone-verifier-world-identity");
+    await extractAdmittedRuntime(admitted, extractedRoot);
+    const expected = [
+      "--expected-world-version", "4.1.0",
+      "--expected-world-commit", admitted.manifest.sourceCommit,
+      "--expected-boundary-version", lock.boundaryVersion,
+      "--expected-boundary-commit", lock.boundaryCommit,
+      "--expected-kernel-sha256", lock.kernelSha256,
+    ];
+    for (const [index, value, message] of [
+      [1, "4.0.0", /runtime World version differs/],
+      [3, "0".repeat(40), /runtime World source commit differs/],
+    ]) {
+      const arguments_ = [...expected];
+      arguments_[index] = value;
+      const result = spawnSync(process.execPath, ["./verify-runtime.mjs", ...arguments_], {
+        cwd: extractedRoot,
+        encoding: "utf8",
+        env: {},
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(message);
+      expect(result.stdout).not.toMatch(/internal_consistency=pass/);
+    }
+  });
+
   test("preserves the historical Boundary lock separately from the current runtime kernel", async () => {
     const historical = await readExactBoundaryLock();
     expect(historical.boundaryVersion).toBe("1.7.0");

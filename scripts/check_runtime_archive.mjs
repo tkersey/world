@@ -371,9 +371,11 @@ export async function extractAdmittedRuntime(admitted, destination) {
   return destination;
 }
 
-function runInnerVerifier(extractedRoot, sanitizedPath, lock) {
+function runInnerVerifier(extractedRoot, sanitizedPath, lock, worldSourceCommit) {
   const result = spawnSync(process.execPath, [
     "./verify-runtime.mjs",
+    "--expected-world-version", WORLD_VERSION,
+    "--expected-world-commit", worldSourceCommit,
     "--expected-boundary-version", lock.boundaryVersion,
     "--expected-boundary-commit", lock.boundaryCommit,
     "--expected-kernel-sha256", lock.kernelSha256,
@@ -449,7 +451,12 @@ export async function checkRuntimeArchive({
       if (runInner) {
         const pathRoot = await mkdtemp(join(tmpdir(), "world-runtime-empty-path-"));
         try {
-          inner = runInnerVerifier(extractedRoot, pathRoot, lock);
+          inner = runInnerVerifier(
+            extractedRoot,
+            pathRoot,
+            lock,
+            admitted.manifest.sourceCommit,
+          );
         } finally {
           await rm(pathRoot, { recursive: true, force: true });
         }

@@ -1,8 +1,8 @@
 # Boundary Process Host v1
 
-World 4.1 embeds one fixed semantic engine: the Boundary 1.8.0 candidate Process
-kernel whose reviewed dependency binding records commit
-`186e0555ca00ffeffbcecfc8a16a8c29ac37c4e1`. The kernel is
+World 4.1 embeds one fixed semantic engine: the released Boundary 1.8.0 Process
+kernel whose dependency binding records landed commit
+`9772a22838c3243c746379e292de01230cb60eda`. The kernel is
 682,943 bytes, has SHA-256
 `4da38268f12e8a2749a266480748da5460b5030dadfc10804f79ba3a3bb8013e`,
 declares ABI 1, 2,457 initial memory pages, a 4,096-page maximum, and no imports.

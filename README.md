@@ -17,8 +17,8 @@ BPI1 + InitialArgs or ABL_PST1 [+ ABL_ERS1]
                          +-- Requested: typed ABL_ERQ1
 ```
 
-World pins the fixed Boundary 1.8.0 candidate Process kernel bytes and records
-commit `186e0555ca00ffeffbcecfc8a16a8c29ac37c4e1` as the reviewed dependency
+World pins the fixed Boundary 1.8.0 release Process kernel bytes and records
+landed commit `9772a22838c3243c746379e292de01230cb60eda` as the released dependency
 binding. It creates a fresh WebAssembly
 instance, performs exactly one finite reduction, copies the canonical outcome
 bytes out of guest memory, and discards the instance. The published Boundary

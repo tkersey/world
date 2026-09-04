@@ -19,16 +19,22 @@ const API_EXPORTS = Object.freeze([
 
 function parseExpectedIdentity(argv) {
   assert.deepEqual(argv.filter((_, index) => index % 2 === 0), [
+    "--expected-world-version",
+    "--expected-world-commit",
     "--expected-boundary-version",
     "--expected-boundary-commit",
     "--expected-kernel-sha256",
-  ], "usage: verify-runtime.mjs --expected-boundary-version VERSION --expected-boundary-commit COMMIT --expected-kernel-sha256 SHA256");
-  assert.equal(argv.length, 6, "runtime verification requires an external expected identity");
+  ], "usage: verify-runtime.mjs --expected-world-version VERSION --expected-world-commit COMMIT --expected-boundary-version VERSION --expected-boundary-commit COMMIT --expected-kernel-sha256 SHA256");
+  assert.equal(argv.length, 10, "runtime verification requires an external expected identity");
   const expected = Object.freeze({
-    boundaryVersion: argv[1],
-    boundaryCommit: argv[3],
-    kernelSha256: argv[5],
+    worldVersion: argv[1],
+    worldCommit: argv[3],
+    boundaryVersion: argv[5],
+    boundaryCommit: argv[7],
+    kernelSha256: argv[9],
   });
+  assert(/^\d+\.\d+\.\d+$/.test(expected.worldVersion), "expected World version is invalid");
+  assert(/^[0-9a-f]{40}$/.test(expected.worldCommit), "expected World commit is invalid");
   assert(/^\d+\.\d+\.\d+$/.test(expected.boundaryVersion), "expected Boundary version is invalid");
   assert(/^[0-9a-f]{40}$/.test(expected.boundaryCommit), "expected Boundary commit is invalid");
   assert(/^[0-9a-f]{64}$/.test(expected.kernelSha256), "expected kernel digest is invalid");
@@ -36,6 +42,7 @@ function parseExpectedIdentity(argv) {
 }
 
 const expectedIdentity = parseExpectedIdentity(process.argv.slice(2));
+assert.equal(WORLD_VERSION, expectedIdentity.worldVersion, "runtime World version differs from the external expectation");
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -193,6 +200,7 @@ exactObject(manifest, {
   productionSourceSha256: manifest.productionSourceSha256,
 }, "runtime manifest");
 assert(/^[0-9a-f]{40}$/.test(manifest.sourceCommit), "runtime manifest source commit is invalid");
+assert.equal(manifest.sourceCommit, expectedIdentity.worldCommit, "runtime World source commit differs from the external expectation");
 assert.equal(productionSourceDigest(entries), manifest.productionSourceSha256, "runtime production source digest differs");
 
 const kernel = entries.get("boundary-process-kernel-v1.wasm");
@@ -218,6 +226,7 @@ console.log("world_runtime_dependency_count=0");
 console.log(`world_runtime_public_api_exports=${JSON.stringify([...API_EXPORTS].sort(compareUtf8))}`);
 console.log("world_runtime_cli_commands=[\"world process step\"]");
 console.log(`world_runtime_boundary_commit=${identity.boundaryCommit}`);
+console.log(`world_runtime_source_commit=${manifest.sourceCommit}`);
 console.log(`world_runtime_kernel_sha256=${identity.sha256}`);
 console.log(`world_runtime_kernel_bytes=${identity.byteLength}`);
 console.log(`world_runtime_kernel_imports=${identity.importCount}`);
