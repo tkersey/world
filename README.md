@@ -30,7 +30,8 @@ The World source and release artifact authenticate this configured tuple by
 their own Git and distribution identities. A source-free runtime cannot prove
 that an upstream Boundary source commit produced the kernel bytes without an
 external attestation or rebuild; its embedded verifier checks internal
-consistency against the expected tuple supplied by the outer archive checker.
+consistency against the expected World version, source commit, production-source
+digest, Boundary tuple, and kernel digest supplied by the outer archive checker.
 
 World does not compile programs. It does not define Agent semantics, interpret
 BPI1 or Process State in JavaScript, drive a process loop, persist runs, or

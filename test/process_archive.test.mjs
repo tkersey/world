@@ -150,12 +150,73 @@ describe("World Process Host runtime archive", () => {
       checksumPath,
       verifyRebuild: false,
       runInner: true,
+      expectedWorldIdentity: {
+        worldVersion: admitted.manifest.worldVersion,
+        worldSourceCommit: admitted.manifest.sourceCommit,
+        worldProductionSourceSha256: admitted.manifest.productionSourceSha256,
+      },
     });
     expect(result.archiveSha256).toBe(sha256(archive));
     expect(result.innerVerified).toBe(true);
     expect(result.innerStdout).toMatch(/^world_runtime_internal_consistency=pass$/m);
     expect(result.innerStdout).toMatch(/^world_runtime_dependency_count=0$/m);
     expect(result.innerStdout).toMatch(/^world_runtime_kernel_imports=0$/m);
+  });
+
+  test("requires an external World identity when inner verification skips the exact rebuild", async () => {
+    await expect(checkRuntimeArchive({
+      root: repositoryRoot,
+      archivePath,
+      checksumPath,
+      verifyRebuild: false,
+      runInner: true,
+    })).rejects.toThrow(/external expected World identity or an exact source rebuild/);
+
+    const result = await checkRuntimeArchive({
+      root: repositoryRoot,
+      archivePath,
+      checksumPath,
+      verifyRebuild: false,
+      runInner: true,
+      expectedWorldIdentity: {
+        worldVersion: admitted.manifest.worldVersion,
+        worldSourceCommit: admitted.manifest.sourceCommit,
+        worldProductionSourceSha256: admitted.manifest.productionSourceSha256,
+      },
+    });
+    expect(result.innerVerified).toBe(true);
+  });
+
+  test("rejects a coherent production-source rewrite against the external World identity", async () => {
+    const entries = new Map([...admitted.entries].map(([path, bytes]) => [path, Buffer.from(bytes)]));
+    entries.set(
+      "src/process_v1/outcome.mjs",
+      Buffer.concat([entries.get("src/process_v1/outcome.mjs"), Buffer.from("\n// rewritten\n")]),
+    );
+    const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
+    entries.set("runtime-manifest.json", Buffer.from(stableJson({
+      ...manifest,
+      productionSourceSha256: productionSourceSha256(entries),
+    }), "utf8"));
+    entries.set("checksums.sha256", checksumsBytes(entries));
+    const rewritten = canonicalGzip(createCanonicalTar(entries));
+    const rewrittenPath = join(temporaryRoot, "rewritten", RUNTIME_ARCHIVE_NAME);
+    await mkdir(join(temporaryRoot, "rewritten"), { recursive: true });
+    await writeFile(rewrittenPath, rewritten);
+    await writeFile(`${rewrittenPath}.sha256`, `${sha256(rewritten)}  ${RUNTIME_ARCHIVE_NAME}\n`);
+
+    await expect(checkRuntimeArchive({
+      root: repositoryRoot,
+      archivePath: rewrittenPath,
+      checksumPath: `${rewrittenPath}.sha256`,
+      verifyRebuild: false,
+      runInner: true,
+      expectedWorldIdentity: {
+        worldVersion: admitted.manifest.worldVersion,
+        worldSourceCommit: admitted.manifest.sourceCommit,
+        worldProductionSourceSha256: admitted.manifest.productionSourceSha256,
+      },
+    })).rejects.toThrow(/production-source digest differs from the external expectation/);
   });
 
   test("does not let the embedded verifier mint its own expected identity", async () => {
@@ -177,6 +238,7 @@ describe("World Process Host runtime archive", () => {
     const expected = [
       "--expected-world-version", "4.1.0",
       "--expected-world-commit", admitted.manifest.sourceCommit,
+      "--expected-world-production-source-sha256", admitted.manifest.productionSourceSha256,
       "--expected-boundary-version", lock.boundaryVersion,
       "--expected-boundary-commit", lock.boundaryCommit,
       "--expected-kernel-sha256", lock.kernelSha256,
@@ -184,6 +246,7 @@ describe("World Process Host runtime archive", () => {
     for (const [index, value, message] of [
       [1, "4.0.0", /runtime World version differs/],
       [3, "0".repeat(40), /runtime World source commit differs/],
+      [5, "0".repeat(64), /runtime World production-source digest differs/],
     ]) {
       const arguments_ = [...expected];
       arguments_[index] = value;

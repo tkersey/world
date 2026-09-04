@@ -32,6 +32,7 @@ import {
   crc32,
   defaultArchivePath,
   defaultChecksumPath,
+  exactGitHeadCommit,
   isSafeRelativePath,
   productionSourceSha256,
   readBoundedRegularFileSnapshot,
@@ -40,6 +41,7 @@ import {
   runtimeMode,
   runtimeSourcePaths,
   sha256,
+  snapshotRuntimeSources,
 } from "./build_runtime_archive.mjs";
 
 const MAXIMUM_SIDECAR_BYTES = 256;
@@ -371,11 +373,46 @@ export async function extractAdmittedRuntime(admitted, destination) {
   return destination;
 }
 
-function runInnerVerifier(extractedRoot, sanitizedPath, lock, worldSourceCommit) {
+function validateExpectedWorldIdentity(identity) {
+  assert(identity !== null && typeof identity === "object" && !Array.isArray(identity), "expected World identity must be an object");
+  assert.deepEqual(
+    Object.keys(identity).sort(),
+    ["worldProductionSourceSha256", "worldSourceCommit", "worldVersion"],
+    "expected World identity fields are not exact",
+  );
+  assert(/^\d+\.\d+\.\d+$/.test(identity.worldVersion), "expected World version is invalid");
+  assert(/^[0-9a-f]{40}$/.test(identity.worldSourceCommit), "expected World source commit is invalid");
+  assert(/^[0-9a-f]{64}$/.test(identity.worldProductionSourceSha256), "expected World production-source digest is invalid");
+  return Object.freeze({ ...identity });
+}
+
+async function expectedWorldIdentityFromRepository(root) {
+  const worldSourceCommit = exactGitHeadCommit(root);
+  await assertTrackedRepositoryMatchesCommit(root, worldSourceCommit);
+  const entries = await snapshotRuntimeSources(root);
+  return Object.freeze({
+    worldVersion: WORLD_VERSION,
+    worldSourceCommit,
+    worldProductionSourceSha256: productionSourceSha256(entries),
+  });
+}
+
+function assertManifestMatchesExpectedWorldIdentity(manifest, expected) {
+  assert.equal(manifest.worldVersion, expected.worldVersion, "runtime World version differs from the external expectation");
+  assert.equal(manifest.sourceCommit, expected.worldSourceCommit, "runtime World source commit differs from the external expectation");
+  assert.equal(
+    manifest.productionSourceSha256,
+    expected.worldProductionSourceSha256,
+    "runtime World production-source digest differs from the external expectation",
+  );
+}
+
+function runInnerVerifier(extractedRoot, sanitizedPath, lock, expectedWorldIdentity) {
   const result = spawnSync(process.execPath, [
     "./verify-runtime.mjs",
-    "--expected-world-version", WORLD_VERSION,
-    "--expected-world-commit", worldSourceCommit,
+    "--expected-world-version", expectedWorldIdentity.worldVersion,
+    "--expected-world-commit", expectedWorldIdentity.worldSourceCommit,
+    "--expected-world-production-source-sha256", expectedWorldIdentity.worldProductionSourceSha256,
     "--expected-boundary-version", lock.boundaryVersion,
     "--expected-boundary-commit", lock.boundaryCommit,
     "--expected-kernel-sha256", lock.kernelSha256,
@@ -403,6 +440,7 @@ export async function checkRuntimeArchive({
   keepExtractedRoot = false,
   verifyRebuild = true,
   runInner = true,
+  expectedWorldIdentity = null,
 } = {}) {
   const archive = await readBoundedRegularFile(archivePath, RUNTIME_ARCHIVE_MAX_BYTES, "runtime archive");
   const sidecar = await readBoundedRegularFile(checksumPath, MAXIMUM_SIDECAR_BYTES, "runtime archive checksum sidecar");
@@ -410,6 +448,12 @@ export async function checkRuntimeArchive({
   const expectedInventory = [...await runtimeSourcePaths(root), "checksums.sha256", "runtime-manifest.json"].sort(compareUtf8);
   const lock = await readBoundaryLock(root);
   const admitted = await admitRuntimeArchiveBytes(archive, { expectedDigest, expectedInventory, lock });
+  let trustedWorldIdentity = expectedWorldIdentity === null
+    ? null
+    : validateExpectedWorldIdentity(expectedWorldIdentity);
+  if (trustedWorldIdentity !== null) {
+    assertManifestMatchesExpectedWorldIdentity(admitted.manifest, trustedWorldIdentity);
+  }
 
   let reproducible = false;
   if (verifyRebuild) {
@@ -431,6 +475,13 @@ export async function checkRuntimeArchive({
       assert(first.equals(second), "two runtime archive rebuilds are not byte-identical");
       assert(first.equals(archive), "runtime archive differs from an exact source rebuild");
       await assertTrackedRepositoryMatchesCommit(root, admitted.manifest.sourceCommit);
+      const repositoryIdentity = await expectedWorldIdentityFromRepository(root);
+      assertManifestMatchesExpectedWorldIdentity(admitted.manifest, repositoryIdentity);
+      if (trustedWorldIdentity !== null) {
+        assert.deepEqual(trustedWorldIdentity, repositoryIdentity, "external World identity differs from the exact repository");
+      } else {
+        trustedWorldIdentity = repositoryIdentity;
+      }
       reproducible = true;
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -449,13 +500,17 @@ export async function checkRuntimeArchive({
       }
       await extractAdmittedRuntime(admitted, extractedRoot);
       if (runInner) {
+        assert(
+          trustedWorldIdentity !== null,
+          "embedded runtime verification requires an external expected World identity or an exact source rebuild",
+        );
         const pathRoot = await mkdtemp(join(tmpdir(), "world-runtime-empty-path-"));
         try {
           inner = runInnerVerifier(
             extractedRoot,
             pathRoot,
             lock,
-            admitted.manifest.sourceCommit,
+            trustedWorldIdentity,
           );
         } finally {
           await rm(pathRoot, { recursive: true, force: true });

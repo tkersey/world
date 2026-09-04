@@ -263,6 +263,7 @@ describe("runtime archive source provenance", () => {
     const paths = await buildArchive("failing-inner-verifier");
     const parsed = parseCanonicalTar(parseCanonicalGzip(await readFile(paths.archivePath)));
     const entries = new Map(parsed.map(({ path, bytes }) => [path, Buffer.from(bytes)]));
+    const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
     entries.set("verify-runtime.mjs", Buffer.from("throw new Error(\"expected verifier failure\");\n", "utf8"));
     entries.set("checksums.sha256", checksumsBytes(entries));
     const archive = canonicalGzip(createCanonicalTar(entries));
@@ -278,6 +279,11 @@ describe("runtime archive source provenance", () => {
       ...paths,
       verifyRebuild: false,
       runInner: true,
+      expectedWorldIdentity: {
+        worldVersion: manifest.worldVersion,
+        worldSourceCommit: manifest.sourceCommit,
+        worldProductionSourceSha256: manifest.productionSourceSha256,
+      },
     })).rejects.toThrow(/embedded runtime verifier failed/);
     expect(await ownedRoots()).toEqual(before);
   });

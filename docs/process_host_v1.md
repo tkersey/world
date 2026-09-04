@@ -13,11 +13,13 @@ WebAssembly instantiation, host-facing record framing, and byte transport.
 
 The commit/hash tuple is a World-owned dependency binding, not a source-free
 attestation that the upstream commit produced those bytes. The outer archive
-checker supplies the expected Boundary version, commit, and kernel digest to
-the embedded verifier. That verifier proves archive-internal consistency; the
-World Git identity and published archive digest provide the external trust
-anchor, or an independent Boundary rebuild/attestation may be applied by a
-release consumer.
+checker supplies the expected World version, source commit, production-source
+digest, Boundary version and commit, and kernel digest to the embedded
+verifier. Non-rebuild verification requires this caller-owned World identity;
+an exact repository rebuild may derive it only after Git/source custody passes.
+The verifier proves archive-internal consistency; the World Git identity and
+published archive digest provide the external trust anchor, or an independent
+Boundary rebuild/attestation may be applied by a release consumer.
 
 ## Kernel admission
 
