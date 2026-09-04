@@ -79,16 +79,15 @@ async function cloneRepository(name) {
 }
 
 describe("runtime archive source provenance", () => {
-  test("derives runtime kernel identity from the selected root snapshot", async () => {
+  test("rejects invalid identity bytes from the selected root without falling back", async () => {
     const root = await cloneRepository("selected-root-kernel-identity");
     const identityPath = join(root, "src", "process_v1", "kernel_identity.json");
-    const alternateCommit = "a".repeat(40);
     const identity = JSON.parse(await readFile(identityPath, "utf8"));
-    await writeFile(identityPath, stableJson({ ...identity, boundaryCommit: alternateCommit }));
+    await writeFile(identityPath, stableJson({ ...identity, unexpected: true }));
     git(root, ["add", "src/process_v1/kernel_identity.json"]);
-    git(root, ["-c", "user.name=World Test", "-c", "user.email=world-test@example.invalid", "commit", "-m", "alternate kernel identity"]);
-    expect((await readBoundaryLock(root)).boundaryCommit).toBe(alternateCommit);
-    expect((await acquireBoundaryProcessAssets({ root, checkOnly: true })).boundaryCommit).toBe(alternateCommit);
+    git(root, ["-c", "user.name=World Test", "-c", "user.email=world-test@example.invalid", "commit", "-m", "invalid kernel identity"]);
+    await expect(readBoundaryLock(root)).rejects.toThrow(/fields are not exact/);
+    await expect(acquireBoundaryProcessAssets({ root, checkOnly: true })).rejects.toThrow(/fields are not exact/);
   });
 
   test("does not execute the selected root's identity projection", async () => {

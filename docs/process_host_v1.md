@@ -1,7 +1,8 @@
 # Boundary Process Host v1
 
 World 4.1 embeds one fixed semantic engine: the Boundary 1.8.0 candidate Process
-kernel at commit `186e0555ca00ffeffbcecfc8a16a8c29ac37c4e1`. The kernel is
+kernel whose reviewed dependency binding records commit
+`186e0555ca00ffeffbcecfc8a16a8c29ac37c4e1`. The kernel is
 682,943 bytes, has SHA-256
 `4da38268f12e8a2749a266480748da5460b5030dadfc10804f79ba3a3bb8013e`,
 declares ABI 1, 2,457 initial memory pages, a 4,096-page maximum, and no imports.
@@ -9,6 +10,14 @@ The lock in `conformance/boundary.lock.json` remains the historical published
 Boundary 1.7.0 conformance tuple; it does not identify the embedded runtime
 kernel. Boundary owns program meaning; World owns only artifact admission,
 WebAssembly instantiation, host-facing record framing, and byte transport.
+
+The commit/hash tuple is a World-owned dependency binding, not a source-free
+attestation that the upstream commit produced those bytes. The outer archive
+checker supplies the expected Boundary version, commit, and kernel digest to
+the embedded verifier. That verifier proves archive-internal consistency; the
+World Git identity and published archive digest provide the external trust
+anchor, or an independent Boundary rebuild/attestation may be applied by a
+release consumer.
 
 ## Kernel admission
 

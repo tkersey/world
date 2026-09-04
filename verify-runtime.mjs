@@ -17,6 +17,26 @@ const API_EXPORTS = Object.freeze([
   "encodeEffectResult",
 ]);
 
+function parseExpectedIdentity(argv) {
+  assert.deepEqual(argv.filter((_, index) => index % 2 === 0), [
+    "--expected-boundary-version",
+    "--expected-boundary-commit",
+    "--expected-kernel-sha256",
+  ], "usage: verify-runtime.mjs --expected-boundary-version VERSION --expected-boundary-commit COMMIT --expected-kernel-sha256 SHA256");
+  assert.equal(argv.length, 6, "runtime verification requires an external expected identity");
+  const expected = Object.freeze({
+    boundaryVersion: argv[1],
+    boundaryCommit: argv[3],
+    kernelSha256: argv[5],
+  });
+  assert(/^\d+\.\d+\.\d+$/.test(expected.boundaryVersion), "expected Boundary version is invalid");
+  assert(/^[0-9a-f]{40}$/.test(expected.boundaryCommit), "expected Boundary commit is invalid");
+  assert(/^[0-9a-f]{64}$/.test(expected.kernelSha256), "expected kernel digest is invalid");
+  return expected;
+}
+
+const expectedIdentity = parseExpectedIdentity(process.argv.slice(2));
+
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -155,6 +175,9 @@ for (const field of ["abiVersion", "byteLength", "importCount", "exportCount", "
   assert(Number.isSafeInteger(identity[field]) && identity[field] >= 0, `runtime kernel ${field} is invalid`);
 }
 assert.equal(identity.abiVersion, 1, "runtime kernel ABI version is not supported");
+assert.equal(identity.boundaryVersion, expectedIdentity.boundaryVersion, "runtime Boundary version differs from the external expectation");
+assert.equal(identity.boundaryCommit, expectedIdentity.boundaryCommit, "runtime Boundary commit differs from the external expectation");
+assert.equal(identity.sha256, expectedIdentity.kernelSha256, "runtime kernel digest differs from the external expectation");
 
 const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
 exactObject(manifest, {
@@ -187,7 +210,7 @@ assert.equal(host.abiVersion, identity.abiVersion, "runtime admitted host ABI di
 assert.equal(host.byteLength, identity.byteLength, "runtime admitted host kernel length differs");
 assert.equal(host.sha256, identity.sha256, "runtime admitted host kernel digest differs");
 
-console.log("world_runtime_verify=pass");
+console.log("world_runtime_internal_consistency=pass");
 console.log(`world_runtime_inventory=${JSON.stringify(files)}`);
 console.log(`world_runtime_file_count=${files.length}`);
 console.log(`world_runtime_production_source_file_count=${covered.filter((path) => path === "bin/world.mjs" || path.startsWith("src/process_v1/")).length}`);

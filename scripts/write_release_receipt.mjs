@@ -140,6 +140,19 @@ async function writeReleaseReceiptInternal({
     cleanRoomRuntimeVerified: true,
     publishedProcessCorpusParityClaimed: true,
     publishedProcessCorpusParity: Object.freeze({
+      boundaryCorpusIdentity: Object.freeze({
+        producerTag: conformance.boundaryCorpus.producerTag,
+        producerCommit: conformance.boundaryCorpus.producerCommit,
+        manifestSha256: conformance.boundaryCorpus.manifestSha256,
+        payloadSha256: conformance.boundaryCorpus.payloadSha256,
+      }),
+      repositoryRepairCorpusIdentity: Object.freeze({
+        producerTag: conformance.repositoryRepair.producerTag,
+        producerCommit: conformance.repositoryRepair.producerCommit,
+        manifestSha256: conformance.repositoryRepair.manifestSha256,
+        payloadSha256: conformance.repositoryRepair.payloadSha256,
+        programImageSha256: conformance.repositoryRepair.programImageSha256,
+      }),
       boundaryVectorCount: conformance.boundaryCorpus.vectorCount,
       boundaryByteIdenticalCount: conformance.boundaryCorpus.byteIdenticalCount,
       repositoryRepairReductionCount: conformance.repositoryRepair.reductionCount,

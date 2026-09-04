@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   EXPECTED_PRODUCTION_BUILTINS,
   checkProcessSurface,
+  deriveReachableProduction,
   derivePackageFilesystemPaths,
   derivePackageInventory,
   scanModuleSpecifiers,
@@ -253,6 +254,39 @@ describe("source-derived topology", () => {
     expect(() => validateProductionSpecifier("left-pad", "src/process_v1/a.mjs")).toThrow(
       "forbidden bare package",
     );
+  });
+
+  test("requires the canonical identity asset in production reachability", async () => {
+    const temporaryRoot = await mkdtemp(path.join(tmpdir(), "world-identity-reachability-"));
+    try {
+      await mkdir(path.join(temporaryRoot, "bin"), { recursive: true });
+      await mkdir(path.join(temporaryRoot, "src", "process_v1"), { recursive: true });
+      await writeFile(path.join(temporaryRoot, "bin", "world.mjs"), 'import "../src/process_v1/index.mjs";\n');
+      await writeFile(path.join(temporaryRoot, "src", "process_v1", "index.mjs"), 'import "./kernel_identity.mjs";\n');
+      await writeFile(path.join(temporaryRoot, "src", "process_v1", "kernel_identity.mjs"), "export const identity = {};\n");
+      await writeFile(path.join(temporaryRoot, "src", "process_v1", "kernel_identity.json"), "{}\n");
+      const paths = [
+        "bin/world.mjs",
+        "src/process_v1/index.mjs",
+        "src/process_v1/kernel_identity.mjs",
+        "src/process_v1/kernel_identity.json",
+      ];
+      const entries = paths.map((relativePath) => ({
+        path: relativePath,
+        tracked: true,
+        regular: true,
+        symlink: false,
+        mode: 0o100644,
+      }));
+      expect(() => deriveReachableProduction(
+        temporaryRoot,
+        manifest(),
+        entries,
+        paths,
+      )).toThrow(/unreachable production artifacts.*kernel_identity\.json/);
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
   });
 
   test("rejects import routes the source graph cannot derive", () => {

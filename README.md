@@ -17,13 +17,20 @@ BPI1 + InitialArgs or ABL_PST1 [+ ABL_ERS1]
                          +-- Requested: typed ABL_ERQ1
 ```
 
-World authenticates the fixed Boundary 1.8.0 candidate Process kernel at commit
-`186e0555ca00ffeffbcecfc8a16a8c29ac37c4e1`, creates a fresh WebAssembly
+World pins the fixed Boundary 1.8.0 candidate Process kernel bytes and records
+commit `186e0555ca00ffeffbcecfc8a16a8c29ac37c4e1` as the reviewed dependency
+binding. It creates a fresh WebAssembly
 instance, performs exactly one finite reduction, copies the canonical outcome
 bytes out of guest memory, and discards the instance. The published Boundary
 1.7.0 lock remains a separate historical conformance source. A caller may
 answer a residual request by supplying typed resume bytes in an `ABL_ERS1`
 record on a later call.
+
+The World source and release artifact authenticate this configured tuple by
+their own Git and distribution identities. A source-free runtime cannot prove
+that an upstream Boundary source commit produced the kernel bytes without an
+external attestation or rebuild; its embedded verifier checks internal
+consistency against the expected tuple supplied by the outer archive checker.
 
 World does not compile programs. It does not define Agent semantics, interpret
 BPI1 or Process State in JavaScript, drive a process loop, persist runs, or

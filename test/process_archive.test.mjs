@@ -23,6 +23,7 @@ import {
 import {
   admitRuntimeArchiveBytes,
   checkRuntimeArchive,
+  extractAdmittedRuntime,
   parseCanonicalGzip,
   parseCanonicalTar,
   parseChecksumSidecar,
@@ -152,9 +153,22 @@ describe("World Process Host runtime archive", () => {
     });
     expect(result.archiveSha256).toBe(sha256(archive));
     expect(result.innerVerified).toBe(true);
-    expect(result.innerStdout).toMatch(/^world_runtime_verify=pass$/m);
+    expect(result.innerStdout).toMatch(/^world_runtime_internal_consistency=pass$/m);
     expect(result.innerStdout).toMatch(/^world_runtime_dependency_count=0$/m);
     expect(result.innerStdout).toMatch(/^world_runtime_kernel_imports=0$/m);
+  });
+
+  test("does not let the embedded verifier mint its own expected identity", async () => {
+    const extractedRoot = join(temporaryRoot, "standalone-verifier-without-trust-root");
+    await extractAdmittedRuntime(admitted, extractedRoot);
+    const result = spawnSync(process.execPath, ["./verify-runtime.mjs"], {
+      cwd: extractedRoot,
+      encoding: "utf8",
+      env: {},
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/external expected identity|usage: verify-runtime/);
+    expect(result.stdout).not.toMatch(/internal_consistency=pass/);
   });
 
   test("preserves the historical Boundary lock separately from the current runtime kernel", async () => {
@@ -252,6 +266,19 @@ describe("World Process Host runtime archive", () => {
     });
     expect(result.receipt.publishedProcessCorpusParityClaimed).toBe(true);
     expect(result.receipt.publishedProcessCorpusParity).toEqual({
+      boundaryCorpusIdentity: {
+        producerTag: "v1.7.0",
+        producerCommit: "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
+        manifestSha256: "5ef2fb9fc3667ce97eae74d5bf9b635da46596fd7f0b3e68a04a43b24b7bb331",
+        payloadSha256: "17a74f8adfdd7fe9aced05d01fe0432f7ad6720b69cf353bc57a695378bb527f",
+      },
+      repositoryRepairCorpusIdentity: {
+        producerTag: "v2.7.0",
+        producerCommit: "f8609bc68f2a9c798df3511cfc3a2af60a359d41",
+        manifestSha256: "c2e0e63192c19cbb8e5d0d1d3b6951fcd428f9496c015471f69524286cf236c1",
+        payloadSha256: "f0ddf27f8402168e76360178b532da37323ada5c97a4294ca9d1c98e1c4838dd",
+        programImageSha256: "7440076a8078220d9d4000b871423d981bbbee19aedba499afaa4a86239fe6a6",
+      },
       boundaryVectorCount: 20,
       boundaryByteIdenticalCount: 20,
       repositoryRepairReductionCount: 96,

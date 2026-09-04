@@ -534,15 +534,16 @@ export function deriveReachableProduction(root, manifest, entries, packageMember
     }
   }
 
-  const productionModules = entries
+  const productionArtifacts = entries
     .map((entry) => entry.path)
     .filter((relativePath) =>
       relativePath === "bin/world.mjs" ||
-      (relativePath.startsWith("src/process_v1/") && relativePath.endsWith(".mjs")),
+      (relativePath.startsWith("src/process_v1/") && relativePath.endsWith(".mjs")) ||
+      relativePath === "src/process_v1/kernel_identity.json",
     )
     .sort();
-  const missing = productionModules.filter((relativePath) => !reachable.has(relativePath));
-  assert(missing.length === 0, `unreachable production modules are forbidden: ${missing.join(", ")}`);
+  const missing = productionArtifacts.filter((relativePath) => !reachable.has(relativePath));
+  assert(missing.length === 0, `unreachable production artifacts are forbidden: ${missing.join(", ")}`);
   const actualBuiltins = [...builtinSpecifiers].sort();
   assert(
     JSON.stringify(actualBuiltins) === JSON.stringify(EXPECTED_PRODUCTION_BUILTINS),

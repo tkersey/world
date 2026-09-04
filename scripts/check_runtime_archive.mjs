@@ -371,8 +371,13 @@ export async function extractAdmittedRuntime(admitted, destination) {
   return destination;
 }
 
-function runInnerVerifier(extractedRoot, sanitizedPath) {
-  const result = spawnSync(process.execPath, ["./verify-runtime.mjs"], {
+function runInnerVerifier(extractedRoot, sanitizedPath, lock) {
+  const result = spawnSync(process.execPath, [
+    "./verify-runtime.mjs",
+    "--expected-boundary-version", lock.boundaryVersion,
+    "--expected-boundary-commit", lock.boundaryCommit,
+    "--expected-kernel-sha256", lock.kernelSha256,
+  ], {
     cwd: extractedRoot,
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
@@ -384,7 +389,7 @@ function runInnerVerifier(extractedRoot, sanitizedPath) {
     },
   });
   assert.equal(result.status, 0, `embedded runtime verifier failed:\n${result.stdout ?? ""}\n${result.stderr ?? ""}`);
-  assert.match(result.stdout, /^world_runtime_verify=pass$/m, "embedded runtime verifier did not report success");
+  assert.match(result.stdout, /^world_runtime_internal_consistency=pass$/m, "embedded runtime verifier did not report success");
   return Object.freeze({ stdout: result.stdout, stderr: result.stderr ?? "" });
 }
 
@@ -444,7 +449,7 @@ export async function checkRuntimeArchive({
       if (runInner) {
         const pathRoot = await mkdtemp(join(tmpdir(), "world-runtime-empty-path-"));
         try {
-          inner = runInnerVerifier(extractedRoot, pathRoot);
+          inner = runInnerVerifier(extractedRoot, pathRoot, lock);
         } finally {
           await rm(pathRoot, { recursive: true, force: true });
         }
