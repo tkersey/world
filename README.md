@@ -32,6 +32,8 @@ that an upstream Boundary source commit produced the kernel bytes without an
 external attestation or rebuild; its embedded verifier checks internal
 consistency against the expected World version, source commit, production-source
 digest, Boundary tuple, and kernel digest supplied by the outer archive checker.
+Non-rebuild inner verification also requires the externally authenticated
+complete runtime-archive digest before executing the embedded verifier.
 
 World does not compile programs. It does not define Agent semantics, interpret
 BPI1 or Process State in JavaScript, drive a process loop, persist runs, or

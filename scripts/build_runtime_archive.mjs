@@ -253,17 +253,15 @@ export function productionSourceSha256(entries) {
     .sort(compareUtf8);
   assert(sourcePaths.includes("bin/world.mjs"), "production source digest is missing bin/world.mjs");
   assert(sourcePaths.includes("src/process_v1/index.mjs"), "production source digest is missing the public module");
-  const digest = createHash("sha256");
-  digest.update("world-production-source/v1\0");
-  for (const path of sourcePaths) {
+  const records = sourcePaths.map((path) => {
     const bytes = entries.get(path);
     assert(Buffer.isBuffer(bytes), `production source bytes are missing: ${path}`);
-    digest.update(path, "utf8");
-    digest.update("\0");
-    digest.update(bytes);
-    digest.update("\0");
-  }
-  return digest.digest("hex");
+    return [path, sha256(bytes)];
+  });
+  return sha256(Buffer.from(JSON.stringify([
+    "world-production-source/v2",
+    records,
+  ]), "utf8"));
 }
 
 export function runtimePackageJson(sourceBytes) {

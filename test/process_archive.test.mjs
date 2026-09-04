@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,17 +8,20 @@ import { join } from "node:path";
 import {
   RUNTIME_ARCHIVE_NAME,
   RUNTIME_ROOT,
+  WORLD_VERSION,
   assertRepositoryOutputNamespaces,
   buildRuntimeArchive,
   canonicalGzip,
   checksumsBytes,
   createCanonicalTar,
   crc32,
+  exactGitHeadCommit,
   productionSourceSha256,
   readBoundaryLock,
   repositoryRoot,
   runtimeSourcePaths,
   sha256,
+  snapshotRuntimeSources,
   stableJson,
 } from "../scripts/build_runtime_archive.mjs";
 import {
@@ -41,6 +45,8 @@ let archive;
 let tar;
 let admitted;
 let lock;
+let trustedWorldIdentity;
+let trustedArchiveSha256;
 
 beforeAll(async () => {
   temporaryRoot = await mkdtemp(join(tmpdir(), "world-process-archive-test-"));
@@ -52,6 +58,14 @@ beforeAll(async () => {
     checksumPath,
   });
   archive = await readFile(archivePath);
+  trustedArchiveSha256 = sha256(archive);
+  trustedWorldIdentity = Object.freeze({
+    worldVersion: WORLD_VERSION,
+    worldSourceCommit: exactGitHeadCommit(repositoryRoot),
+    worldProductionSourceSha256: productionSourceSha256(
+      await snapshotRuntimeSources(repositoryRoot),
+    ),
+  });
   tar = parseCanonicalGzip(archive);
   lock = await readBoundaryLock(repositoryRoot);
   admitted = await admitRuntimeArchiveBytes(archive, {
@@ -86,6 +100,32 @@ describe("World Process Host runtime archive", () => {
     expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/security_model.md");
     expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/migration_from_world_3.md");
     expect(runtimeReadme).not.toMatch(/\]\(docs\//);
+  });
+
+  test("uses a prefix-free production-source commitment", () => {
+    const firstPath = "bin/world.mjs";
+    const secondPath = "src/process_v1/index.mjs";
+    const left = new Map([
+      [firstPath, Buffer.from(`a\0${secondPath}\0b`)],
+      [secondPath, Buffer.from("c")],
+    ]);
+    const right = new Map([
+      [firstPath, Buffer.from("a")],
+      [secondPath, Buffer.from(`b\0${secondPath}\0c`)],
+    ]);
+    const ambiguous = (entries) => {
+      const digest = createHash("sha256");
+      digest.update("world-production-source/v1\0");
+      for (const path of [firstPath, secondPath]) {
+        digest.update(path);
+        digest.update("\0");
+        digest.update(entries.get(path));
+        digest.update("\0");
+      }
+      return digest.digest("hex");
+    };
+    expect(ambiguous(left)).toBe(ambiguous(right));
+    expect(productionSourceSha256(left)).not.toBe(productionSourceSha256(right));
   });
 
   test("rejects archive and checksum path aliasing before writing", async () => {
@@ -150,11 +190,8 @@ describe("World Process Host runtime archive", () => {
       checksumPath,
       verifyRebuild: false,
       runInner: true,
-      expectedWorldIdentity: {
-        worldVersion: admitted.manifest.worldVersion,
-        worldSourceCommit: admitted.manifest.sourceCommit,
-        worldProductionSourceSha256: admitted.manifest.productionSourceSha256,
-      },
+      expectedWorldIdentity: trustedWorldIdentity,
+      expectedArchiveSha256: trustedArchiveSha256,
     });
     expect(result.archiveSha256).toBe(sha256(archive));
     expect(result.innerVerified).toBe(true);
@@ -170,7 +207,26 @@ describe("World Process Host runtime archive", () => {
       checksumPath,
       verifyRebuild: false,
       runInner: true,
-    })).rejects.toThrow(/external expected World identity or an exact source rebuild/);
+    })).rejects.toThrow(/external expected World identity/);
+
+    await expect(checkRuntimeArchive({
+      root: repositoryRoot,
+      archivePath,
+      checksumPath,
+      verifyRebuild: false,
+      runInner: true,
+      expectedWorldIdentity: trustedWorldIdentity,
+    })).rejects.toThrow(/external expected archive digest/);
+
+    await expect(checkRuntimeArchive({
+      root: repositoryRoot,
+      archivePath,
+      checksumPath,
+      verifyRebuild: false,
+      runInner: true,
+      expectedWorldIdentity: trustedWorldIdentity,
+      expectedArchiveSha256: "0".repeat(64),
+    })).rejects.toThrow(/archive differs from the external expected digest/);
 
     const result = await checkRuntimeArchive({
       root: repositoryRoot,
@@ -178,11 +234,8 @@ describe("World Process Host runtime archive", () => {
       checksumPath,
       verifyRebuild: false,
       runInner: true,
-      expectedWorldIdentity: {
-        worldVersion: admitted.manifest.worldVersion,
-        worldSourceCommit: admitted.manifest.sourceCommit,
-        worldProductionSourceSha256: admitted.manifest.productionSourceSha256,
-      },
+      expectedWorldIdentity: trustedWorldIdentity,
+      expectedArchiveSha256: trustedArchiveSha256,
     });
     expect(result.innerVerified).toBe(true);
   });
@@ -211,11 +264,8 @@ describe("World Process Host runtime archive", () => {
       checksumPath: `${rewrittenPath}.sha256`,
       verifyRebuild: false,
       runInner: true,
-      expectedWorldIdentity: {
-        worldVersion: admitted.manifest.worldVersion,
-        worldSourceCommit: admitted.manifest.sourceCommit,
-        worldProductionSourceSha256: admitted.manifest.productionSourceSha256,
-      },
+      expectedWorldIdentity: trustedWorldIdentity,
+      expectedArchiveSha256: sha256(rewritten),
     })).rejects.toThrow(/production-source digest differs from the external expectation/);
   });
 
@@ -237,8 +287,8 @@ describe("World Process Host runtime archive", () => {
     await extractAdmittedRuntime(admitted, extractedRoot);
     const expected = [
       "--expected-world-version", "4.1.0",
-      "--expected-world-commit", admitted.manifest.sourceCommit,
-      "--expected-world-production-source-sha256", admitted.manifest.productionSourceSha256,
+      "--expected-world-commit", trustedWorldIdentity.worldSourceCommit,
+      "--expected-world-production-source-sha256", trustedWorldIdentity.worldProductionSourceSha256,
       "--expected-boundary-version", lock.boundaryVersion,
       "--expected-boundary-commit", lock.boundaryCommit,
       "--expected-kernel-sha256", lock.kernelSha256,

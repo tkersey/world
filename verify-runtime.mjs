@@ -127,15 +127,11 @@ function productionSourceDigest(entries) {
     .filter((path) => path === "bin/world.mjs" || path.startsWith("src/process_v1/"))
     .sort(compareUtf8);
   assert(paths.includes("bin/world.mjs") && paths.includes("src/process_v1/index.mjs"), "runtime production source set is incomplete");
-  const digest = createHash("sha256");
-  digest.update("world-production-source/v1\0");
-  for (const path of paths) {
-    digest.update(path, "utf8");
-    digest.update("\0");
-    digest.update(entries.get(path));
-    digest.update("\0");
-  }
-  return digest.digest("hex");
+  const records = paths.map((path) => [path, sha256(entries.get(path))]);
+  return sha256(Buffer.from(JSON.stringify([
+    "world-production-source/v2",
+    records,
+  ]), "utf8"));
 }
 
 function exactObject(value, expected, label) {

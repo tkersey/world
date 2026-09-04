@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   RUNTIME_ARCHIVE_NAME,
+  WORLD_VERSION,
   assertTrackedRepositoryMatchesCommit,
   bindRetainedSnapshotsToGitHead,
   buildRuntimeArchive,
@@ -15,6 +16,7 @@ import {
   createCanonicalTar,
   exactGitHeadCommit,
   probeBoundaryProcessKernelAbi,
+  productionSourceSha256,
   repositoryRoot,
   readBoundaryLock,
   readBoundedRegularFileSnapshot,
@@ -263,7 +265,6 @@ describe("runtime archive source provenance", () => {
     const paths = await buildArchive("failing-inner-verifier");
     const parsed = parseCanonicalTar(parseCanonicalGzip(await readFile(paths.archivePath)));
     const entries = new Map(parsed.map(({ path, bytes }) => [path, Buffer.from(bytes)]));
-    const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
     entries.set("verify-runtime.mjs", Buffer.from("throw new Error(\"expected verifier failure\");\n", "utf8"));
     entries.set("checksums.sha256", checksumsBytes(entries));
     const archive = canonicalGzip(createCanonicalTar(entries));
@@ -280,10 +281,13 @@ describe("runtime archive source provenance", () => {
       verifyRebuild: false,
       runInner: true,
       expectedWorldIdentity: {
-        worldVersion: manifest.worldVersion,
-        worldSourceCommit: manifest.sourceCommit,
-        worldProductionSourceSha256: manifest.productionSourceSha256,
+        worldVersion: WORLD_VERSION,
+        worldSourceCommit: exactGitHeadCommit(repositoryRoot),
+        worldProductionSourceSha256: productionSourceSha256(
+          await snapshotRuntimeSources(repositoryRoot),
+        ),
       },
+      expectedArchiveSha256: sha256(archive),
     })).rejects.toThrow(/embedded runtime verifier failed/);
     expect(await ownedRoots()).toEqual(before);
   });

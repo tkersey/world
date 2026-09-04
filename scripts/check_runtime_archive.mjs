@@ -441,16 +441,33 @@ export async function checkRuntimeArchive({
   verifyRebuild = true,
   runInner = true,
   expectedWorldIdentity = null,
+  expectedArchiveSha256 = null,
 } = {}) {
+  let trustedWorldIdentity = expectedWorldIdentity === null
+    ? null
+    : validateExpectedWorldIdentity(expectedWorldIdentity);
+  if (expectedArchiveSha256 !== null) {
+    assert(/^[0-9a-f]{64}$/.test(expectedArchiveSha256), "expected runtime archive digest is invalid");
+  }
+  if (runInner && !verifyRebuild) {
+    assert(
+      trustedWorldIdentity !== null,
+      "embedded runtime verification without an exact source rebuild requires an external expected World identity",
+    );
+    assert(
+      expectedArchiveSha256 !== null,
+      "embedded runtime verification without an exact source rebuild requires an external expected archive digest",
+    );
+  }
   const archive = await readBoundedRegularFile(archivePath, RUNTIME_ARCHIVE_MAX_BYTES, "runtime archive");
+  if (expectedArchiveSha256 !== null) {
+    assert.equal(sha256(archive), expectedArchiveSha256, "runtime archive differs from the external expected digest");
+  }
   const sidecar = await readBoundedRegularFile(checksumPath, MAXIMUM_SIDECAR_BYTES, "runtime archive checksum sidecar");
   const expectedDigest = parseChecksumSidecar(sidecar, basename(archivePath));
   const expectedInventory = [...await runtimeSourcePaths(root), "checksums.sha256", "runtime-manifest.json"].sort(compareUtf8);
   const lock = await readBoundaryLock(root);
   const admitted = await admitRuntimeArchiveBytes(archive, { expectedDigest, expectedInventory, lock });
-  let trustedWorldIdentity = expectedWorldIdentity === null
-    ? null
-    : validateExpectedWorldIdentity(expectedWorldIdentity);
   if (trustedWorldIdentity !== null) {
     assertManifestMatchesExpectedWorldIdentity(admitted.manifest, trustedWorldIdentity);
   }
