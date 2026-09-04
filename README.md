@@ -17,11 +17,23 @@ BPI1 + InitialArgs or ABL_PST1 [+ ABL_ERS1]
                          +-- Requested: typed ABL_ERQ1
 ```
 
-World authenticates the fixed Boundary 1.7.0 Process kernel, creates a fresh
-WebAssembly instance, performs exactly one finite reduction, copies the
-canonical outcome bytes out of guest memory, and discards the instance. A
-caller may answer a residual request by supplying typed resume bytes in an
-`ABL_ERS1` record on a later call.
+World pins the fixed Boundary 1.8.0 release Process kernel bytes and records
+landed commit `9772a22838c3243c746379e292de01230cb60eda` as the released dependency
+binding. It creates a fresh WebAssembly
+instance, performs exactly one finite reduction, copies the canonical outcome
+bytes out of guest memory, and discards the instance. The published Boundary
+1.7.0 lock remains a separate historical conformance source. A caller may
+answer a residual request by supplying typed resume bytes in an `ABL_ERS1`
+record on a later call.
+
+The World source and release artifact authenticate this configured tuple by
+their own Git and distribution identities. A source-free runtime cannot prove
+that an upstream Boundary source commit produced the kernel bytes without an
+external attestation or rebuild; its embedded verifier checks internal
+consistency against the expected World version, source commit, production-source
+digest, Boundary tuple, and kernel digest supplied by the outer archive checker.
+Non-rebuild inner verification also requires the externally authenticated
+complete runtime-archive digest before executing the embedded verifier.
 
 World does not compile programs. It does not define Agent semantics, interpret
 BPI1 or Process State in JavaScript, drive a process loop, persist runs, or
@@ -90,6 +102,6 @@ Without `--kernel`, the command uses the exact kernel bundled with World 4.
 Input paths are admitted as coherent regular-file generations. `--out` publishes
 through a sibling temporary file and an atomic rename.
 
-See [Process Host v1](https://github.com/tkersey/world/blob/v4.0.0/docs/process_host_v1.md), the
-[security model](https://github.com/tkersey/world/blob/v4.0.0/docs/security_model.md), and
-[migration from World 3](https://github.com/tkersey/world/blob/v4.0.0/docs/migration_from_world_3.md).
+See [Process Host v1](https://github.com/tkersey/world/blob/v4.1.0/docs/process_host_v1.md), the
+[security model](https://github.com/tkersey/world/blob/v4.1.0/docs/security_model.md), and
+[migration from World 3](https://github.com/tkersey/world/blob/v4.1.0/docs/migration_from_world_3.md).

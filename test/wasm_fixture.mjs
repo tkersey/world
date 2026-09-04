@@ -102,7 +102,9 @@ export function processKernelWasmFixture(options = {}) {
   }
 
   sections.push(section(10, vector(assignedTypes.map((typeIndex, index) => {
-    const instruction = typeIndex === 2
+    const instruction = index === 0 && options.abiLoop === true
+      ? [0x03, 0x40, 0x0c, 0x00, 0x0b, 0x41, 0x00]
+      : typeIndex === 2
       ? [0x42, 0x00]
       : typeIndex === 5
       ? []

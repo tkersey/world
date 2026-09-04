@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   EXPECTED_PRODUCTION_BUILTINS,
   checkProcessSurface,
+  deriveReachableProduction,
   derivePackageFilesystemPaths,
   derivePackageInventory,
   scanModuleSpecifiers,
@@ -22,7 +23,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function manifest(overrides = {}) {
   return {
     name: "@tkersey/world",
-    version: "4.0.0",
+    version: "4.1.0",
     type: "module",
     private: false,
     license: "MIT",
@@ -99,6 +100,41 @@ describe("World 4 package identity", () => {
       validatePackageManifest(manifest({ main: "./src/process_v1/index.mjs" })),
     ).toThrow("main");
   });
+
+  test("keeps the public Process v1 module self-contained when bundled by Bun", async () => {
+    const temporaryRoot = await mkdtemp(path.join(tmpdir(), "world-process-bundle-"));
+    try {
+      const entryPath = path.join(temporaryRoot, "entry.mjs");
+      const outputRoot = path.join(temporaryRoot, "out");
+      await writeFile(entryPath, [
+        `import { admitProcessKernel } from ${JSON.stringify(path.join(root, "src", "process_v1", "index.mjs"))};`,
+        `console.log(typeof admitProcessKernel);`,
+      ].join("\n"));
+      const build = await Bun.build({
+        entrypoints: [entryPath],
+        outdir: outputRoot,
+        target: "bun",
+        format: "esm",
+      });
+      expect(build.success).toBe(true);
+      expect(build.outputs).toHaveLength(1);
+      const child = Bun.spawn([process.execPath, build.outputs[0].path], {
+        env: {},
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ]);
+      expect(stderr).toBe("");
+      expect(exitCode).toBe(0);
+      expect(stdout).toBe("function\n");
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("source-derived topology", () => {
@@ -169,6 +205,7 @@ describe("source-derived topology", () => {
       "README.md",
       "bin/world.mjs",
       "src/process_v1/index.mjs",
+      "src/process_v1/kernel_identity.json",
       "boundary-process-kernel-v1.wasm",
     ].map((entry) => ({ path: entry, tracked: true, regular: true, symlink: false, mode: 0o100644 }));
     const inventory = derivePackageInventory(entries, manifest());
@@ -217,6 +254,39 @@ describe("source-derived topology", () => {
     expect(() => validateProductionSpecifier("left-pad", "src/process_v1/a.mjs")).toThrow(
       "forbidden bare package",
     );
+  });
+
+  test("requires the canonical identity asset in production reachability", async () => {
+    const temporaryRoot = await mkdtemp(path.join(tmpdir(), "world-identity-reachability-"));
+    try {
+      await mkdir(path.join(temporaryRoot, "bin"), { recursive: true });
+      await mkdir(path.join(temporaryRoot, "src", "process_v1"), { recursive: true });
+      await writeFile(path.join(temporaryRoot, "bin", "world.mjs"), 'import "../src/process_v1/index.mjs";\n');
+      await writeFile(path.join(temporaryRoot, "src", "process_v1", "index.mjs"), 'import "./kernel_identity.mjs";\n');
+      await writeFile(path.join(temporaryRoot, "src", "process_v1", "kernel_identity.mjs"), "export const identity = {};\n");
+      await writeFile(path.join(temporaryRoot, "src", "process_v1", "kernel_identity.json"), "{}\n");
+      const paths = [
+        "bin/world.mjs",
+        "src/process_v1/index.mjs",
+        "src/process_v1/kernel_identity.mjs",
+        "src/process_v1/kernel_identity.json",
+      ];
+      const entries = paths.map((relativePath) => ({
+        path: relativePath,
+        tracked: true,
+        regular: true,
+        symlink: false,
+        mode: 0o100644,
+      }));
+      expect(() => deriveReachableProduction(
+        temporaryRoot,
+        manifest(),
+        entries,
+        paths,
+      )).toThrow(/unreachable production artifacts.*kernel_identity\.json/);
+    } finally {
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
   });
 
   test("rejects import routes the source graph cannot derive", () => {

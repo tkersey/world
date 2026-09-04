@@ -159,7 +159,7 @@ describe("fixed-kernel admitted host", () => {
       "sha256",
     ]);
     expect(host.abiVersion).toBe(1);
-    expect(host.byteLength).toBe(647473);
+    expect(host.byteLength).toBe(682943);
     expect(host.sha256).toBe(BOUNDARY_PROCESS_KERNEL_V1.sha256);
     expect(Object.isFrozen(host)).toBe(true);
     expect(Object.isFrozen(host.inspection)).toBe(true);

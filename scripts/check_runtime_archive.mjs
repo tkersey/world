@@ -23,13 +23,16 @@ import {
   RUNTIME_FORMAT,
   RUNTIME_ROOT,
   WORLD_VERSION,
+  assertBoundaryProcessKernelMatchesLock,
   assertTrackedRepositoryMatchesCommit,
+  boundaryProcessKernelLockFromIdentityBytes,
   canonicalGzip,
   canonicalTarHeader,
   checksumsBytes,
   crc32,
   defaultArchivePath,
   defaultChecksumPath,
+  exactGitHeadCommit,
   isSafeRelativePath,
   productionSourceSha256,
   readBoundedRegularFileSnapshot,
@@ -38,6 +41,7 @@ import {
   runtimeMode,
   runtimeSourcePaths,
   sha256,
+  snapshotRuntimeSources,
 } from "./build_runtime_archive.mjs";
 
 const MAXIMUM_SIDECAR_BYTES = 256;
@@ -262,6 +266,7 @@ function allowedInventory(paths) {
     "checksums.sha256",
     "package.json",
     "runtime-manifest.json",
+    "src/process_v1/kernel_identity.json",
     "verify-runtime.mjs",
   ]);
   let moduleCount = 0;
@@ -294,6 +299,10 @@ export async function admitRuntimeArchiveBytes(archive, {
   for (const path of covered) assert.equal(sha256(entries.get(path)), checksums.get(path), `runtime checksum differs: ${path}`);
   assert(entries.get("checksums.sha256").equals(checksumsBytes(entries)), "runtime checksums file is not canonical");
   const boundaryLock = lock ?? await readBoundaryLock(repositoryRoot);
+  const archivedBoundaryLock = boundaryProcessKernelLockFromIdentityBytes(
+    entries.get("src/process_v1/kernel_identity.json"),
+  );
+  assert.deepEqual(archivedBoundaryLock, boundaryLock, "runtime kernel identity differs from the selected Boundary lock");
   const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
   exactObject(manifest, {
     format: RUNTIME_FORMAT,
@@ -311,11 +320,7 @@ export async function admitRuntimeArchiveBytes(archive, {
   assert(/^[0-9a-f]{64}$/.test(manifest.productionSourceSha256), "runtime manifest productionSourceSha256 is invalid");
   assert.equal(productionSourceSha256(entries), manifest.productionSourceSha256, "runtime production source digest differs");
   const kernel = entries.get("boundary-process-kernel-v1.wasm");
-  assert.equal(kernel.length, boundaryLock.kernelByteLength, "runtime kernel byte length differs");
-  assert.equal(sha256(kernel), boundaryLock.kernelSha256, "runtime kernel digest differs");
-  assert.equal(WebAssembly.validate(kernel), true, "runtime kernel is not valid WebAssembly");
-  const module = await WebAssembly.compile(kernel);
-  assert.equal(WebAssembly.Module.imports(module).length, boundaryLock.kernelImportCount, "runtime kernel import count differs");
+  await assertBoundaryProcessKernelMatchesLock(kernel, boundaryLock);
   validatePackage(entries.get("package.json"));
   const admitted = Object.freeze({
     archiveSha256: actualDigest,
@@ -368,8 +373,50 @@ export async function extractAdmittedRuntime(admitted, destination) {
   return destination;
 }
 
-function runInnerVerifier(extractedRoot, sanitizedPath) {
-  const result = spawnSync(process.execPath, ["./verify-runtime.mjs"], {
+function validateExpectedWorldIdentity(identity) {
+  assert(identity !== null && typeof identity === "object" && !Array.isArray(identity), "expected World identity must be an object");
+  assert.deepEqual(
+    Object.keys(identity).sort(),
+    ["worldProductionSourceSha256", "worldSourceCommit", "worldVersion"],
+    "expected World identity fields are not exact",
+  );
+  assert(/^\d+\.\d+\.\d+$/.test(identity.worldVersion), "expected World version is invalid");
+  assert(/^[0-9a-f]{40}$/.test(identity.worldSourceCommit), "expected World source commit is invalid");
+  assert(/^[0-9a-f]{64}$/.test(identity.worldProductionSourceSha256), "expected World production-source digest is invalid");
+  return Object.freeze({ ...identity });
+}
+
+async function expectedWorldIdentityFromRepository(root) {
+  const worldSourceCommit = exactGitHeadCommit(root);
+  await assertTrackedRepositoryMatchesCommit(root, worldSourceCommit);
+  const entries = await snapshotRuntimeSources(root);
+  return Object.freeze({
+    worldVersion: WORLD_VERSION,
+    worldSourceCommit,
+    worldProductionSourceSha256: productionSourceSha256(entries),
+  });
+}
+
+function assertManifestMatchesExpectedWorldIdentity(manifest, expected) {
+  assert.equal(manifest.worldVersion, expected.worldVersion, "runtime World version differs from the external expectation");
+  assert.equal(manifest.sourceCommit, expected.worldSourceCommit, "runtime World source commit differs from the external expectation");
+  assert.equal(
+    manifest.productionSourceSha256,
+    expected.worldProductionSourceSha256,
+    "runtime World production-source digest differs from the external expectation",
+  );
+}
+
+function runInnerVerifier(extractedRoot, sanitizedPath, lock, expectedWorldIdentity) {
+  const result = spawnSync(process.execPath, [
+    "./verify-runtime.mjs",
+    "--expected-world-version", expectedWorldIdentity.worldVersion,
+    "--expected-world-commit", expectedWorldIdentity.worldSourceCommit,
+    "--expected-world-production-source-sha256", expectedWorldIdentity.worldProductionSourceSha256,
+    "--expected-boundary-version", lock.boundaryVersion,
+    "--expected-boundary-commit", lock.boundaryCommit,
+    "--expected-kernel-sha256", lock.kernelSha256,
+  ], {
     cwd: extractedRoot,
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
@@ -381,7 +428,7 @@ function runInnerVerifier(extractedRoot, sanitizedPath) {
     },
   });
   assert.equal(result.status, 0, `embedded runtime verifier failed:\n${result.stdout ?? ""}\n${result.stderr ?? ""}`);
-  assert.match(result.stdout, /^world_runtime_verify=pass$/m, "embedded runtime verifier did not report success");
+  assert.match(result.stdout, /^world_runtime_internal_consistency=pass$/m, "embedded runtime verifier did not report success");
   return Object.freeze({ stdout: result.stdout, stderr: result.stderr ?? "" });
 }
 
@@ -393,13 +440,37 @@ export async function checkRuntimeArchive({
   keepExtractedRoot = false,
   verifyRebuild = true,
   runInner = true,
+  expectedWorldIdentity = null,
+  expectedArchiveSha256 = null,
 } = {}) {
+  let trustedWorldIdentity = expectedWorldIdentity === null
+    ? null
+    : validateExpectedWorldIdentity(expectedWorldIdentity);
+  if (expectedArchiveSha256 !== null) {
+    assert(/^[0-9a-f]{64}$/.test(expectedArchiveSha256), "expected runtime archive digest is invalid");
+  }
+  if (runInner && !verifyRebuild) {
+    assert(
+      trustedWorldIdentity !== null,
+      "embedded runtime verification without an exact source rebuild requires an external expected World identity",
+    );
+    assert(
+      expectedArchiveSha256 !== null,
+      "embedded runtime verification without an exact source rebuild requires an external expected archive digest",
+    );
+  }
   const archive = await readBoundedRegularFile(archivePath, RUNTIME_ARCHIVE_MAX_BYTES, "runtime archive");
+  if (expectedArchiveSha256 !== null) {
+    assert.equal(sha256(archive), expectedArchiveSha256, "runtime archive differs from the external expected digest");
+  }
   const sidecar = await readBoundedRegularFile(checksumPath, MAXIMUM_SIDECAR_BYTES, "runtime archive checksum sidecar");
   const expectedDigest = parseChecksumSidecar(sidecar, basename(archivePath));
   const expectedInventory = [...await runtimeSourcePaths(root), "checksums.sha256", "runtime-manifest.json"].sort(compareUtf8);
   const lock = await readBoundaryLock(root);
   const admitted = await admitRuntimeArchiveBytes(archive, { expectedDigest, expectedInventory, lock });
+  if (trustedWorldIdentity !== null) {
+    assertManifestMatchesExpectedWorldIdentity(admitted.manifest, trustedWorldIdentity);
+  }
 
   let reproducible = false;
   if (verifyRebuild) {
@@ -421,6 +492,13 @@ export async function checkRuntimeArchive({
       assert(first.equals(second), "two runtime archive rebuilds are not byte-identical");
       assert(first.equals(archive), "runtime archive differs from an exact source rebuild");
       await assertTrackedRepositoryMatchesCommit(root, admitted.manifest.sourceCommit);
+      const repositoryIdentity = await expectedWorldIdentityFromRepository(root);
+      assertManifestMatchesExpectedWorldIdentity(admitted.manifest, repositoryIdentity);
+      if (trustedWorldIdentity !== null) {
+        assert.deepEqual(trustedWorldIdentity, repositoryIdentity, "external World identity differs from the exact repository");
+      } else {
+        trustedWorldIdentity = repositoryIdentity;
+      }
       reproducible = true;
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -439,9 +517,18 @@ export async function checkRuntimeArchive({
       }
       await extractAdmittedRuntime(admitted, extractedRoot);
       if (runInner) {
+        assert(
+          trustedWorldIdentity !== null,
+          "embedded runtime verification requires an external expected World identity or an exact source rebuild",
+        );
         const pathRoot = await mkdtemp(join(tmpdir(), "world-runtime-empty-path-"));
         try {
-          inner = runInnerVerifier(extractedRoot, pathRoot);
+          inner = runInnerVerifier(
+            extractedRoot,
+            pathRoot,
+            lock,
+            trustedWorldIdentity,
+          );
         } finally {
           await rm(pathRoot, { recursive: true, force: true });
         }

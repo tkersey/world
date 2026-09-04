@@ -11,10 +11,16 @@ import {
   rm,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseBoundaryProcessKernelIdentityV1 } from
+  "../src/process_v1/kernel_identity.mjs";
+import {
+  inspectProcessKernelWasm,
+  PROCESS_KERNEL_EXPORT_NAMES,
+} from "../src/process_v1/wasm.mjs";
 
-export const WORLD_VERSION = "4.0.0";
+export const WORLD_VERSION = "4.1.0";
 export const RUNTIME_FORMAT = "world-process-host-runtime/v1";
 export const RUNTIME_ROOT = `world-v${WORLD_VERSION}-process-host-runtime`;
 export const RUNTIME_ARCHIVE_NAME = `${RUNTIME_ROOT}.tar.gz`;
@@ -24,6 +30,20 @@ export const RUNTIME_ENTRY_MAX_BYTES = 16 * 1024 * 1024;
 export const RUNTIME_ENTRY_MAX_COUNT = 256;
 const TRACKED_FILE_MAX_BYTES = 64 * 1024 * 1024;
 const TRACKED_REPOSITORY_MAX_BYTES = 128 * 1024 * 1024;
+const KERNEL_ABI_PROBE_TIMEOUT_MS = 5_000;
+const SUPPORTED_PROCESS_KERNEL_ABI_VERSION = 1;
+const KERNEL_ABI_PROBE_SOURCE = String.raw`
+(async () => {
+  const { readFileSync } = await import("node:fs");
+  const bytes = readFileSync(0);
+  const module = await WebAssembly.compile(bytes);
+  const instance = await WebAssembly.instantiate(module, {});
+  process.stdout.write(String(instance.exports.boundary_process_kernel_abi_version()) + "\n");
+})().catch((error) => {
+  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\n");
+  process.exitCode = 1;
+});
+`;
 
 const scriptPath = fileURLToPath(import.meta.url);
 export const repositoryRoot = resolve(dirname(scriptPath), "..");
@@ -48,6 +68,10 @@ const REQUIRED_PROCESS_MODULES = Object.freeze([
   "kernel_identity.mjs",
   "outcome.mjs",
   "wasm.mjs",
+]);
+
+const REQUIRED_PROCESS_ASSETS = Object.freeze([
+  "kernel_identity.json",
 ]);
 
 const GENERATED_PATHS = Object.freeze([
@@ -195,16 +219,22 @@ export async function runtimeSourcePaths(root = repositoryRoot) {
   const moduleRoot = join(root, "src", "process_v1");
   const entries = await readdir(moduleRoot, { withFileTypes: true });
   const modules = [];
+  const assets = [];
   for (const entry of entries) {
     assert(entry.isFile() && !entry.isSymbolicLink(), `runtime source entry is not a regular file: src/process_v1/${entry.name}`);
-    assert(/^[a-z0-9_]+\.mjs$/.test(entry.name), `unexpected runtime source entry: src/process_v1/${entry.name}`);
-    modules.push(entry.name);
+    if (/^[a-z0-9_]+\.mjs$/.test(entry.name)) modules.push(entry.name);
+    else if (REQUIRED_PROCESS_ASSETS.includes(entry.name)) assets.push(entry.name);
+    else assert.fail(`unexpected runtime source entry: src/process_v1/${entry.name}`);
   }
   modules.sort(compareUtf8);
+  assets.sort(compareUtf8);
   for (const required of REQUIRED_PROCESS_MODULES) {
     assert(modules.includes(required), `required runtime module is missing: src/process_v1/${required}`);
   }
-  return [...FIXED_SOURCE_PATHS, ...modules.map((name) => `src/process_v1/${name}`)].sort(compareUtf8);
+  assert.deepEqual(assets, [...REQUIRED_PROCESS_ASSETS], "required runtime assets are not exact");
+  return [...FIXED_SOURCE_PATHS, ...modules, ...assets].map((name) =>
+    FIXED_SOURCE_PATHS.includes(name) ? name : `src/process_v1/${name}`
+  ).sort(compareUtf8);
 }
 
 async function snapshotRegularFileGeneration(root, path, maximumBytes = RUNTIME_ENTRY_MAX_BYTES) {
@@ -223,17 +253,15 @@ export function productionSourceSha256(entries) {
     .sort(compareUtf8);
   assert(sourcePaths.includes("bin/world.mjs"), "production source digest is missing bin/world.mjs");
   assert(sourcePaths.includes("src/process_v1/index.mjs"), "production source digest is missing the public module");
-  const digest = createHash("sha256");
-  digest.update("world-production-source/v1\0");
-  for (const path of sourcePaths) {
+  const records = sourcePaths.map((path) => {
     const bytes = entries.get(path);
     assert(Buffer.isBuffer(bytes), `production source bytes are missing: ${path}`);
-    digest.update(path, "utf8");
-    digest.update("\0");
-    digest.update(bytes);
-    digest.update("\0");
-  }
-  return digest.digest("hex");
+    return [path, sha256(bytes)];
+  });
+  return sha256(Buffer.from(JSON.stringify([
+    "world-production-source/v2",
+    records,
+  ]), "utf8"));
 }
 
 export function runtimePackageJson(sourceBytes) {
@@ -262,36 +290,73 @@ export async function snapshotRuntimeSources(root = repositoryRoot) {
   return entries;
 }
 
-function requireExactObject(value, expected, label) {
-  assert(value !== null && typeof value === "object" && !Array.isArray(value), `${label} must be an object`);
-  assert.deepEqual(Object.keys(value).sort(), Object.keys(expected).sort(), `${label} fields are not exact`);
-  for (const [key, expectedValue] of Object.entries(expected)) assert.deepEqual(value[key], expectedValue, `${label}.${key} differs`);
+export function boundaryProcessKernelLockFromIdentityBytes(bytes) {
+  const identity = parseBoundaryProcessKernelIdentityV1(bytes);
+  return Object.freeze({
+    boundaryVersion: identity.boundaryVersion,
+    boundaryCommit: identity.boundaryCommit,
+    kernelSha256: identity.sha256,
+    kernelByteLength: identity.byteLength,
+    processKernelAbiVersion: identity.abiVersion,
+    kernelImportCount: identity.importCount,
+    kernelExportCount: identity.exportCount,
+    memoryInitialPages: identity.memoryInitialPages,
+    memoryMaximumPages: identity.memoryMaximumPages,
+  });
 }
 
-async function snapshotBoundaryLock(root = repositoryRoot) {
-  const bytes = await snapshotRegularFile(root, "conformance/boundary.lock.json");
-  const lock = JSON.parse(bytes.toString("utf8"));
-  const expected = {
-    format: "world-boundary-process-lock/v1",
-    boundaryVersion: "1.7.0",
-    boundaryCommit: "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
-    sourceArchiveUrl: "https://github.com/tkersey/boundary/archive/refs/tags/v1.7.0.tar.gz",
-    sourceArchiveSha256: "a787f9838458d43e93aa7b955a36f69eb377b18036a05e3461ae3e7084f2e7d7",
-    kernelReleaseUrl: "https://github.com/tkersey/boundary/releases/download/v1.7.0/boundary-process-kernel-v1.wasm",
-    kernelSha256: "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0",
-    kernelByteLength: 647473,
-    processKernelAbiVersion: 1,
-    kernelImportCount: 0,
-    kernelExportCount: 13,
-    memoryInitialPages: 2457,
-    memoryMaximumPages: 4096,
-  };
-  requireExactObject(lock, expected, "Boundary lock");
-  return Object.freeze({ bytes, lock: Object.freeze(lock) });
+export async function readBoundaryLock(root = repositoryRoot, sourceEntries = null) {
+  const source = sourceEntries?.get("src/process_v1/kernel_identity.json")
+    ?? await snapshotRegularFile(root, "src/process_v1/kernel_identity.json");
+  return boundaryProcessKernelLockFromIdentityBytes(source);
 }
 
-export async function readBoundaryLock(root = repositoryRoot) {
-  return (await snapshotBoundaryLock(root)).lock;
+export async function assertBoundaryProcessKernelMatchesLock(bytes, lock) {
+  assert(bytes instanceof Uint8Array, "Boundary Process kernel must be bytes");
+  assert.equal(bytes.byteLength, lock.kernelByteLength, "Boundary Process kernel byte length differs from the lock");
+  assert.equal(sha256(bytes), lock.kernelSha256, "Boundary Process kernel digest differs from the lock");
+  assert.equal(WebAssembly.validate(bytes), true, "Boundary Process kernel is not valid WebAssembly");
+  const inspection = inspectProcessKernelWasm(bytes);
+  assert.equal(inspection.importCount, lock.kernelImportCount, "Boundary Process kernel import count differs from the lock");
+  assert.equal(inspection.exportCount, lock.kernelExportCount, "Boundary Process kernel export count differs from the lock");
+  assert.equal(inspection.memory.initialPages, lock.memoryInitialPages, "Boundary Process kernel initial memory differs from the lock");
+  assert.equal(inspection.memory.maximumPages, lock.memoryMaximumPages, "Boundary Process kernel maximum memory differs from the lock");
+
+  const module = await WebAssembly.compile(bytes);
+  assert.equal(WebAssembly.Module.imports(module).length, lock.kernelImportCount, "Boundary Process kernel compiled imports differ from the lock");
+  const exports = WebAssembly.Module.exports(module);
+  assert.equal(exports.length, lock.kernelExportCount, "Boundary Process kernel compiled exports differ from the lock");
+  const actualExports = new Map(exports.map((entry) => [entry.name, entry.kind]));
+  for (const name of PROCESS_KERNEL_EXPORT_NAMES) {
+    assert.equal(actualExports.get(name), name === "memory" ? "memory" : "function", `Boundary Process kernel export differs: ${name}`);
+  }
+
+  const abiVersion = probeBoundaryProcessKernelAbi(bytes);
+  assert.equal(
+    abiVersion,
+    lock.processKernelAbiVersion,
+    "Boundary Process kernel ABI version differs from the lock",
+  );
+  assert.equal(abiVersion, SUPPORTED_PROCESS_KERNEL_ABI_VERSION, "Boundary Process kernel ABI version is not supported");
+  return Object.freeze({ inspection });
+}
+
+export function probeBoundaryProcessKernelAbi(bytes, timeoutMs = KERNEL_ABI_PROBE_TIMEOUT_MS) {
+  assert(bytes instanceof Uint8Array, "Boundary Process ABI probe input must be bytes");
+  assert(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= KERNEL_ABI_PROBE_TIMEOUT_MS, "Boundary Process ABI probe timeout is invalid");
+  const result = spawnSync(process.execPath, ["--eval", KERNEL_ABI_PROBE_SOURCE], {
+    input: Buffer.from(bytes),
+    encoding: "utf8",
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+    maxBuffer: 4096,
+    env: {},
+  });
+  if (result.error?.code === "ETIMEDOUT") assert.fail("Boundary Process kernel ABI probe timed out");
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, `Boundary Process kernel ABI probe failed: ${result.stderr.trim()}`);
+  assert(/^\d+\n$/.test(result.stdout), "Boundary Process kernel ABI probe returned invalid output");
+  return Number(result.stdout.trim());
 }
 
 export function gitProvenanceEnvironment(environment = process.env) {
@@ -597,18 +662,16 @@ export async function buildRuntimeArchive({
     ],
     [
       ...sourcePaths.map((path) => ({ label: path, path: join(root, ...path.split("/")) })),
-      { label: "conformance/boundary.lock.json", path: join(root, "conformance", "boundary.lock.json") },
     ],
     "runtime build custody",
   );
-  const boundary = await snapshotBoundaryLock(root);
-  const lock = boundary.lock;
   const sourceEntries = await snapshotRuntimeSources(root);
   const entries = new Map(sourceEntries);
   entries.set("package.json", runtimePackageJson(entries.get("package.json")));
   const retainedSnapshots = new Map(sourceEntries);
-  retainedSnapshots.set("conformance/boundary.lock.json", boundary.bytes);
   const resolvedCommit = bindRetainedSnapshotsToGitHead(root, retainedSnapshots);
+  const lock = await readBoundaryLock(root, sourceEntries);
+  await assertBoundaryProcessKernelMatchesLock(entries.get("boundary-process-kernel-v1.wasm"), lock);
   const manifest = createRuntimeManifest({ lock, commit: resolvedCommit, entries });
   entries.set("runtime-manifest.json", Buffer.from(stableJson(manifest), "utf8"));
   entries.set("checksums.sha256", checksumsBytes(entries));

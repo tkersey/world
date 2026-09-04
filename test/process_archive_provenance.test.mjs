@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   RUNTIME_ARCHIVE_NAME,
+  WORLD_VERSION,
   assertTrackedRepositoryMatchesCommit,
   bindRetainedSnapshotsToGitHead,
   buildRuntimeArchive,
@@ -14,7 +15,10 @@ import {
   checksumsBytes,
   createCanonicalTar,
   exactGitHeadCommit,
+  probeBoundaryProcessKernelAbi,
+  productionSourceSha256,
   repositoryRoot,
+  readBoundaryLock,
   readBoundedRegularFileSnapshot,
   sha256,
   snapshotRuntimeSources,
@@ -27,6 +31,8 @@ import {
 } from "../scripts/check_runtime_archive.mjs";
 import { writeReleaseReceipt } from "../scripts/write_release_receipt.mjs";
 import { deriveGitWorkingInventory } from "../scripts/check_process_surface.mjs";
+import { acquireBoundaryProcessAssets } from "../scripts/acquire_boundary_process_assets.mjs";
+import { processKernelWasmFixture } from "./wasm_fixture.mjs";
 
 setDefaultTimeout(30_000);
 
@@ -75,6 +81,52 @@ async function cloneRepository(name) {
 }
 
 describe("runtime archive source provenance", () => {
+  test("rejects invalid identity bytes from the selected root without falling back", async () => {
+    const root = await cloneRepository("selected-root-kernel-identity");
+    const identityPath = join(root, "src", "process_v1", "kernel_identity.json");
+    const identity = JSON.parse(await readFile(identityPath, "utf8"));
+    await writeFile(identityPath, stableJson({ ...identity, unexpected: true }));
+    git(root, ["add", "src/process_v1/kernel_identity.json"]);
+    git(root, ["-c", "user.name=World Test", "-c", "user.email=world-test@example.invalid", "commit", "-m", "invalid kernel identity"]);
+    await expect(readBoundaryLock(root)).rejects.toThrow(/fields are not exact/);
+    await expect(acquireBoundaryProcessAssets({ root, checkOnly: true })).rejects.toThrow(/fields are not exact/);
+  });
+
+  test("does not execute the selected root's identity projection", async () => {
+    const root = await cloneRepository("selected-root-inert-identity");
+    const projectionPath = join(root, "src", "process_v1", "kernel_identity.mjs");
+    const markerPath = join(root, "identity-side-effect");
+    await writeFile(
+      projectionPath,
+      `await Bun.write(${JSON.stringify(markerPath)}, "executed");\n${await readFile(projectionPath, "utf8")}`,
+    );
+    await expect(readBoundaryLock(root)).resolves.toMatchObject({ boundaryVersion: "1.8.0" });
+    expect(await readdir(root)).not.toContain("identity-side-effect");
+  });
+
+  test("rejects a declared kernel profile that differs from the selected Wasm", async () => {
+    const root = await cloneRepository("selected-root-kernel-profile");
+    const identityPath = join(root, "src", "process_v1", "kernel_identity.json");
+    const identity = JSON.parse(await readFile(identityPath, "utf8"));
+    await writeFile(identityPath, stableJson({ ...identity, abiVersion: identity.abiVersion + 1 }));
+    git(root, ["add", "src/process_v1/kernel_identity.json"]);
+    git(root, ["-c", "user.name=World Test", "-c", "user.email=world-test@example.invalid", "commit", "-m", "mismatched kernel profile"]);
+    await expect(acquireBoundaryProcessAssets({ root, checkOnly: true }))
+      .rejects.toThrow(/ABI version is not supported/);
+    await expect(buildRuntimeArchive({
+      root,
+      outputPath: join(root, "dist", RUNTIME_ARCHIVE_NAME),
+      checksumPath: join(root, "dist", `${RUNTIME_ARCHIVE_NAME}.sha256`),
+    })).rejects.toThrow(/ABI version is not supported/);
+  });
+
+  test("bounds dynamic execution of the selected kernel ABI probe", () => {
+    expect(() => probeBoundaryProcessKernelAbi(
+      processKernelWasmFixture({ abiLoop: true }),
+      100,
+    )).toThrow(/ABI probe timed out/);
+  });
+
   test("reproduces an archive labeled with the exact clean Git HEAD", async () => {
     const paths = await buildArchive("exact");
     const result = await checkRuntimeArchive({
@@ -228,6 +280,14 @@ describe("runtime archive source provenance", () => {
       ...paths,
       verifyRebuild: false,
       runInner: true,
+      expectedWorldIdentity: {
+        worldVersion: WORLD_VERSION,
+        worldSourceCommit: exactGitHeadCommit(repositoryRoot),
+        worldProductionSourceSha256: productionSourceSha256(
+          await snapshotRuntimeSources(repositoryRoot),
+        ),
+      },
+      expectedArchiveSha256: sha256(archive),
     })).rejects.toThrow(/embedded runtime verifier failed/);
     expect(await ownedRoots()).toEqual(before);
   });

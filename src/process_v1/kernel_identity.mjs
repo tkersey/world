@@ -1,18 +1,41 @@
-/**
- * Exact public Boundary v1.7.0 Process kernel identity.
- *
- * This is a production admission constant, not a development default. The
- * acquisition check must keep it identical to conformance/boundary.lock.json
- * and boundary-process-kernel-v1.wasm.
- */
-export const BOUNDARY_PROCESS_KERNEL_V1 = Object.freeze({
-  boundaryVersion: "1.7.0",
-  boundaryCommit: "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
-  abiVersion: 1,
-  byteLength: 647473,
-  sha256: "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0",
-  importCount: 0,
-  exportCount: 13,
-  memoryInitialPages: 2457,
-  memoryMaximumPages: 4096,
-});
+import identityRecord from "./kernel_identity.json" with { type: "json" };
+
+const IDENTITY_FIELDS = Object.freeze([
+  "abiVersion",
+  "boundaryCommit",
+  "boundaryVersion",
+  "byteLength",
+  "exportCount",
+  "importCount",
+  "memoryInitialPages",
+  "memoryMaximumPages",
+  "sha256",
+]);
+
+function requireIdentity(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+/** Decode the exact inert Boundary Process kernel identity record. */
+export function parseBoundaryProcessKernelIdentityV1(bytes) {
+  requireIdentity(bytes instanceof Uint8Array, "runtime kernel identity must be bytes");
+  return validateBoundaryProcessKernelIdentityV1(
+    JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+  );
+}
+
+export function validateBoundaryProcessKernelIdentityV1(identity) {
+  requireIdentity(identity !== null && typeof identity === "object" && !Array.isArray(identity), "runtime kernel identity must be an object");
+  requireIdentity(JSON.stringify(Object.keys(identity).sort()) === JSON.stringify(IDENTITY_FIELDS), "runtime kernel identity fields are not exact");
+  requireIdentity(/^\d+\.\d+\.\d+$/.test(identity.boundaryVersion), "runtime Boundary version is invalid");
+  requireIdentity(/^[0-9a-f]{40}$/.test(identity.boundaryCommit), "runtime Boundary commit is invalid");
+  requireIdentity(/^[0-9a-f]{64}$/.test(identity.sha256), "runtime kernel digest is invalid");
+  for (const field of ["abiVersion", "byteLength", "importCount", "exportCount", "memoryInitialPages", "memoryMaximumPages"]) {
+    requireIdentity(Number.isSafeInteger(identity[field]) && identity[field] >= 0, `runtime kernel ${field} is invalid`);
+  }
+  requireIdentity(identity.abiVersion === 1, "runtime kernel ABI version is not supported");
+  return Object.freeze(identity);
+}
+
+/** Exact minimized Boundary v1.8.0 candidate Process kernel identity. */
+export const BOUNDARY_PROCESS_KERNEL_V1 = validateBoundaryProcessKernelIdentityV1(identityRecord);

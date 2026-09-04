@@ -6,8 +6,10 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  assertBoundaryProcessKernelMatchesLock,
   assertPhysicalPathCustody,
   gitProvenanceEnvironment,
+  readBoundaryLock,
   readBoundedRegularFileSnapshot,
 } from "./build_runtime_archive.mjs";
 
@@ -72,10 +74,8 @@ async function fetchBounded(url, maximum, label) {
   return Buffer.concat(chunks, total);
 }
 
-function admitKernel(bytes, lock) {
-  assert.equal(bytes.length, lock.kernelByteLength, "Boundary Process kernel byte length differs from the lock");
-  assert.equal(sha256(bytes), lock.kernelSha256, "Boundary Process kernel digest differs from the lock");
-  assert.equal(WebAssembly.validate(bytes), true, "Boundary Process kernel is not valid WebAssembly");
+async function admitKernel(bytes, lock) {
+  await assertBoundaryProcessKernelMatchesLock(bytes, lock);
   return bytes;
 }
 
@@ -113,7 +113,7 @@ export async function exactBoundarySource(sourceRoot, lock) {
   }).trim();
   const physicalSourceRoot = await realpath(sourceRoot);
   assert.equal(await realpath(topLevel), physicalSourceRoot, "WORLD_BOUNDARY_SOURCE is not the selected Git checkout root");
-  assert.equal(commit, lock.boundaryCommit, "local Boundary source is not the exact landed v1.7.0 commit");
+  assert.equal(commit, lock.boundaryCommit, "local Boundary source is not the exact selected commit");
 }
 
 function resolveLocalKernel(sourceRoot, explicitKernel) {
@@ -142,6 +142,13 @@ export function classifyLocalBoundaryAssetProvenance(sourceRoot) {
   return sourceRoot === null ? "local-kernel-override" : "local-checkout-asset";
 }
 
+export function defaultBoundaryKernelOutput(root, mode) {
+  assert(mode === "local" || mode === "release", "Boundary acquisition mode must be local or release");
+  return mode === "release"
+    ? join(root, "dist", "boundary-v1.7.0-process-kernel-v1.wasm")
+    : join(root, "boundary-process-kernel-v1.wasm");
+}
+
 async function readLocalBoundaryKernel(path, sourceRoot) {
   if (sourceRoot !== null) await assertPhysicalBoundaryKernelDescendant(sourceRoot, path);
   const bytes = await readRegular(path, MAXIMUM_DOWNLOAD_BYTES, "local Boundary Process kernel");
@@ -151,16 +158,19 @@ async function readLocalBoundaryKernel(path, sourceRoot) {
 
 export async function acquireBoundaryProcessAssets({
   root = repositoryRoot,
-  lockPath = join(root, "conformance", "boundary.lock.json"),
-  outputPath = join(root, "boundary-process-kernel-v1.wasm"),
+  lockPath = null,
+  outputPath = null,
   mode = "local",
   kernelPath = process.env.WORLD_BOUNDARY_PROCESS_KERNEL ?? null,
   sourceRoot = process.env.WORLD_BOUNDARY_SOURCE ?? null,
   checkOnly = false,
 } = {}) {
   assert(mode === "local" || mode === "release", "Boundary acquisition mode must be local or release");
-  assert(isAbsolute(outputPath), "Boundary kernel output path must be absolute");
+  const resolvedOutput = outputPath ?? defaultBoundaryKernelOutput(root, mode);
+  assert(isAbsolute(resolvedOutput), "Boundary kernel output path must be absolute");
+  if (mode === "local") assert(lockPath === null, "local acquisition forbids a historical Boundary lock");
   if (mode === "release") assert(kernelPath === null && sourceRoot === null, "release acquisition forbids local Boundary overrides");
+  const resolvedLock = lockPath ?? join(root, "conformance", "boundary.lock.json");
   const resolvedSourceRoot = sourceRoot === null ? null : resolve(sourceRoot);
   const resolvedKernel = mode === "local" && (kernelPath !== null || sourceRoot !== null)
     ? resolveLocalKernel(resolvedSourceRoot, kernelPath === null ? null : resolve(kernelPath))
@@ -169,13 +179,20 @@ export async function acquireBoundaryProcessAssets({
     await assertPhysicalBoundaryKernelDescendant(resolvedSourceRoot, resolvedKernel);
   }
   await assertPhysicalPathCustody([
-    { label: "Boundary lock", path: lockPath },
-    { label: "Boundary kernel output", path: outputPath },
+    ...(mode === "release" ? [{ label: "Boundary lock", path: resolvedLock }] : []),
+    { label: "Boundary kernel output", path: resolvedOutput },
     ...(!checkOnly && resolvedKernel !== null
       ? [{ label: "local Boundary kernel input", path: resolvedKernel }]
       : []),
-  ], [], "Boundary acquisition custody");
-  const lock = await readExactBoundaryLock(lockPath);
+  ], [
+    { label: "current Boundary kernel identity", path: join(root, "src", "process_v1", "kernel_identity.json") },
+    ...(mode === "local"
+      ? [{ label: "historical Boundary lock", path: resolvedLock }]
+      : [{ label: "current Boundary kernel", path: join(root, "boundary-process-kernel-v1.wasm") }]),
+  ], "Boundary acquisition custody");
+  const lock = mode === "release"
+    ? await readExactBoundaryLock(resolvedLock)
+    : await readBoundaryLock(root);
   let bytes;
   let provenance;
   if (mode === "release") {
@@ -184,17 +201,17 @@ export async function acquireBoundaryProcessAssets({
       fetchBounded(lock.sourceArchiveUrl, MAXIMUM_DOWNLOAD_BYTES, "Boundary source archive"),
     ]);
     assert.equal(sha256(sourceArchive), lock.sourceArchiveSha256, "Boundary source archive digest differs from the lock");
-    bytes = admitKernel(kernel, lock);
+    bytes = await admitKernel(kernel, lock);
     provenance = "public-release";
   } else if (kernelPath !== null || sourceRoot !== null) {
     if (resolvedSourceRoot !== null) await exactBoundarySource(resolvedSourceRoot, lock);
-    bytes = admitKernel(await readLocalBoundaryKernel(resolvedKernel, resolvedSourceRoot), lock);
+    bytes = await admitKernel(await readLocalBoundaryKernel(resolvedKernel, resolvedSourceRoot), lock);
     provenance = classifyLocalBoundaryAssetProvenance(sourceRoot);
   } else {
-    bytes = admitKernel(await readRegular(outputPath, MAXIMUM_DOWNLOAD_BYTES, "bundled Boundary Process kernel"), lock);
+    bytes = await admitKernel(await readRegular(resolvedOutput, MAXIMUM_DOWNLOAD_BYTES, "bundled Boundary Process kernel"), lock);
     provenance = "bundled-check";
   }
-  if (!checkOnly) await atomicWrite(outputPath, bytes);
+  if (!checkOnly) await atomicWrite(resolvedOutput, bytes);
   return Object.freeze({
     format: "world-boundary-process-acquisition/v1",
     provenance,
@@ -203,7 +220,7 @@ export async function acquireBoundaryProcessAssets({
     kernelSha256: lock.kernelSha256,
     kernelByteLength: lock.kernelByteLength,
     processKernelAbiVersion: lock.processKernelAbiVersion,
-    outputPath,
+    outputPath: resolvedOutput,
     wrote: !checkOnly,
   });
 }

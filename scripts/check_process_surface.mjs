@@ -162,7 +162,7 @@ function assertExactObject(actual, expected, label) {
 export function validatePackageManifest(manifest) {
   assert(manifest && typeof manifest === "object" && !Array.isArray(manifest), "package.json must contain an object");
   assert(manifest.name === "@tkersey/world", "package name must be @tkersey/world");
-  assert(manifest.version === "4.0.0", "package version must be 4.0.0");
+  assert(manifest.version === "4.1.0", "package version must be 4.1.0");
   assert(manifest.type === "module", "package type must be module");
   assert(manifest.private === false, "package private must be false");
   assert(manifest.license === "MIT", "package license must be MIT");
@@ -267,6 +267,7 @@ function isAllowedRepositoryPath(relativePath) {
   if (relativePath === "verify-runtime.mjs") return true;
   if (REQUIRED_DOCS.has(relativePath)) return true;
   if (relativePath === "bin/world.mjs") return true;
+  if (relativePath === "src/process_v1/kernel_identity.json") return true;
   if (relativePath.startsWith("src/process_v1/") && relativePath.endsWith(".mjs")) return true;
   if (REQUIRED_SCRIPTS.has(relativePath)) return true;
   if (relativePath.startsWith("test/")) return true;
@@ -335,6 +336,7 @@ export function derivePackageInventory(entries, manifest) {
     "README.md",
     "bin/world.mjs",
     "src/process_v1/index.mjs",
+    "src/process_v1/kernel_identity.json",
     "boundary-process-kernel-v1.wasm",
   ]) {
     assert(members.has(required), `required package member is missing: ${required}`);
@@ -474,6 +476,13 @@ export function validateProductionSpecifier(specifier, importer) {
     `production module ${importer} imports forbidden bare package ${JSON.stringify(specifier)}`,
   );
   assert(!specifier.includes("?") && !specifier.includes("#"), `production import must not contain query or fragment: ${specifier}`);
+  if (specifier.endsWith(".json")) {
+    assert(
+      importer === "src/process_v1/kernel_identity.mjs" && specifier === "./kernel_identity.json",
+      `production JSON import is not the canonical kernel identity: ${importer} -> ${specifier}`,
+    );
+    return "asset";
+  }
   assert(specifier.endsWith(".mjs"), `production relative import must name an .mjs file exactly: ${specifier}`);
   return "relative";
 }
@@ -499,7 +508,8 @@ export function deriveReachableProduction(root, manifest, entries, packageMember
     const source = readFileSync(path.join(root, relativePath), "utf8");
     validateModuleImportSyntax(source, relativePath);
     for (const specifier of scanModuleSpecifiers(source)) {
-      if (validateProductionSpecifier(specifier, relativePath) === "builtin") {
+      const specifierKind = validateProductionSpecifier(specifier, relativePath);
+      if (specifierKind === "builtin") {
         builtinSpecifiers.add(specifier);
         continue;
       }
@@ -513,19 +523,27 @@ export function deriveReachableProduction(root, manifest, entries, packageMember
         relativeTarget === "bin/world.mjs" || relativeTarget.startsWith("src/process_v1/"),
         `production import escapes the admitted source roots: ${relativePath} -> ${relativeTarget}`,
       );
-      queue.push(relativeTarget);
+      if (specifierKind === "asset") {
+        const target = entryByPath.get(relativeTarget);
+        assert(target?.regular && !target.symlink, `production asset is not a regular file: ${relativeTarget}`);
+        assert(packaged.has(relativeTarget), `reachable production asset is absent from package inventory: ${relativeTarget}`);
+        reachable.add(relativeTarget);
+      } else {
+        queue.push(relativeTarget);
+      }
     }
   }
 
-  const productionModules = entries
+  const productionArtifacts = entries
     .map((entry) => entry.path)
     .filter((relativePath) =>
       relativePath === "bin/world.mjs" ||
-      (relativePath.startsWith("src/process_v1/") && relativePath.endsWith(".mjs")),
+      (relativePath.startsWith("src/process_v1/") && relativePath.endsWith(".mjs")) ||
+      relativePath === "src/process_v1/kernel_identity.json",
     )
     .sort();
-  const missing = productionModules.filter((relativePath) => !reachable.has(relativePath));
-  assert(missing.length === 0, `unreachable production modules are forbidden: ${missing.join(", ")}`);
+  const missing = productionArtifacts.filter((relativePath) => !reachable.has(relativePath));
+  assert(missing.length === 0, `unreachable production artifacts are forbidden: ${missing.join(", ")}`);
   const actualBuiltins = [...builtinSpecifiers].sort();
   assert(
     JSON.stringify(actualBuiltins) === JSON.stringify(EXPECTED_PRODUCTION_BUILTINS),

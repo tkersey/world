@@ -5,7 +5,7 @@ import { mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const WORLD_VERSION = "4.0.0";
+const WORLD_VERSION = "4.1.0";
 const RUNTIME_ARCHIVE_NAME = `world-v${WORLD_VERSION}-process-host-runtime.tar.gz`;
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepositoryRoot = resolve(dirname(scriptPath), "..");
@@ -140,6 +140,19 @@ async function writeReleaseReceiptInternal({
     cleanRoomRuntimeVerified: true,
     publishedProcessCorpusParityClaimed: true,
     publishedProcessCorpusParity: Object.freeze({
+      boundaryCorpusIdentity: Object.freeze({
+        producerTag: conformance.boundaryCorpus.producerTag,
+        producerCommit: conformance.boundaryCorpus.producerCommit,
+        manifestSha256: conformance.boundaryCorpus.manifestSha256,
+        payloadSha256: conformance.boundaryCorpus.payloadSha256,
+      }),
+      repositoryRepairCorpusIdentity: Object.freeze({
+        producerTag: conformance.repositoryRepair.producerTag,
+        producerCommit: conformance.repositoryRepair.producerCommit,
+        manifestSha256: conformance.repositoryRepair.manifestSha256,
+        payloadSha256: conformance.repositoryRepair.payloadSha256,
+        programImageSha256: conformance.repositoryRepair.programImageSha256,
+      }),
       boundaryVectorCount: conformance.boundaryCorpus.vectorCount,
       boundaryByteIdenticalCount: conformance.boundaryCorpus.byteIdenticalCount,
       repositoryRepairReductionCount: conformance.repositoryRepair.reductionCount,

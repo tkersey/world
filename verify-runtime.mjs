@@ -7,10 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)));
-const WORLD_VERSION = "4.0.0";
-const KERNEL_SHA256 = "178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0";
-const KERNEL_BYTE_LENGTH = 647473;
-const BOUNDARY_COMMIT = "4fd4cd959ea283a6b5af12a228f0d80a102683e3";
+const WORLD_VERSION = "4.1.0";
 const API_EXPORTS = Object.freeze([
   "WorldProcessHostError",
   "admitProcessKernel",
@@ -19,6 +16,36 @@ const API_EXPORTS = Object.freeze([
   "decodeProcessOutcome",
   "encodeEffectResult",
 ]);
+
+function parseExpectedIdentity(argv) {
+  assert.deepEqual(argv.filter((_, index) => index % 2 === 0), [
+    "--expected-world-version",
+    "--expected-world-commit",
+    "--expected-world-production-source-sha256",
+    "--expected-boundary-version",
+    "--expected-boundary-commit",
+    "--expected-kernel-sha256",
+  ], "usage: verify-runtime.mjs --expected-world-version VERSION --expected-world-commit COMMIT --expected-world-production-source-sha256 SHA256 --expected-boundary-version VERSION --expected-boundary-commit COMMIT --expected-kernel-sha256 SHA256");
+  assert.equal(argv.length, 12, "runtime verification requires an external expected identity");
+  const expected = Object.freeze({
+    worldVersion: argv[1],
+    worldCommit: argv[3],
+    worldProductionSourceSha256: argv[5],
+    boundaryVersion: argv[7],
+    boundaryCommit: argv[9],
+    kernelSha256: argv[11],
+  });
+  assert(/^\d+\.\d+\.\d+$/.test(expected.worldVersion), "expected World version is invalid");
+  assert(/^[0-9a-f]{40}$/.test(expected.worldCommit), "expected World commit is invalid");
+  assert(/^[0-9a-f]{64}$/.test(expected.worldProductionSourceSha256), "expected World production-source digest is invalid");
+  assert(/^\d+\.\d+\.\d+$/.test(expected.boundaryVersion), "expected Boundary version is invalid");
+  assert(/^[0-9a-f]{40}$/.test(expected.boundaryCommit), "expected Boundary commit is invalid");
+  assert(/^[0-9a-f]{64}$/.test(expected.kernelSha256), "expected kernel digest is invalid");
+  return expected;
+}
+
+const expectedIdentity = parseExpectedIdentity(process.argv.slice(2));
+assert.equal(WORLD_VERSION, expectedIdentity.worldVersion, "runtime World version differs from the external expectation");
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -69,6 +96,7 @@ function admitInventory(files) {
     "checksums.sha256",
     "package.json",
     "runtime-manifest.json",
+    "src/process_v1/kernel_identity.json",
     "verify-runtime.mjs",
   ]);
   let processModules = 0;
@@ -99,15 +127,11 @@ function productionSourceDigest(entries) {
     .filter((path) => path === "bin/world.mjs" || path.startsWith("src/process_v1/"))
     .sort(compareUtf8);
   assert(paths.includes("bin/world.mjs") && paths.includes("src/process_v1/index.mjs"), "runtime production source set is incomplete");
-  const digest = createHash("sha256");
-  digest.update("world-production-source/v1\0");
-  for (const path of paths) {
-    digest.update(path, "utf8");
-    digest.update("\0");
-    digest.update(entries.get(path));
-    digest.update("\0");
-  }
-  return digest.digest("hex");
+  const records = paths.map((path) => [path, sha256(entries.get(path))]);
+  return sha256(Buffer.from(JSON.stringify([
+    "world-production-source/v2",
+    records,
+  ]), "utf8"));
 }
 
 function exactObject(value, expected, label) {
@@ -138,45 +162,76 @@ exactObject(packageJson, {
   engines: { bun: ">=1.4.0" },
 }, "runtime package");
 
+const identity = JSON.parse(entries.get("src/process_v1/kernel_identity.json").toString("utf8"));
+exactObject(identity, {
+  boundaryVersion: identity.boundaryVersion,
+  boundaryCommit: identity.boundaryCommit,
+  abiVersion: identity.abiVersion,
+  byteLength: identity.byteLength,
+  sha256: identity.sha256,
+  importCount: identity.importCount,
+  exportCount: identity.exportCount,
+  memoryInitialPages: identity.memoryInitialPages,
+  memoryMaximumPages: identity.memoryMaximumPages,
+}, "runtime kernel identity");
+assert(/^\d+\.\d+\.\d+$/.test(identity.boundaryVersion), "runtime Boundary version is invalid");
+assert(/^[0-9a-f]{40}$/.test(identity.boundaryCommit), "runtime Boundary commit is invalid");
+assert(/^[0-9a-f]{64}$/.test(identity.sha256), "runtime kernel digest is invalid");
+for (const field of ["abiVersion", "byteLength", "importCount", "exportCount", "memoryInitialPages", "memoryMaximumPages"]) {
+  assert(Number.isSafeInteger(identity[field]) && identity[field] >= 0, `runtime kernel ${field} is invalid`);
+}
+assert.equal(identity.abiVersion, 1, "runtime kernel ABI version is not supported");
+assert.equal(identity.boundaryVersion, expectedIdentity.boundaryVersion, "runtime Boundary version differs from the external expectation");
+assert.equal(identity.boundaryCommit, expectedIdentity.boundaryCommit, "runtime Boundary commit differs from the external expectation");
+assert.equal(identity.sha256, expectedIdentity.kernelSha256, "runtime kernel digest differs from the external expectation");
+
 const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
 exactObject(manifest, {
   format: "world-process-host-runtime/v1",
   worldVersion: WORLD_VERSION,
-  processKernelAbiVersion: 1,
-  boundaryVersion: "1.7.0",
-  boundaryCommit: BOUNDARY_COMMIT,
-  kernelSha256: KERNEL_SHA256,
-  kernelByteLength: KERNEL_BYTE_LENGTH,
-  kernelImportCount: 0,
+  processKernelAbiVersion: identity.abiVersion,
+  boundaryVersion: identity.boundaryVersion,
+  boundaryCommit: identity.boundaryCommit,
+  kernelSha256: identity.sha256,
+  kernelByteLength: identity.byteLength,
+  kernelImportCount: identity.importCount,
   sourceCommit: manifest.sourceCommit,
   productionSourceSha256: manifest.productionSourceSha256,
 }, "runtime manifest");
 assert(/^[0-9a-f]{40}$/.test(manifest.sourceCommit), "runtime manifest source commit is invalid");
+assert.equal(manifest.sourceCommit, expectedIdentity.worldCommit, "runtime World source commit differs from the external expectation");
 assert.equal(productionSourceDigest(entries), manifest.productionSourceSha256, "runtime production source digest differs");
+assert.equal(
+  manifest.productionSourceSha256,
+  expectedIdentity.worldProductionSourceSha256,
+  "runtime World production-source digest differs from the external expectation",
+);
 
 const kernel = entries.get("boundary-process-kernel-v1.wasm");
-assert.equal(kernel.length, KERNEL_BYTE_LENGTH, "runtime kernel byte length differs");
-assert.equal(sha256(kernel), KERNEL_SHA256, "runtime kernel digest differs");
+assert.equal(kernel.length, identity.byteLength, "runtime kernel byte length differs");
+assert.equal(sha256(kernel), identity.sha256, "runtime kernel digest differs");
 assert.equal(WebAssembly.validate(kernel), true, "runtime kernel is not valid WebAssembly");
 const kernelModule = await WebAssembly.compile(kernel);
-assert.equal(WebAssembly.Module.imports(kernelModule).length, 0, "runtime kernel has imports");
+assert.equal(WebAssembly.Module.imports(kernelModule).length, identity.importCount, "runtime kernel import count differs");
+assert.equal(WebAssembly.Module.exports(kernelModule).length, identity.exportCount, "runtime kernel export count differs");
 
 const api = await import("./src/process_v1/index.mjs");
 assert.deepEqual(Object.keys(api).sort(compareUtf8), [...API_EXPORTS].sort(compareUtf8), "runtime public API exports differ");
-const host = await api.admitProcessKernel(new Uint8Array(kernel), { expectedSha256: KERNEL_SHA256 });
-assert.equal(host.abiVersion, 1, "runtime admitted host ABI differs");
-assert.equal(host.byteLength, KERNEL_BYTE_LENGTH, "runtime admitted host kernel length differs");
-assert.equal(host.sha256, KERNEL_SHA256, "runtime admitted host kernel digest differs");
+const host = await api.admitProcessKernel(new Uint8Array(kernel), { expectedSha256: identity.sha256 });
+assert.equal(host.abiVersion, identity.abiVersion, "runtime admitted host ABI differs");
+assert.equal(host.byteLength, identity.byteLength, "runtime admitted host kernel length differs");
+assert.equal(host.sha256, identity.sha256, "runtime admitted host kernel digest differs");
 
-console.log("world_runtime_verify=pass");
+console.log("world_runtime_internal_consistency=pass");
 console.log(`world_runtime_inventory=${JSON.stringify(files)}`);
 console.log(`world_runtime_file_count=${files.length}`);
 console.log(`world_runtime_production_source_file_count=${covered.filter((path) => path === "bin/world.mjs" || path.startsWith("src/process_v1/")).length}`);
 console.log("world_runtime_dependency_count=0");
 console.log(`world_runtime_public_api_exports=${JSON.stringify([...API_EXPORTS].sort(compareUtf8))}`);
 console.log("world_runtime_cli_commands=[\"world process step\"]");
-console.log(`world_runtime_boundary_commit=${BOUNDARY_COMMIT}`);
-console.log(`world_runtime_kernel_sha256=${KERNEL_SHA256}`);
-console.log(`world_runtime_kernel_bytes=${KERNEL_BYTE_LENGTH}`);
-console.log("world_runtime_kernel_imports=0");
-console.log("world_runtime_kernel_abi=1");
+console.log(`world_runtime_boundary_commit=${identity.boundaryCommit}`);
+console.log(`world_runtime_source_commit=${manifest.sourceCommit}`);
+console.log(`world_runtime_kernel_sha256=${identity.sha256}`);
+console.log(`world_runtime_kernel_bytes=${identity.byteLength}`);
+console.log(`world_runtime_kernel_imports=${identity.importCount}`);
+console.log(`world_runtime_kernel_abi=${identity.abiVersion}`);

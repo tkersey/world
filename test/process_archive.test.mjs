@@ -1,33 +1,38 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import {
   RUNTIME_ARCHIVE_NAME,
   RUNTIME_ROOT,
+  WORLD_VERSION,
   assertRepositoryOutputNamespaces,
   buildRuntimeArchive,
   canonicalGzip,
+  checksumsBytes,
   createCanonicalTar,
   crc32,
+  exactGitHeadCommit,
+  productionSourceSha256,
   readBoundaryLock,
   repositoryRoot,
   runtimeSourcePaths,
   sha256,
+  snapshotRuntimeSources,
+  stableJson,
 } from "../scripts/build_runtime_archive.mjs";
 import {
   admitRuntimeArchiveBytes,
   checkRuntimeArchive,
+  extractAdmittedRuntime,
   parseCanonicalGzip,
   parseCanonicalTar,
   parseChecksumSidecar,
 } from "../scripts/check_runtime_archive.mjs";
-import {
-  acquireBoundaryProcessAssets,
-  readExactBoundaryLock,
-} from "../scripts/acquire_boundary_process_assets.mjs";
+import { readExactBoundaryLock } from "../scripts/acquire_boundary_process_assets.mjs";
 import {
   DEFAULT_CONFORMANCE_RECEIPT,
   writeReleaseReceipt,
@@ -40,6 +45,8 @@ let archive;
 let tar;
 let admitted;
 let lock;
+let trustedWorldIdentity;
+let trustedArchiveSha256;
 
 beforeAll(async () => {
   temporaryRoot = await mkdtemp(join(tmpdir(), "world-process-archive-test-"));
@@ -51,6 +58,14 @@ beforeAll(async () => {
     checksumPath,
   });
   archive = await readFile(archivePath);
+  trustedArchiveSha256 = sha256(archive);
+  trustedWorldIdentity = Object.freeze({
+    worldVersion: WORLD_VERSION,
+    worldSourceCommit: exactGitHeadCommit(repositoryRoot),
+    worldProductionSourceSha256: productionSourceSha256(
+      await snapshotRuntimeSources(repositoryRoot),
+    ),
+  });
   tar = parseCanonicalGzip(archive);
   lock = await readBoundaryLock(repositoryRoot);
   admitted = await admitRuntimeArchiveBytes(archive, {
@@ -81,10 +96,36 @@ describe("World Process Host runtime archive", () => {
     expect(admitted.parsed.find(({ path }) => path === "package.json")?.mode).toBe(0o644);
     expect(admitted.manifest.productionSourceSha256).toMatch(/^[0-9a-f]{64}$/);
     const runtimeReadme = admitted.entries.get("README.md").toString("utf8");
-    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.0.0/docs/process_host_v1.md");
-    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.0.0/docs/security_model.md");
-    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.0.0/docs/migration_from_world_3.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/process_host_v1.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/security_model.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/migration_from_world_3.md");
     expect(runtimeReadme).not.toMatch(/\]\(docs\//);
+  });
+
+  test("uses a prefix-free production-source commitment", () => {
+    const firstPath = "bin/world.mjs";
+    const secondPath = "src/process_v1/index.mjs";
+    const left = new Map([
+      [firstPath, Buffer.from(`a\0${secondPath}\0b`)],
+      [secondPath, Buffer.from("c")],
+    ]);
+    const right = new Map([
+      [firstPath, Buffer.from("a")],
+      [secondPath, Buffer.from(`b\0${secondPath}\0c`)],
+    ]);
+    const ambiguous = (entries) => {
+      const digest = createHash("sha256");
+      digest.update("world-production-source/v1\0");
+      for (const path of [firstPath, secondPath]) {
+        digest.update(path);
+        digest.update("\0");
+        digest.update(entries.get(path));
+        digest.update("\0");
+      }
+      return digest.digest("hex");
+    };
+    expect(ambiguous(left)).toBe(ambiguous(right));
+    expect(productionSourceSha256(left)).not.toBe(productionSourceSha256(right));
   });
 
   test("rejects archive and checksum path aliasing before writing", async () => {
@@ -149,27 +190,150 @@ describe("World Process Host runtime archive", () => {
       checksumPath,
       verifyRebuild: false,
       runInner: true,
+      expectedWorldIdentity: trustedWorldIdentity,
+      expectedArchiveSha256: trustedArchiveSha256,
     });
     expect(result.archiveSha256).toBe(sha256(archive));
     expect(result.innerVerified).toBe(true);
-    expect(result.innerStdout).toMatch(/^world_runtime_verify=pass$/m);
+    expect(result.innerStdout).toMatch(/^world_runtime_internal_consistency=pass$/m);
     expect(result.innerStdout).toMatch(/^world_runtime_dependency_count=0$/m);
     expect(result.innerStdout).toMatch(/^world_runtime_kernel_imports=0$/m);
   });
 
-  test("validates the exact Boundary lock and local development override without changing source provenance", async () => {
-    expect(await readExactBoundaryLock()).toEqual(lock);
-    const outputPath = join(temporaryRoot, "acquired", "boundary-process-kernel-v1.wasm");
-    const result = await acquireBoundaryProcessAssets({
+  test("requires an external World identity when inner verification skips the exact rebuild", async () => {
+    await expect(checkRuntimeArchive({
       root: repositoryRoot,
-      outputPath,
-      mode: "local",
-      kernelPath: resolve(repositoryRoot, "boundary-process-kernel-v1.wasm"),
-      sourceRoot: null,
+      archivePath,
+      checksumPath,
+      verifyRebuild: false,
+      runInner: true,
+    })).rejects.toThrow(/external expected World identity/);
+
+    await expect(checkRuntimeArchive({
+      root: repositoryRoot,
+      archivePath,
+      checksumPath,
+      verifyRebuild: false,
+      runInner: true,
+      expectedWorldIdentity: trustedWorldIdentity,
+    })).rejects.toThrow(/external expected archive digest/);
+
+    await expect(checkRuntimeArchive({
+      root: repositoryRoot,
+      archivePath,
+      checksumPath,
+      verifyRebuild: false,
+      runInner: true,
+      expectedWorldIdentity: trustedWorldIdentity,
+      expectedArchiveSha256: "0".repeat(64),
+    })).rejects.toThrow(/archive differs from the external expected digest/);
+
+    const result = await checkRuntimeArchive({
+      root: repositoryRoot,
+      archivePath,
+      checksumPath,
+      verifyRebuild: false,
+      runInner: true,
+      expectedWorldIdentity: trustedWorldIdentity,
+      expectedArchiveSha256: trustedArchiveSha256,
     });
-    expect(result.provenance).toBe("local-kernel-override");
-    expect(result.kernelSha256).toBe(lock.kernelSha256);
-    expect(await readFile(outputPath)).toEqual(await readFile(join(repositoryRoot, "boundary-process-kernel-v1.wasm")));
+    expect(result.innerVerified).toBe(true);
+  });
+
+  test("rejects a coherent production-source rewrite against the external World identity", async () => {
+    const entries = new Map([...admitted.entries].map(([path, bytes]) => [path, Buffer.from(bytes)]));
+    entries.set(
+      "src/process_v1/outcome.mjs",
+      Buffer.concat([entries.get("src/process_v1/outcome.mjs"), Buffer.from("\n// rewritten\n")]),
+    );
+    const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
+    entries.set("runtime-manifest.json", Buffer.from(stableJson({
+      ...manifest,
+      productionSourceSha256: productionSourceSha256(entries),
+    }), "utf8"));
+    entries.set("checksums.sha256", checksumsBytes(entries));
+    const rewritten = canonicalGzip(createCanonicalTar(entries));
+    const rewrittenPath = join(temporaryRoot, "rewritten", RUNTIME_ARCHIVE_NAME);
+    await mkdir(join(temporaryRoot, "rewritten"), { recursive: true });
+    await writeFile(rewrittenPath, rewritten);
+    await writeFile(`${rewrittenPath}.sha256`, `${sha256(rewritten)}  ${RUNTIME_ARCHIVE_NAME}\n`);
+
+    await expect(checkRuntimeArchive({
+      root: repositoryRoot,
+      archivePath: rewrittenPath,
+      checksumPath: `${rewrittenPath}.sha256`,
+      verifyRebuild: false,
+      runInner: true,
+      expectedWorldIdentity: trustedWorldIdentity,
+      expectedArchiveSha256: sha256(rewritten),
+    })).rejects.toThrow(/production-source digest differs from the external expectation/);
+  });
+
+  test("does not let the embedded verifier mint its own expected identity", async () => {
+    const extractedRoot = join(temporaryRoot, "standalone-verifier-without-trust-root");
+    await extractAdmittedRuntime(admitted, extractedRoot);
+    const result = spawnSync(process.execPath, ["./verify-runtime.mjs"], {
+      cwd: extractedRoot,
+      encoding: "utf8",
+      env: {},
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/external expected identity|usage: verify-runtime/);
+    expect(result.stdout).not.toMatch(/internal_consistency=pass/);
+  });
+
+  test("rejects an external World version or commit that differs from the archive", async () => {
+    const extractedRoot = join(temporaryRoot, "standalone-verifier-world-identity");
+    await extractAdmittedRuntime(admitted, extractedRoot);
+    const expected = [
+      "--expected-world-version", "4.1.0",
+      "--expected-world-commit", trustedWorldIdentity.worldSourceCommit,
+      "--expected-world-production-source-sha256", trustedWorldIdentity.worldProductionSourceSha256,
+      "--expected-boundary-version", lock.boundaryVersion,
+      "--expected-boundary-commit", lock.boundaryCommit,
+      "--expected-kernel-sha256", lock.kernelSha256,
+    ];
+    for (const [index, value, message] of [
+      [1, "4.0.0", /runtime World version differs/],
+      [3, "0".repeat(40), /runtime World source commit differs/],
+      [5, "0".repeat(64), /runtime World production-source digest differs/],
+    ]) {
+      const arguments_ = [...expected];
+      arguments_[index] = value;
+      const result = spawnSync(process.execPath, ["./verify-runtime.mjs", ...arguments_], {
+        cwd: extractedRoot,
+        encoding: "utf8",
+        env: {},
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(message);
+      expect(result.stdout).not.toMatch(/internal_consistency=pass/);
+    }
+  });
+
+  test("preserves the historical Boundary lock separately from the current runtime kernel", async () => {
+    const historical = await readExactBoundaryLock();
+    expect(historical.boundaryVersion).toBe("1.7.0");
+    expect(historical.kernelSha256).toBe("178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0");
+    expect(lock.boundaryVersion).toBe("1.8.0");
+    const kernel = await readFile(join(repositoryRoot, "boundary-process-kernel-v1.wasm"));
+    expect(kernel.byteLength).toBe(lock.kernelByteLength);
+    expect(sha256(kernel)).toBe(lock.kernelSha256);
+  });
+
+  test("rejects an archived canonical identity that contradicts the selected lock", async () => {
+    const entries = new Map([...admitted.entries].map(([path, bytes]) => [path, Buffer.from(bytes)]));
+    const identityPath = "src/process_v1/kernel_identity.json";
+    const identity = JSON.parse(entries.get(identityPath).toString("utf8"));
+    entries.set(identityPath, Buffer.from(stableJson({ ...identity, boundaryCommit: "a".repeat(40) }), "utf8"));
+    const manifest = JSON.parse(entries.get("runtime-manifest.json").toString("utf8"));
+    entries.set("runtime-manifest.json", Buffer.from(stableJson({
+      ...manifest,
+      productionSourceSha256: productionSourceSha256(entries),
+    }), "utf8"));
+    entries.set("checksums.sha256", checksumsBytes(entries));
+    await expect(admitRuntimeArchiveBytes(canonicalGzip(createCanonicalTar(entries)), { lock }))
+      .rejects.toThrow(/runtime kernel identity differs from the selected Boundary lock/);
   });
 
   test("rejects noncanonical or corrupt gzip before parsing USTAR", () => {
@@ -242,6 +406,19 @@ describe("World Process Host runtime archive", () => {
     });
     expect(result.receipt.publishedProcessCorpusParityClaimed).toBe(true);
     expect(result.receipt.publishedProcessCorpusParity).toEqual({
+      boundaryCorpusIdentity: {
+        producerTag: "v1.7.0",
+        producerCommit: "4fd4cd959ea283a6b5af12a228f0d80a102683e3",
+        manifestSha256: "5ef2fb9fc3667ce97eae74d5bf9b635da46596fd7f0b3e68a04a43b24b7bb331",
+        payloadSha256: "17a74f8adfdd7fe9aced05d01fe0432f7ad6720b69cf353bc57a695378bb527f",
+      },
+      repositoryRepairCorpusIdentity: {
+        producerTag: "v2.7.0",
+        producerCommit: "f8609bc68f2a9c798df3511cfc3a2af60a359d41",
+        manifestSha256: "c2e0e63192c19cbb8e5d0d1d3b6951fcd428f9496c015471f69524286cf236c1",
+        payloadSha256: "f0ddf27f8402168e76360178b532da37323ada5c97a4294ca9d1c98e1c4838dd",
+        programImageSha256: "7440076a8078220d9d4000b871423d981bbbee19aedba499afaa4a86239fe6a6",
+      },
       boundaryVectorCount: 20,
       boundaryByteIdenticalCount: 20,
       repositoryRepairReductionCount: 96,
@@ -256,6 +433,12 @@ describe("World Process Host runtime archive", () => {
     expect(result.receipt).not.toHaveProperty("semanticConformance");
     const directConformance = JSON.parse(await readFile(conformanceOutputPath, "utf8"));
     expect(directConformance.result).toBe("passed");
+    expect(directConformance.boundary).toEqual({
+      version: lock.boundaryVersion,
+      commit: lock.boundaryCommit,
+      kernelSha256: lock.kernelSha256,
+    });
+    expect(directConformance.boundaryCorpus.producerTag).toBe("v1.7.0");
     expect(directConformance.cleanRoom.runtimeArchiveSha256).toBe(result.receipt.archiveSha256);
   }, 120_000);
 

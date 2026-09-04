@@ -37,7 +37,7 @@ const DEFAULT_BOUNDARY_LOCK = resolve("conformance/boundary-process-proof.lock.j
 const DEFAULT_BOUNDARY_ROOT = resolve("conformance/vectors");
 const DEFAULT_TRANSCRIPT_LOCK = resolve("conformance/repository-repair-transcript/lock.json");
 const DEFAULT_TRANSCRIPT_ROOT = resolve("conformance/repository-repair-transcript/data");
-const DEFAULT_RECEIPT = resolve("dist/world-v4.0.0-process-host-conformance-receipt.json");
+const DEFAULT_RECEIPT = resolve("dist/world-v4.1.0-process-host-conformance-receipt.json");
 const MAX_CHILD_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 function fail(code, message, details = {}) {
@@ -424,6 +424,7 @@ export async function runRuntimeCleanRoomSmoke({ archivePath, checksumPath, extr
       archiveSha256: checked.archiveSha256,
       archiveByteLength: checked.archiveByteLength,
       runtimeInventory: Object.freeze([...checked.runtimeInventory]),
+      runtimeManifest: checked.manifest,
       extractedRoot: keepExtractedRoot || !ownsTemporaryRoot ? checked.extractedRoot : null,
       reproducible: checked.reproducible,
       innerVerified: checked.innerVerified,
@@ -449,8 +450,10 @@ if (typeof admitProcessKernel !== "function" || typeof decodeProcessOutcome !== 
 const readJson = async (path) => JSON.parse(await readFile(path, "utf8"));
 const boundaryLock = await readJson(boundaryLockPath);
 const transcriptLock = await readJson(transcriptLockPath);
+const runtimeManifest = await readJson(join(runtimeRoot, "runtime-manifest.json"));
 const kernelBytes = new Uint8Array(await readFile(join(runtimeRoot, "boundary-process-kernel-v1.wasm")));
-let host = await admitProcessKernel(kernelBytes, { expectedSha256: boundaryLock.boundary.kernelSha256 });
+let host = await admitProcessKernel(kernelBytes);
+if (host.sha256 !== runtimeManifest.kernelSha256) throw new Error("runtime_kernel_manifest_mismatch");
 
 const equal = (left, right) => Buffer.from(left).equals(Buffer.from(right));
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -462,8 +465,9 @@ const invocation = async (vector) => {
   const instance = vector.instance.kind === "initialArgs" ? { initialArgs: instanceBytes } : { state: instanceBytes };
   const outcome = await host.advance({ image, instance, ...(effectResult === undefined ? {} : { effectResult }) });
   const expected = await bytesAt(boundaryRoot, vector.expectedOutcomePath);
-  if (!equal(outcome.bytes, expected) || outcome.kind !== vector.expectedKind) throw new Error("boundary_vector_mismatch:" + vector.id);
-  return { vector, image, instance, effectResult, expected };
+  const byteIdentical = equal(outcome.bytes, expected);
+  if (outcome.kind !== vector.expectedKind || !byteIdentical) throw new Error("boundary_vector_mismatch:" + vector.id);
+  return { vector, image, instance, effectResult, expected, byteIdentical };
 };
 
 const vectorResults = [];
@@ -526,7 +530,7 @@ for (const expectedEntry of transcriptLock.transcript.expectedOutcomes) {
     if (!equal(actual.request, expectedRequest)) throw new Error("repository_repair_request_mismatch:" + requestBoundary);
     let reconstructionHost = host;
     if (requestBoundary === transcriptLock.transcript.transferAfterBoundary) {
-      reconstructionHost = await admitProcessKernel(kernelBytes, { expectedSha256: boundaryLock.boundary.kernelSha256 });
+      reconstructionHost = await admitProcessKernel(kernelBytes);
     }
     const reconstructed = await reconstructionHost.advance({ image, instance });
     if (!(reconstructed.request instanceof Uint8Array)) throw new Error("repository_repair_reconstruction_request_shape:" + requestBoundary);
@@ -565,8 +569,9 @@ const inventory = async (root, prefix = "") => {
 };
 process.stdout.write(JSON.stringify({
   format: "world-process-host-clean-room-result/v1",
+  runtimeManifest,
   boundaryVectorCount: boundaryLock.vectors.length,
-  boundaryByteIdenticalCount: boundaryLock.vectors.length,
+  boundaryByteIdenticalCount: vectorResults.filter((entry) => entry.byteIdentical).length,
   concurrencyByteIdentical: true,
   cliByteIdentical: true,
   repositoryRepairReductionCount: transcriptLock.transcript.reductionCount,
@@ -697,6 +702,7 @@ export async function runFullCleanRoomConformance({
     }
     if (
       result.format !== "world-process-host-clean-room-result/v1" ||
+      JSON.stringify(result.runtimeManifest) !== JSON.stringify(smoke.runtimeManifest) ||
       result.boundaryVectorCount !== copiedProofs.boundaryLock.vectors.length ||
       result.boundaryByteIdenticalCount !== copiedProofs.boundaryLock.vectors.length ||
       result.repositoryRepairReductionCount !== 96 ||
@@ -712,11 +718,11 @@ export async function runFullCleanRoomConformance({
     const receipt = {
       format: "world-process-host-conformance-receipt/v1",
       result: "passed",
-      worldVersion: "4.0.0",
+      worldVersion: "4.1.0",
       boundary: {
-        version: BOUNDARY_PROCESS_PROOF.version,
-        commit: BOUNDARY_PROCESS_PROOF.commit,
-        kernelSha256: BOUNDARY_PROCESS_PROOF.kernelSha256,
+        version: result.runtimeManifest.boundaryVersion,
+        commit: result.runtimeManifest.boundaryCommit,
+        kernelSha256: result.runtimeManifest.kernelSha256,
       },
       boundaryCorpus: {
         producerTag: copiedProofs.boundaryLock.producer.releaseTag,
