@@ -17,8 +17,8 @@ BPI1 + InitialArgs or ABL_PST1 [+ ABL_ERS1]
                          +-- Requested: typed ABL_ERQ1
 ```
 
-World pins the fixed Boundary 1.8.1 release Process kernel bytes and records
-landed commit `09d3dbe2004d20e9e29f7c3d4b635cd32857b101` as the released dependency
+World pins the fixed Boundary 1.8.2 release Process kernel bytes and records
+landed commit `999e936c4a865cd31948b52b2af2baeacf84c9f1` as the released dependency
 binding. It creates a fresh WebAssembly
 instance, performs exactly one finite reduction, copies the canonical outcome
 bytes out of guest memory, and discards the instance. The published Boundary
@@ -102,6 +102,6 @@ Without `--kernel`, the command uses the exact kernel bundled with World 4.
 Input paths are admitted as coherent regular-file generations. `--out` publishes
 through a sibling temporary file and an atomic rename.
 
-See [Process Host v1](https://github.com/tkersey/world/blob/v4.1.1/docs/process_host_v1.md), the
-[security model](https://github.com/tkersey/world/blob/v4.1.1/docs/security_model.md), and
-[migration from World 3](https://github.com/tkersey/world/blob/v4.1.1/docs/migration_from_world_3.md).
+See [Process Host v1](https://github.com/tkersey/world/blob/v4.1.2/docs/process_host_v1.md), the
+[security model](https://github.com/tkersey/world/blob/v4.1.2/docs/security_model.md), and
+[migration from World 3](https://github.com/tkersey/world/blob/v4.1.2/docs/migration_from_world_3.md).
