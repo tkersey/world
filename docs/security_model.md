@@ -1,7 +1,7 @@
 # Security model
 
 World's trust boundary is deliberately narrow. Boundary owns Process semantics.
-World authenticates the fixed Boundary 1.8.0 candidate kernel, admits its WebAssembly
+World authenticates the fixed Boundary 1.8.1 release kernel, admits its WebAssembly
 shape, creates a fresh instance for one reduction, validates host-facing record
 framing and memory ranges, and copies bytes across the embedding boundary.
 

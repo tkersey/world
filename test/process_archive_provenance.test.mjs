@@ -100,7 +100,7 @@ describe("runtime archive source provenance", () => {
       projectionPath,
       `await Bun.write(${JSON.stringify(markerPath)}, "executed");\n${await readFile(projectionPath, "utf8")}`,
     );
-    await expect(readBoundaryLock(root)).resolves.toMatchObject({ boundaryVersion: "1.8.0" });
+    await expect(readBoundaryLock(root)).resolves.toMatchObject({ boundaryVersion: "1.8.1" });
     expect(await readdir(root)).not.toContain("identity-side-effect");
   });
 
