@@ -37,5 +37,5 @@ export function validateBoundaryProcessKernelIdentityV1(identity) {
   return Object.freeze(identity);
 }
 
-/** Exact minimized Boundary v1.8.1 released Process kernel identity. */
+/** Exact minimized Boundary v1.8.2 released Process kernel identity. */
 export const BOUNDARY_PROCESS_KERNEL_V1 = validateBoundaryProcessKernelIdentityV1(identityRecord);

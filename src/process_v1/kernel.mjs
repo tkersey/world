@@ -18,7 +18,7 @@ const KERNEL_INPUT_HEADER_BYTES = 40;
 const admittedHosts = new WeakMap();
 
 /**
- * Authenticate and compile the one Boundary v1.8.1 Process interpreter that
+ * Authenticate and compile the one Boundary v1.8.2 Process interpreter that
  * World 4 is allowed to execute.
  */
 export async function admitProcessKernel(kernelBytes, options = undefined) {

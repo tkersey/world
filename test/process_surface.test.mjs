@@ -23,7 +23,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function manifest(overrides = {}) {
   return {
     name: "@tkersey/world",
-    version: "4.1.1",
+    version: "4.1.2",
     type: "module",
     private: false,
     license: "MIT",

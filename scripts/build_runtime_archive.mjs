@@ -20,7 +20,7 @@ import {
   PROCESS_KERNEL_EXPORT_NAMES,
 } from "../src/process_v1/wasm.mjs";
 
-export const WORLD_VERSION = "4.1.1";
+export const WORLD_VERSION = "4.1.2";
 export const RUNTIME_FORMAT = "world-process-host-runtime/v1";
 export const RUNTIME_ROOT = `world-v${WORLD_VERSION}-process-host-runtime`;
 export const RUNTIME_ARCHIVE_NAME = `${RUNTIME_ROOT}.tar.gz`;
