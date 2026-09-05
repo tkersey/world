@@ -96,9 +96,9 @@ describe("World Process Host runtime archive", () => {
     expect(admitted.parsed.find(({ path }) => path === "package.json")?.mode).toBe(0o644);
     expect(admitted.manifest.productionSourceSha256).toMatch(/^[0-9a-f]{64}$/);
     const runtimeReadme = admitted.entries.get("README.md").toString("utf8");
-    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/process_host_v1.md");
-    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/security_model.md");
-    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.0/docs/migration_from_world_3.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.1/docs/process_host_v1.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.1/docs/security_model.md");
+    expect(runtimeReadme).toContain("https://github.com/tkersey/world/blob/v4.1.1/docs/migration_from_world_3.md");
     expect(runtimeReadme).not.toMatch(/\]\(docs\//);
   });
 
@@ -286,7 +286,7 @@ describe("World Process Host runtime archive", () => {
     const extractedRoot = join(temporaryRoot, "standalone-verifier-world-identity");
     await extractAdmittedRuntime(admitted, extractedRoot);
     const expected = [
-      "--expected-world-version", "4.1.0",
+      "--expected-world-version", "4.1.1",
       "--expected-world-commit", trustedWorldIdentity.worldSourceCommit,
       "--expected-world-production-source-sha256", trustedWorldIdentity.worldProductionSourceSha256,
       "--expected-boundary-version", lock.boundaryVersion,
@@ -315,7 +315,7 @@ describe("World Process Host runtime archive", () => {
     const historical = await readExactBoundaryLock();
     expect(historical.boundaryVersion).toBe("1.7.0");
     expect(historical.kernelSha256).toBe("178f9c2fb79402a85ab5a7905586879347ad5c99f988127eec001c9ecfd813f0");
-    expect(lock.boundaryVersion).toBe("1.8.0");
+    expect(lock.boundaryVersion).toBe("1.8.1");
     const kernel = await readFile(join(repositoryRoot, "boundary-process-kernel-v1.wasm"));
     expect(kernel.byteLength).toBe(lock.kernelByteLength);
     expect(sha256(kernel)).toBe(lock.kernelSha256);
