@@ -1,8 +1,8 @@
 {
   "format": "world-v2-external-consumer-freeze/v1",
-  "frozenAt": "2026-09-06T18:19:56.407Z",
-  "kernelSha256": "8a03e67562743bb9fa1d65477eb15c58b22c0da0d6f8e034fc69db5098145ff9",
-  "kernelBytes": 365111,
+  "frozenAt": "2026-09-06T23:38:12.894Z",
+  "kernelSha256": "9a398479e69c27dd234512ba0dbce2556e85bca16244e7502386a7f559632912",
+  "kernelBytes": 386803,
   "abi": 2,
   "profile": 1,
   "memory": {
@@ -14,15 +14,15 @@
   "sourceInputs": {
     "boundary": {
       "git": {
-        "head": "6174070f5a76a2fdf214dbbc5847e749039b04f8",
-        "tree": "2013138e22b43711db9a505c57a69b9db6a1ac43",
+        "head": "570f7f8f3436333605456c8b7dbd04dbe5235c9c",
+        "tree": "e6bb4856d8887aabefae24681777b12a1977d7b9",
         "dirty": true
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
       "files": [
         {
           "name": "build.zig",
-          "sha256": "b5e791ffd88113cfafd5161d3af8376a48e3ab05b983260a739897258410088a"
+          "sha256": "5f281b3fad7501921ba179e42058bd3f605c7b402b3f2ec1877da6acca19a261"
         },
         {
           "name": "build.zig.zon",
@@ -46,7 +46,7 @@
         },
         {
           "name": "src/v2/data/borrow_flow.zig",
-          "sha256": "cda08da8bafe7604898e816e99c5b852044b0e5791444998b41b442eb303ada1"
+          "sha256": "4b76c635d81420e639dd70fa5ed948a79f8ed4b5489bc8c8e9b6980e0033288d"
         },
         {
           "name": "src/v2/data/canonical.zig",
@@ -58,7 +58,7 @@
         },
         {
           "name": "src/v2/data/contracts.zig",
-          "sha256": "9aa4e7fd39a8ee343c805614e3ab150d9ac0898c91c6659d882d74fc937678ad"
+          "sha256": "583ad030b0d573e4e87dce46bdf4b89746607937c863a32d08abfa103f87b407"
         },
         {
           "name": "src/v2/data/diagnostic.zig",
@@ -114,11 +114,15 @@
         },
         {
           "name": "src/v2/data/snapshot.zig",
-          "sha256": "77fa3ef9eec37176620d2a22e9357c728a3ff61da9a43469ee9a4407c82009bf"
+          "sha256": "205c36e0e2d3b5217545a358f21769e45d4750b09714de745536c64681b63cfc"
         },
         {
           "name": "src/v2/data/state_admission.zig",
-          "sha256": "b2dc10462c00d171ea1c42b49f9db272fb202aa54d10ce0556ac92b4d0f552f9"
+          "sha256": "83a7eb259393f5649708dcd14727036deec2c33de357e6ca0e27b74bb9e5cf81"
+        },
+        {
+          "name": "src/v2/data/state_effects.zig",
+          "sha256": "96f00d8bce4cb647af3cfed4c76dc3032de4b4e4242bc1a21ce05b46514f94e6"
         },
         {
           "name": "src/v2/data/test_root.zig",
@@ -141,12 +145,12 @@
           "sha256": "2cad2f4762b4aaaa472db9fda6e8f038b5cc01c969a5ee32a9efa1067ebe8a28"
         }
       ],
-      "filesSha256": "9d9601aad3cb086dae022e5b5b2e67393d10f8598a8cec8469fb6225b52d6f9f"
+      "filesSha256": "420b942a0a51e4a6727e6d61309fa18f43672e3ca63032cc36a2ef9197d126a6"
     },
     "world": {
       "git": {
-        "head": "d9b78164228764faa2e731ced1264cd5a8082741",
-        "tree": "9cf8fe6900e7362b203e9cccc2a3e34f848f18cd",
+        "head": "0810a1c10424928d30006f3757538ec8d6f58340",
+        "tree": "19020fe08643884218f299e92fe3cbcb36214ea8",
         "dirty": true
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
@@ -209,7 +213,7 @@
         },
         {
           "name": "src/interpreter_v2/machine.zig",
-          "sha256": "03a72f0c8463bd3eb944ad3fe48409d9a52808286762c36c0b37929145eb69a5"
+          "sha256": "3cda5f47754af7a818e943a90b53baad9dfa48e606563d48f1dce8a4ebeb7a38"
         },
         {
           "name": "src/interpreter_v2/process.zig",
@@ -252,7 +256,7 @@
           "sha256": "0ea81f7c02bfe17874a730c42ab42afcfdaea1e9832371a9f80dc004bec4d07e"
         }
       ],
-      "filesSha256": "872fa2cbb3867e023cc4ea85401803e2316a2b8f82e604b5ffe51cf743edc56b"
+      "filesSha256": "7a1123ce5a7f1bafa7dab362da9f23e789d7462b5e4431fec180718663076f61"
     }
   }
 }

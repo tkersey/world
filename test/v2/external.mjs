@@ -16,11 +16,11 @@ const kernel = await readFile(kernelPath);
 assert.equal(sha256(kernel), freeze.kernelSha256, 'kernel changed: author another unrelated consumer after a new freeze');
 await mkdir(output, { recursive: true });
 const scratch = await mkdtemp(join(output, 'consumer-'));
-await cp(join(world, 'test/v2/external/checksum'), join(scratch, 'checksum'), { recursive: true });
+await cp(join(world, 'test/v2/external/thermostat'), join(scratch, 'thermostat'), { recursive: true });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
 function compile(source) {
   const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
-    { cwd: join(scratch, 'checksum'), timeout: 180000, maxBuffer: 16 << 20 });
+    { cwd: join(scratch, 'thermostat'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
 }
@@ -44,15 +44,14 @@ async function compare(input, mode) {
   records.push({ producer, input: Buffer.from(encoded).toString('base64'), output: Buffer.from(bytes).toString('base64') });
   return { ...decodeOutcome(bytes), bytes };
 }
-function expected(bytes) {
-  const checksum = bytes.reduce((value, byte) => value ^ (BigInt(byte) ^ 165n), 17n);
-  const value = Buffer.alloc(8); value.writeBigUInt64LE(checksum);
-  return { kind: 'Completed', value: [...value], trace: bytes.map(() => ({ kind: 'Yielded' })) };
+function expected([setpoint, first, second]) {
+  return { kind: 'Completed', value: [Number(first < setpoint), Number(second < setpoint)], trace: [{ kind: 'Yielded' }] };
 }
 try {
-  for (const bytes of [[], [0], [1, 2, 3], [255, 128, 0, 127], [7, 7, 9, 9, 17, 17, 255, 255]]) {
-    const initialArgs = Buffer.from([bytes.length, ...bytes]), oracle = execute(source, [...initialArgs]);
-    const wanted = expected(bytes);
+  for (const temperatures of [[20n, 10n, 25n], [20n, 20n, 19n], [0n, -1n, 0n], [-20n, -100n, 100n], [0n, -(1n << 63n), (1n << 63n) - 1n]]) {
+    const initialArgs = Buffer.alloc(24);
+    temperatures.forEach((value, index) => initialArgs.writeBigInt64LE(value, index * 8));
+    const oracle = execute(source, [...initialArgs]), wanted = expected(temperatures);
     assert.equal(oracle.kind, wanted.kind);
     assert.deepEqual(oracle.trace, wanted.trace);
     assert.deepEqual(oracle.value, wanted.value);
@@ -77,11 +76,11 @@ try {
   }
 } finally { await peer.close(); }
 assert.equal(sha256(await readFile(kernelPath)), freeze.kernelSha256);
-await writeFile(join(output, 'checksum.bpi2'), image);
-await writeFile(join(output, 'checksum-source.json'), sourceBytes);
+await writeFile(join(output, 'thermostat.bpi2'), image);
+await writeFile(join(output, 'thermostat-source.json'), sourceBytes);
 await writeFile(join(output, 'external.json'), json({ format: 'world-v2-external-consumer/v1', freeze, checkedAt: new Date().toISOString(),
-  consumer: 'checksum', consumerSourceSha256: sha256(await readFile(join(world, 'test/v2/external/checksum/main.zig'))), imageSha256: sha256(image),
+  consumer: 'thermostat', consumerSourceSha256: sha256(await readFile(join(world, 'test/v2/external/thermostat/main.zig'))), imageSha256: sha256(image),
   imageBytes: image.length, sourceSha256: sha256(sourceBytes), kernelSha256: freeze.kernelSha256, nativeSha256: native ? sha256(await readFile(native)) : null,
   embeddings: native ? ['native', 'javascript', 'wasmtime'] : ['javascript', 'wasmtime'],
-  observations: ['new operation and handler compiled using only the public Boundary module', 'independent source semantics and raw-byte checksum expectations agreed', 'fresh producers alternated through every advance boundary', 'run matched canonical advance records; empty input, high bytes and pair cancellation agreed'], records }));
-console.log(`post-freeze checksum consumer: ${records.length} exact records under ${freeze.kernelSha256}`);
+  observations: ['new operation and handler compiled using only the public Boundary module', 'independent source semantics and signed-temperature expectations agreed', 'fresh producers alternated through every advance boundary', 'run matched canonical advance records; setpoint equality, negative temperatures and signed extremes agreed'], records }));
+console.log(`post-freeze thermostat consumer: ${records.length} exact records under ${freeze.kernelSha256}`);

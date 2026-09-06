@@ -288,14 +288,19 @@ pub const Machine = struct {
             },
             .resume_computation => |resuming| {
                 const value = slots[@intCast(resuming.resumption)];
-                if (self.program.schemas[@intCast(value.schema)].internal.resumption.mode != .deep) return error.UnsupportedTransition;
                 const token = try self.takeCapture(value);
                 defer if (self.isMulti(value)) self.allocator.free(token.use_site_capabilities);
                 const after = try self.continuation(control.block, slots, control);
-                try self.activate(token, after);
+                const evidence = try self.prepareResumption(token, after);
                 const captured = (try self.store.get(token.capture.?)).continuation;
                 const injected = try self.store.add(.{ .injection = .{ .continuation = token.capture.? } });
-                try self.applyComputation(slots[@intCast(resuming.computation)], token.use_site_capabilities, injected, token.evidence, captured.region);
+                try self.applyComputation(
+                    slots[@intCast(resuming.computation)],
+                    token.use_site_capabilities,
+                    injected,
+                    evidence,
+                    captured.region,
+                );
             },
             .with_region => |scope| {
                 const region = try self.store.add(.{ .region = .{ .descriptor = scope.region, .outer = control.region, .obligations = &.{} } });
@@ -476,12 +481,10 @@ pub const Machine = struct {
 
     fn resumeValue(self: *Machine, resumption_slot: p.Id, argument_slot: p.Id, slots: []const g.Value, control: g.Control) Error!void {
         const value = slots[@intCast(resumption_slot)];
-        const signature = self.program.schemas[@intCast(value.schema)].internal.resumption;
-        if (signature.mode != .deep) return error.UnsupportedTransition;
         const token = try self.takeCapture(value);
         defer if (self.isMulti(value)) self.allocator.free(token.use_site_capabilities);
         const after = try self.continuation(control.block, slots, control);
-        try self.activate(token, after);
+        _ = try self.prepareResumption(token, after);
         try self.resumeContinuation(token.capture.?, slots[@intCast(argument_slot)]);
     }
 
@@ -504,6 +507,39 @@ pub const Machine = struct {
         token.use_site_capabilities = (try self.store.get(reference_id)).one_shot.use_site_capabilities;
         return token;
     }
+    fn prepareResumption(self: *Machine, token: g.Capture, after: g.NodeRef) Error!?g.NodeRef {
+        const signature = self.program.schemas[@intCast(token.schema)].internal.resumption;
+        if (signature.mode == .deep) {
+            try self.activate(token, after);
+            return token.evidence;
+        }
+        const outer = (try self.store.get(token.delimiter)).attachment.outer;
+        // Plug the caller into the captured hole. The old handler and its return
+        // clause are absent from plain shallow resumption.
+        try self.store.replace(token.delimiter, try self.store.get(after));
+        for (self.store.nodes.items, self.store.alive.items) |*record, live| {
+            if (!live) continue;
+            const evidence: ?*?g.NodeRef = switch (record.*) {
+                .control => |*v| &v.evidence,
+                .continuation => |*v| &v.evidence,
+                .handler => |*v| &v.evidence,
+                .attachment => |*v| &v.outer,
+                .protection => |*v| &v.evidence,
+                .one_shot, .multi_template => |*v| &v.evidence,
+                else => null,
+            };
+            // These are lexical-context links, not capability values. Explicit
+            // capabilities keep selecting their original attachment identities.
+            if (evidence) |link| if (link.*) |ref| {
+                if (ref.id == token.delimiter.id) link.* = outer;
+            };
+        }
+        return if (token.evidence != null and token.evidence.?.id == token.delimiter.id)
+            outer
+        else
+            token.evidence;
+    }
+
     pub fn activate(self: *Machine, token: g.Capture, after: g.NodeRef) Error!void {
         var attachment = (try self.store.get(token.delimiter)).attachment;
         attachment.return_to = after;

@@ -4,6 +4,116 @@ const boundary = @import("boundary");
 const data = @import("boundary_data_v2");
 const world = @import("world").process_v2;
 
+fn phaseReturnExample(b: *boundary.source.Builder) !boundary.source.Module {
+    const unit = try b.scalar(void);
+    const integer = try b.scalar(u64);
+    const boolean = try b.scalar(bool);
+    const returns = try b.declare(&.{integer}, boolean, &.{}, &.{});
+    try b.define(returns, try b.pure(try b.constant(bool, true)));
+    const handler = try b.handler(.{
+        .mode = .deep,
+        .input = integer,
+        .answer = boolean,
+        .return_function = returns,
+        .clauses = &.{},
+    });
+    const body = try b.declare(&.{}, integer, &.{}, &.{});
+    try b.define(body, try b.pure(try b.constant(u64, 42)));
+    const body_type = try b.schema(.{ .internal = .{ .computation = .{
+        .parameters = &.{},
+        .result = integer,
+    } } });
+    const main = try b.declare(&.{}, integer, &.{}, &.{});
+    const installed = try b.term(.{ .handle = .{
+        .handler = handler,
+        .body = try b.lambda(body, body_type),
+    } });
+    try b.define(main, try b.bind(
+        try b.variable(boolean),
+        installed,
+        try b.pure(try b.constant(u64, 9)),
+    ));
+    return b.module(main, unit);
+}
+
+fn rejectSuspendedReturn(program: data.program.Program, block: data.program.Id, handler: data.program.Id) !void {
+    const allocator = std.testing.allocator;
+    const nodes: []const data.graph.Node = &.{
+        .{ .control = .{
+            .block = block,
+            .arguments = &.{},
+            .parent = .{ .id = 1 },
+            .evidence = .{ .id = 1 },
+        } },
+        .{ .attachment = .{
+            .handler = .{ .id = 2 },
+            .outer = null,
+            .return_to = null,
+            .phase = .suspended,
+        } },
+        .{ .handler = .{ .definition = handler, .state = &.{}, .evidence = null } },
+    };
+    for ([_]data.graph.Status{ .active, .yielded }) |status| {
+        const forged: data.graph.State = .{
+            .program_identity = try data.image.identity(program),
+            .status = status,
+            .roots = .{ .current = .{ .id = 0 }, .evidence = .{ .id = 1 } },
+            .nodes = nodes,
+        };
+        try std.testing.expectError(error.InvalidState, data.state_admission.validate(
+            allocator,
+            program,
+            forged,
+        ));
+        var encoded = try data.snapshot.emit(allocator, forged, allocator, null);
+        defer encoded.normalized.deinit();
+        defer allocator.free(encoded.bytes);
+        inline for (.{ world.run, world.advance }) |execute| {
+            try std.testing.expectError(error.InvalidState, execute(allocator, .{
+                .program = .{ .records = program },
+                .instance = .{ .records = forged },
+            }));
+            try std.testing.expectError(error.InvalidState, execute(allocator, .{
+                .program = .{ .records = program },
+                .instance = .{ .snapshot = encoded.bytes },
+            }));
+        }
+    }
+}
+
+test "a suspended delimiter cannot terminate a live return spine" {
+    const allocator = std.testing.allocator;
+    var b = boundary.source.Builder.init(allocator);
+    defer b.deinit();
+    var compiled = try boundary.program.compile(allocator, try phaseReturnExample(&b));
+    defer compiled.deinit();
+    var step = try world.advance(allocator, .{
+        .program = .{ .records = compiled.program },
+        .instance = .{ .initial_args = &.{} },
+    });
+    defer step.deinit();
+    var tested = false;
+    while (step.record == .progressed) {
+        var saved = try data.snapshot.decodeGraph(allocator, step.record.progressed);
+        defer saved.deinit();
+        const control = saved.state.nodes[@intCast(saved.state.roots.current.?.id)].control;
+        if (control.parent) |parent| if (saved.state.nodes[@intCast(parent.id)] == .attachment) {
+            const attachment = saved.state.nodes[@intCast(parent.id)].attachment;
+            const activation = saved.state.nodes[@intCast(attachment.handler.id)].handler;
+            try rejectSuspendedReturn(compiled.program, control.block, activation.definition);
+            tested = true;
+        };
+        const next = try world.advance(allocator, .{
+            .program = .{ .records = compiled.program },
+            .instance = .{ .snapshot = step.record.progressed },
+        });
+        step.deinit();
+        step = next;
+    }
+    try std.testing.expect(tested);
+    try std.testing.expectEqualSlices(u8, &.{ 9, 0, 0, 0, 0, 0, 0, 0 }, step.record.completed);
+}
+
 test "saved same-family capability substitution cannot escape through a helper return" {
     const allocator = std.testing.allocator;
     for ([_]bool{ false, true }) |through_pair| {
@@ -625,4 +735,180 @@ test "higher-order source lambdas, non-tail handlers, and mutual recursion execu
             try std.testing.expectEqualSlices(u8, expected, step.record.completed);
         }
     }
+}
+
+fn shallowReturnExample(b: *boundary.source.Builder, comptime mode: data.program.Mode, comptime use: data.program.Use, comptime injecting: bool) !boundary.source.Module {
+    const unit = try b.scalar(void);
+    const integer = try b.scalar(u64);
+    const effect = try b.effect(.{ .identity = "review/shallow-return", .payload = unit, .result = unit, .external = true, .control_use = use });
+    const cap = try b.schema(.{ .internal = .{ .capability = effect } });
+    const token = try b.reserveSchema();
+    try b.defineSchema(token, .{ .internal = .{ .resumption = .{
+        .effect = effect,
+        .input = unit,
+        .answer = integer,
+        .mode = mode,
+        .use = use,
+        .handled = &.{effect},
+        .effects = &.{effect},
+        .capture_bound = &.{ unit, cap, integer, token },
+    } } });
+    const returns = try b.declare(&.{integer}, integer, &.{}, &.{});
+    try b.define(returns, try b.pure(try b.constant(u64, 99)));
+    const clause = try b.declare(&.{ unit, token }, integer, &.{effect}, &.{});
+    const k = try b.reference(b.parameter(clause, 1));
+    const resume_term = if (injecting) blk: {
+        const thunk = try b.declare(&.{}, unit, &.{}, &.{});
+        try b.define(thunk, try b.pure(try b.constant(void, {})));
+        const thunk_type = try b.schema(.{ .internal = .{ .computation = .{ .parameters = &.{}, .result = unit } } });
+        break :blk try b.term(.{ .resume_computation = .{ .resumption = k, .computation = try b.lambda(thunk, thunk_type) } });
+    } else try b.term(.{ .resume_value = .{ .resumption = k, .argument = try b.constant(void, {}) } });
+    const body_term = if (use == .multi)
+        try b.bind(try b.variable(integer), resume_term, resume_term)
+    else
+        resume_term;
+    try b.define(clause, body_term);
+    const handler = try b.handler(.{ .mode = mode, .input = integer, .answer = integer, .effects = &.{effect}, .return_function = returns, .clauses = &.{.{ .effect = effect, .function = clause, .resumption = token }} });
+    const body = try b.declare(&.{cap}, integer, &.{effect}, &.{});
+    const call = try b.term(.{ .perform = .{ .effect = effect, .capability = try b.reference(b.parameter(body, 0)), .payload = try b.constant(void, {}) } });
+    try b.define(body, try b.bind(try b.variable(unit), call, try b.pure(try b.constant(u64, 42))));
+    const body_type = try b.schema(.{ .internal = .{ .computation = .{ .parameters = &.{cap}, .result = integer, .effects = &.{effect} } } });
+    const entry = try b.declare(&.{}, integer, &.{effect}, &.{});
+    try b.define(entry, try b.term(.{ .handle = .{ .handler = handler, .body = try b.lambda(body, body_type) } }));
+    return b.module(entry, unit);
+}
+
+test "shallow value and computation resumption omit the original return clause" {
+    const allocator = std.testing.allocator;
+    inline for (.{ data.program.Mode.deep, data.program.Mode.shallow }) |mode| {
+        inline for (.{ data.program.Use.linear, data.program.Use.multi }) |use| {
+            inline for (.{ false, true }) |injecting| {
+                var b = boundary.source.Builder.init(allocator);
+                defer b.deinit();
+                const source = try shallowReturnExample(&b, mode, use, injecting);
+                var compiled = try boundary.program.compile(allocator, source);
+                defer compiled.deinit();
+                inline for (.{ world.run, world.advance }) |execute| {
+                    var statistics: world.Statistics = .{};
+                    var step = try execute(allocator, .{
+                        .program = .{ .records = compiled.program },
+                        .instance = .{ .initial_args = &.{} },
+                        .statistics = &statistics,
+                    });
+                    defer step.deinit();
+                    while (step.record == .progressed) {
+                        const next = try execute(allocator, .{
+                            .program = .{ .records = compiled.program },
+                            .instance = .{ .snapshot = step.record.progressed },
+                            .statistics = &statistics,
+                        });
+                        step.deinit();
+                        step = next;
+                    }
+                    const expected = [_]u8{ if (mode == .deep) 99 else 42, 0, 0, 0, 0, 0, 0, 0 };
+                    try std.testing.expectEqualSlices(u8, &expected, step.record.completed);
+                    if (use == .multi)
+                        try std.testing.expectEqual(@as(u64, 2), statistics.branch_activations);
+                }
+            }
+        }
+    }
+}
+
+fn restoredEffectExample(b: *boundary.source.Builder) !boundary.source.Module {
+    const unit = try b.scalar(void);
+    const boolean = try b.scalar(bool);
+    const a = try b.effect(.{ .identity = "restore/A", .payload = unit, .result = unit, .external = false });
+    const residual = try b.effect(.{ .identity = "restore/B", .payload = unit, .result = unit, .external = true });
+    const cap = try b.schema(.{ .internal = .{ .capability = a } });
+    const returns = try b.declare(&.{unit}, unit, &.{}, &.{});
+    try b.define(returns, try b.pure(try b.reference(b.parameter(returns, 0))));
+    var branches: [2]data.program.Id = undefined;
+    for (&branches, 0..) |*branch, index| {
+        const row: []const data.program.Id = if (index == 0) &.{} else &.{residual};
+        const token = try b.schema(.{ .internal = .{ .resumption = .{ .effect = a, .input = unit, .answer = unit, .mode = .deep, .use = .linear, .handled = &.{a}, .effects = row, .capture_bound = &.{ unit, cap } } } });
+        const clause = try b.declare(&.{ unit, token }, unit, row, &.{});
+        const resume_term = try b.term(.{ .resume_value = .{ .resumption = try b.reference(b.parameter(clause, 1)), .argument = try b.constant(void, {}) } });
+        const yield = try b.term(.{ .yield_then = try b.pure(try b.constant(void, {})) });
+        try b.define(clause, try b.bind(try b.variable(unit), resume_term, yield));
+        const handler = try b.handler(.{ .mode = .deep, .input = unit, .answer = unit, .effects = row, .return_function = returns, .clauses = &.{.{ .effect = a, .function = clause, .resumption = token }} });
+        const body_row: []const data.program.Id = if (index == 0) &.{a} else &.{ a, residual };
+        const body = try b.declare(&.{cap}, unit, body_row, &.{});
+        const first = try b.term(.{ .perform = .{ .effect = a, .capability = try b.reference(b.parameter(body, 0)), .payload = try b.constant(void, {}) } });
+        const last = if (index == 0) try b.pure(try b.constant(void, {})) else try b.term(.{ .perform = .{ .effect = residual, .payload = try b.constant(void, {}) } });
+        try b.define(body, try b.bind(try b.variable(unit), first, last));
+        const signature = try b.schema(.{ .internal = .{ .computation = .{ .parameters = &.{cap}, .result = unit, .effects = body_row } } });
+        branch.* = try b.term(.{ .handle = .{ .handler = handler, .body = try b.lambda(body, signature) } });
+    }
+    const entry = try b.declare(&.{boolean}, unit, &.{residual}, &.{});
+    try b.define(entry, try b.term(.{ .conditional = .{ .condition = try b.reference(b.parameter(entry, 0)), .when_true = branches[1], .when_false = branches[0] } }));
+    return b.module(entry, unit);
+}
+
+test "restored token interfaces bound the actual captured continuation effects" {
+    const allocator = std.testing.allocator;
+    var b = boundary.source.Builder.init(allocator);
+    defer b.deinit();
+    var compiled = try boundary.program.compile(allocator, try restoredEffectExample(&b));
+    defer compiled.deinit();
+    var replacement: ?usize = null;
+    for (compiled.program.handlers, 0..) |handler, id| {
+        if (handler.effects.len == 0) replacement = id;
+    }
+    const handler = compiled.program.handlers[replacement.?];
+    const schema = handler.clauses[0].resumption;
+    const clause_block = compiled.program.functions[@intCast(handler.clauses[0].function)].entry;
+    var step = try world.advance(allocator, .{
+        .program = .{ .records = compiled.program },
+        .instance = .{ .initial_args = &.{1} },
+    });
+    defer step.deinit();
+    while (step.record == .progressed) {
+        var saved = try data.snapshot.decodeGraph(allocator, step.record.progressed);
+        defer saved.deinit();
+        try data.state_admission.validate(allocator, compiled.program, saved.state);
+        const nodes = @constCast(saved.state.nodes);
+        for (nodes) |*node| {
+            if (node.* != .one_shot) continue;
+            const old_schema = node.one_shot.schema;
+            if (compiled.program.schemas[@intCast(old_schema)].internal.resumption.effects.len == 0)
+                continue;
+            node.one_shot.schema = schema;
+            const delimiter = nodes[@intCast(node.one_shot.delimiter.id)].attachment;
+            nodes[@intCast(delimiter.handler.id)].handler.definition = replacement.?;
+            const control = &nodes[@intCast(saved.state.roots.current.?.id)].control;
+            control.block = clause_block;
+            for (@constCast(control.arguments)) |*argument| {
+                if (argument.schema == old_schema) argument.schema = schema;
+            }
+            try std.testing.expectError(error.InvalidEffect, data.state_admission.validate(allocator, compiled.program, saved.state));
+            var encoded = try data.snapshot.emit(allocator, saved.state, allocator, null);
+            defer encoded.normalized.deinit();
+            defer allocator.free(encoded.bytes);
+            inline for (.{ world.run, world.advance }) |execute| {
+                try std.testing.expectError(error.InvalidEffect, execute(allocator, .{
+                    .program = .{ .records = compiled.program },
+                    .instance = .{ .records = saved.state },
+                }));
+                try std.testing.expectError(error.InvalidEffect, execute(allocator, .{
+                    .program = .{ .records = compiled.program },
+                    .instance = .{ .snapshot = encoded.bytes },
+                }));
+            }
+            var original = try world.run(allocator, .{
+                .program = .{ .records = compiled.program },
+                .instance = .{ .snapshot = step.record.progressed },
+            });
+            defer original.deinit();
+            try std.testing.expect(original.record == .requested);
+            return;
+        }
+        const next = try world.advance(allocator, .{
+            .program = .{ .records = compiled.program },
+            .instance = .{ .snapshot = step.record.progressed },
+        });
+        step.deinit();
+        step = next;
+    }
+    return error.CaptureNotFound;
 }

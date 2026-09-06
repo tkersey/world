@@ -2,8 +2,8 @@
   "format": "world-v2-working-memory/v1",
   "method": "same native pointer width and inputs; v2 exact peak simultaneously live allocator payload includes PKI2 decoding, admission, execution, snapshot and PKO2 encoding; allocator metadata demand is separately a lower bound; v1 mandatory ValidationWorkspace is an unconditional working-allocation lower bound, excluding its additionally measured buffer demands; unused backing reservations are reported separately",
   "probes": {
-    "v1Sha256": "2a8a371c255ceb343f3d6f6d0edf9c3575664bbefe6cb5bc99b21071e6f56ee9",
-    "v2Sha256": "609dea7d887e6087225c3b3c94a1f814b9087842b058b195e956c93f40457229"
+    "v1Sha256": "b06aca2e59ba0a0292ee620fd3bc49ef9e7f9eff39107c1f7b5de0a364a73dd6",
+    "v2Sha256": "c33340debe3f89d2da42eace4056bc7bfd358b3ec15c0a2b058f1556d0d62636"
   },
   "workloads": [
     {
