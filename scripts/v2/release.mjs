@@ -1,23 +1,24 @@
 // Build local runtime assets. This command never tags, merges or publishes.
 import assert from 'node:assert/strict';
-import { readFile, readdir, lstat, mkdir } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { bounded } from './bounded.mjs';
 import { inspectProcessKernelWasm } from '../../src/process_v2/wasm.mjs';
-import { sha256, json, safeName, tarGzip, readTarGzip, sourceIdentity, writeAssets, verifyAssets } from './assets.mjs';
+import { sha256, json, safeName, tarGzip, readTarGzip, sourceIdentity, readSource, writeAssets, verifyAssets } from './assets.mjs';
 
 const [kernelArg,nativeArg,rejectionsArg,boundaryArg,boundaryAssetsArg,projectArg,outputArg]=process.argv.slice(2);
 if(process.argv.length!==9)throw new Error('expected kernel, native embedding, malformed-State producer, Boundary source, Boundary assets, Wasmtime project, output');
 const root=resolve(import.meta.dirname,'../..'),kernelPath=resolve(kernelArg),nativePath=resolve(nativeArg),rejectionsPath=resolve(rejectionsArg),boundary=resolve(boundaryArg),boundaryAssets=resolve(boundaryAssetsArg),project=resolve(projectArg),output=resolve(outputArg);
-const packageBytes=await readFile(join(root,'package.json')),pkg=JSON.parse(packageBytes),version=pkg.version;
+const source=await sourceIdentity(root),sourceFiles=new Map((await readSource(root,source)).map(entry=>[entry.name,entry]));
+const packageBytes=sourceFiles.get('package.json').bytes,pkg=JSON.parse(packageBytes),version=pkg.version;
 if(!/^5\.0\.0(?:-dev\.0)?$/.test(version??''))throw new Error('unexpected World release version');
 const boundaryOuter=await verifyAssets(boundaryAssets,['boundary-v2-semantic-fixtures.json','boundary-v2-semantic-fixtures.bin','boundary-v2-examples.tar.gz','boundary-v2-release-receipt.json']);
 const boundaryReceipt=JSON.parse(boundaryOuter.get('boundary-v2-release-receipt.json'));
 assert.equal(boundaryReceipt.format,'boundary-v2-release-receipt/v1');
 const boundarySource=await sourceIdentity(boundary);
 assert.equal(boundarySource.filesSha256,boundaryReceipt.source.filesSha256,'Boundary assets must match the exact selected source');
-const source=await sourceIdentity(root),kernel=await readFile(kernelPath),inspection=inspectProcessKernelWasm(kernel);
+const kernel=await readFile(kernelPath),inspection=inspectProcessKernelWasm(kernel);
 const kernelSha256=sha256(kernel);
 await mkdir(output,{recursive:true});
 // Static admission occurs above. Any indispensable guest execution happens in a
@@ -37,15 +38,14 @@ const identity={format:'world-runtime-identity/v2',version,abi:2,profile:1,sourc
 const entries=new Map([['package.json',{name:'package.json',bytes:packageBytes}],
   ['world-process-kernel-v2.wasm',{name:'world-process-kernel-v2.wasm',bytes:kernel}],
   ['world-runtime-identity.json',{name:'world-runtime-identity.json',bytes:json(identity)}]]);
-async function include(name) {
+function include(name) {
   safeName(name);
   if(entries.has(name)||name==='SHA256SUMS')return;
-  const path=join(root,name),stat=await lstat(path);
-  if(stat.isDirectory()) {for(const child of (await readdir(path)).sort())await include(`${name}/${child}`);return;}
-  if(!stat.isFile())throw new Error(`nonregular package entry: ${name}`);
-  entries.set(name,{name,bytes:await readFile(path),executable:(stat.mode&0o111)!==0});
+  const selected=[...sourceFiles.values()].filter(entry=>entry.name===name||entry.name.startsWith(`${name}/`));
+  if(!selected.length)throw new Error(`package entry absent from verified source: ${name}`);
+  for(const entry of selected)if(!entries.has(entry.name))entries.set(entry.name,entry);
 }
-for(const name of pkg.files)await include(name.replace(/\/$/,''));
+for(const name of pkg.files)include(name.replace(/\/$/,''));
 for(const name of [...Object.values(pkg.exports),...Object.values(pkg.bin)])assert.ok(entries.has(name.replace(/^\.\//,'')),`missing exported entry: ${name}`);
 const innerSums=[...entries.values()].sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0).map(({name,bytes})=>`${sha256(bytes)}  ${name}\n`).join('');
 entries.set('SHA256SUMS',{name:'SHA256SUMS',bytes:Buffer.from(innerSums)});

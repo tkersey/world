@@ -4,7 +4,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tarGzip, readTarGzip, indexedBundle, readBundle, writeAssets, verifyAssets, readSource, sha256, json } from '../../scripts/v2/assets.mjs';
+import { tarGzip, readTarGzip, indexedBundle, readBundle, writeAssets, verifyAssets, sourceIdentity, readSource, sha256, json } from '../../scripts/v2/assets.mjs';
 
 const files = [{ name: 'z/data.bin', bytes: Buffer.from([0, 255]) }, { name: 'a/run', bytes: Buffer.from('hello'), executable: true }];
 function repairChecksum(bytes) {
@@ -100,4 +100,55 @@ test('a clean source claim cannot substitute receipt-controlled files for its Gi
   forged.files.pop(); forged.filesSha256 = sha256(json(forged.files));
   await assert.rejects(readSource(root, forged, head), /inventory mismatch/);
   await assert.rejects(readSource(root, { ...identity, git: { ...identity.git, dirty: true } }, head), /commit mismatch/);
+});
+
+test('replacement refs cannot change the tree certified under an immutable commit id', async () => {
+  const root = resolve(import.meta.dirname, '../..');
+  const git = (cwd, ...args) => execFileSync('git', args, { cwd, maxBuffer: 64 << 20 });
+  const head = git(root, 'rev-parse', 'HEAD').toString().trim();
+  const base = 'a55154eb43d19cba83c0bf1869cfd38704905ff1';
+  const files = [];
+  for (const row of git(root, 'ls-tree', '-r', '--full-tree', '-z', base).toString().split('\0').filter(Boolean)) {
+    const path = row.slice(row.indexOf('\t') + 1);
+    if (path === '.learnings.jsonl' || path.startsWith('.ledger/')) continue;
+    const match = /^(100644|100755) blob ([a-f0-9]{40})\t(.+)$/.exec(row);
+    assert.ok(match);
+    files.push({ name: path, sha256: sha256(git(root, 'cat-file', 'blob', match[2])) });
+  }
+  files.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  const forged = { git: { head, tree: git(root, 'rev-parse', `${base}^{tree}`).toString().trim(), dirty: false }, files, filesSha256: sha256(json(files)) };
+  const cache = resolve(root, '.cache/v2/assets-tests');
+  await mkdir(cache, { recursive: true });
+  const temporary = await mkdtemp(join(cache, 'replacement-'));
+  try {
+    const checkout = join(temporary, 'checkout');
+    git(root, 'clone', '--quiet', '--no-local', root, checkout);
+    const actual = await sourceIdentity(checkout);
+    git(checkout, 'replace', head, base);
+    await assert.rejects(readSource(checkout, forged, head), /source tree mismatch/);
+    assert.deepEqual(await sourceIdentity(checkout), actual);
+    const savedGitDir = process.env.GIT_DIR, savedWorkTree = process.env.GIT_WORK_TREE;
+    try {
+      process.env.GIT_DIR = join(temporary, 'absent.git');
+      process.env.GIT_WORK_TREE = root;
+      assert.deepEqual(await sourceIdentity(checkout), actual);
+      const verified = await readSource(checkout, actual, head);
+      assert.equal(verified.length, actual.files.length);
+      await assert.rejects(sourceIdentity(join(checkout, 'src')), /repository root/);
+    } finally {
+      if (savedGitDir === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = savedGitDir;
+      if (savedWorkTree === undefined) delete process.env.GIT_WORK_TREE; else process.env.GIT_WORK_TREE = savedWorkTree;
+    }
+    await writeFile(join(checkout, '.git/info/exclude'), 'src/process_v2/private-note.txt\n');
+    await writeFile(join(checkout, 'src/process_v2/private-note.txt'), 'ignored source must not enter the package');
+    assert.deepEqual(await sourceIdentity(checkout), actual);
+    await writeFile(join(checkout, 'README.md'), 'development snapshot');
+    const development = await sourceIdentity(checkout);
+    assert.equal(development.git.dirty, true);
+    const retained = await readSource(checkout, development);
+    await writeFile(join(checkout, 'README.md'), 'later source generation');
+    assert.equal(retained.find(row => row.name === 'README.md').bytes.toString(), 'development snapshot');
+    assert.ok(!retained.some(row => row.name.endsWith('private-note.txt')));
+    await assert.rejects(readSource(checkout, development), /source content mismatch/);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
 });

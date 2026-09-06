@@ -81,9 +81,9 @@ and checksums under `zig-out/v2/release`. It never publishes, merges or tags.
 The verifier checks outer checksums and source bindings before executing the
 compiler example or bundled runtime. Optional final arguments select the exact
 expected Boundary and World public commits and require clean source receipts.
-See [the ABI and API](docs/process_v2-abi.md) and
-[measured economy](docs/economy-v2.md), with the semantic and ownership witnesses
-indexed in [verification](docs/verification-v2.md).
+See [the ABI and API](docs/process_v2-abi.md). The source checkout also contains
+measured economy in `docs/economy-v2.md` and the semantic and ownership witness
+index in `docs/verification-v2.md`.
 
 ## State and effects
 

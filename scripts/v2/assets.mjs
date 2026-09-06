@@ -1,12 +1,20 @@
 // Deterministic release containers and inert source provenance. No evaluator.
 import { createHash } from 'node:crypto';
 import { readFile, writeFile, mkdir, lstat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export const json = (value) => Buffer.from(JSON.stringify(value, null, 2) + '\n');
+function sourceGit(root) {
+  const cwd = realpathSync(root);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_')));
+  const git = (...args) => execFileSync('git', ['--no-replace-objects', '-c', 'core.fsmonitor=false', ...args], { cwd, env, maxBuffer: 64 << 20 });
+  if (realpathSync(git('rev-parse', '--show-toplevel').toString().trim()) !== cwd) throw new Error('source must select the repository root');
+  return git;
+}
 export function safeName(name) {
   if (typeof name !== 'string' || !/^[A-Za-z0-9_.\-/]+$/.test(name) || name.startsWith('/') || name.split('/').some((part)=>!part || part === '.' || part === '..')) throw new Error(`unsafe asset name: ${name}`);
   return name;
@@ -83,7 +91,7 @@ export function readBundle(manifest,bytes) {
   return result;
 }
 export async function sourceIdentity(root) {
-  const git=(...args)=>execFileSync('git',args,{cwd:root,encoding:'utf8',maxBuffer:16<<20}).trim();
+  const readGit=sourceGit(root), git=(...args)=>readGit(...args).toString().trim();
   const head=git('rev-parse','HEAD'), tree=git('rev-parse','HEAD^{tree}');
   const dirty=git('status','--porcelain','--untracked-files=all').length!==0;
   const names=git('ls-files','--cached','--others','--exclude-standard','-z').split('\0').filter((name)=>name&&name!=='.learnings.jsonl'&&!name.startsWith('.ledger/'));
@@ -100,13 +108,13 @@ export async function sourceIdentity(root) {
 // A clean source claim is checked against immutable Git objects. Receipt fields
 // alone cannot establish that supplied compiler or runtime code belongs to a commit.
 export async function readSource(root, identity, expectedCommit) {
+  const git = sourceGit(root);
   if (typeof identity?.git?.dirty !== 'boolean' || !Array.isArray(identity.files)) throw new Error('invalid source identity');
   if (expectedCommit !== undefined && (identity.git.dirty || identity.git.head !== expectedCommit)) throw new Error('source commit mismatch');
   if (sha256(json(identity.files)) !== identity.filesSha256) throw new Error('source inventory digest mismatch');
   let objects;
   if (!identity.git.dirty) {
     if (!/^[a-f0-9]{40}$/.test(identity.git.head)) throw new Error('source commit must be an exact object id');
-    const git = (...args) => execFileSync('git', args, { cwd: root, maxBuffer: 64 << 20 });
     if (git('rev-parse', `${identity.git.head}^{tree}`).toString().trim() !== identity.git.tree) throw new Error('source tree mismatch');
     objects = new Map();
     for (const row of git('ls-tree', '-r', '--full-tree', '-z', identity.git.head).toString().split('\0').filter(Boolean)) {
@@ -114,8 +122,8 @@ export async function readSource(root, identity, expectedCommit) {
       if (path === '.learnings.jsonl' || path.startsWith('.ledger/')) continue;
       const match = /^(100644|100755) blob ([a-f0-9]{40})\t(.+)$/.exec(row);
       if (!match) throw new Error('source commit contains a nonregular entry');
-      const [, , object, name] = match;
-      objects.set(safeName(name), object);
+      const [, mode, object, name] = match;
+      objects.set(safeName(name), { object, executable: mode === '100755' });
     }
     if (JSON.stringify([...objects.keys()].sort()) !== JSON.stringify(identity.files.map(row => row.name))) throw new Error('source commit inventory mismatch');
   }
@@ -124,9 +132,12 @@ export async function readSource(root, identity, expectedCommit) {
     safeName(row.name);
     if (row.name === '.learnings.jsonl' || row.name.startsWith('.ledger/') || seen.has(row.name)) throw new Error('invalid source inventory');
     seen.add(row.name);
-    const bytes = objects ? execFileSync('git', ['cat-file', 'blob', objects.get(row.name)], { cwd: root, maxBuffer: 64 << 20 }) : await readFile(join(root, row.name));
+    const entry = objects?.get(row.name);
+    const metadata = entry ? null : await lstat(join(root, row.name));
+    if (metadata && !metadata.isFile()) throw new Error(`source must be a regular file: ${row.name}`);
+    const bytes = entry ? git('cat-file', 'blob', entry.object) : await readFile(join(root, row.name));
     if (sha256(bytes) !== row.sha256) throw new Error(`source content mismatch: ${row.name}`);
-    files.push({ name: row.name, bytes });
+    files.push({ name: row.name, bytes, executable: entry ? entry.executable : (metadata.mode & 0o111) !== 0 });
   }
   return files;
 }
