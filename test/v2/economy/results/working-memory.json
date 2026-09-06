@@ -1,0 +1,886 @@
+{
+  "format": "world-v2-working-memory/v1",
+  "method": "same native pointer width and inputs; v2 exact peak simultaneously live allocator payload includes PKI2 decoding, admission, execution, snapshot and PKO2 encoding; allocator metadata demand is separately a lower bound; v1 mandatory ValidationWorkspace is an unconditional working-allocation lower bound, excluding its additionally measured buffer demands; unused backing reservations are reported separately",
+  "probes": {
+    "v1Sha256": "2a8a371c255ceb343f3d6f6d0edf9c3575664bbefe6cb5bc99b21071e6f56ee9",
+    "v2Sha256": "7322a7466678888b3489d896f4f005f28a162da7d64de0abd50594cfc834be87"
+  },
+  "workloads": [
+    {
+      "name": "integer-boolean",
+      "imageSha256": "83dd8b20fe9365be4f791d5781f4f271ebc63f5f9c77b190e975ac9745725768",
+      "liftedSha256": "2645a87a67a9672aa182a1fe9760dfbe19ade57cf20dc1b2ced091af7076d7f5",
+      "initialSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "before": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "mandatory_validation_workspace_bytes": 261408,
+        "reserved_buffer_bytes": 7340032,
+        "observed_arena_demands": [
+          0,
+          0,
+          0,
+          42,
+          0,
+          47,
+          0,
+          0,
+          80
+        ],
+        "outcome": "completed"
+      },
+      "after": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "peak_working_payload_bytes": 27886,
+        "working_demand_lower_bound": 28462,
+        "working_reservation_bytes": 16777216,
+        "outcome": "completed",
+        "output_bytes": 64,
+        "output_sha256": "3e985163198fcf67451fbbb9b172f5c9ca4a43c8bb0854780a8362cd2a348a95",
+        "statistics": {
+          "transitions": 1,
+          "direct_clauses": 0,
+          "one_shot_captures": 0,
+          "multi_templates": 0,
+          "branch_activations": 0,
+          "storage": {
+            "added_nodes": 1,
+            "copied_blob_bytes": 42,
+            "traced_nodes": 0,
+            "traced_edges": 0,
+            "swept_slots": 0
+          },
+          "snapshot": {
+            "nodes": 0,
+            "edges": 0,
+            "blobs": 0,
+            "remapped_nodes": 0,
+            "stored_payload_bytes": 0,
+            "interning_hash_bytes": 0,
+            "interning_comparisons": 0
+          }
+        }
+      },
+      "ratioToV1MandatoryWorkspace": 0.10667615375198923
+    },
+    {
+      "name": "collections",
+      "imageSha256": "a06c44ea0abf30a5fdf1d42c9a7f8337b138e1ef6b1d8330fffd441fdc03dc93",
+      "liftedSha256": "4e015bfcad5a3c9ff2ff95d81cfbe03621bca41354e2fbfab6d21d26b460baf6",
+      "initialSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "before": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "mandatory_validation_workspace_bytes": 261408,
+        "reserved_buffer_bytes": 7340032,
+        "observed_arena_demands": [
+          0,
+          0,
+          0,
+          149,
+          0,
+          47,
+          0,
+          0,
+          367
+        ],
+        "outcome": "completed"
+      },
+      "after": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "peak_working_payload_bytes": 75427,
+        "working_demand_lower_bound": 77923,
+        "working_reservation_bytes": 16777216,
+        "outcome": "completed",
+        "output_bytes": 132,
+        "output_sha256": "0629bdc5156ecdd3cd97e9018e835ce5e67b00d6beacffc5cc817c73c9eb4d55",
+        "statistics": {
+          "transitions": 1,
+          "direct_clauses": 0,
+          "one_shot_captures": 0,
+          "multi_templates": 0,
+          "branch_activations": 0,
+          "storage": {
+            "added_nodes": 1,
+            "copied_blob_bytes": 295,
+            "traced_nodes": 0,
+            "traced_edges": 0,
+            "swept_slots": 0
+          },
+          "snapshot": {
+            "nodes": 0,
+            "edges": 0,
+            "blobs": 0,
+            "remapped_nodes": 0,
+            "stored_payload_bytes": 0,
+            "interning_hash_bytes": 0,
+            "interning_comparisons": 0
+          }
+        }
+      },
+      "ratioToV1MandatoryWorkspace": 0.28854128412290364
+    },
+    {
+      "name": "portable-values",
+      "imageSha256": "d00110409c41e9e2ff28fd8d0a843209ddd09507c0c52c75cdd1d82455dd9c0f",
+      "liftedSha256": "ef3d822bb731a56c04569a4bd0d22543970c6d8bbbf01c31cf1bdc4c36cd72c1",
+      "initialSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "before": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "mandatory_validation_workspace_bytes": 261408,
+        "reserved_buffer_bytes": 7340032,
+        "observed_arena_demands": [
+          0,
+          0,
+          0,
+          30,
+          0,
+          47,
+          0,
+          0,
+          81
+        ],
+        "outcome": "completed"
+      },
+      "after": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "peak_working_payload_bytes": 18140,
+        "working_demand_lower_bound": 19100,
+        "working_reservation_bytes": 16777216,
+        "outcome": "completed",
+        "output_bytes": 43,
+        "output_sha256": "7d5119977df31d64ac39e4b993231b8b0351e45f64bb79381cf2da59653ebcf6",
+        "statistics": {
+          "transitions": 1,
+          "direct_clauses": 0,
+          "one_shot_captures": 0,
+          "multi_templates": 0,
+          "branch_activations": 0,
+          "storage": {
+            "added_nodes": 1,
+            "copied_blob_bytes": 56,
+            "traced_nodes": 0,
+            "traced_edges": 0,
+            "swept_slots": 0
+          },
+          "snapshot": {
+            "nodes": 0,
+            "edges": 0,
+            "blobs": 0,
+            "remapped_nodes": 0,
+            "stored_payload_bytes": 0,
+            "interning_hash_bytes": 0,
+            "interning_comparisons": 0
+          }
+        }
+      },
+      "ratioToV1MandatoryWorkspace": 0.06939343860937691
+    },
+    {
+      "name": "recursion-0",
+      "imageSha256": "2402616bc23ec1d4f969bd8843571c1e2e6023d74145bde8ce6e593178bf42cb",
+      "liftedSha256": "098eb9ec9e151f7249786ed2c6d2854d1b4eb7355da46a15e15a80e4e523b10d",
+      "initialSha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+      "before": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "mandatory_validation_workspace_bytes": 261408,
+        "reserved_buffer_bytes": 7340032,
+        "observed_arena_demands": [
+          0,
+          0,
+          89,
+          4,
+          0,
+          51,
+          28,
+          16,
+          1
+        ],
+        "outcome": "completed"
+      },
+      "after": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "peak_working_payload_bytes": 14335,
+        "working_demand_lower_bound": 14767,
+        "working_reservation_bytes": 16777216,
+        "outcome": "completed",
+        "output_bytes": 26,
+        "output_sha256": "2e9ca634b45fed9bd96657846be9cf847b414d197ee977a4ee1d3b60064b5dae",
+        "statistics": {
+          "transitions": 3,
+          "direct_clauses": 0,
+          "one_shot_captures": 0,
+          "multi_templates": 0,
+          "branch_activations": 0,
+          "storage": {
+            "added_nodes": 3,
+            "copied_blob_bytes": 0,
+            "traced_nodes": 2,
+            "traced_edges": 2,
+            "swept_slots": 4
+          },
+          "snapshot": {
+            "nodes": 0,
+            "edges": 0,
+            "blobs": 0,
+            "remapped_nodes": 0,
+            "stored_payload_bytes": 0,
+            "interning_hash_bytes": 0,
+            "interning_comparisons": 0
+          }
+        }
+      },
+      "ratioToV1MandatoryWorkspace": 0.054837648426980044
+    },
+    {
+      "name": "recursion-32",
+      "imageSha256": "2402616bc23ec1d4f969bd8843571c1e2e6023d74145bde8ce6e593178bf42cb",
+      "liftedSha256": "098eb9ec9e151f7249786ed2c6d2854d1b4eb7355da46a15e15a80e4e523b10d",
+      "initialSha256": "8d71b3faab8201459ad37ef499beb336ba88bdcfa0f51ee6f0a46ec3192d750a",
+      "before": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "mandatory_validation_workspace_bytes": 261408,
+        "reserved_buffer_bytes": 7340032,
+        "observed_arena_demands": [
+          0,
+          0,
+          1433,
+          4,
+          0,
+          51,
+          40,
+          16,
+          8
+        ],
+        "outcome": "completed"
+      },
+      "after": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "peak_working_payload_bytes": 14335,
+        "working_demand_lower_bound": 14829,
+        "working_reservation_bytes": 16777216,
+        "outcome": "completed",
+        "output_bytes": 26,
+        "output_sha256": "33fc077f3385cc50652dbd91ed2dbb5ed7c893a59e9669aee16685bb7976d91d",
+        "statistics": {
+          "transitions": 67,
+          "direct_clauses": 0,
+          "one_shot_captures": 0,
+          "multi_templates": 0,
+          "branch_activations": 0,
+          "storage": {
+            "added_nodes": 67,
+            "copied_blob_bytes": 0,
+            "traced_nodes": 66,
+            "traced_edges": 66,
+            "swept_slots": 132
+          },
+          "snapshot": {
+            "nodes": 0,
+            "edges": 0,
+            "blobs": 0,
+            "remapped_nodes": 0,
+            "stored_payload_bytes": 0,
+            "interning_hash_bytes": 0,
+            "interning_comparisons": 0
+          }
+        }
+      },
+      "ratioToV1MandatoryWorkspace": 0.054837648426980044
+    },
+    {
+      "name": "residual",
+      "imageSha256": "6564f37639bfd4cf33491582e71b4f6602f865ea619b9616627080d86f805f0e",
+      "liftedSha256": "bb8d2b53c9ea0e254e718c5b21d996ee9ffab71b3cbab222f0a3544e718053b2",
+      "initialSha256": "84fc05949dc1e486652a4ed316afb6434e9437eb30b714594a1d0b4205776602",
+      "before": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "mandatory_validation_workspace_bytes": 261408,
+        "reserved_buffer_bytes": 7340032,
+        "observed_arena_demands": [
+          0,
+          0,
+          51,
+          4,
+          268,
+          51,
+          4,
+          0,
+          0
+        ],
+        "outcome": "requested"
+      },
+      "after": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "peak_working_payload_bytes": 19403,
+        "working_demand_lower_bound": 20507,
+        "working_reservation_bytes": 16777216,
+        "outcome": "requested",
+        "output_bytes": 326,
+        "output_sha256": "50957428a8313e201fb1e0ba82fb60b07e1516d7d0e0556ff6cf5e22bba96ad0",
+        "statistics": {
+          "transitions": 1,
+          "direct_clauses": 0,
+          "one_shot_captures": 0,
+          "multi_templates": 0,
+          "branch_activations": 0,
+          "storage": {
+            "added_nodes": 3,
+            "copied_blob_bytes": 0,
+            "traced_nodes": 2,
+            "traced_edges": 2,
+            "swept_slots": 3
+          },
+          "snapshot": {
+            "nodes": 2,
+            "edges": 2,
+            "blobs": 0,
+            "remapped_nodes": 2,
+            "stored_payload_bytes": 0,
+            "interning_hash_bytes": 0,
+            "interning_comparisons": 0
+          }
+        }
+      },
+      "ratioToV1MandatoryWorkspace": 0.07422496633614886
+    },
+    {
+      "name": "yield",
+      "imageSha256": "88f2519a28941a2097947487e7b65741b08d763a81d7e750bc39e52d3643ddba",
+      "liftedSha256": "bb80d0fea914384b15b87ba1259ca25dd81444c958f6f31b0f5bfe075cfc280f",
+      "initialSha256": "84fc05949dc1e486652a4ed316afb6434e9437eb30b714594a1d0b4205776602",
+      "before": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "mandatory_validation_workspace_bytes": 261408,
+        "reserved_buffer_bytes": 7340032,
+        "observed_arena_demands": [
+          0,
+          0,
+          51,
+          0,
+          0,
+          51,
+          4,
+          0,
+          0
+        ],
+        "outcome": "explicitly_yielded"
+      },
+      "after": {
+        "platform": "aarch64",
+        "pointer_bytes": 8,
+        "peak_working_payload_bytes": 5195,
+        "working_demand_lower_bound": 5819,
+        "working_reservation_bytes": 16777216,
+        "outcome": "yielded",
+        "output_bytes": 99,
+        "output_sha256": "9fb2f4f0384d6f17234563a455f72973d8d75a08aa6ca0b88d92f307f6b8b97a",
+        "statistics": {
+          "transitions": 1,
+          "direct_clauses": 0,
+          "one_shot_captures": 0,
+          "multi_templates": 0,
+          "branch_activations": 0,
+          "storage": {
+            "added_nodes": 2,
+            "copied_blob_bytes": 0,
+            "traced_nodes": 1,
+            "traced_edges": 1,
+            "swept_slots": 2
+          },
+          "snapshot": {
+            "nodes": 1,
+            "edges": 1,
+            "blobs": 0,
+            "remapped_nodes": 1,
+            "stored_payload_bytes": 0,
+            "interning_hash_bytes": 0,
+            "interning_comparisons": 0
+          }
+        }
+      },
+      "ratioToV1MandatoryWorkspace": 0.01987314848818705
+    }
+  ],
+  "features": [
+    {
+      "file": "source-deep.bpi2",
+      "imageBytes": 324,
+      "imageSha256": "36b5e425ce4b8cd77e38559045474768fe3d918203f5274d1a26264d19ecbfee",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 20675,
+      "working_demand_lower_bound": 21115,
+      "working_reservation_bytes": 16777216,
+      "outcome": "completed",
+      "output_bytes": 30,
+      "output_sha256": "c207c5e2b875ea94c2bc8d70aac891a420a40c3fb8813886de40bbeae335c7bd",
+      "statistics": {
+        "transitions": 8,
+        "direct_clauses": 0,
+        "one_shot_captures": 1,
+        "multi_templates": 0,
+        "branch_activations": 0,
+        "storage": {
+          "added_nodes": 16,
+          "copied_blob_bytes": 0,
+          "traced_nodes": 27,
+          "traced_edges": 38,
+          "swept_slots": 53
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "source-choices-all.bpi2",
+      "imageBytes": 334,
+      "imageSha256": "7e0a6f544f444f8b55c20a97b5197790bec19d4878e1fc4fc83a3b30b7f201d2",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 27547,
+      "working_demand_lower_bound": 28619,
+      "working_reservation_bytes": 16777216,
+      "outcome": "completed",
+      "output_bytes": 31,
+      "output_sha256": "daaf63cc1644fd63dd52531ae45386d056c4167f6488d789538c54e8a918560e",
+      "statistics": {
+        "transitions": 25,
+        "direct_clauses": 0,
+        "one_shot_captures": 0,
+        "multi_templates": 3,
+        "branch_activations": 6,
+        "storage": {
+          "added_nodes": 54,
+          "copied_blob_bytes": 55,
+          "traced_nodes": 166,
+          "traced_edges": 297,
+          "swept_slots": 378
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "source-state-local.bpi2",
+      "imageBytes": 761,
+      "imageSha256": "1cd065e40d86a71fd053104bc6b70f061fe83e53b14f5640e80b4632613e0c79",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 58429,
+      "working_demand_lower_bound": 59613,
+      "working_reservation_bytes": 16777216,
+      "outcome": "completed",
+      "output_bytes": 39,
+      "output_sha256": "483cc00bc132ac9437d2a3b837598b82daeda4e2a23cd54113b31556412ba74e",
+      "statistics": {
+        "transitions": 30,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 68,
+          "copied_blob_bytes": 26,
+          "traced_nodes": 347,
+          "traced_edges": 719,
+          "swept_slots": 610
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "source-state-shared.bpi2",
+      "imageBytes": 736,
+      "imageSha256": "bf00e07c54d87bc4b91890ad401ec36a98d7b9cfda74e22b3ec809412e4178d5",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 53285,
+      "working_demand_lower_bound": 54389,
+      "working_reservation_bytes": 16777216,
+      "outcome": "completed",
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad",
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "source-reentrant.bpi2",
+      "imageBytes": 634,
+      "imageSha256": "3aaf0a2b8c9f727220f431301a1e227ee7381c8724e643e3d5c5eb859bdd62c3",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 57327,
+      "working_demand_lower_bound": 58383,
+      "working_reservation_bytes": 16777216,
+      "outcome": "yielded",
+      "output_bytes": 214,
+      "output_sha256": "034a0888ac9932625839cc6e23a3f3c21c922fd893eddf3066f8ca52613d8cf8",
+      "statistics": {
+        "transitions": 10,
+        "direct_clauses": 0,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 1,
+        "storage": {
+          "added_nodes": 30,
+          "copied_blob_bytes": 0,
+          "traced_nodes": 105,
+          "traced_edges": 221,
+          "swept_slots": 123
+        },
+        "snapshot": {
+          "nodes": 14,
+          "edges": 33,
+          "blobs": 0,
+          "remapped_nodes": 14,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "source-cloned.bpi2",
+      "imageBytes": 668,
+      "imageSha256": "0539292df365d55e4c0e928084fb0242989343fb75f12413c3a5a09ce9c6bbfe",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 60799,
+      "working_demand_lower_bound": 61855,
+      "working_reservation_bytes": 16777216,
+      "outcome": "yielded",
+      "output_bytes": 214,
+      "output_sha256": "43a6db5c52c480775b64a9b00b0def70a3a0e6e909b68cbfe2917cd5672d2ff9",
+      "statistics": {
+        "transitions": 11,
+        "direct_clauses": 0,
+        "one_shot_captures": 1,
+        "multi_templates": 1,
+        "branch_activations": 1,
+        "storage": {
+          "added_nodes": 32,
+          "copied_blob_bytes": 0,
+          "traced_nodes": 117,
+          "traced_edges": 246,
+          "swept_slots": 137
+        },
+        "snapshot": {
+          "nodes": 14,
+          "edges": 33,
+          "blobs": 0,
+          "remapped_nodes": 14,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "source-queens-dfs.bpi2",
+      "imageBytes": 2298,
+      "imageSha256": "95ea6e11a02faa9ff9d49a2851a6cca5c05ee8a94fc40c76e26f3b68aff8fc5a",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 157162,
+      "working_demand_lower_bound": 158746,
+      "working_reservation_bytes": 16777216,
+      "outcome": "yielded",
+      "output_bytes": 425,
+      "output_sha256": "fcc2a683365d888735c2c97fca6df89d4979401bfcabe40eecbb51f5e1b613ea",
+      "statistics": {
+        "transitions": 42,
+        "direct_clauses": 0,
+        "one_shot_captures": 0,
+        "multi_templates": 2,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 96,
+          "copied_blob_bytes": 2,
+          "traced_nodes": 829,
+          "traced_edges": 2001,
+          "swept_slots": 1003
+        },
+        "snapshot": {
+          "nodes": 30,
+          "edges": 78,
+          "blobs": 2,
+          "remapped_nodes": 30,
+          "stored_payload_bytes": 2,
+          "interning_hash_bytes": 3,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "source-queens-bfs.bpi2",
+      "imageBytes": 2298,
+      "imageSha256": "1b7a38eab653f06a70f4a8b945c2b86cdd6e2551040068c7a67d5be323091483",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 157618,
+      "working_demand_lower_bound": 159250,
+      "working_reservation_bytes": 16777216,
+      "outcome": "yielded",
+      "output_bytes": 456,
+      "output_sha256": "bbcadbcc8a756f3093e6972fa324d7d1e1cb56fc057db0eddcf80ac2f8497078",
+      "statistics": {
+        "transitions": 54,
+        "direct_clauses": 0,
+        "one_shot_captures": 0,
+        "multi_templates": 3,
+        "branch_activations": 3,
+        "storage": {
+          "added_nodes": 125,
+          "copied_blob_bytes": 2,
+          "traced_nodes": 1140,
+          "traced_edges": 2748,
+          "swept_slots": 1420
+        },
+        "snapshot": {
+          "nodes": 31,
+          "edges": 80,
+          "blobs": 2,
+          "remapped_nodes": 31,
+          "stored_payload_bytes": 2,
+          "interning_hash_bytes": 3,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "source-scheduler.bpi2",
+      "imageBytes": 1437,
+      "imageSha256": "c548877e4d12ab5b6d747b41bcc793bbb9e23edfdeb5a6868fb30a85d58a663f",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 111700,
+      "working_demand_lower_bound": 113044,
+      "working_reservation_bytes": 16777216,
+      "outcome": "yielded",
+      "output_bytes": 300,
+      "output_sha256": "2797dad14367ca22f4528c9145d709bcf16779c9b0a58f5da019045675460f29",
+      "statistics": {
+        "transitions": 26,
+        "direct_clauses": 2,
+        "one_shot_captures": 2,
+        "multi_templates": 0,
+        "branch_activations": 0,
+        "storage": {
+          "added_nodes": 65,
+          "copied_blob_bytes": 28,
+          "traced_nodes": 428,
+          "traced_edges": 1102,
+          "swept_slots": 560
+        },
+        "snapshot": {
+          "nodes": 21,
+          "edges": 56,
+          "blobs": 2,
+          "remapped_nodes": 21,
+          "stored_payload_bytes": 18,
+          "interning_hash_bytes": 35,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "source-recursive.bpi2",
+      "imageBytes": 262,
+      "imageSha256": "f1f1d7d8e636e1fac6aa6cd63fb7a19c272bd562a1a71c7e47fcb5559cf3dfdd",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 16953,
+      "working_demand_lower_bound": 17385,
+      "working_reservation_bytes": 16777216,
+      "outcome": "completed",
+      "output_bytes": 23,
+      "output_sha256": "9aff0c595ee29d41653ddebad96ae0c0444f4876833c75af53fc6ca3ed9866fc",
+      "statistics": {
+        "transitions": 20003,
+        "direct_clauses": 0,
+        "one_shot_captures": 0,
+        "multi_templates": 0,
+        "branch_activations": 0,
+        "storage": {
+          "added_nodes": 20003,
+          "copied_blob_bytes": 0,
+          "traced_nodes": 20002,
+          "traced_edges": 20002,
+          "swept_slots": 40004
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "economy-1.bpi2",
+      "imageBytes": 271,
+      "imageSha256": "f340e9b6ff985dc371771e467e084ff968aaeac0e7b3baaaf013632b1e5c010c",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 19407,
+      "working_demand_lower_bound": 19935,
+      "working_reservation_bytes": 16777216,
+      "outcome": "completed",
+      "output_bytes": 30,
+      "output_sha256": "7ea2ec36ab049fbf9074ecadc641b535f200dc020a99d3b90b0444210a366332",
+      "statistics": {
+        "transitions": 6,
+        "direct_clauses": 1,
+        "one_shot_captures": 0,
+        "multi_templates": 0,
+        "branch_activations": 0,
+        "storage": {
+          "added_nodes": 11,
+          "copied_blob_bytes": 0,
+          "traced_nodes": 13,
+          "traced_edges": 18,
+          "swept_slots": 35
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "economy-8.bpi2",
+      "imageBytes": 652,
+      "imageSha256": "0472775a7a209aed62e51e683a124387e081ce87887ce73a1ea0a86b6c65e461",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 27333,
+      "working_demand_lower_bound": 27957,
+      "working_reservation_bytes": 16777216,
+      "outcome": "completed",
+      "output_bytes": 30,
+      "output_sha256": "9ab5609558b6a8c995f44755fe5455df4df6aefc5f718bdb29ef89c61a8c5472",
+      "statistics": {
+        "transitions": 41,
+        "direct_clauses": 8,
+        "one_shot_captures": 0,
+        "multi_templates": 0,
+        "branch_activations": 0,
+        "storage": {
+          "added_nodes": 81,
+          "copied_blob_bytes": 0,
+          "traced_nodes": 104,
+          "traced_edges": 144,
+          "swept_slots": 280
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    },
+    {
+      "file": "economy-64.bpi2",
+      "imageBytes": 8971,
+      "imageSha256": "a213fc7c06366986f728a4e95471e116f55a906b797b571237bb5b04b2b76df6",
+      "platform": "aarch64",
+      "pointer_bytes": 8,
+      "peak_working_payload_bytes": 218915,
+      "working_demand_lower_bound": 219539,
+      "working_reservation_bytes": 16777216,
+      "outcome": "completed",
+      "output_bytes": 30,
+      "output_sha256": "690bd37ca81b1f51cff3fee4bb3a2d0b8ddab7f918b33a1281ff75a5a04bba34",
+      "statistics": {
+        "transitions": 321,
+        "direct_clauses": 64,
+        "one_shot_captures": 0,
+        "multi_templates": 0,
+        "branch_activations": 0,
+        "storage": {
+          "added_nodes": 641,
+          "copied_blob_bytes": 0,
+          "traced_nodes": 832,
+          "traced_edges": 1152,
+          "swept_slots": 2240
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      }
+    }
+  ]
+}
