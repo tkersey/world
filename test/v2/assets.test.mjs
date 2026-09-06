@@ -83,9 +83,11 @@ test('a clean source claim cannot substitute receipt-controlled files for its Gi
   const head = git('rev-parse', 'HEAD').toString().trim(), tree = git('rev-parse', 'HEAD^{tree}').toString().trim();
   const files = [];
   for (const row of git('ls-tree', '-r', '--full-tree', '-z', head).toString().split('\0').filter(Boolean)) {
+    const path = row.slice(row.indexOf('\t') + 1);
+    if (path === '.learnings.jsonl' || path.startsWith('.ledger/')) continue;
     const match = /^(100644|100755) blob ([a-f0-9]{40})\t(.+)$/.exec(row);
     assert.ok(match);
-    if (!match[3].startsWith('.ledger/')) files.push({ name: match[3], sha256: sha256(git('cat-file', 'blob', match[2])) });
+    files.push({ name: match[3], sha256: sha256(git('cat-file', 'blob', match[2])) });
   }
   files.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   const identity = { git: { head, tree, dirty: false }, files, filesSha256: sha256(json(files)) };
