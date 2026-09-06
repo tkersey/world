@@ -16,11 +16,11 @@ const kernel = await readFile(kernelPath);
 assert.equal(sha256(kernel), freeze.kernelSha256, 'kernel changed: author another unrelated consumer after a new freeze');
 await mkdir(output, { recursive: true });
 const scratch = await mkdtemp(join(output, 'consumer-'));
-await cp(join(world, 'test/v2/external/survey'), join(scratch, 'survey'), { recursive: true });
+await cp(join(world, 'test/v2/external/checksum'), join(scratch, 'checksum'), { recursive: true });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
 function compile(source) {
   const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
-    { cwd: join(scratch, 'survey'), timeout: 180000, maxBuffer: 16 << 20 });
+    { cwd: join(scratch, 'checksum'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
 }
@@ -44,17 +44,21 @@ async function compare(input, mode) {
   records.push({ producer, input: Buffer.from(encoded).toString('base64'), output: Buffer.from(bytes).toString('base64') });
   return { ...decodeOutcome(bytes), bytes };
 }
-const point = (x, y) => { const bytes = Buffer.alloc(16); bytes.writeBigInt64LE(x, 0); bytes.writeBigInt64LE(y, 8); return bytes; };
+function expected(bytes) {
+  const checksum = bytes.reduce((value, byte) => value ^ (BigInt(byte) ^ 165n), 17n);
+  const value = Buffer.alloc(8); value.writeBigUInt64LE(checksum);
+  return { kind: 'Completed', value: [...value], trace: bytes.map(() => ({ kind: 'Yielded' })) };
+}
 try {
-  for (const [x, y] of [[4n, 9n], [-9n, 6n], [0n, 0n], [(1n << 63n) - 1n, 0n]]) {
-    const initialArgs = point(x, y), oracle = execute(source, [...initialArgs]);
-    const overflow = x === (1n << 63n) - 1n;
-    assert.equal(oracle.kind, overflow ? 'Failed' : 'Completed');
-    assert.deepEqual(oracle.trace, overflow ? [] : [{ kind: 'Yielded' }]);
-    assert.deepEqual(oracle.value, overflow ? [] : [...point(x + 20n, y - 6n)]);
+  for (const bytes of [[], [0], [1, 2, 3], [255, 128, 0, 127], [7, 7, 9, 9, 17, 17, 255, 255]]) {
+    const initialArgs = Buffer.from([bytes.length, ...bytes]), oracle = execute(source, [...initialArgs]);
+    const wanted = expected(bytes);
+    assert.equal(oracle.kind, wanted.kind);
+    assert.deepEqual(oracle.trace, wanted.trace);
+    assert.deepEqual(oracle.value, wanted.value);
     const boundaries = [];
     let input = { image, initialArgs }, terminal;
-    for (let steps = 0; steps < 100; steps++) {
+    for (let steps = 0; steps < 1000; steps++) {
       const result = await compare(input, 'advance');
       if (result.kind !== 'Progressed') boundaries.push(result);
       if (['Completed', 'Failed'].includes(result.kind)) { terminal = result; break; }
@@ -73,11 +77,11 @@ try {
   }
 } finally { await peer.close(); }
 assert.equal(sha256(await readFile(kernelPath)), freeze.kernelSha256);
-await writeFile(join(output, 'survey.bpi2'), image);
-await writeFile(join(output, 'survey-source.json'), sourceBytes);
+await writeFile(join(output, 'checksum.bpi2'), image);
+await writeFile(join(output, 'checksum-source.json'), sourceBytes);
 await writeFile(join(output, 'external.json'), json({ format: 'world-v2-external-consumer/v1', freeze, checkedAt: new Date().toISOString(),
-  consumer: 'survey', consumerSourceSha256: sha256(await readFile(join(world, 'test/v2/external/survey/main.zig'))), imageSha256: sha256(image),
+  consumer: 'checksum', consumerSourceSha256: sha256(await readFile(join(world, 'test/v2/external/checksum/main.zig'))), imageSha256: sha256(image),
   imageBytes: image.length, sourceSha256: sha256(sourceBytes), kernelSha256: freeze.kernelSha256, nativeSha256: native ? sha256(await readFile(native)) : null,
   embeddings: native ? ['native', 'javascript', 'wasmtime'] : ['javascript', 'wasmtime'],
-  observations: ['new operation and handler compiled using only the public Boundary module', 'independent source semantics and signed-coordinate expectations agreed', 'fresh producers alternated through every advance boundary', 'run matched canonical advance records; signed overflow failed as authored'], records }));
-console.log(`post-freeze survey consumer: ${records.length} exact records under ${freeze.kernelSha256}`);
+  observations: ['new operation and handler compiled using only the public Boundary module', 'independent source semantics and raw-byte checksum expectations agreed', 'fresh producers alternated through every advance boundary', 'run matched canonical advance records; empty input, high bytes and pair cancellation agreed'], records }));
+console.log(`post-freeze checksum consumer: ${records.length} exact records under ${freeze.kernelSha256}`);

@@ -9,16 +9,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "ee3d0ffe21add860d8d4d350d3e270b1b2730aa95ac205d7106830da3f79fbf3",
+          "executableSha256": "3040480b98604f7c5b406f60c04774a2a9d2079e822175365a161d7517efeb93",
           "phaseMediansNs": {
             "initialization_ns": 166,
             "direct_clause_ns": 0,
-            "one_shot_capture_ns": 333,
+            "one_shot_capture_ns": 292,
             "multi_template_capture_ns": 0,
             "branch_creation_transition_ns": 0,
-            "execution_ns": 1543,
+            "execution_ns": 1458,
             "unwind_ns": 0,
-            "collection_ns": 1376,
+            "collection_ns": 1333,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 84
           },
@@ -58,16 +58,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "ee3d0ffe21add860d8d4d350d3e270b1b2730aa95ac205d7106830da3f79fbf3",
+          "executableSha256": "3040480b98604f7c5b406f60c04774a2a9d2079e822175365a161d7517efeb93",
           "phaseMediansNs": {
-            "initialization_ns": 167,
+            "initialization_ns": 208,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 0,
-            "multi_template_capture_ns": 1042,
-            "branch_creation_transition_ns": 4376,
-            "execution_ns": 5958,
+            "multi_template_capture_ns": 1125,
+            "branch_creation_transition_ns": 4751,
+            "execution_ns": 6500,
             "unwind_ns": 0,
-            "collection_ns": 7544,
+            "collection_ns": 8162,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 125
           },
@@ -107,16 +107,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "ee3d0ffe21add860d8d4d350d3e270b1b2730aa95ac205d7106830da3f79fbf3",
+          "executableSha256": "3040480b98604f7c5b406f60c04774a2a9d2079e822175365a161d7517efeb93",
           "phaseMediansNs": {
             "initialization_ns": 250,
-            "direct_clause_ns": 1083,
+            "direct_clause_ns": 1084,
             "one_shot_capture_ns": 0,
-            "multi_template_capture_ns": 334,
-            "branch_creation_transition_ns": 5042,
-            "execution_ns": 5374,
+            "multi_template_capture_ns": 375,
+            "branch_creation_transition_ns": 5084,
+            "execution_ns": 5500,
             "unwind_ns": 0,
-            "collection_ns": 14165,
+            "collection_ns": 14334,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 125
           },
@@ -152,20 +152,20 @@
     {
       "name": "shared-cells",
       "file": "source-state-shared.bpi2",
-      "imageSha256": "bf00e07c54d87bc4b91890ad401ec36a98d7b9cfda74e22b3ec809412e4178d5",
+      "imageSha256": "5cb8eee21525395c6d93caf0ed034d205239de1ca12a35f920351629f82bea47",
       "variants": [
         {
           "label": "after",
-          "executableSha256": "ee3d0ffe21add860d8d4d350d3e270b1b2730aa95ac205d7106830da3f79fbf3",
+          "executableSha256": "3040480b98604f7c5b406f60c04774a2a9d2079e822175365a161d7517efeb93",
           "phaseMediansNs": {
             "initialization_ns": 250,
-            "direct_clause_ns": 1124,
+            "direct_clause_ns": 1083,
             "one_shot_capture_ns": 0,
-            "multi_template_capture_ns": 375,
-            "branch_creation_transition_ns": 1792,
-            "execution_ns": 4712,
+            "multi_template_capture_ns": 333,
+            "branch_creation_transition_ns": 1708,
+            "execution_ns": 4583,
             "unwind_ns": 0,
-            "collection_ns": 10206,
+            "collection_ns": 9666,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 125
           },
@@ -205,17 +205,17 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "ee3d0ffe21add860d8d4d350d3e270b1b2730aa95ac205d7106830da3f79fbf3",
+          "executableSha256": "3040480b98604f7c5b406f60c04774a2a9d2079e822175365a161d7517efeb93",
           "phaseMediansNs": {
-            "initialization_ns": 667,
+            "initialization_ns": 709,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 0,
-            "multi_template_capture_ns": 916,
-            "branch_creation_transition_ns": 4500,
-            "execution_ns": 19624,
+            "multi_template_capture_ns": 1000,
+            "branch_creation_transition_ns": 4667,
+            "execution_ns": 20295,
             "unwind_ns": 0,
-            "collection_ns": 39247,
-            "snapshot_validation_encoding_ns": 45041,
+            "collection_ns": 39873,
+            "snapshot_validation_encoding_ns": 281667,
             "outcome_encoding_ns": 208
           },
           "statistics": {
@@ -241,7 +241,7 @@
               "interning_comparisons": 0
             }
           },
-          "peakWorkingBytes": 36404,
+          "peakWorkingBytes": 79232,
           "outputBytes": 425,
           "outputSha256": "fcc2a683365d888735c2c97fca6df89d4979401bfcabe40eecbb51f5e1b613ea"
         }
@@ -254,17 +254,17 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "ee3d0ffe21add860d8d4d350d3e270b1b2730aa95ac205d7106830da3f79fbf3",
+          "executableSha256": "3040480b98604f7c5b406f60c04774a2a9d2079e822175365a161d7517efeb93",
           "phaseMediansNs": {
             "initialization_ns": 500,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 0,
             "branch_creation_transition_ns": 0,
-            "execution_ns": 3168,
-            "unwind_ns": 2460,
-            "collection_ns": 9413,
-            "snapshot_validation_encoding_ns": 16708,
+            "execution_ns": 3208,
+            "unwind_ns": 2500,
+            "collection_ns": 9375,
+            "snapshot_validation_encoding_ns": 28125,
             "outcome_encoding_ns": 167
           },
           "statistics": {
@@ -303,16 +303,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "ee3d0ffe21add860d8d4d350d3e270b1b2730aa95ac205d7106830da3f79fbf3",
+          "executableSha256": "3040480b98604f7c5b406f60c04774a2a9d2079e822175365a161d7517efeb93",
           "phaseMediansNs": {
             "initialization_ns": 167,
-            "direct_clause_ns": 11087,
+            "direct_clause_ns": 11337,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 0,
             "branch_creation_transition_ns": 0,
-            "execution_ns": 75914,
+            "execution_ns": 77616,
             "unwind_ns": 0,
-            "collection_ns": 102670,
+            "collection_ns": 103794,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 125
           },

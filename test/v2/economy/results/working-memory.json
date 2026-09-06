@@ -3,7 +3,7 @@
   "method": "same native pointer width and inputs; v2 exact peak simultaneously live allocator payload includes PKI2 decoding, admission, execution, snapshot and PKO2 encoding; allocator metadata demand is separately a lower bound; v1 mandatory ValidationWorkspace is an unconditional working-allocation lower bound, excluding its additionally measured buffer demands; unused backing reservations are reported separately",
   "probes": {
     "v1Sha256": "2a8a371c255ceb343f3d6f6d0edf9c3575664bbefe6cb5bc99b21071e6f56ee9",
-    "v2Sha256": "7322a7466678888b3489d896f4f005f28a162da7d64de0abd50594cfc834be87"
+    "v2Sha256": "609dea7d887e6087225c3b3c94a1f814b9087842b058b195e956c93f40457229"
   },
   "workloads": [
     {
@@ -32,8 +32,8 @@
       "after": {
         "platform": "aarch64",
         "pointer_bytes": 8,
-        "peak_working_payload_bytes": 27886,
-        "working_demand_lower_bound": 28462,
+        "peak_working_payload_bytes": 30550,
+        "working_demand_lower_bound": 31126,
         "working_reservation_bytes": 16777216,
         "outcome": "completed",
         "output_bytes": 64,
@@ -62,7 +62,7 @@
           }
         }
       },
-      "ratioToV1MandatoryWorkspace": 0.10667615375198923
+      "ratioToV1MandatoryWorkspace": 0.11686711959848206
     },
     {
       "name": "collections",
@@ -90,8 +90,8 @@
       "after": {
         "platform": "aarch64",
         "pointer_bytes": 8,
-        "peak_working_payload_bytes": 75427,
-        "working_demand_lower_bound": 77923,
+        "peak_working_payload_bytes": 78703,
+        "working_demand_lower_bound": 81199,
         "working_reservation_bytes": 16777216,
         "outcome": "completed",
         "output_bytes": 132,
@@ -120,7 +120,7 @@
           }
         }
       },
-      "ratioToV1MandatoryWorkspace": 0.28854128412290364
+      "ratioToV1MandatoryWorkspace": 0.3010734177989962
     },
     {
       "name": "portable-values",
@@ -206,8 +206,8 @@
       "after": {
         "platform": "aarch64",
         "pointer_bytes": 8,
-        "peak_working_payload_bytes": 14335,
-        "working_demand_lower_bound": 14767,
+        "peak_working_payload_bytes": 14361,
+        "working_demand_lower_bound": 14793,
         "working_reservation_bytes": 16777216,
         "outcome": "completed",
         "output_bytes": 26,
@@ -236,7 +236,7 @@
           }
         }
       },
-      "ratioToV1MandatoryWorkspace": 0.054837648426980044
+      "ratioToV1MandatoryWorkspace": 0.054937109805361733
     },
     {
       "name": "recursion-32",
@@ -264,8 +264,8 @@
       "after": {
         "platform": "aarch64",
         "pointer_bytes": 8,
-        "peak_working_payload_bytes": 14335,
-        "working_demand_lower_bound": 14829,
+        "peak_working_payload_bytes": 14361,
+        "working_demand_lower_bound": 14855,
         "working_reservation_bytes": 16777216,
         "outcome": "completed",
         "output_bytes": 26,
@@ -294,7 +294,7 @@
           }
         }
       },
-      "ratioToV1MandatoryWorkspace": 0.054837648426980044
+      "ratioToV1MandatoryWorkspace": 0.054937109805361733
     },
     {
       "name": "residual",
@@ -322,8 +322,8 @@
       "after": {
         "platform": "aarch64",
         "pointer_bytes": 8,
-        "peak_working_payload_bytes": 19403,
-        "working_demand_lower_bound": 20507,
+        "peak_working_payload_bytes": 19015,
+        "working_demand_lower_bound": 20119,
         "working_reservation_bytes": 16777216,
         "outcome": "requested",
         "output_bytes": 326,
@@ -352,7 +352,7 @@
           }
         }
       },
-      "ratioToV1MandatoryWorkspace": 0.07422496633614886
+      "ratioToV1MandatoryWorkspace": 0.07274069653568369
     },
     {
       "name": "yield",
@@ -380,8 +380,8 @@
       "after": {
         "platform": "aarch64",
         "pointer_bytes": 8,
-        "peak_working_payload_bytes": 5195,
-        "working_demand_lower_bound": 5819,
+        "peak_working_payload_bytes": 11903,
+        "working_demand_lower_bound": 12623,
         "working_reservation_bytes": 16777216,
         "outcome": "yielded",
         "output_bytes": 99,
@@ -410,7 +410,7 @@
           }
         }
       },
-      "ratioToV1MandatoryWorkspace": 0.01987314848818705
+      "ratioToV1MandatoryWorkspace": 0.04553418411066226
     }
   ],
   "features": [
@@ -420,8 +420,8 @@
       "imageSha256": "36b5e425ce4b8cd77e38559045474768fe3d918203f5274d1a26264d19ecbfee",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 20675,
-      "working_demand_lower_bound": 21115,
+      "peak_working_payload_bytes": 20321,
+      "working_demand_lower_bound": 20761,
       "working_reservation_bytes": 16777216,
       "outcome": "completed",
       "output_bytes": 30,
@@ -456,8 +456,8 @@
       "imageSha256": "7e0a6f544f444f8b55c20a97b5197790bec19d4878e1fc4fc83a3b30b7f201d2",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 27547,
-      "working_demand_lower_bound": 28619,
+      "peak_working_payload_bytes": 26387,
+      "working_demand_lower_bound": 27459,
       "working_reservation_bytes": 16777216,
       "outcome": "completed",
       "output_bytes": 31,
@@ -492,8 +492,8 @@
       "imageSha256": "1cd065e40d86a71fd053104bc6b70f061fe83e53b14f5640e80b4632613e0c79",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 58429,
-      "working_demand_lower_bound": 59613,
+      "peak_working_payload_bytes": 56851,
+      "working_demand_lower_bound": 58035,
       "working_reservation_bytes": 16777216,
       "outcome": "completed",
       "output_bytes": 39,
@@ -524,12 +524,12 @@
     },
     {
       "file": "source-state-shared.bpi2",
-      "imageBytes": 736,
-      "imageSha256": "bf00e07c54d87bc4b91890ad401ec36a98d7b9cfda74e22b3ec809412e4178d5",
+      "imageBytes": 737,
+      "imageSha256": "5cb8eee21525395c6d93caf0ed034d205239de1ca12a35f920351629f82bea47",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 53285,
-      "working_demand_lower_bound": 54389,
+      "peak_working_payload_bytes": 52329,
+      "working_demand_lower_bound": 53433,
       "working_reservation_bytes": 16777216,
       "outcome": "completed",
       "output_bytes": 39,
@@ -564,8 +564,8 @@
       "imageSha256": "3aaf0a2b8c9f727220f431301a1e227ee7381c8724e643e3d5c5eb859bdd62c3",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 57327,
-      "working_demand_lower_bound": 58383,
+      "peak_working_payload_bytes": 529731,
+      "working_demand_lower_bound": 530979,
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 214,
@@ -600,8 +600,8 @@
       "imageSha256": "0539292df365d55e4c0e928084fb0242989343fb75f12413c3a5a09ce9c6bbfe",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 60799,
-      "working_demand_lower_bound": 61855,
+      "peak_working_payload_bytes": 551031,
+      "working_demand_lower_bound": 552279,
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 214,
@@ -636,8 +636,8 @@
       "imageSha256": "95ea6e11a02faa9ff9d49a2851a6cca5c05ee8a94fc40c76e26f3b68aff8fc5a",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 157162,
-      "working_demand_lower_bound": 158746,
+      "peak_working_payload_bytes": 199990,
+      "working_demand_lower_bound": 201622,
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 425,
@@ -672,8 +672,8 @@
       "imageSha256": "1b7a38eab653f06a70f4a8b945c2b86cdd6e2551040068c7a67d5be323091483",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 157618,
-      "working_demand_lower_bound": 159250,
+      "peak_working_payload_bytes": 200446,
+      "working_demand_lower_bound": 202126,
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 456,
@@ -708,8 +708,8 @@
       "imageSha256": "c548877e4d12ab5b6d747b41bcc793bbb9e23edfdeb5a6868fb30a85d58a663f",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 111700,
-      "working_demand_lower_bound": 113044,
+      "peak_working_payload_bytes": 150638,
+      "working_demand_lower_bound": 152030,
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 300,
@@ -744,8 +744,8 @@
       "imageSha256": "f1f1d7d8e636e1fac6aa6cd63fb7a19c272bd562a1a71c7e47fcb5559cf3dfdd",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 16953,
-      "working_demand_lower_bound": 17385,
+      "peak_working_payload_bytes": 17295,
+      "working_demand_lower_bound": 17727,
       "working_reservation_bytes": 16777216,
       "outcome": "completed",
       "output_bytes": 23,
@@ -780,8 +780,8 @@
       "imageSha256": "f340e9b6ff985dc371771e467e084ff968aaeac0e7b3baaaf013632b1e5c010c",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 19407,
-      "working_demand_lower_bound": 19935,
+      "peak_working_payload_bytes": 19153,
+      "working_demand_lower_bound": 19681,
       "working_reservation_bytes": 16777216,
       "outcome": "completed",
       "output_bytes": 30,

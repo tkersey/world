@@ -1,6 +1,6 @@
 .{
-    .name = .survey_consumer,
-    .fingerprint = 0x2cac7100aece03a8,
+    .name = .checksum_consumer,
+    .fingerprint = 0x8bd79f0456fdf1cd,
     .version = "0.0.0",
     .dependencies = .{ .boundary = .{ .path = "../boundary" } },
     .paths = .{ "build.zig", "build.zig.zon", "main.zig", "README.md" },

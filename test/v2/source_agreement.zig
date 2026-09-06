@@ -4,6 +4,79 @@ const boundary = @import("boundary");
 const data = @import("boundary_data_v2");
 const world = @import("world").process_v2;
 
+test "saved same-family capability substitution cannot escape through a helper return" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |through_pair| {
+        var b = boundary.source.Builder.init(allocator);
+        defer b.deinit();
+        const unit = try b.scalar(void);
+        const effect = try b.effect(.{ .identity = "saved-capability", .payload = unit, .result = unit, .external = false });
+        const cap = try b.schema(.{ .internal = .{ .capability = effect } });
+        const pair = try b.schema(.{ .product = &.{ cap, cap } });
+        var handlers: [2]data.program.Id = undefined;
+        for (&handlers, [_]data.program.Id{ unit, cap }) |*handler, result| {
+            const returns = try b.declare(&.{result}, result, &.{}, &.{});
+            try b.define(returns, try b.pure(try b.reference(b.parameter(returns, 0))));
+            const token = try b.schema(.{ .internal = .{ .resumption = .{ .effect = effect, .input = unit, .answer = result, .capture_bound = &.{ unit, cap, pair }, .handled = &.{effect}, .mode = .deep, .use = .linear } } });
+            const clause = try b.declare(&.{ unit, token }, result, &.{}, &.{});
+            try b.define(clause, try b.term(.{ .resume_value = .{ .resumption = try b.reference(b.parameter(clause, 1)), .argument = try b.constant(void, {}) } }));
+            handler.* = try b.handler(.{ .mode = .deep, .input = result, .answer = result, .return_function = returns, .clauses = &.{.{ .effect = effect, .function = clause, .resumption = token }} });
+        }
+        const inner = try b.declare(&.{ cap, cap }, cap, &.{}, &.{});
+        const fresh = try b.reference(b.parameter(inner, 0));
+        const older = try b.reference(b.parameter(inner, 1));
+        const body = if (through_pair) blk: {
+            const helper = try b.declare(&.{ cap, cap }, pair, &.{}, &.{});
+            try b.define(helper, try b.pure(try b.primitive(pair, .product, &.{ try b.reference(b.parameter(helper, 0)), try b.reference(b.parameter(helper, 1)) }, 0)));
+            const answer = try b.variable(pair);
+            break :blk try b.bind(answer, try b.term(.{ .call = .{ .function = helper, .arguments = &.{ fresh, older } } }), try b.pure(try b.primitive(cap, .field, &.{try b.reference(answer)}, 1)));
+        } else try b.pure(older);
+        try b.define(inner, body);
+        const inner_type = try b.schema(.{ .internal = .{ .computation = .{ .parameters = &.{ cap, cap }, .result = cap } } });
+        const outer = try b.declare(&.{cap}, unit, &.{effect}, &.{});
+        const answer = try b.variable(cap);
+        const installed = try b.term(.{ .handle = .{ .handler = handlers[1], .body = try b.lambda(inner, inner_type), .arguments = &.{try b.reference(b.parameter(outer, 0))} } });
+        try b.define(outer, try b.bind(answer, installed, try b.term(.{ .perform = .{ .effect = effect, .capability = try b.reference(answer), .payload = try b.constant(void, {}) } })));
+        const outer_type = try b.schema(.{ .internal = .{ .computation = .{ .parameters = &.{cap}, .result = unit, .effects = &.{effect} } } });
+        const main = try b.declare(&.{}, unit, &.{}, &.{});
+        try b.define(main, try b.term(.{ .handle = .{ .handler = handlers[0], .body = try b.lambda(outer, outer_type) } }));
+        var compiled = try boundary.program.compile(allocator, b.module(main, unit));
+        defer compiled.deinit();
+        var step = try world.advance(allocator, .{ .program = .{ .records = compiled.program }, .instance = .{ .initial_args = &.{} } });
+        defer step.deinit();
+        var rejected: usize = 0;
+        while (step.record != .completed) {
+            const bytes = switch (step.record) {
+                .progressed => |bytes| bytes,
+                else => return error.UnexpectedOutcome,
+            };
+            var snapshot = try data.snapshot.decodeGraph(allocator, bytes);
+            defer snapshot.deinit();
+            const current = snapshot.state.roots.current.?;
+            const control = snapshot.state.nodes[@intCast(current.id)].control;
+            if (control.arguments.len == 2 and control.arguments[0].body == .reference and control.arguments[1].body == .reference and control.arguments[0].schema == control.arguments[1].schema and control.arguments[0].body.reference.id != control.arguments[1].body.reference.id) {
+                const shape = compiled.program.schemas[@intCast(control.arguments[0].schema)];
+                if (shape == .internal and shape.internal == .capability) {
+                    const forged = try allocator.dupe(data.graph.Node, snapshot.state.nodes);
+                    defer allocator.free(forged);
+                    const arguments = try allocator.dupe(data.graph.Value, control.arguments);
+                    defer allocator.free(arguments);
+                    arguments[1] = arguments[0];
+                    forged[@intCast(current.id)].control.arguments = arguments;
+                    var invalid = snapshot.state;
+                    invalid.nodes = forged;
+                    try std.testing.expectError(error.InvalidScope, data.state_admission.validate(allocator, compiled.program, invalid));
+                    rejected += 1;
+                }
+            }
+            const successor = try world.advance(allocator, .{ .program = .{ .records = compiled.program }, .instance = .{ .snapshot = bytes } });
+            step.deinit();
+            step = successor;
+        }
+        try std.testing.expect(rejected >= if (through_pair) @as(usize, 2) else 1);
+    }
+}
+
 test "one eight and sixty-four actual installations use one handler and zero captures" {
     for ([_]usize{ 1, 8, 64 }) |count| {
         var b = boundary.computation.Builder.init(std.testing.allocator);

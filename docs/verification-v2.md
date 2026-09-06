@@ -42,7 +42,7 @@ records exact target inputs/outputs in `world-v2-conformance.json` and `.bin`.
 | H22 | Native `tests.zig` and transfer harnesses compare `advance` and `run` at the same observable boundary. |
 | H23 | Native failure-injection tests plus `capacity.mjs`: admission, capture/branch creation, unwinding, image emission and output encoding retain unchanged retry inputs. |
 | H24 | Recursive/yielding source and native workloads reach externally selected lengths; dead control slots are reused without semantic fuel. |
-| H25 / O03 | `test/v2/external/survey` was authored after `external/freeze.json`: its new translation operation/handler passed 52 exact records under the recorded kernel digest. |
+| H25 / O03 | `test/v2/external/checksum` was authored after `external/freeze.json`: its new byte-mixing operation and handler passed 120 exact records under the recorded kernel digest. |
 | H26 | `bpi1_agreement.mjs`: pure lifted data agrees with the frozen public v1 interpreter; no v1 evaluator is in the v2 package. |
 
 The integrated solver explores columns 1–4, reports `[2,4,1,3]` then
@@ -58,6 +58,12 @@ catalog references, registers and captures. Source tests cover hidden effects,
 answers, representations, use/capture bounds and borrowed-region escape.
 Program-relative State admission checks the complete ownership graph, region
 topology, blobs, cleanup status, pending contracts and control attachments.
+Compiler regressions also distinguish fresh capabilities from older values of
+the same family through helpers, product fields, sequence lookups and writes to
+handler state. Saved-State substitutions reject before an outward return;
+selecting an older field from a helper's temporary product remains valid.
+Owned package tests distinguish private captured regions from the implicit
+handler and region context borrowed by a nested installation.
 
 `emit_rejections.zig` starts from valid source-derived states before changing
 pending contracts, identities, blob types, delimiters, local aliases or token
