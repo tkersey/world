@@ -16,13 +16,13 @@ const kernel = await readFile(kernelPath);
 assert.equal(sha256(kernel), freeze.kernelSha256, 'kernel changed: author another unrelated consumer after a new freeze');
 await mkdir(output, { recursive: true });
 const scratch = await mkdtemp(join(output, 'consumer-'));
-await cp(join(world, 'test/v2/external/bitmask'), join(scratch, 'bitmask'), {
+await cp(join(world, 'test/v2/external/clamp'), join(scratch, 'clamp'), {
   recursive: true,
 });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
 function compile(source) {
   const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
-    { cwd: join(scratch, 'bitmask'), timeout: 180000, maxBuffer: 16 << 20 });
+    { cwd: join(scratch, 'clamp'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
 }
@@ -46,8 +46,12 @@ async function compare(input, mode) {
   records.push({ producer, input: Buffer.from(encoded).toString('base64'), output: Buffer.from(bytes).toString('base64') });
   return { ...decodeOutcome(bytes), bytes };
 }
-function expected([initial, firstMask, secondMask]) {
-  const first = initial ^ firstMask, second = first ^ secondMask;
+function expected([initial, firstA, firstB, secondA, secondB]) {
+  const clamp = (value, a, b) => {
+    const ordered = [value, a, b].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+    return ordered[1];
+  };
+  const first = clamp(initial, firstA, firstB), second = clamp(first, secondA, secondB);
   const value = Buffer.alloc(16);
   value.writeBigUInt64LE(first, 0);
   value.writeBigUInt64LE(second, 8);
@@ -56,14 +60,14 @@ function expected([initial, firstMask, secondMask]) {
 try {
   const maximum = (1n << 64n) - 1n, highBit = 1n << 63n;
   for (const values of [
-    [0n, 0n, 0n],
-    [5n, 3n, 3n],
-    [0xaaaaaaaaaaaaaaaan, 0x5555555555555555n, maximum],
-    [highBit, 1n, highBit],
-    [maximum, maximum, highBit],
-    [123456789n, 987654321n, 0n],
+    [0n, 0n, 0n, maximum, 0n],
+    [5n, 3n, 9n, 6n, 8n],
+    [42n, 0n, 10n, 10n, 0n],
+    [highBit, 0n, maximum, highBit + 1n, maximum],
+    [maximum, highBit, 0n, 7n, 1n],
+    [123456789n, 987654321n, 5n, maximum, maximum],
   ]) {
-    const initialArgs = Buffer.alloc(24);
+    const initialArgs = Buffer.alloc(40);
     values.forEach((value, index) => initialArgs.writeBigUInt64LE(value, index * 8));
     const oracle = execute(source, [...initialArgs]), wanted = expected(values);
     assert.equal(oracle.kind, wanted.kind);
@@ -90,22 +94,22 @@ try {
   }
 } finally { await peer.close(); }
 assert.equal(sha256(await readFile(kernelPath)), freeze.kernelSha256);
-await writeFile(join(output, 'bitmask.bpi2'), image);
-await writeFile(join(output, 'bitmask-source.json'), sourceBytes);
+await writeFile(join(output, 'clamp.bpi2'), image);
+await writeFile(join(output, 'clamp-source.json'), sourceBytes);
 await writeFile(join(output, 'external.json'), json({
   format: 'world-v2-external-consumer/v1', freeze, checkedAt: new Date().toISOString(),
-  consumer: 'bitmask',
-  consumerSourceSha256: sha256(await readFile(join(world, 'test/v2/external/bitmask/main.zig'))),
+  consumer: 'clamp',
+  consumerSourceSha256: sha256(await readFile(join(world, 'test/v2/external/clamp/main.zig'))),
   imageSha256: sha256(image), imageBytes: image.length, sourceSha256: sha256(sourceBytes),
   kernelSha256: freeze.kernelSha256, nativeSha256: native ? sha256(await readFile(native)) : null,
   embeddings: native ? ['native', 'javascript', 'wasmtime'] : ['javascript', 'wasmtime'],
   observations: [
     'new operation and deep handler compiled using only the public Boundary module',
-    'independent source semantics and unsigned bitmask expectations agreed',
+    'independent source semantics and unsigned median-of-three expectations agreed',
     'fresh producers alternated through every advance boundary',
-    'run matched advance records; chained masks retained both u64 results through yield',
-    'zero, full-width, alternating, high-bit and repeated masks preserved exact results',
+    'run matched advance records; chained clamps retained both u64 results through yield',
+    'zero, reversed, equal, full-width and high-bit bounds preserved exact results',
   ], records,
 }));
-console.log(`post-freeze bitmask consumer: ${records.length} exact records under ` +
+console.log(`post-freeze clamp consumer: ${records.length} exact records under ` +
   freeze.kernelSha256);

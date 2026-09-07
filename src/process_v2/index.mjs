@@ -1,23 +1,16 @@
 // Copyright (c) 2026 World contributors. MIT license.
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { inspectProcessKernelWasm, wasmRange } from "./wasm.mjs";
 import { encodeInput, decodeOutcome } from "./codec.mjs";
+import { readProcessKernelFile } from "./kernel_file.mjs";
 export { encodeInput, decodeOutcome, decodeRequest, encodeResult, validateValue } from "./codec.mjs";
 
 export const packageVersion = "5.0.0-dev.0";
 
 /** Load the bundled, manifest-bound kernel or an explicitly digest-bound file. */
-export async function loadProcessKernel({ kernelPath, expectedSha256 } = {}) {
-  if (kernelPath === undefined) {
-    const identity = JSON.parse(await readFile(new URL("../../world-runtime-identity.json", import.meta.url), "utf8"));
-    if (identity.format !== "world-runtime-identity/v2" || identity.version !== packageVersion ||
-        identity.kernel?.file !== "world-process-kernel-v2.wasm" || identity.abi !== 2) throw new Error("InvalidRuntimeIdentity");
-    if (expectedSha256 !== undefined && expectedSha256 !== identity.kernel.sha256) throw new Error("KernelIdentityMismatch");
-    expectedSha256 = identity.kernel.sha256;
-    kernelPath = new URL("../../world-process-kernel-v2.wasm", import.meta.url);
-  }
-  return admitProcessKernel(await readFile(kernelPath), { expectedSha256 });
+export async function loadProcessKernel(options) {
+  const selected = await readProcessKernelFile(options, packageVersion);
+  return admitProcessKernel(selected.bytes, { expectedSha256: selected.expectedSha256 });
 }
 
 export async function advance(input, options) { return (await loadProcessKernel(options)).advance(input); }

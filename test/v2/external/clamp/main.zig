@@ -6,43 +6,54 @@ const source = boundary.computation;
 fn program(b: *source.Builder) !source.Module {
     const unit = try b.scalar(void);
     const integer = try b.scalar(u64);
+    const boolean = try b.scalar(bool);
     const pair = try b.schema(.{ .product = &.{ integer, integer } });
-    const toggle = try b.effect(.{
-        .identity = "bitmask/toggle",
-        .payload = pair,
+    const triple = try b.schema(.{ .product = &.{ integer, integer, integer } });
+    const clamp = try b.effect(.{
+        .identity = "range/clamp",
+        .payload = triple,
         .result = integer,
         .external = false,
     });
-    const capability = try b.schema(.{ .internal = .{ .capability = toggle } });
+    const capability = try b.schema(.{ .internal = .{ .capability = clamp } });
     const token = try b.schema(.{ .internal = .{ .resumption = .{
-        .effect = toggle,
+        .effect = clamp,
         .input = integer,
         .answer = pair,
-        .capture_bound = &.{ unit, integer, pair, capability },
-        .handled = &.{toggle},
+        .capture_bound = &.{ unit, boolean, integer, pair, triple, capability },
+        .handled = &.{clamp},
         .mode = .deep,
         .use = .linear,
     } } });
     const returns = try b.declare(&.{pair}, pair, &.{}, &.{});
     try b.define(returns, try b.pure(try b.reference(b.parameter(returns, 0))));
-    const clause = try b.declare(&.{ pair, token }, pair, &.{}, &.{});
+    const clause = try b.declare(&.{ triple, token }, pair, &.{}, &.{});
     const payload = try b.reference(b.parameter(clause, 0));
-    const toggled = try b.primitive(integer, .integer_bit_xor, &.{
-        try b.primitive(integer, .field, &.{payload}, 0),
-        try b.primitive(integer, .field, &.{payload}, 1),
-    }, 0);
     try b.define(clause, try b.term(.{ .resume_value = .{
         .resumption = try b.reference(b.parameter(clause, 1)),
-        .argument = toggled,
+        .argument = try clampValue(b, integer, boolean, payload),
     } }));
     const handler = try b.handler(.{
         .mode = .deep,
         .input = pair,
         .answer = pair,
         .return_function = returns,
-        .clauses = &.{.{ .effect = toggle, .function = clause, .resumption = token }},
+        .clauses = &.{.{ .effect = clamp, .function = clause, .resumption = token }},
     });
-    return application(b, unit, integer, pair, toggle, capability, handler);
+    return application(b, unit, integer, pair, triple, clamp, capability, handler);
+}
+
+fn clampValue(b: *source.Builder, integer: u64, boolean: u64, payload: u64) !u64 {
+    const value = try b.primitive(integer, .field, &.{payload}, 0);
+    const first = try b.primitive(integer, .field, &.{payload}, 1);
+    const second = try b.primitive(integer, .field, &.{payload}, 2);
+    const ordered = try b.primitive(boolean, .less, &.{ first, second }, 0);
+    const lower = try b.primitive(integer, .select, &.{ ordered, first, second }, 0);
+    const upper = try b.primitive(integer, .select, &.{ ordered, second, first }, 0);
+    const below = try b.primitive(boolean, .less, &.{ value, lower }, 0);
+    const above = try b.primitive(boolean, .less, &.{ upper, value }, 0);
+    const bounded_above = try b.primitive(integer, .select, &.{ above, upper, value }, 0);
+    return b.primitive(integer, .select, &.{ below, lower, bounded_above }, 0);
 }
 
 fn application(
@@ -50,26 +61,31 @@ fn application(
     unit: u64,
     integer: u64,
     pair: u64,
-    toggle: u64,
+    triple: u64,
+    clamp: u64,
     capability: u64,
     handler: u64,
 ) !source.Module {
-    const body = try b.declare(&.{ capability, integer, integer, integer }, pair, &.{toggle}, &.{});
+    const parameters: []const u64 = &.{ capability, integer, integer, integer, integer, integer };
+    const body = try b.declare(parameters, pair, &.{clamp}, &.{});
     const first = try b.variable(integer);
     const second = try b.variable(integer);
     const request = try b.term(.{ .perform = .{
-        .effect = toggle,
+        .effect = clamp,
         .capability = try b.reference(b.parameter(body, 0)),
-        .payload = try b.primitive(pair, .product, &.{
+        .payload = try b.primitive(triple, .product, &.{
             try b.reference(b.parameter(body, 1)),
             try b.reference(b.parameter(body, 2)),
+            try b.reference(b.parameter(body, 3)),
         }, 0),
     } });
     const next = try b.term(.{ .perform = .{
-        .effect = toggle,
+        .effect = clamp,
         .capability = try b.reference(b.parameter(body, 0)),
-        .payload = try b.primitive(pair, .product, &.{
-            try b.reference(first), try b.reference(b.parameter(body, 3)),
+        .payload = try b.primitive(triple, .product, &.{
+            try b.reference(first),
+            try b.reference(b.parameter(body, 4)),
+            try b.reference(b.parameter(body, 5)),
         }, 0),
     } });
     const result = try b.pure(try b.primitive(pair, .product, &.{
@@ -78,11 +94,11 @@ fn application(
     const after_yield = try b.bind(second, next, result);
     try b.define(body, try b.bind(first, request, try b.term(.{ .yield_then = after_yield })));
     const body_type = try b.schema(.{ .internal = .{ .computation = .{
-        .parameters = &.{ capability, integer, integer, integer },
+        .parameters = parameters,
         .result = pair,
-        .effects = &.{toggle},
+        .effects = &.{clamp},
     } } });
-    const entry = try b.declare(&.{ integer, integer, integer }, pair, &.{}, &.{});
+    const entry = try b.declare(&.{ integer, integer, integer, integer, integer }, pair, &.{}, &.{});
     try b.define(entry, try b.term(.{ .handle = .{
         .handler = handler,
         .body = try b.lambda(body, body_type),
@@ -90,6 +106,8 @@ fn application(
             try b.reference(b.parameter(entry, 0)),
             try b.reference(b.parameter(entry, 1)),
             try b.reference(b.parameter(entry, 2)),
+            try b.reference(b.parameter(entry, 3)),
+            try b.reference(b.parameter(entry, 4)),
         },
     } }));
     return b.module(entry, unit);

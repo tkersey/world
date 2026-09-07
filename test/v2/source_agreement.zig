@@ -5,6 +5,72 @@ const data = @import("boundary_data_v2");
 const world = @import("world").process_v2;
 const borrow_returns = @import("borrow_return_fixtures");
 
+test "yielded cleanup cancellation resumes internal transitions in every native input mode" {
+    const allocator = std.testing.allocator;
+    var b = boundary.source.Builder.init(allocator);
+    defer b.deinit();
+    var compiled = try boundary.program.compile(allocator, try boundary.source.examples.yieldingCleanup(&b));
+    defer compiled.deinit();
+    const image = try allocator.alloc(u8, try data.image.encodedLength(compiled.program));
+    defer allocator.free(image);
+    _ = try compiled.encode(allocator, image);
+    for ([_]u8{ 0, 1 }) |primary| {
+        for ([_]data.protocol.Reason{ .{ .text = "stop" }, .{ .bytes = &.{ 0xff, 0 } } }) |reason| {
+            var current = try world.run(allocator, .{ .program = .{ .records = compiled.program }, .instance = .{ .initial_args = &.{primary} } });
+            defer current.deinit();
+            for (0..2) |round| {
+                try std.testing.expect(current.record == .yielded);
+                const snapshot = current.record.yielded;
+                var saved = try data.snapshot.decodeGraph(allocator, snapshot);
+                defer saved.deinit();
+                try data.state_admission.validate(allocator, compiled.program, saved.state);
+                try std.testing.expect(saved.state.status == .yielded and saved.state.roots.exit != null);
+                const control: data.protocol.Control = .{ .cancel = if (round == 0) reason else .{ .text = "later" } };
+                var expected = try world.run(allocator, .{ .program = .{ .image = image }, .instance = .{ .snapshot = snapshot }, .control = control });
+                defer expected.deinit();
+                // Each next authored boundary is a request; the intervening call
+                // is internal and cannot produce another Yielded observation.
+                try std.testing.expect(expected.record == .requested);
+                const request = try data.protocol.decode(data.protocol.Request, allocator, expected.record.requested.request);
+                try std.testing.expectEqualStrings(if (round == 0) "example/middle-cleanup" else "example/outer-cleanup", request.semantic_identity);
+                inline for (.{ world.run, world.advance }, 0..) |execute, mode| {
+                    inline for (.{ false, true }) |record_program| {
+                        inline for (.{ false, true }) |record_state| {
+                            var actual = try execute(allocator, .{
+                                .program = if (record_program) .{ .records = compiled.program } else .{ .image = image },
+                                .instance = if (record_state) .{ .records = saved.state } else .{ .snapshot = snapshot },
+                                .control = control,
+                            });
+                            defer actual.deinit();
+                            if (mode == 1) try std.testing.expect(actual.record == .progressed);
+                            var transitions: usize = 0;
+                            while (actual.record == .progressed) : (transitions += 1) {
+                                try std.testing.expect(transitions < 32);
+                                const next = try world.advance(allocator, .{ .program = .{ .image = image }, .instance = .{ .snapshot = actual.record.progressed } });
+                                actual.deinit();
+                                actual = next;
+                            }
+                            try std.testing.expect(actual.record == .requested);
+                            try std.testing.expectEqualSlices(u8, expected.record.requested.state, actual.record.requested.state);
+                            try std.testing.expectEqualSlices(u8, expected.record.requested.request, actual.record.requested.request);
+                        }
+                    }
+                }
+                const result: data.protocol.Result = .{ .request_identity = request.request_identity, .resume_schema_digest = data.wire.digest(request.resume_schema), .value = &.{} };
+                const response = try allocator.alloc(u8, try data.protocol.encodedLength(data.protocol.Result, result));
+                defer allocator.free(response);
+                _ = try data.protocol.encode(data.protocol.Result, allocator, result, response);
+                const next = try world.run(allocator, .{ .program = .{ .image = image }, .instance = .{ .snapshot = expected.record.requested.state }, .control = .{ .continue_value = response } });
+                current.deinit();
+                current = next;
+            }
+            try std.testing.expect(current.record == .failed);
+            try std.testing.expectEqualSlices(u8, &.{ if (primary == 1) 9 else 7, 0, 0, 0, 0, 0, 0, 0 }, current.record.failed.value);
+            try std.testing.expectEqualDeep(reason, current.record.failed.cancellation.?);
+        }
+    }
+}
+
 test "initial and successor return clauses preserve older references through execution" {
     for (std.enums.values(borrow_returns.ResultFrom)) |from| {
         for ([_]bool{ false, true }) |initial| {

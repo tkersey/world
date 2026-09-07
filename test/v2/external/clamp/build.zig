@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "boundary", .module = dependency.module("boundary") }},
     });
     root.addOptions("options", options);
-    const compiler = b.addExecutable(.{ .name = "compile-bitmask", .root_module = root });
-    b.step("emit", "Compile chained bitmask operations into portable data")
+    const compiler = b.addExecutable(.{ .name = "compile-clamp", .root_module = root });
+    b.step("emit", "Compile chained range operations into portable data")
         .dependOn(&b.addRunArtifact(compiler).step);
 }

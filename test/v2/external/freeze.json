@@ -1,8 +1,8 @@
 {
   "format": "world-v2-external-consumer-freeze/v1",
-  "frozenAt": "2026-09-07T16:36:47.074Z",
-  "kernelSha256": "fe8218c8b330740330c881005fa3ebac2b7d4a660a04bf8caaacf01d63fd2743",
-  "kernelBytes": 388431,
+  "frozenAt": "2026-09-07T19:08:26.965Z",
+  "kernelSha256": "0a8ee56c30384e8a86ca5ac238e3022dbe1954cf8c341d2983781d497bc23866",
+  "kernelBytes": 388452,
   "abi": 2,
   "profile": 1,
   "memory": {
@@ -14,15 +14,15 @@
   "sourceInputs": {
     "boundary": {
       "git": {
-        "head": "7333510c35e90788de3882635ea68e87be85f52d",
-        "tree": "fbd6e32b675aa30dbf615f8e35fb2ef9ec356450",
+        "head": "3e228a0220a8bda98fa6128bbcf35e392112c1c1",
+        "tree": "84d3d048f6cbe0865c7894e18ceb78d42a35ac86",
         "dirty": true
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
       "files": [
         {
           "name": "build.zig",
-          "sha256": "27cb52bd88e45b1b7ebf9ef2c81387ffc38cb3fd6d05ecc83c2886d98c54626b"
+          "sha256": "d5b1190ff3c16f6c3c9974d5ecb9bd0130f9614afa1b559635ce531f493d5f87"
         },
         {
           "name": "build.zig.zon",
@@ -145,12 +145,12 @@
           "sha256": "2cad2f4762b4aaaa472db9fda6e8f038b5cc01c969a5ee32a9efa1067ebe8a28"
         }
       ],
-      "filesSha256": "8db11fd262eecbfd2f92b32be565968c4388c488b50786f0cba5562522cdc0f6"
+      "filesSha256": "489974ea2180b855515558c8947acbf4a6310984e87721d8e6a63014c10decb9"
     },
     "world": {
       "git": {
-        "head": "7220bd4490bfab1a5e269059e7d5372c4aae5545",
-        "tree": "fa3df682a8ba3d17deafcd8722f347583ee4720e",
+        "head": "181fbc74bd873d46b622a99696fb936e4911c7cb",
+        "tree": "fa57ee182b9c5812df21f140b77fde11d8a14063",
         "dirty": true
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
@@ -217,7 +217,7 @@
         },
         {
           "name": "src/interpreter_v2/process.zig",
-          "sha256": "99ab55f3f0823e554f8be537912f1844955f53d91850af8756edb0a6ca79dcff"
+          "sha256": "b2dc53e9c6ff02956f10be802814ea2456503f73fccee2b2cdb8fc0c5ba5f945"
         },
         {
           "name": "src/interpreter_v2/reentrant_tests.zig",
@@ -256,7 +256,7 @@
           "sha256": "0ea81f7c02bfe17874a730c42ab42afcfdaea1e9832371a9f80dc004bec4d07e"
         }
       ],
-      "filesSha256": "7a1123ce5a7f1bafa7dab362da9f23e789d7462b5e4431fec180718663076f61"
+      "filesSha256": "1fc75d2cc6b43dfe74221253163849becaf1b898aef700e836a9a285f4f96c2e"
     }
   }
 }

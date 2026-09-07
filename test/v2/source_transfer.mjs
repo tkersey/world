@@ -197,6 +197,37 @@ try {
     assert.equal(step.cancellation, oracle.cancellation);
     assert.deepEqual(trace, oracle.trace);
   }
-  console.log("source oracle/native/WASM agreement and fresh transfers passed for thirty-five compiled source examples and cancellation scenarios");
+  for (const primary of [0, 1]) for (const cancel of [false, true]) {
+    const source = JSON.parse(await readFile(join(fixtures, "source-yielding-cleanup.json"), "utf8"));
+    const image = new Uint8Array(await readFile(join(fixtures, "source-yielding-cleanup.bpi2")));
+    const oracle = execute(source, [primary], [[], []], cancel ? [{ at: 0, reason: "stop" }, { at: 2, reason: "later" }] : []);
+    for (const mode of ["advance", "run"]) {
+      const trace = [];
+      let yields = 0, requests = 0, transitions = 0;
+      let step = await compare(mode, { image, initialArgs: Uint8Array.of(primary) });
+      while (step.kind !== "Failed") {
+        assert.ok(transitions++ < 1000, "finite cleanup fixture exceeded its test horizon");
+        const input = { image, state: step.state };
+        if (step.kind === "Yielded") {
+          trace.push({ kind: "Yielded" });
+          if (cancel) input.cancel = yields === 0 ? "stop" : "later";
+          yields++;
+        } else if (step.kind === "Requested") {
+          const request = decodeRequest(step.request);
+          trace.push({ kind: "Requested", identity: request.semanticIdentity, payload: [...request.payload] });
+          input.result = encodeResult(step.request, new Uint8Array());
+          requests++;
+        } else assert.equal(step.kind, "Progressed");
+        step = await compare(mode, input);
+      }
+      assert.equal(yields, 2); assert.equal(requests, 2);
+      assert.equal(step.kind, oracle.kind);
+      assert.deepEqual(step.value, Uint8Array.from(oracle.value));
+      assert.deepEqual(step.cleanupFailures.map(bytes => [...bytes]), oracle.cleanupFailures);
+      assert.equal(step.cancellation, oracle.cancellation);
+      assert.deepEqual(trace, oracle.trace);
+    }
+  }
+  console.log("source oracle/native/WASM agreement and fresh transfers passed for thirty-six compiled source examples and cancellation scenarios");
   if (peer) console.log(`Wasmtime ${peer.identity.wasmtime} matched all source checkpoints; kernel ${peer.identity.kernel_sha256}`);
 } finally { if (peer) await peer.close(); }

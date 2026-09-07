@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdir, mkdtemp } from 'node:fs/promises';
 import { dirname,join,resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { sha256,json,readTarGzip,readBundle,verifyAssets,safeName,readSource } from './assets.mjs';
+import { sha256,json,readTarGzip,readBundle,verifyAssets,safeName,readSource,verifyExampleSources } from './assets.mjs';
 import { inspectProcessKernelWasm } from '../../src/process_v2/wasm.mjs';
 import { bounded } from './bounded.mjs';
 const [boundaryArg,worldArg,boundarySourceArg,outputArg,expectedBoundaryCommit,expectedWorldCommit]=process.argv.slice(2);
@@ -34,6 +34,7 @@ for(const line of runtimeMap.get('SHA256SUMS').toString().trimEnd().split('\n'))
 assert.equal(sums.size,runtimeMap.size-1);
 for(const [name,bytes] of runtimeMap)if(name!=='SHA256SUMS')assert.equal(sha256(bytes),sums.get(name));
 const examples=readTarGzip(b.get('boundary-v2-examples.tar.gz'));
+verifyExampleSources(examples,compilerFiles);
 const bm=JSON.parse(b.get('boundary-v2-semantic-fixtures.json')),bf=readBundle(bm,b.get('boundary-v2-semantic-fixtures.bin'));
 assert.equal(bm.binarySha256,sha256(b.get('boundary-v2-semantic-fixtures.bin')));
 const wm=JSON.parse(w.get('world-v2-conformance.json'));assert.equal(wm.kernelSha256,identity.kernel.sha256);assert.equal(wm.boundary.fixturesSha256,sha256(b.get('boundary-v2-semantic-fixtures.json')));

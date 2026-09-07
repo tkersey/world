@@ -4,7 +4,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tarGzip, readTarGzip, indexedBundle, readBundle, writeAssets, verifyAssets, sourceIdentity, readSource, sha256, json } from '../../scripts/v2/assets.mjs';
+import { tarGzip, readTarGzip, indexedBundle, readBundle, writeAssets, verifyAssets, sourceIdentity, readSource, verifyExampleSources, sha256, json } from '../../scripts/v2/assets.mjs';
 
 const files = [{ name: 'z/data.bin', bytes: Buffer.from([0, 255]) }, { name: 'a/run', bytes: Buffer.from('hello'), executable: true }];
 function repairChecksum(bytes) {
@@ -47,6 +47,26 @@ test('container producers reject duplicate and escaping names', () => {
   }
   assert.throws(() => tarGzip([files[0], files[0]]));
   assert.throws(() => indexedBundle([files[0], files[0]]));
+});
+
+test('self-consistent example archives cannot replace any executable source input', () => {
+  const inputs = [
+    ['build.zig', 'tools/v2/examples/build.zig', 'trusted build instructions'],
+    ['build.zig.zon', 'tools/v2/examples/build.zig.zon', 'trusted dependency paths'],
+    ['main.zig', 'test/v2/emit_source.zig', 'trusted example program'],
+  ];
+  const source = inputs.map(([, name, text]) => ({ name, bytes: Buffer.from(text) }));
+  const archive = inputs.map(([name, , text]) => ({ name, bytes: Buffer.from(text) }));
+  verifyExampleSources(readTarGzip(tarGzip(archive)), source);
+  for (let index = 0; index < archive.length; index++) {
+    const changed = archive.map(entry => ({ ...entry }));
+    changed[index].bytes = Buffer.from('replacement with fresh archive checksums');
+    // The tar writer repairs container checksums; independent source binding
+    // must still reject the changed file before any compiler invocation.
+    assert.throws(() => verifyExampleSources(readTarGzip(tarGzip(changed)), source), /example source mismatch/);
+    assert.throws(() => verifyExampleSources(readTarGzip(tarGzip(archive.filter((_, i) => i !== index))), source), /example source mismatch/);
+    assert.throws(() => verifyExampleSources(readTarGzip(tarGzip(archive)), source.filter((_, i) => i !== index)), /example source mismatch/);
+  }
 });
 
 test('indexed data requires exact offsets, names, lengths and byte digests', () => {

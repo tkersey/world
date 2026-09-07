@@ -1,6 +1,6 @@
 .{
-    .name = .bitmask,
-    .fingerprint = 0xfcc78603913a506e,
+    .name = .clamp,
+    .fingerprint = 0xa00377fac03d429a,
     .version = "0.0.0",
     .dependencies = .{ .boundary = .{ .path = "../boundary" } },
     .paths = .{ "build.zig", "build.zig.zon", "main.zig", "README.md" },

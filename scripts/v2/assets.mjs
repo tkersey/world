@@ -141,6 +141,20 @@ export async function readSource(root, identity, expectedCommit) {
   }
   return files;
 }
+// These are the entry points and transitive local source inputs of the example
+// build. Its dependency is the separately authenticated sibling compiler.
+export function verifyExampleSources(examples, compilerFiles) {
+  const archive = new Map(examples.map(entry => [entry.name, entry]));
+  const source = new Map(compilerFiles.map(entry => [entry.name, entry.bytes]));
+  for (const [name, path] of [
+    ['build.zig', 'tools/v2/examples/build.zig'],
+    ['build.zig.zon', 'tools/v2/examples/build.zig.zon'],
+    ['main.zig', 'test/v2/emit_source.zig'],
+  ]) {
+    const entry = archive.get(name), expected = source.get(path);
+    if (!entry || !expected || entry.executable || !entry.bytes.equals(expected)) throw new Error(`example source mismatch: ${name}`);
+  }
+}
 export async function writeAssets(directory, entries) {
   await mkdir(directory,{recursive:true});
   for(const {name,bytes} of entries) {

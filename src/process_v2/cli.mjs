@@ -2,7 +2,8 @@
 import { readFile, writeFile, rename, rm, realpath } from "node:fs/promises";
 import { resolve, dirname, basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { loadProcessKernel, encodeInput, packageVersion } from "./index.mjs";
+import { admitProcessKernel, encodeInput, packageVersion } from "./index.mjs";
+import { readProcessKernelFile } from "./kernel_file.mjs";
 
 export const help = `Usage: world process <step|run> --image FILE (--initial FILE | --state FILE) --output FILE
   --kernel FILE --kernel-sha256 HEX  Use an explicitly digest-bound kernel
@@ -45,14 +46,19 @@ export async function executeCli(args, stdout = process.stdout) {
   if (options.version) { stdout.write(`${packageVersion}\n`); return; }
   const destination = resolve(options.output);
   const destinationIdentity = await realpath(destination).catch((error) => { if (error.code !== "ENOENT") throw error; return resolve(destination); });
+  async function checkInputPath(path) {
+    if (await realpath(path) === destinationIdentity) usage("output must differ from every input file");
+  }
   const input = {};
   for (const key of ["image", "initialArgs", "state", "result", "cancelBytes"]) if (options[key] !== undefined) {
-    if (await realpath(options[key]) === destinationIdentity) usage("output must differ from every input file");
+    await checkInputPath(options[key]);
     input[key === "cancelBytes" ? "cancel" : key] = await readFile(options[key]);
   }
   if (options.cancel !== undefined) input.cancel = options.cancel;
   encodeInput({ ...input, mode: options.mode });
-  const host = await loadProcessKernel(options);
+  const selected = await readProcessKernelFile(options, packageVersion);
+  for (const path of selected.files) await checkInputPath(path);
+  const host = await admitProcessKernel(selected.bytes, { expectedSha256: selected.expectedSha256 });
   const outcome = await host[options.mode](input);
   const temporary = join(dirname(destination), `.${basename(destination)}.${randomUUID()}.tmp`);
   try {

@@ -116,8 +116,10 @@ fn execute(allocator: std.mem.Allocator, invocation: Invocation, mode: data.prot
                 } else return machine.finish();
             } else {
                 if (invocation.control.continue_value != null) return error.InvalidControl;
-                if (machine.status == .yielded) machine.status = .active;
             }
+            // A saved yield has already been observed. Both continuation and
+            // cancellation resume preserved cleanup at the next transition.
+            if (machine.status == .yielded) machine.status = .active;
         },
     }
     while (true) {
