@@ -42,7 +42,7 @@ records exact target inputs/outputs in `world-v2-conformance.json` and `.bin`.
 | H22 | Native `tests.zig` and transfer harnesses compare `advance` and `run` at the same observable boundary. |
 | H23 | Native failure-injection tests plus `capacity.mjs`: admission, capture/branch creation, unwinding, image emission and output encoding retain unchanged retry inputs. |
 | H24 | Recursive/yielding source and native workloads reach externally selected lengths; dead control slots are reused without semantic fuel. |
-| H25 / O03 | `test/v2/external/thermostat` was authored after `external/freeze.json`: its new signed-temperature operation and handler passed 50 exact records under the recorded kernel digest. |
+| H25 / O03 | `test/v2/external/coordinate-path` was authored after `external/freeze.json`: its new signed-coordinate operation and shallow successor handler passed 70 exact records under the recorded kernel digest. |
 | H26 | `bpi1_agreement.mjs`: pure lifted data agrees with the frozen public v1 interpreter; no v1 evaluator is in the v2 package. |
 
 The integrated solver explores columns 1–4, reports `[2,4,1,3]` then
@@ -70,6 +70,12 @@ have distinct return-clause observations for both one-shot and multi-shot use;
 shallow computation injection preserves clause-site and use-site capabilities.
 Owned package tests distinguish private captured regions from the implicit
 handler and region context borrowed by a nested installation.
+`successor-state` carries a capability and cell across a yield and two shallow
+resumptions, then reads them to produce `(42,37)`. `clause-payload` preserves an
+older capability across clause suspension; source checks reject passing the
+selected attachment itself, directly and through a helper. The handler and
+protection operand-order fixtures each produce `7` after ordered cell writes
+in computation construction and argument evaluation.
 
 `emit_rejections.zig` starts from valid source-derived states before changing
 pending contracts, identities, blob types, delimiters, local aliases or token

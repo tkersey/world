@@ -1,6 +1,6 @@
 .{
-    .name = .thermostat,
-    .fingerprint = 0xb69bddd053a5fac5,
+    .name = .coordinate_path,
+    .fingerprint = 0x2a79516949fbc5bd,
     .version = "0.0.0",
     .dependencies = .{ .boundary = .{ .path = "../boundary" } },
     .paths = .{ "build.zig", "build.zig.zon", "main.zig", "README.md" },

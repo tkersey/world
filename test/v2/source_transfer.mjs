@@ -50,7 +50,7 @@ try {
       assert.deepEqual(step.bytes, result.bytes);
     }
   }
-  for (const [name, initial] of [["lexical", [40, 0, 0, 0, 0, 0, 0, 0]], ["deep", []], ["recursive", [16, 39, 0, 0, 0, 0, 0, 0]], ["choices-all", []], ["choices-first", []], ["state-local", []], ["state-shared", []], ["answers", []], ["writer-raise", []], ["cell-order", []], ["nested", []], ["shallow", [0]], ["shallow", [1]], ["injection", [0]], ["injection", [1]], ["abort-custody", [1]], ["bounded-values", []], ["shallow-resumptions", []], ["shallow-injection", [0]], ["shallow-injection", [1]]]) {
+  for (const [name, initial] of [["lexical", [40, 0, 0, 0, 0, 0, 0, 0]], ["deep", []], ["recursive", [16, 39, 0, 0, 0, 0, 0, 0]], ["choices-all", []], ["choices-first", []], ["state-local", []], ["state-shared", []], ["answers", []], ["writer-raise", []], ["cell-order", []], ["nested", []], ["shallow", [0]], ["shallow", [1]], ["injection", [0]], ["injection", [1]], ["abort-custody", [1]], ["bounded-values", []], ["shallow-resumptions", []], ["shallow-injection", [0]], ["shallow-injection", [1]], ["handle-operand-order", []], ["protect-operand-order", []]]) {
     const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
     const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi2`)));
     const oracle = execute(source, initial);
@@ -64,7 +64,7 @@ try {
       assert.deepEqual(step.bytes, result.bytes);
     }
   }
-  for (const name of ["generator", "scheduler", "reentrant", "cloned", "ownership"]) {
+  for (const name of ["generator", "scheduler", "reentrant", "cloned", "ownership", "successor-state", "clause-payload"]) {
     const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
     const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi2`)));
     const oracle = execute(source, [], name === "generator" ? [[]] : []);
@@ -197,6 +197,6 @@ try {
     assert.equal(step.cancellation, oracle.cancellation);
     assert.deepEqual(trace, oracle.trace);
   }
-  console.log("source oracle/native/WASM agreement and fresh transfers passed for thirty-one compiled source examples and cancellation scenarios");
+  console.log("source oracle/native/WASM agreement and fresh transfers passed for thirty-five compiled source examples and cancellation scenarios");
   if (peer) console.log(`Wasmtime ${peer.identity.wasmtime} matched all source checkpoints; kernel ${peer.identity.kernel_sha256}`);
 } finally { if (peer) await peer.close(); }
