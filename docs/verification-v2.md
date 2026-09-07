@@ -42,7 +42,7 @@ records exact target inputs/outputs in `world-v2-conformance.json` and `.bin`.
 | H22 | Native `tests.zig` and transfer harnesses compare `advance` and `run` at the same observable boundary, including cancellation between internal cleanup transitions. |
 | H23 | Native failure-injection tests plus `capacity.mjs`: admission, capture/branch creation, unwinding, image emission and output encoding retain unchanged retry inputs. |
 | H24 | Recursive/yielding source and native workloads reach externally selected lengths; dead control slots are reused without semantic fuel. |
-| H25 / O03 | `test/v2/external/clamp` was authored after `external/freeze.json`: its new range operation and deep handler passed 54 exact records, chaining both results through a yield under the recorded kernel digest. |
+| H25 / O03 | `test/v2/external/saturating_add` was authored after `external/freeze.json`: its new arithmetic operation and deep handler passed 90 exact records, chaining both results through a yield under the recorded kernel digest. |
 | H26 | `bpi1_agreement.mjs`: pure lifted data agrees with the frozen public v1 interpreter; no v1 evaluator is in the v2 package. |
 
 The integrated solver explores columns 1–4, reports `[2,4,1,3]` then

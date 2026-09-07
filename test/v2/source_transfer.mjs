@@ -38,6 +38,32 @@ async function compare(mode, input) {
 }
 try {
   {
+    const source = JSON.parse(await readFile(join(fixtures, "source-borrow-operands.json"), "utf8"));
+    const image = new Uint8Array(await readFile(join(fixtures, "source-borrow-operands.bpi2")));
+    for (let index = 0; index < 20; index++) {
+      const oracle = execute(source, [index]);
+      const populated = index % 2 === 1, owned = index >= 12;
+      const kind = owned || !populated ? "Failed" : "Completed";
+      const value = Uint8Array.of(owned ? (populated ? 8 : 9) : (populated ? 7 : 8), 0, 0, 0, 0, 0, 0, 0);
+      assert.equal(oracle.kind, kind);
+      assert.deepEqual(Uint8Array.from(oracle.value), value);
+      for (const mode of ["advance", "run"]) {
+        const trace = [];
+        let step = await compare(mode, { image, initialArgs: Uint8Array.of(index) });
+        let transitions = 0;
+        while (step.kind === "Progressed" || step.kind === "Yielded") {
+          assert.ok(transitions++ < 128, "finite operand fixture exceeded its test horizon");
+          if (step.kind === "Yielded") trace.push({ kind: "Yielded" });
+          step = await compare(mode, { image, state: step.state });
+        }
+        assert.equal(step.kind, kind);
+        assert.deepEqual(step.value, value);
+        assert.deepEqual(trace, kind === "Failed" ? [{ kind: "Yielded" }] : []);
+        assert.deepEqual(trace, oracle.trace);
+      }
+    }
+  }
+  {
     const source = JSON.parse(await readFile(join(fixtures, "source-scalar-contracts.json"), "utf8"));
     const image = new Uint8Array(await readFile(join(fixtures, "source-scalar-contracts.bpi2")));
     for (let index = 0; index < 19; index++) {
@@ -228,6 +254,6 @@ try {
       assert.deepEqual(trace, oracle.trace);
     }
   }
-  console.log("source oracle/native/WASM agreement and fresh transfers passed for thirty-six compiled source examples and cancellation scenarios");
+  console.log("source oracle/native/WASM agreement and fresh transfers passed for thirty-seven compiled source examples and cancellation scenarios");
   if (peer) console.log(`Wasmtime ${peer.identity.wasmtime} matched all source checkpoints; kernel ${peer.identity.kernel_sha256}`);
 } finally { if (peer) await peer.close(); }

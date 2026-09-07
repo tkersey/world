@@ -5,6 +5,23 @@ const data = @import("boundary_data_v2");
 const world = @import("world").process_v2;
 const borrow_returns = @import("borrow_return_fixtures");
 
+test "borrowed operand evaluation preserves failure custody across native snapshots" {
+    var b = boundary.source.Builder.init(std.testing.allocator);
+    defer b.deinit();
+    const module = try boundary.source.examples.borrowOperands(&b);
+    for (0..20) |index| {
+        const populated = index % 2 == 1;
+        const owned = index >= 12;
+        const reason: u8 = if (owned) (if (populated) 8 else 9) else (if (populated) 7 else 8);
+        const value = [_]u8{ reason, 0, 0, 0, 0, 0, 0, 0 };
+        const expected: BindingExit = if (owned or !populated)
+            .{ .failed = &value }
+        else
+            .{ .completed = &value };
+        try expectBindingExecution(module, &.{@intCast(index)}, expected);
+    }
+}
+
 test "yielded cleanup cancellation resumes internal transitions in every native input mode" {
     const allocator = std.testing.allocator;
     var b = boundary.source.Builder.init(allocator);

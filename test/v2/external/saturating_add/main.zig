@@ -8,84 +8,104 @@ fn program(b: *source.Builder) !source.Module {
     const integer = try b.scalar(u64);
     const boolean = try b.scalar(bool);
     const pair = try b.schema(.{ .product = &.{ integer, integer } });
-    const triple = try b.schema(.{ .product = &.{ integer, integer, integer } });
-    const clamp = try b.effect(.{
-        .identity = "range/clamp",
-        .payload = triple,
+    const operation = try b.effect(.{
+        .identity = "arithmetic/saturating-add",
+        .payload = pair,
         .result = integer,
         .external = false,
     });
-    const capability = try b.schema(.{ .internal = .{ .capability = clamp } });
+    const capability = try b.schema(.{ .internal = .{ .capability = operation } });
     const token = try b.schema(.{ .internal = .{ .resumption = .{
-        .effect = clamp,
+        .effect = operation,
         .input = integer,
         .answer = pair,
-        .capture_bound = &.{ unit, boolean, integer, pair, triple, capability },
-        .handled = &.{clamp},
+        .capture_bound = &.{ unit, boolean, integer, pair, capability },
+        .handled = &.{operation},
         .mode = .deep,
         .use = .linear,
     } } });
     const returns = try b.declare(&.{pair}, pair, &.{}, &.{});
     try b.define(returns, try b.pure(try b.reference(b.parameter(returns, 0))));
-    const clause = try b.declare(&.{ triple, token }, pair, &.{}, &.{});
+    const clause = try b.declare(&.{ pair, token }, pair, &.{}, &.{});
     const payload = try b.reference(b.parameter(clause, 0));
-    try b.define(clause, try b.term(.{ .resume_value = .{
-        .resumption = try b.reference(b.parameter(clause, 1)),
-        .argument = try clampValue(b, integer, boolean, payload),
-    } }));
+    const resumption = try b.reference(b.parameter(clause, 1));
+    try b.define(clause, try addition(b, integer, boolean, payload, resumption));
     const handler = try b.handler(.{
         .mode = .deep,
         .input = pair,
         .answer = pair,
         .return_function = returns,
-        .clauses = &.{.{ .effect = clamp, .function = clause, .resumption = token }},
+        .clauses = &.{.{ .effect = operation, .function = clause, .resumption = token }},
     });
-    return application(b, unit, integer, pair, triple, clamp, capability, handler);
+    return application(b, integer, pair, operation, capability, handler);
 }
 
-fn clampValue(b: *source.Builder, integer: u64, boolean: u64, payload: u64) !u64 {
-    const value = try b.primitive(integer, .field, &.{payload}, 0);
-    const first = try b.primitive(integer, .field, &.{payload}, 1);
-    const second = try b.primitive(integer, .field, &.{payload}, 2);
-    const ordered = try b.primitive(boolean, .less, &.{ first, second }, 0);
-    const lower = try b.primitive(integer, .select, &.{ ordered, first, second }, 0);
-    const upper = try b.primitive(integer, .select, &.{ ordered, second, first }, 0);
-    const below = try b.primitive(boolean, .less, &.{ value, lower }, 0);
-    const above = try b.primitive(boolean, .less, &.{ upper, value }, 0);
-    const bounded_above = try b.primitive(integer, .select, &.{ above, upper, value }, 0);
-    return b.primitive(integer, .select, &.{ below, lower, bounded_above }, 0);
+fn addition(
+    b: *source.Builder,
+    integer: u64,
+    boolean: u64,
+    payload: u64,
+    token: u64,
+) !u64 {
+    const left = try b.primitive(integer, .field, &.{payload}, 0);
+    const right = try b.primitive(integer, .field, &.{payload}, 1);
+    const maximum = try b.constant(u64, std.math.maxInt(u64));
+    const headroom = try arithmetic(b, integer, .integer_sub, maximum, left);
+    const overflow = try b.primitive(boolean, .less, &.{ headroom, right }, 0);
+    const sum = try arithmetic(b, integer, .integer_add, left, right);
+    return b.term(.{ .conditional = .{
+        .condition = overflow,
+        .when_true = try b.term(.{ .resume_value = .{
+            .resumption = token,
+            .argument = maximum,
+        } }),
+        .when_false = try b.term(.{ .resume_value = .{
+            .resumption = token,
+            .argument = sum,
+        } }),
+    } });
+}
+
+fn arithmetic(
+    b: *source.Builder,
+    integer: u64,
+    opcode: boundary.data_v2.program.Opcode,
+    left: u64,
+    right: u64,
+) !u64 {
+    const fault = try b.failureLiteral(try b.constant(void, {}));
+    return b.value(.{ .schema = integer, .expression = .{ .primitive = .{
+        .opcode = opcode,
+        .operands = &.{ left, right },
+        .failures = &.{.{ .kind = .arithmetic_overflow, .value = fault }},
+    } } });
 }
 
 fn application(
     b: *source.Builder,
-    unit: u64,
     integer: u64,
     pair: u64,
-    triple: u64,
-    clamp: u64,
+    operation: u64,
     capability: u64,
     handler: u64,
 ) !source.Module {
-    const parameters: []const u64 = &.{ capability, integer, integer, integer, integer, integer };
-    const body = try b.declare(parameters, pair, &.{clamp}, &.{});
+    const parameters: []const u64 = &.{ capability, integer, integer, integer };
+    const body = try b.declare(parameters, pair, &.{operation}, &.{});
     const first = try b.variable(integer);
     const second = try b.variable(integer);
     const request = try b.term(.{ .perform = .{
-        .effect = clamp,
+        .effect = operation,
         .capability = try b.reference(b.parameter(body, 0)),
-        .payload = try b.primitive(triple, .product, &.{
+        .payload = try b.primitive(pair, .product, &.{
             try b.reference(b.parameter(body, 1)),
             try b.reference(b.parameter(body, 2)),
-            try b.reference(b.parameter(body, 3)),
         }, 0),
     } });
     const next = try b.term(.{ .perform = .{
-        .effect = clamp,
+        .effect = operation,
         .capability = try b.reference(b.parameter(body, 0)),
-        .payload = try b.primitive(triple, .product, &.{
-            try b.reference(first),
-            try b.reference(b.parameter(body, 4)),
-            try b.reference(b.parameter(body, 5)),
+        .payload = try b.primitive(pair, .product, &.{
+            try b.reference(first), try b.reference(b.parameter(body, 3)),
         }, 0),
     } });
     const result = try b.pure(try b.primitive(pair, .product, &.{
@@ -96,9 +116,9 @@ fn application(
     const body_type = try b.schema(.{ .internal = .{ .computation = .{
         .parameters = parameters,
         .result = pair,
-        .effects = &.{clamp},
+        .effects = &.{operation},
     } } });
-    const entry = try b.declare(&.{ integer, integer, integer, integer, integer }, pair, &.{}, &.{});
+    const entry = try b.declare(&.{ integer, integer, integer }, pair, &.{}, &.{});
     try b.define(entry, try b.term(.{ .handle = .{
         .handler = handler,
         .body = try b.lambda(body, body_type),
@@ -106,11 +126,9 @@ fn application(
             try b.reference(b.parameter(entry, 0)),
             try b.reference(b.parameter(entry, 1)),
             try b.reference(b.parameter(entry, 2)),
-            try b.reference(b.parameter(entry, 3)),
-            try b.reference(b.parameter(entry, 4)),
         },
     } }));
-    return b.module(entry, unit);
+    return b.module(entry, try b.scalar(void));
 }
 
 pub fn main(init: std.process.Init) !void {

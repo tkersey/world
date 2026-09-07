@@ -1,17 +1,57 @@
 {
-  "admission_ns": 64708,
+  "admission_ns": 72375,
   "warmups": 5,
   "measurements": [
+    {
+      "phases": {
+        "initialization_ns": 250,
+        "direct_clause_ns": 1084,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 375,
+        "branch_creation_transition_ns": 1875,
+        "execution_ns": 5000,
+        "unwind_ns": 0,
+        "collection_ns": 10707,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 125
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
     {
       "phases": {
         "initialization_ns": 250,
         "direct_clause_ns": 1125,
         "one_shot_capture_ns": 0,
         "multi_template_capture_ns": 375,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4667,
+        "branch_creation_transition_ns": 1875,
+        "execution_ns": 4665,
         "unwind_ns": 0,
-        "collection_ns": 10123,
+        "collection_ns": 10623,
         "snapshot_validation_encoding_ns": 0,
         "outcome_encoding_ns": 125
       },
@@ -44,14 +84,54 @@
     },
     {
       "phases": {
+        "initialization_ns": 292,
+        "direct_clause_ns": 1125,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 375,
+        "branch_creation_transition_ns": 1876,
+        "execution_ns": 4833,
+        "unwind_ns": 0,
+        "collection_ns": 10540,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 83
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
         "initialization_ns": 250,
-        "direct_clause_ns": 1084,
+        "direct_clause_ns": 1042,
         "one_shot_capture_ns": 0,
         "multi_template_capture_ns": 333,
         "branch_creation_transition_ns": 1833,
-        "execution_ns": 4541,
+        "execution_ns": 4750,
         "unwind_ns": 0,
-        "collection_ns": 9997,
+        "collection_ns": 10417,
         "snapshot_validation_encoding_ns": 0,
         "outcome_encoding_ns": 125
       },
@@ -85,15 +165,215 @@
     {
       "phases": {
         "initialization_ns": 250,
-        "direct_clause_ns": 1040,
+        "direct_clause_ns": 1126,
         "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 334,
+        "multi_template_capture_ns": 375,
         "branch_creation_transition_ns": 1834,
-        "execution_ns": 4668,
+        "execution_ns": 4583,
         "unwind_ns": 0,
-        "collection_ns": 9956,
+        "collection_ns": 10459,
         "snapshot_validation_encoding_ns": 0,
         "outcome_encoding_ns": 125
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 250,
+        "direct_clause_ns": 1166,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 333,
+        "branch_creation_transition_ns": 1750,
+        "execution_ns": 4708,
+        "unwind_ns": 0,
+        "collection_ns": 10293,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 125
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 250,
+        "direct_clause_ns": 1126,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 375,
+        "branch_creation_transition_ns": 1834,
+        "execution_ns": 4789,
+        "unwind_ns": 0,
+        "collection_ns": 10205,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 125
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 291,
+        "direct_clause_ns": 1125,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 375,
+        "branch_creation_transition_ns": 1792,
+        "execution_ns": 4751,
+        "unwind_ns": 0,
+        "collection_ns": 10208,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 83
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 292,
+        "direct_clause_ns": 1126,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 375,
+        "branch_creation_transition_ns": 1875,
+        "execution_ns": 4540,
+        "unwind_ns": 0,
+        "collection_ns": 10209,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 125
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 250,
+        "direct_clause_ns": 1166,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 334,
+        "branch_creation_transition_ns": 1958,
+        "execution_ns": 4792,
+        "unwind_ns": 0,
+        "collection_ns": 10375,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 84
       },
       "statistics": {
         "transitions": 24,
@@ -127,11 +407,51 @@
         "initialization_ns": 250,
         "direct_clause_ns": 1084,
         "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1749,
-        "execution_ns": 4544,
+        "multi_template_capture_ns": 375,
+        "branch_creation_transition_ns": 1708,
+        "execution_ns": 4542,
         "unwind_ns": 0,
-        "collection_ns": 9918,
+        "collection_ns": 9878,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 125
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 250,
+        "direct_clause_ns": 1083,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 333,
+        "branch_creation_transition_ns": 1750,
+        "execution_ns": 4541,
+        "unwind_ns": 0,
+        "collection_ns": 9833,
         "snapshot_validation_encoding_ns": 0,
         "outcome_encoding_ns": 125
       },
@@ -168,10 +488,50 @@
         "direct_clause_ns": 1042,
         "one_shot_capture_ns": 0,
         "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4584,
+        "branch_creation_transition_ns": 1792,
+        "execution_ns": 4542,
         "unwind_ns": 0,
-        "collection_ns": 10041,
+        "collection_ns": 10123,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 84
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 250,
+        "direct_clause_ns": 1000,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 291,
+        "branch_creation_transition_ns": 1667,
+        "execution_ns": 4374,
+        "unwind_ns": 0,
+        "collection_ns": 9374,
         "snapshot_validation_encoding_ns": 0,
         "outcome_encoding_ns": 83
       },
@@ -205,253 +565,13 @@
     {
       "phases": {
         "initialization_ns": 250,
-        "direct_clause_ns": 1041,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4667,
-        "unwind_ns": 0,
-        "collection_ns": 9919,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 209,
         "direct_clause_ns": 1084,
         "one_shot_capture_ns": 0,
         "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1666,
-        "execution_ns": 4373,
+        "branch_creation_transition_ns": 1625,
+        "execution_ns": 4418,
         "unwind_ns": 0,
-        "collection_ns": 9962,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1083,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1666,
-        "execution_ns": 4666,
-        "unwind_ns": 0,
-        "collection_ns": 10082,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1125,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1792,
-        "execution_ns": 4374,
-        "unwind_ns": 0,
-        "collection_ns": 9876,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1123,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 375,
-        "branch_creation_transition_ns": 1709,
-        "execution_ns": 4543,
-        "unwind_ns": 0,
-        "collection_ns": 9880,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1083,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 334,
-        "branch_creation_transition_ns": 1708,
-        "execution_ns": 4498,
-        "unwind_ns": 0,
-        "collection_ns": 9876,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 999,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4543,
-        "unwind_ns": 0,
-        "collection_ns": 10044,
+        "collection_ns": 9583,
         "snapshot_validation_encoding_ns": 0,
         "outcome_encoding_ns": 125
       },
@@ -487,51 +607,11 @@
         "initialization_ns": 250,
         "direct_clause_ns": 1043,
         "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 375,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4499,
-        "unwind_ns": 0,
-        "collection_ns": 9919,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1041,
-        "one_shot_capture_ns": 0,
         "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4710,
+        "branch_creation_transition_ns": 1624,
+        "execution_ns": 4333,
         "unwind_ns": 0,
-        "collection_ns": 9957,
+        "collection_ns": 9542,
         "snapshot_validation_encoding_ns": 0,
         "outcome_encoding_ns": 125
       },
@@ -565,13 +645,13 @@
     {
       "phases": {
         "initialization_ns": 250,
-        "direct_clause_ns": 1082,
+        "direct_clause_ns": 1001,
         "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 375,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4500,
+        "multi_template_capture_ns": 292,
+        "branch_creation_transition_ns": 1708,
+        "execution_ns": 4414,
         "unwind_ns": 0,
-        "collection_ns": 10040,
+        "collection_ns": 9668,
         "snapshot_validation_encoding_ns": 0,
         "outcome_encoding_ns": 83
       },
@@ -605,215 +685,135 @@
     {
       "phases": {
         "initialization_ns": 250,
-        "direct_clause_ns": 1168,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4626,
-        "unwind_ns": 0,
-        "collection_ns": 9708,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1040,
+        "direct_clause_ns": 1000,
         "one_shot_capture_ns": 0,
         "multi_template_capture_ns": 333,
         "branch_creation_transition_ns": 1667,
-        "execution_ns": 4541,
+        "execution_ns": 4292,
         "unwind_ns": 0,
-        "collection_ns": 9707,
+        "collection_ns": 9459,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 125
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 250,
+        "direct_clause_ns": 1042,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 334,
+        "branch_creation_transition_ns": 1666,
+        "execution_ns": 4371,
+        "unwind_ns": 0,
+        "collection_ns": 9544,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 125
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 250,
+        "direct_clause_ns": 1083,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 333,
+        "branch_creation_transition_ns": 1708,
+        "execution_ns": 4458,
+        "unwind_ns": 0,
+        "collection_ns": 9541,
+        "snapshot_validation_encoding_ns": 0,
+        "outcome_encoding_ns": 125
+      },
+      "statistics": {
+        "transitions": 24,
+        "direct_clauses": 4,
+        "one_shot_captures": 0,
+        "multi_templates": 1,
+        "branch_activations": 2,
+        "storage": {
+          "added_nodes": 48,
+          "copied_blob_bytes": 35,
+          "traced_nodes": 232,
+          "traced_edges": 549,
+          "swept_slots": 379
+        },
+        "snapshot": {
+          "nodes": 0,
+          "edges": 0,
+          "blobs": 0,
+          "remapped_nodes": 0,
+          "stored_payload_bytes": 0,
+          "interning_hash_bytes": 0,
+          "interning_comparisons": 0
+        }
+      },
+      "peak_working_bytes": 4807,
+      "output_bytes": 39,
+      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+    },
+    {
+      "phases": {
+        "initialization_ns": 209,
+        "direct_clause_ns": 1000,
+        "one_shot_capture_ns": 0,
+        "multi_template_capture_ns": 333,
+        "branch_creation_transition_ns": 1666,
+        "execution_ns": 4293,
+        "unwind_ns": 0,
+        "collection_ns": 9499,
         "snapshot_validation_encoding_ns": 0,
         "outcome_encoding_ns": 83
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1083,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4501,
-        "unwind_ns": 0,
-        "collection_ns": 9794,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1000,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1750,
-        "execution_ns": 4584,
-        "unwind_ns": 0,
-        "collection_ns": 9794,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1000,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 333,
-        "branch_creation_transition_ns": 1709,
-        "execution_ns": 4542,
-        "unwind_ns": 0,
-        "collection_ns": 9790,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
-      },
-      "statistics": {
-        "transitions": 24,
-        "direct_clauses": 4,
-        "one_shot_captures": 0,
-        "multi_templates": 1,
-        "branch_activations": 2,
-        "storage": {
-          "added_nodes": 48,
-          "copied_blob_bytes": 35,
-          "traced_nodes": 232,
-          "traced_edges": 549,
-          "swept_slots": 379
-        },
-        "snapshot": {
-          "nodes": 0,
-          "edges": 0,
-          "blobs": 0,
-          "remapped_nodes": 0,
-          "stored_payload_bytes": 0,
-          "interning_hash_bytes": 0,
-          "interning_comparisons": 0
-        }
-      },
-      "peak_working_bytes": 4807,
-      "output_bytes": 39,
-      "output_sha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
-    },
-    {
-      "phases": {
-        "initialization_ns": 250,
-        "direct_clause_ns": 1083,
-        "one_shot_capture_ns": 0,
-        "multi_template_capture_ns": 375,
-        "branch_creation_transition_ns": 1708,
-        "execution_ns": 4585,
-        "unwind_ns": 0,
-        "collection_ns": 9917,
-        "snapshot_validation_encoding_ns": 0,
-        "outcome_encoding_ns": 125
       },
       "statistics": {
         "transitions": 24,

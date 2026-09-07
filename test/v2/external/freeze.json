@@ -1,8 +1,8 @@
 {
   "format": "world-v2-external-consumer-freeze/v1",
-  "frozenAt": "2026-09-07T19:08:26.965Z",
-  "kernelSha256": "0a8ee56c30384e8a86ca5ac238e3022dbe1954cf8c341d2983781d497bc23866",
-  "kernelBytes": 388452,
+  "frozenAt": "2026-09-07T21:40:28.146Z",
+  "kernelSha256": "9d1cc7b8f2895a25034a5074413da646ae038dfc00b3d80563e71698c630f9a4",
+  "kernelBytes": 388453,
   "abi": 2,
   "profile": 1,
   "memory": {
@@ -14,15 +14,15 @@
   "sourceInputs": {
     "boundary": {
       "git": {
-        "head": "3e228a0220a8bda98fa6128bbcf35e392112c1c1",
-        "tree": "84d3d048f6cbe0865c7894e18ceb78d42a35ac86",
+        "head": "582642fb1a7dfefad3f5a1bf1bf0bd3855cc9c74",
+        "tree": "5823852fdda34adf89df89fe4d547c44169cedd2",
         "dirty": true
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
       "files": [
         {
           "name": "build.zig",
-          "sha256": "d5b1190ff3c16f6c3c9974d5ecb9bd0130f9614afa1b559635ce531f493d5f87"
+          "sha256": "e6d6ce531e273a3e5e9e214c336baf446a937ad8c521cfcbeb9825d17f0700c5"
         },
         {
           "name": "build.zig.zon",
@@ -82,7 +82,7 @@
         },
         {
           "name": "src/v2/data/program.zig",
-          "sha256": "a346fc749053888ad0619113b833cae9ed8acdfec1717c34fef25b37826405be"
+          "sha256": "bf9119f556b19301e7a5ccf9abec34ca6ee455cb1805e1a69a2d0c8f12f1a33a"
         },
         {
           "name": "src/v2/data/protocol.zig",
@@ -138,19 +138,19 @@
         },
         {
           "name": "src/v2/data/use_admission.zig",
-          "sha256": "dfa1c2f40fc3313625e16bdef81f5b67032d0335ebf4f6a206fe901d4240d97c"
+          "sha256": "bbd942e177bc328e2a7b10d5f81966448930f145e715802653444742805efb76"
         },
         {
           "name": "src/v2/data/wire.zig",
           "sha256": "2cad2f4762b4aaaa472db9fda6e8f038b5cc01c969a5ee32a9efa1067ebe8a28"
         }
       ],
-      "filesSha256": "489974ea2180b855515558c8947acbf4a6310984e87721d8e6a63014c10decb9"
+      "filesSha256": "4f13caca70433d1a402e7aa0340aeaafede278b80c70f310c8286eb5161f130e"
     },
     "world": {
       "git": {
-        "head": "181fbc74bd873d46b622a99696fb936e4911c7cb",
-        "tree": "fa57ee182b9c5812df21f140b77fde11d8a14063",
+        "head": "f2f57d3b63b136f6eb45b593cde3e86aa3b37fea",
+        "tree": "d9a77555a0df138cabd75e16957157f7b6cb6c0f",
         "dirty": true
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
