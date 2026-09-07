@@ -4,6 +4,234 @@ const boundary = @import("boundary");
 const data = @import("boundary_data_v2");
 const world = @import("world").process_v2;
 
+const BindingForm = enum { bind, sum_zero, sum_one, product };
+const BindingConsumer = enum { value, call, closure };
+const BindingBody = struct { term: data.program.Id, schema: data.program.Id };
+
+fn bindingBody(
+    b: *boundary.source.Builder,
+    name: data.program.Id,
+    consumer: BindingConsumer,
+) !BindingBody {
+    const integer = try b.scalar(u64);
+    const read = try b.pure(try b.reference(name));
+    if (consumer == .value) return .{ .term = read, .schema = integer };
+    const helper = try b.declare(&.{}, integer, &.{}, &.{});
+    try b.define(helper, read);
+    if (consumer == .call) return .{
+        .term = try b.term(.{ .call = .{ .function = helper, .arguments = &.{} } }),
+        .schema = integer,
+    };
+    const computation = try b.schema(.{ .internal = .{ .computation = .{
+        .parameters = &.{},
+        .result = integer,
+        .capture_bound = &.{integer},
+    } } });
+    return .{
+        .term = try b.pure(try b.lambda(helper, computation)),
+        .schema = computation,
+    };
+}
+
+fn introduceBinding(
+    b: *boundary.source.Builder,
+    name: data.program.Id,
+    body: data.program.Id,
+    form: BindingForm,
+) !data.program.Id {
+    const integer = try b.scalar(u64);
+    const two = try b.constant(u64, 2);
+    if (form == .bind) return b.bind(name, try b.pure(two), body);
+    if (form == .product) {
+        const product = try b.schema(.{ .product = &.{ integer, integer } });
+        const pair = try b.primitive(product, .product, &.{ two, try b.constant(u64, 9) }, 0);
+        return b.term(.{ .unpack_product = .{
+            .value = pair,
+            .variables = &.{ name, try b.variable(integer) },
+            .body = body,
+        } });
+    }
+    const sum = try b.schema(.{ .sum = &.{ integer, integer } });
+    const tag: data.program.Id = if (form == .sum_zero) 0 else 1;
+    return b.term(.{ .match_sum = .{
+        .value = try b.primitive(sum, .variant, &.{two}, tag),
+        .cases = &.{ .{ .variable = name, .body = body }, .{ .variable = name, .body = body } },
+    } });
+}
+
+fn shadowedBindingExample(
+    b: *boundary.source.Builder,
+    form: BindingForm,
+    consumer: BindingConsumer,
+    shadow: bool,
+    yield_inside: bool,
+) !boundary.source.Module {
+    const integer = try b.scalar(u64);
+    const pair = try b.schema(.{ .product = &.{ integer, integer } });
+    const entry = try b.declare(&.{integer}, pair, &.{}, &.{});
+    const outer = b.parameter(entry, 0);
+    const name = if (shadow) outer else try b.variable(integer);
+    const body = try bindingBody(b, name, consumer);
+    const inner = if (yield_inside) try b.term(.{ .yield_then = body.term }) else body.term;
+    const scope = try introduceBinding(b, name, inner, form);
+    const result = try b.variable(body.schema);
+    const value = if (consumer == .closure) try b.variable(integer) else result;
+    const combined = try b.primitive(pair, .product, &.{
+        try b.reference(value), try b.reference(outer),
+    }, 0);
+    const returned = try b.pure(combined);
+    const after = if (consumer == .closure) try b.bind(value, try b.term(.{ .apply = .{
+        .computation = try b.reference(result),
+        .arguments = &.{},
+    } }), returned) else returned;
+    try b.define(entry, try b.bind(result, scope, after));
+    return b.module(entry, integer);
+}
+
+const BindingExit = union(enum) { completed: []const u8, failed: []const u8 };
+
+fn expectBindingExecution(
+    module: boundary.source.Module,
+    initial: []const u8,
+    expected: BindingExit,
+) !void {
+    const allocator = std.testing.allocator;
+    var diagnostic: boundary.program.Diagnostic = .{};
+    var compiled = boundary.program.compileObserved(allocator, module, .{
+        .diagnostic = &diagnostic,
+    }) catch |err| {
+        std.debug.print("lexical fixture compile: {any}\n", .{diagnostic});
+        return err;
+    };
+    defer compiled.deinit();
+    const image = try allocator.alloc(u8, try data.image.encodedLength(compiled.program));
+    defer allocator.free(image);
+    _ = try compiled.encode(allocator, image);
+    inline for (.{ world.run, world.advance }) |execute| {
+        for ([_]bool{ false, true }) |bytes| {
+            const program: world.ProgramInput = if (bytes)
+                .{ .image = image }
+            else
+                .{ .records = compiled.program };
+            var step = try execute(allocator, .{
+                .program = program,
+                .instance = .{ .initial_args = initial },
+            });
+            defer step.deinit();
+            for (0..128) |_| {
+                const saved = switch (step.record) {
+                    .progressed, .yielded => |state| state,
+                    else => break,
+                };
+                const next = try execute(allocator, .{
+                    .program = program,
+                    .instance = .{ .snapshot = saved },
+                });
+                step.deinit();
+                step = next;
+            }
+            switch (expected) {
+                .completed => |value| {
+                    try std.testing.expect(step.record == .completed);
+                    try std.testing.expectEqualSlices(u8, value, step.record.completed);
+                },
+                .failed => |value| {
+                    try std.testing.expect(step.record == .failed);
+                    try std.testing.expectEqualSlices(u8, value, step.record.failed.value);
+                },
+            }
+        }
+    }
+}
+
+test "lexical binders preserve inner values and outside continuations through captures and yield" {
+    inline for (std.meta.tags(BindingForm)) |form| {
+        inline for (std.meta.tags(BindingConsumer)) |consumer| {
+            for ([_]bool{ false, true }) |shadow| {
+                for ([_]bool{ false, true }) |yield_inside| {
+                    var b = boundary.source.Builder.init(std.testing.allocator);
+                    defer b.deinit();
+                    const module = try shadowedBindingExample(
+                        &b,
+                        form,
+                        consumer,
+                        shadow,
+                        yield_inside,
+                    );
+                    expectBindingExecution(module, &.{ 1, 0, 0, 0, 0, 0, 0, 0 }, .{
+                        .completed = &.{ 2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },
+                    }) catch |err| {
+                        std.debug.print("form={s} consumer={s} shadow={any} yield={any}\n", .{
+                            @tagName(form), @tagName(consumer), shadow, yield_inside,
+                        });
+                        return err;
+                    };
+                }
+            }
+        }
+    }
+}
+
+test "lexical environments distinguish shared term bodies under different bindings" {
+    var b = boundary.source.Builder.init(std.testing.allocator);
+    defer b.deinit();
+    const integer = try b.scalar(u64);
+    const boolean = try b.scalar(bool);
+    const entry = try b.declare(&.{boolean}, integer, &.{}, &.{});
+    const name = try b.variable(integer);
+    const shared = try b.pure(try b.reference(name));
+    const left = try b.bind(name, try b.pure(try b.constant(u64, 11)), shared);
+    const right = try b.bind(name, try b.pure(try b.constant(u64, 22)), shared);
+    try b.define(entry, try b.term(.{ .conditional = .{
+        .condition = try b.reference(b.parameter(entry, 0)),
+        .when_true = left,
+        .when_false = right,
+    } }));
+    const module = b.module(entry, integer);
+    try expectBindingExecution(module, &.{1}, .{ .completed = &.{ 11, 0, 0, 0, 0, 0, 0, 0 } });
+    try expectBindingExecution(module, &.{0}, .{ .completed = &.{ 22, 0, 0, 0, 0, 0, 0, 0 } });
+}
+
+fn ownedBindingExample(b: *boundary.source.Builder, fail: bool) !boundary.source.Module {
+    const integer = try b.scalar(u64);
+    const computation = try b.schema(.{ .internal = .{ .computation = .{
+        .parameters = &.{},
+        .result = integer,
+        .use = .linear,
+    } } });
+    const outer = try b.declare(&.{}, integer, &.{}, &.{});
+    const inner = try b.declare(&.{}, integer, &.{}, &.{});
+    try b.define(outer, try b.pure(try b.constant(u64, 1)));
+    try b.define(inner, try b.pure(try b.constant(u64, 2)));
+    const name = try b.variable(computation);
+    const inner_exit = if (fail)
+        try b.term(.{ .fail = try b.constant(u64, 9) })
+    else
+        try b.term(.{ .apply = .{ .computation = try b.reference(name), .arguments = &.{} } });
+    const nested = try b.bind(name, try b.pure(try b.lambda(inner, computation)), inner_exit);
+    const after = try b.term(.{ .apply = .{
+        .computation = try b.reference(name),
+        .arguments = &.{},
+    } });
+    const entry = try b.declare(&.{}, integer, &.{}, &.{});
+    const rest = try b.bind(try b.variable(integer), nested, after);
+    try b.define(entry, try b.bind(name, try b.pure(try b.lambda(outer, computation)), rest));
+    return b.module(entry, integer);
+}
+
+test "lexical shadowing preserves distinct owned values on consumption and failure" {
+    for ([_]bool{ false, true }) |fail| {
+        var b = boundary.source.Builder.init(std.testing.allocator);
+        defer b.deinit();
+        const module = try ownedBindingExample(&b, fail);
+        const expected: BindingExit = if (fail)
+            .{ .failed = &.{ 9, 0, 0, 0, 0, 0, 0, 0 } }
+        else
+            .{ .completed = &.{ 1, 0, 0, 0, 0, 0, 0, 0 } };
+        try expectBindingExecution(module, &.{}, expected);
+    }
+}
+
 fn regionInvocationExample(b: *boundary.source.Builder) !boundary.source.Module {
     const unit = try b.scalar(void);
     const effect = try b.effect(.{

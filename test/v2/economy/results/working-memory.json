@@ -2,7 +2,7 @@
   "format": "world-v2-working-memory/v1",
   "method": "same native pointer width and inputs; v2 exact peak simultaneously live allocator payload includes PKI2 decoding, admission, execution, snapshot and PKO2 encoding; allocator metadata demand is separately a lower bound; v1 mandatory ValidationWorkspace is an unconditional working-allocation lower bound, excluding its additionally measured buffer demands; unused backing reservations are reported separately",
   "probes": {
-    "v1Sha256": "2bf46c0fcbdf04776056949de56188598de30d29627d4073e4a2b087cd6da1aa",
+    "v1Sha256": "24d74525b8e71c8647f79190cef18ceaf0c28b3ee1f606105288da95bb3c2e3e",
     "v2Sha256": "498995168eb781dacdb502ed1b7a3069b70d99531113c4eaa9390a4a92e4304b"
   },
   "workloads": [
@@ -453,7 +453,7 @@
     {
       "file": "source-choices-all.bpi2",
       "imageBytes": 334,
-      "imageSha256": "7e0a6f544f444f8b55c20a97b5197790bec19d4878e1fc4fc83a3b30b7f201d2",
+      "imageSha256": "6304dfe46d30fa4f0c346558d6d5c2a41f69fdd947e9e41c5e302499ba496dee",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 26387,
@@ -489,7 +489,7 @@
     {
       "file": "source-state-local.bpi2",
       "imageBytes": 761,
-      "imageSha256": "1cd065e40d86a71fd053104bc6b70f061fe83e53b14f5640e80b4632613e0c79",
+      "imageSha256": "7fefd347007d87ec39077c2bee9a36045a2e5a8cf95002e1287725c7d8dd2219",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 56851,
@@ -525,7 +525,7 @@
     {
       "file": "source-state-shared.bpi2",
       "imageBytes": 737,
-      "imageSha256": "5cb8eee21525395c6d93caf0ed034d205239de1ca12a35f920351629f82bea47",
+      "imageSha256": "9a8065e9112ceb6834b62abf1cfbd8c048b9b1daa714ad10b8d6d1119dd9f9b2",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 52329,
@@ -561,7 +561,7 @@
     {
       "file": "source-reentrant.bpi2",
       "imageBytes": 634,
-      "imageSha256": "3aaf0a2b8c9f727220f431301a1e227ee7381c8724e643e3d5c5eb859bdd62c3",
+      "imageSha256": "f6ace8890be17b8dc803f92e220ffd923590e614f053964b4e01b68d23d602b8",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 529731,
@@ -569,7 +569,7 @@
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 214,
-      "output_sha256": "034a0888ac9932625839cc6e23a3f3c21c922fd893eddf3066f8ca52613d8cf8",
+      "output_sha256": "cb87012258a2d836f00dd8d909183d1733fd52500951fa47a78ac2ec828772e4",
       "statistics": {
         "transitions": 10,
         "direct_clauses": 0,
@@ -597,7 +597,7 @@
     {
       "file": "source-cloned.bpi2",
       "imageBytes": 668,
-      "imageSha256": "0539292df365d55e4c0e928084fb0242989343fb75f12413c3a5a09ce9c6bbfe",
+      "imageSha256": "847c04f93cbda2af4d85c125a97d00dbd4e5b6078e4975bf50dc57900e60ae96",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 551031,
@@ -605,7 +605,7 @@
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 214,
-      "output_sha256": "43a6db5c52c480775b64a9b00b0def70a3a0e6e909b68cbfe2917cd5672d2ff9",
+      "output_sha256": "f10cb9d263fc443b0fa5869fa655804863a3473049d74e88c4e7f307d2af05e3",
       "statistics": {
         "transitions": 11,
         "direct_clauses": 0,
@@ -633,7 +633,7 @@
     {
       "file": "source-queens-dfs.bpi2",
       "imageBytes": 2298,
-      "imageSha256": "95ea6e11a02faa9ff9d49a2851a6cca5c05ee8a94fc40c76e26f3b68aff8fc5a",
+      "imageSha256": "0466e486b9abd73c5f8b96dcbce7cd5d2037723ebe715f3f92e58ab7327cfba4",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 199990,
@@ -641,7 +641,7 @@
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 425,
-      "output_sha256": "fcc2a683365d888735c2c97fca6df89d4979401bfcabe40eecbb51f5e1b613ea",
+      "output_sha256": "c05280c6dc7c3464d671efa756620ada9ba6f43a59bbbd808f57e1d41d83b408",
       "statistics": {
         "transitions": 42,
         "direct_clauses": 0,
@@ -669,7 +669,7 @@
     {
       "file": "source-queens-bfs.bpi2",
       "imageBytes": 2298,
-      "imageSha256": "1b7a38eab653f06a70f4a8b945c2b86cdd6e2551040068c7a67d5be323091483",
+      "imageSha256": "9a5a8e1a642b0a452d0507bb082ff73f68522d48ffe7b9744020732420f94b5f",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 200446,
@@ -677,7 +677,7 @@
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 456,
-      "output_sha256": "bbcadbcc8a756f3093e6972fa324d7d1e1cb56fc057db0eddcf80ac2f8497078",
+      "output_sha256": "bf1c82b3e774ae6eda56637ccfd7ce0aeaf7ff6b6c75a6df093dd830e7e32408",
       "statistics": {
         "transitions": 54,
         "direct_clauses": 0,
@@ -705,15 +705,15 @@
     {
       "file": "source-scheduler.bpi2",
       "imageBytes": 1437,
-      "imageSha256": "c548877e4d12ab5b6d747b41bcc793bbb9e23edfdeb5a6868fb30a85d58a663f",
+      "imageSha256": "2b95aa8aed432fbacdfee56a637a7cc484eb6adf3129ca842a777a11fcfbfe0f",
       "platform": "aarch64",
       "pointer_bytes": 8,
-      "peak_working_payload_bytes": 150638,
-      "working_demand_lower_bound": 152030,
+      "peak_working_payload_bytes": 150938,
+      "working_demand_lower_bound": 152330,
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 300,
-      "output_sha256": "2797dad14367ca22f4528c9145d709bcf16779c9b0a58f5da019045675460f29",
+      "output_sha256": "df9dfe158a88fbc8aec9d514ce800eca20c39c936d7cda450923b3580944e519",
       "statistics": {
         "transitions": 26,
         "direct_clauses": 2,
@@ -733,7 +733,7 @@
           "blobs": 2,
           "remapped_nodes": 21,
           "stored_payload_bytes": 18,
-          "interning_hash_bytes": 35,
+          "interning_hash_bytes": 19,
           "interning_comparisons": 0
         }
       }
@@ -813,7 +813,7 @@
     {
       "file": "economy-8.bpi2",
       "imageBytes": 652,
-      "imageSha256": "0472775a7a209aed62e51e683a124387e081ce87887ce73a1ea0a86b6c65e461",
+      "imageSha256": "1b4503a5e75c71cdf8102bd48a39ce9a8b260acb06a753bdd80d0ea4472d6a15",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 27333,
@@ -849,7 +849,7 @@
     {
       "file": "economy-64.bpi2",
       "imageBytes": 8971,
-      "imageSha256": "a213fc7c06366986f728a4e95471e116f55a906b797b571237bb5b04b2b76df6",
+      "imageSha256": "b30dfa7ec3091ff54b9b9480bdb9ae9b4e813c77fa1d8fcab37ca901819e5c12",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 218915,

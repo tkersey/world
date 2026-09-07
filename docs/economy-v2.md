@@ -15,7 +15,7 @@ used ReleaseSmall and a 256 MiB maximum. No operational ceiling was increased.
 |---|---|
 | Warm execution, at most 2× v1 | All seven matched workloads passed; worst median ratio 0.8962. |
 | Peak working allocation, at most 2× v1 | The seven matched workloads peaked at 78,703 bytes, below the 261,408-byte mandatory v1 validation workspace alone. |
-| Cold compile and emission, at most 2× v1 | One effect: 1.3116×; 32 dependent additions: 1.2931×. |
+| Cold compile and emission, at most 2× v1 | One effect: 1.3183×; 32 dependent additions: 1.2793×. |
 | Serialized overhead, at most 1.5× plus 4 KiB | All twenty frozen images passed even when every v2 constant byte was conservatively counted as overhead. |
 
 Warm measurements include input copying, admission, execution to the first
