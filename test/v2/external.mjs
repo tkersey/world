@@ -14,15 +14,16 @@ const { admitProcessKernel, encodeInput, decodeOutcome } = await import(pathToFi
 const freeze = JSON.parse(await readFile(join(world, 'test/v2/external/freeze.json')));
 const kernel = await readFile(kernelPath);
 assert.equal(sha256(kernel), freeze.kernelSha256, 'kernel changed: author another unrelated consumer after a new freeze');
+assert.equal(kernel.length, freeze.kernelBytes);
 await mkdir(output, { recursive: true });
 const scratch = await mkdtemp(join(output, 'consumer-'));
-await cp(join(world, 'test/v2/external/saturating_add'), join(scratch, 'saturating_add'), {
+await cp(join(world, 'test/v2/external/sort_three'), join(scratch, 'sort_three'), {
   recursive: true,
 });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
 function compile(source) {
   const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
-    { cwd: join(scratch, 'saturating_add'), timeout: 180000, maxBuffer: 16 << 20 });
+    { cwd: join(scratch, 'sort_three'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
 }
@@ -46,13 +47,10 @@ async function compare(input, mode) {
   records.push({ producer, input: Buffer.from(encoded).toString('base64'), output: Buffer.from(bytes).toString('base64') });
   return { ...decodeOutcome(bytes), bytes };
 }
-function expected([initial, firstAddend, secondAddend]) {
-  const maximum = (1n << 64n) - 1n;
-  const saturate = value => value > maximum ? maximum : value;
-  const first = saturate(initial + firstAddend), second = saturate(first + secondAddend);
-  const value = Buffer.alloc(16);
-  value.writeBigUInt64LE(first, 0);
-  value.writeBigUInt64LE(second, 8);
+function expected(values) {
+  const sorted = [...values].sort((left, right) => left > right ? -1 : left < right ? 1 : 0);
+  const value = Buffer.alloc(24);
+  sorted.forEach((item, index) => value.writeBigUInt64LE(item, index * 8));
   return { kind: 'Completed', value: [...value], trace: [{ kind: 'Yielded' }] };
 }
 try {
@@ -60,10 +58,10 @@ try {
   for (const values of [
     [0n, 0n, 0n],
     [1n, 2n, 3n],
-    [maximum, 0n, 1n],
-    [highBit, highBit - 1n, 0n],
-    [highBit, highBit, 1n],
-    [maximum - 2n, 1n, 1n],
+    [3n, 2n, 1n],
+    [highBit, 0n, maximum],
+    [maximum, highBit, highBit],
+    [maximum - 1n, maximum - 2n, maximum],
   ]) {
     const initialArgs = Buffer.alloc(24);
     values.forEach((value, index) => initialArgs.writeBigUInt64LE(value, index * 8));
@@ -81,6 +79,8 @@ try {
       input = { image, state: result.state };
     }
     assert.ok(terminal, 'finite external witness exceeded its test horizon');
+    assert.deepEqual(boundaries.map(result => result.kind),
+      [...wanted.trace.map(result => result.kind), wanted.kind]);
     assert.equal(terminal.kind, oracle.kind);
     assert.deepEqual(terminal.value, Uint8Array.from(oracle.value));
     input = { image, initialArgs };
@@ -91,23 +91,26 @@ try {
     }
   }
 } finally { await peer.close(); }
-assert.equal(sha256(await readFile(kernelPath)), freeze.kernelSha256);
-await writeFile(join(output, 'saturating-add.bpi2'), image);
-await writeFile(join(output, 'saturating-add-source.json'), sourceBytes);
+const finalKernel = await readFile(kernelPath);
+assert.equal(sha256(finalKernel), freeze.kernelSha256);
+assert.equal(finalKernel.length, freeze.kernelBytes);
+await writeFile(join(output, 'sort-three.bpi2'), image);
+await writeFile(join(output, 'sort-three-source.json'), sourceBytes);
 await writeFile(join(output, 'external.json'), json({
   format: 'world-v2-external-consumer/v1', freeze, checkedAt: new Date().toISOString(),
-  consumer: 'saturating-add',
-  consumerSourceSha256: sha256(await readFile(join(world, 'test/v2/external/saturating_add/main.zig'))),
+  consumer: 'sort-three',
+  consumerSourceSha256: sha256(await readFile(join(scratch, 'sort_three/main.zig'))),
   imageSha256: sha256(image), imageBytes: image.length, sourceSha256: sha256(sourceBytes),
   kernelSha256: freeze.kernelSha256, nativeSha256: native ? sha256(await readFile(native)) : null,
   embeddings: native ? ['native', 'javascript', 'wasmtime'] : ['javascript', 'wasmtime'],
   observations: [
     'new operation and deep handler compiled using only the public Boundary module',
-    'independent source semantics and unbounded-integer addition expectations agreed',
+    'independent source semantics and BigInt descending-sort expectations agreed',
     'fresh producers alternated through every advance boundary',
-    'run matched advance records; chained additions retained both u64 results through yield',
-    'zero, exact-limit, full-width and overflowing additions preserved exact results',
+    'run matched advance records; the sorting network retained both ordered pairs through yield',
+    'zero, permutations, duplicates and full-width u64 comparisons preserved exact results',
+    'runtime boundary kinds matched the independently expected single yield and completion',
   ], records,
 }));
-console.log(`post-freeze saturating-add consumer: ${records.length} exact records under ` +
+console.log(`post-freeze sort-three consumer: ${records.length} exact records under ` +
   freeze.kernelSha256);

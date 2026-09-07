@@ -1,8 +1,8 @@
 {
   "format": "world-v2-external-consumer-freeze/v1",
-  "frozenAt": "2026-09-07T21:40:28.146Z",
-  "kernelSha256": "9d1cc7b8f2895a25034a5074413da646ae038dfc00b3d80563e71698c630f9a4",
-  "kernelBytes": 388453,
+  "frozenAt": "2026-09-07T23:45:51.749Z",
+  "kernelSha256": "bb401ca875cb731eb9689afdb1271369bba1cc4493aabb8b43012e006e9c17e8",
+  "kernelBytes": 392401,
   "abi": 2,
   "profile": 1,
   "memory": {
@@ -14,9 +14,9 @@
   "sourceInputs": {
     "boundary": {
       "git": {
-        "head": "582642fb1a7dfefad3f5a1bf1bf0bd3855cc9c74",
-        "tree": "5823852fdda34adf89df89fe4d547c44169cedd2",
-        "dirty": true
+        "head": "7a4d10ec656cf70bbab99281dd71e3ec493daa0c",
+        "tree": "6caee2ec1cebf3b24a710e84bceae2e5a0570255",
+        "dirty": false
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
       "files": [
@@ -149,15 +149,15 @@
     },
     "world": {
       "git": {
-        "head": "f2f57d3b63b136f6eb45b593cde3e86aa3b37fea",
-        "tree": "d9a77555a0df138cabd75e16957157f7b6cb6c0f",
+        "head": "699a3147088274d2bf742c6ecb4cb70a5faea631",
+        "tree": "2139100b1a42bc12886bbcceac836a466b43ee67",
         "dirty": true
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
       "files": [
         {
           "name": "build.zig",
-          "sha256": "62468809541367da878864b8ed3b1a5c9f4780f563100d7eb58d76ab4f11f6b0"
+          "sha256": "2609882ddf690c5b3dfd223d318e9996d2609d4fdca3b981e8fb73e99cc3dc5d"
         },
         {
           "name": "build.zig.zon",
@@ -194,6 +194,14 @@
         {
           "name": "src/interpreter_v2/clone.zig",
           "sha256": "56dcec26d21f134741d998aa4448a6f01b39a5a905d5f576fecda200168169a6"
+        },
+        {
+          "name": "src/interpreter_v2/compact_collection_tests.zig",
+          "sha256": "51b42c8deb0a5c6426b737ed326658b8c0da6d14c1a86754707d4f6c0ad30b1f"
+        },
+        {
+          "name": "src/interpreter_v2/compact_length_tests.zig",
+          "sha256": "c69b5af7c1875119b1e48cba50bf0a1a1f7c2168a5caff488c97da4dc050e118"
         },
         {
           "name": "src/interpreter_v2/economy_phases.zig",
@@ -237,7 +245,7 @@
         },
         {
           "name": "src/interpreter_v2/tests.zig",
-          "sha256": "d32cb12c20910cd677bd05b20ee5bd47cce55a8fba65d383b4eb092c3837d4d4"
+          "sha256": "c31a512bcd98765bf0ff88ebf0e4fd7d74410644ddffa62ec0f4493dcd947654"
         },
         {
           "name": "src/interpreter_v2/unwind.zig",
@@ -245,7 +253,7 @@
         },
         {
           "name": "src/interpreter_v2/values.zig",
-          "sha256": "7df76197a6934361b9fe7995eaed1a4b12d702ba3922a9659c91a0e7f6b2d7a4"
+          "sha256": "edf1f5bc23d7988a19dc4d62a46b895122800e968ea78289ee33c4447edbea8b"
         },
         {
           "name": "src/kernel_v2/main.zig",
@@ -256,7 +264,7 @@
           "sha256": "0ea81f7c02bfe17874a730c42ab42afcfdaea1e9832371a9f80dc004bec4d07e"
         }
       ],
-      "filesSha256": "1fc75d2cc6b43dfe74221253163849becaf1b898aef700e836a9a285f4f96c2e"
+      "filesSha256": "918782a17c5a81547396c3635f7092d54311e883904bbfa42d3608fd62baa993"
     }
   }
 }

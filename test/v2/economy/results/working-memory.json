@@ -3,7 +3,7 @@
   "method": "same native pointer width and inputs; v2 exact peak simultaneously live allocator payload includes PKI2 decoding, admission, execution, snapshot and PKO2 encoding; allocator metadata demand is separately a lower bound; v1 mandatory ValidationWorkspace is an unconditional working-allocation lower bound, excluding its additionally measured buffer demands; unused backing reservations are reported separately",
   "probes": {
     "v1Sha256": "e8d9579952d2435dd9a7227d75c2c6b5e10958ea2c6e11aff1f56413ef55fd7f",
-    "v2Sha256": "12f744d5917d594beb522520b7b8901250be90a876868484915035ac0f484f0c"
+    "v2Sha256": "22e761aca0feab0e14ccb0b616a780946dedf8ff60053de95677f1275a684058"
   },
   "workloads": [
     {
@@ -457,7 +457,7 @@
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 26387,
-      "working_demand_lower_bound": 27459,
+      "working_demand_lower_bound": 27443,
       "working_reservation_bytes": 16777216,
       "outcome": "completed",
       "output_bytes": 31,
@@ -470,10 +470,10 @@
         "branch_activations": 6,
         "storage": {
           "added_nodes": 54,
-          "copied_blob_bytes": 55,
+          "copied_blob_bytes": 39,
           "traced_nodes": 166,
           "traced_edges": 297,
-          "swept_slots": 378
+          "swept_slots": 354
         },
         "snapshot": {
           "nodes": 0,

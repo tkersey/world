@@ -11,6 +11,7 @@ pub const shared_regions = @import("region_tests.zig").program(false);
 pub const shallow = @import("shallow_tests.zig").protocol;
 pub const reentrant = @import("reentrant_tests.zig").reentrant;
 pub const bounded = @import("bounded_tests.zig").program;
+pub const compact = @import("compact_length_tests.zig").program;
 
 const forty_two: p.Program = .{
     .roots = .{ .entry = 0, .result = 0, .failure = 0 },
@@ -168,6 +169,8 @@ test "forged pending result type and cyclic return frames reject before evaluati
 }
 
 test {
+    _ = @import("compact_length_tests.zig");
+    _ = @import("compact_collection_tests.zig");
     _ = @import("cleanup_tests.zig");
     _ = @import("abandon_tests.zig");
     _ = @import("choice_tests.zig");

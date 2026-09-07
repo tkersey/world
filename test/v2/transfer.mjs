@@ -5,18 +5,18 @@ import { spawnSync } from "node:child_process";
 import { admitProcessKernel, decodeRequest, encodeResult, encodeInput, decodeOutcome } from "../../src/process_v2/index.mjs";
 import { wasmtimePeer } from "./wasmtime_peer.mjs";
 
-if (process.argv.length !== 14 && process.argv.length !== 15) throw new Error("expected kernel, ten target fixtures, native embedding, and optional Wasmtime project paths");
+if (process.argv.length !== 15 && process.argv.length !== 16) throw new Error("expected kernel, eleven target fixtures, native embedding, and optional Wasmtime project paths");
 const kernel = new Uint8Array(await readFile(process.argv[2]));
 const image = new Uint8Array(await readFile(process.argv[3]));
 const loop = new Uint8Array(await readFile(process.argv[4]));
 const deep = new Uint8Array(await readFile(process.argv[5]));
 const choice = new Uint8Array(await readFile(process.argv[6]));
 const wasm = await admitProcessKernel(kernel, { expectedSha256: createHash("sha256").update(kernel).digest("hex") });
-const peer = process.argv[14] ? await wasmtimePeer(process.argv[14], process.argv[2], wasm.sha256) : null;
+const peer = process.argv[15] ? await wasmtimePeer(process.argv[15], process.argv[2], wasm.sha256) : null;
 let observations = 0;
 async function compare(mode, input) {
   const encoded = encodeInput({ ...input, mode });
-  const native = spawnSync(process.argv[13], [], { input: encoded, maxBuffer: 64 << 20 });
+  const native = spawnSync(process.argv[14], [], { input: encoded, maxBuffer: 64 << 20 });
   let outcome;
   try { outcome = await wasm[mode](input); }
   catch (error) {
@@ -114,6 +114,27 @@ try {
   await assert.rejects(host.run({ image: boundedImage, state: bounded.state, result: shortArray }), /InvalidValue/);
   const arrayDone = await host.run({ image: boundedImage, state: bounded.state, result: arrayResponse });
   assert.deepEqual(arrayDone.value, Uint8Array.of(9, 8));
-  console.log("native/WASM byte equality and transfers passed for handlers, regions, reentry, cleanup/cancellation rebinding, fixed arrays, bounded text, and 10,000 tail calls");
+  const compact = new Uint8Array(await readFile(process.argv[13]));
+  const natural = value => {
+    const bytes = [];
+    do { const low = Number(value & 127n); value >>= 7n; bytes.push(low | (value ? 128 : 0)); } while (value);
+    return bytes;
+  };
+  const maximum = (1n << 64n) - 1n;
+  for (const count of [0n, 1n, 1n << 32n, 768614336404564650n, maximum]) {
+    for (const mode of ["advance", "run"]) {
+      const initialArgs = Uint8Array.from([...natural(count), ...natural(count)]);
+      const yielded = await compare(mode, { image: compact, initialArgs });
+      assert.equal(yielded.kind, "Yielded");
+      const result = await compare(mode, { image: compact, state: yielded.state });
+      assert.equal(result.kind, "Completed");
+      const expected = Buffer.alloc(24);
+      expected.writeBigUInt64LE(count, 0);
+      expected.writeBigUInt64LE(count, 8);
+      expected.writeBigUInt64LE(maximum, 16);
+      assert.deepEqual(result.value, new Uint8Array(expected));
+    }
+  }
+  console.log("native/WASM byte equality and transfers passed for handlers, regions, cleanup, full-width compact collections, and 10,000 tail calls");
   if (peer) console.log(`Wasmtime ${peer.identity.wasmtime} matched target checkpoints, rejected stale results, and preserved cancellation rebinding`);
 } finally { if (peer) await peer.close(); }

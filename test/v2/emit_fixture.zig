@@ -15,6 +15,7 @@ pub fn main(init: std.process.Init) !void {
         7 => fixtures.reentrant,
         8 => fixtures.cleanup,
         9 => fixtures.bounded,
+        10 => fixtures.compact,
         else => @compileError("unknown target fixture"),
     };
     var normalized = try data.canonical.normalize(init.gpa, records);

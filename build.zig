@@ -52,8 +52,8 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
     });
     const fixture_step = b.step("emit-v2-test-fixtures", "Emit handwritten target fixtures");
-    var emitted_fixtures: [10]std.Build.LazyPath = undefined;
-    for ([_][]const u8{ "suspended", "loop", "deep", "choice", "local-regions", "shared-regions", "shallow", "reentrant", "cleanup", "bounded" }, 0..) |name, index| {
+    var emitted_fixtures: [11]std.Build.LazyPath = undefined;
+    for ([_][]const u8{ "suspended", "loop", "deep", "choice", "local-regions", "shared-regions", "shallow", "reentrant", "cleanup", "bounded", "compact" }, 0..) |name, index| {
         const fixture = b.addExecutable(.{ .name = b.fmt("emit-v2-{s}", .{name}), .root_module = b.createModule(.{
             .root_source_file = b.path("test/v2/emit_fixture.zig"),
             .target = target,
