@@ -1,6 +1,6 @@
 .{
-    .name = .coordinate_path,
-    .fingerprint = 0x2a79516949fbc5bd,
+    .name = .ordering,
+    .fingerprint = 0x7b3133671c521a2f,
     .version = "0.0.0",
     .dependencies = .{ .boundary = .{ .path = "../boundary" } },
     .paths = .{ "build.zig", "build.zig.zon", "main.zig", "README.md" },

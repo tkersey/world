@@ -9,16 +9,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "b18a8bcf44392aad6b83c937decfeab6d96650b33ad8732fc804477a2976c18c",
+          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
           "phaseMediansNs": {
             "initialization_ns": 167,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 333,
             "multi_template_capture_ns": 0,
             "branch_creation_transition_ns": 0,
-            "execution_ns": 1626,
+            "execution_ns": 1542,
             "unwind_ns": 0,
-            "collection_ns": 1583,
+            "collection_ns": 1417,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 125
           },
@@ -58,18 +58,18 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "b18a8bcf44392aad6b83c937decfeab6d96650b33ad8732fc804477a2976c18c",
+          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
           "phaseMediansNs": {
             "initialization_ns": 167,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 0,
-            "multi_template_capture_ns": 1042,
-            "branch_creation_transition_ns": 4583,
-            "execution_ns": 6209,
+            "multi_template_capture_ns": 1125,
+            "branch_creation_transition_ns": 4752,
+            "execution_ns": 6499,
             "unwind_ns": 0,
-            "collection_ns": 7998,
+            "collection_ns": 8457,
             "snapshot_validation_encoding_ns": 0,
-            "outcome_encoding_ns": 84
+            "outcome_encoding_ns": 125
           },
           "statistics": {
             "transitions": 25,
@@ -107,18 +107,18 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "b18a8bcf44392aad6b83c937decfeab6d96650b33ad8732fc804477a2976c18c",
+          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
           "phaseMediansNs": {
             "initialization_ns": 250,
-            "direct_clause_ns": 1001,
+            "direct_clause_ns": 998,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 333,
-            "branch_creation_transition_ns": 4791,
-            "execution_ns": 5126,
+            "branch_creation_transition_ns": 4833,
+            "execution_ns": 5250,
             "unwind_ns": 0,
-            "collection_ns": 13747,
+            "collection_ns": 13670,
             "snapshot_validation_encoding_ns": 0,
-            "outcome_encoding_ns": 83
+            "outcome_encoding_ns": 84
           },
           "statistics": {
             "transitions": 30,
@@ -156,18 +156,18 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "b18a8bcf44392aad6b83c937decfeab6d96650b33ad8732fc804477a2976c18c",
+          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
           "phaseMediansNs": {
             "initialization_ns": 250,
             "direct_clause_ns": 1082,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 333,
-            "branch_creation_transition_ns": 1750,
-            "execution_ns": 4625,
+            "branch_creation_transition_ns": 1708,
+            "execution_ns": 4542,
             "unwind_ns": 0,
-            "collection_ns": 10038,
+            "collection_ns": 9956,
             "snapshot_validation_encoding_ns": 0,
-            "outcome_encoding_ns": 125
+            "outcome_encoding_ns": 84
           },
           "statistics": {
             "transitions": 24,
@@ -205,18 +205,18 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "b18a8bcf44392aad6b83c937decfeab6d96650b33ad8732fc804477a2976c18c",
+          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
           "phaseMediansNs": {
-            "initialization_ns": 708,
+            "initialization_ns": 709,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 958,
             "branch_creation_transition_ns": 4750,
-            "execution_ns": 19837,
+            "execution_ns": 20417,
             "unwind_ns": 0,
-            "collection_ns": 39914,
-            "snapshot_validation_encoding_ns": 290375,
-            "outcome_encoding_ns": 208
+            "collection_ns": 40544,
+            "snapshot_validation_encoding_ns": 296375,
+            "outcome_encoding_ns": 250
           },
           "statistics": {
             "transitions": 42,
@@ -254,17 +254,17 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "b18a8bcf44392aad6b83c937decfeab6d96650b33ad8732fc804477a2976c18c",
+          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
           "phaseMediansNs": {
-            "initialization_ns": 459,
+            "initialization_ns": 500,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 0,
             "branch_creation_transition_ns": 0,
-            "execution_ns": 3251,
-            "unwind_ns": 2460,
-            "collection_ns": 9542,
-            "snapshot_validation_encoding_ns": 28625,
+            "execution_ns": 3334,
+            "unwind_ns": 2583,
+            "collection_ns": 9875,
+            "snapshot_validation_encoding_ns": 29167,
             "outcome_encoding_ns": 167
           },
           "statistics": {
@@ -303,16 +303,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "b18a8bcf44392aad6b83c937decfeab6d96650b33ad8732fc804477a2976c18c",
+          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
           "phaseMediansNs": {
-            "initialization_ns": 167,
-            "direct_clause_ns": 11128,
+            "initialization_ns": 166,
+            "direct_clause_ns": 10671,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 0,
             "branch_creation_transition_ns": 0,
-            "execution_ns": 76038,
+            "execution_ns": 72757,
             "unwind_ns": 0,
-            "collection_ns": 104717,
+            "collection_ns": 101170,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 125
           },

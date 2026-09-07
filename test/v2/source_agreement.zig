@@ -4,6 +4,158 @@ const boundary = @import("boundary");
 const data = @import("boundary_data_v2");
 const world = @import("world").process_v2;
 
+fn regionInvocationExample(b: *boundary.source.Builder) !boundary.source.Module {
+    const unit = try b.scalar(void);
+    const effect = try b.effect(.{
+        .identity = "restore/foreign-region",
+        .payload = unit,
+        .result = unit,
+    });
+    const region_id = b.region();
+    const region = try b.schema(.{ .internal = .{ .region = region_id } });
+    const wide_type = try b.schema(.{ .internal = .{ .computation = .{
+        .parameters = &.{},
+        .result = unit,
+        .effects = &.{effect},
+    } } });
+    var wrappers: [2]data.program.Id = undefined;
+    for (&wrappers, 0..) |*wrapper, index| {
+        const row: []const data.program.Id = if (index == 0) &.{} else &.{effect};
+        const body = try b.declare(&.{region}, unit, row, &.{region_id});
+        const value = try b.constant(void, {});
+        const term = if (index == 0) try b.pure(value) else try b.term(.{ .perform = .{
+            .effect = effect,
+            .payload = value,
+        } });
+        try b.define(body, term);
+        const body_type = try b.schema(.{ .internal = .{ .computation = .{
+            .parameters = &.{region},
+            .result = unit,
+            .effects = row,
+            .regions = &.{region_id},
+        } } });
+        const parameters: []const data.program.Id = if (index == 0) &.{wide_type} else &.{};
+        wrapper.* = try b.declare(parameters, unit, row, &.{});
+        try b.define(wrapper.*, try b.term(.{ .with_region = .{
+            .region = region_id,
+            .body = try b.lambda(body, body_type),
+        } }));
+    }
+    const entry = try b.declare(&.{}, unit, &.{}, &.{});
+    // Passing an unused computation retains its code without performing its effects.
+    try b.define(entry, try b.term(.{ .call = .{
+        .function = wrappers[0],
+        .arguments = &.{try b.lambda(wrappers[1], wide_type)},
+    } }));
+    return b.module(entry, unit);
+}
+
+const RegionInvocation = struct { scope: data.program.Id, body: data.program.Id };
+
+fn widerRegionInvocation(program: data.program.Program) !RegionInvocation {
+    for (program.blocks, 0..) |block, id| {
+        if (block.terminator != .with_region) continue;
+        const slot = block.terminator.with_region.body;
+        const schema = if (slot < block.parameters.len)
+            block.parameters[@intCast(slot)]
+        else
+            block.instructions[@intCast(slot - block.parameters.len)].result_type;
+        if (program.schemas[@intCast(schema)].internal.computation.effects.len == 0) continue;
+        for (program.constructors) |constructor| {
+            if (constructor.schema == schema) return .{
+                .scope = id,
+                .body = program.functions[@intCast(constructor.function)].entry,
+            };
+        }
+    }
+    return error.WiderRegionNotFound;
+}
+
+fn checkRegionInvocationBindings(
+    program: data.program.Program,
+    image: []const u8,
+    snapshot: []const u8,
+    scope: usize,
+    wider: RegionInvocation,
+) !void {
+    const allocator = std.testing.allocator;
+    for (0..4) |mask| {
+        var saved = try data.snapshot.decodeGraph(allocator, snapshot);
+        defer saved.deinit();
+        const nodes = @constCast(saved.state.nodes);
+        if (mask & 1 != 0)
+            nodes[@intCast(saved.state.roots.current.?.id)].control.block = wider.body;
+        if (mask & 2 != 0) nodes[scope].region_scope.source_block = wider.scope;
+        if (mask == 0) {
+            try data.state_admission.validate(allocator, program, saved.state);
+            var original = try world.run(allocator, .{
+                .program = .{ .image = image },
+                .instance = .{ .snapshot = snapshot },
+            });
+            defer original.deinit();
+            try std.testing.expect(original.record == .completed);
+            continue;
+        }
+        const expected = if (mask == 1) error.InvalidEffect else error.InvalidScope;
+        try std.testing.expectError(expected, data.state_admission.validate(
+            allocator,
+            program,
+            saved.state,
+        ));
+        var encoded = try data.snapshot.emit(allocator, saved.state, allocator, null);
+        defer encoded.normalized.deinit();
+        defer allocator.free(encoded.bytes);
+        inline for (.{ world.run, world.advance }) |execute| {
+            try std.testing.expectError(expected, execute(allocator, .{
+                .program = .{ .records = program },
+                .instance = .{ .records = saved.state },
+            }));
+            try std.testing.expectError(expected, execute(allocator, .{
+                .program = .{ .image = image },
+                .instance = .{ .snapshot = encoded.bytes },
+            }));
+        }
+    }
+}
+
+test "restored region frames preserve their saved invocation effect contract" {
+    const allocator = std.testing.allocator;
+    var b = boundary.source.Builder.init(allocator);
+    defer b.deinit();
+    var compiled = try boundary.program.compile(allocator, try regionInvocationExample(&b));
+    defer compiled.deinit();
+    const program = compiled.program;
+    const entry_effects = program.functions[@intCast(program.roots.entry)].effects;
+    try std.testing.expectEqual(@as(usize, 0), entry_effects.len);
+    const storage = try allocator.alloc(u8, try data.image.encodedLength(program));
+    defer allocator.free(storage);
+    const image = try data.image.encode(allocator, program, storage);
+    const wider = try widerRegionInvocation(program);
+    var step = try world.advance(allocator, .{
+        .program = .{ .image = image },
+        .instance = .{ .initial_args = &.{} },
+    });
+    defer step.deinit();
+    for (0..32) |_| {
+        if (step.record != .progressed) return error.RegionScopeNotReached;
+        var saved = try data.snapshot.decodeGraph(allocator, step.record.progressed);
+        defer saved.deinit();
+        try data.state_admission.validate(allocator, program, saved.state);
+        for (saved.state.nodes, 0..) |node, id| {
+            if (node != .region_scope) continue;
+            try checkRegionInvocationBindings(program, image, step.record.progressed, id, wider);
+            return;
+        }
+        const next = try world.advance(allocator, .{
+            .program = .{ .image = image },
+            .instance = .{ .snapshot = step.record.progressed },
+        });
+        step.deinit();
+        step = next;
+    }
+    return error.RegionScopeNotReached;
+}
+
 fn phaseReturnExample(b: *boundary.source.Builder) !boundary.source.Module {
     const unit = try b.scalar(void);
     const integer = try b.scalar(u64);
