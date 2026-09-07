@@ -2,7 +2,7 @@
 
 These are development measurements from September 7, 2026 UTC. Release acceptance
 must bind the final source and delivered kernel separately. The measured kernel
-is `31f0d545e9b83d958914b6c358d8dbe83db42329863768a39808bd39cb6b499d`.
+is `fe8218c8b330740330c881005fa3ebac2b7d4a660a04bf8caaacf01d63fd2743`.
 Raw samples and allocation observations are in
 [`test/v2/economy/results`](../test/v2/economy/results/).
 
@@ -13,9 +13,9 @@ used ReleaseSmall and a 256 MiB maximum. No operational ceiling was increased.
 
 | Gate | Observation |
 |---|---|
-| Warm execution, at most 2× v1 | All seven matched workloads passed; worst median ratio 0.8962. |
+| Warm execution, at most 2× v1 | All seven matched workloads passed; worst median ratio 0.9447. |
 | Peak working allocation, at most 2× v1 | The seven matched workloads peaked at 78,703 bytes, below the 261,408-byte mandatory v1 validation workspace alone. |
-| Cold compile and emission, at most 2× v1 | One effect: 1.3183×; 32 dependent additions: 1.2793×. |
+| Cold compile and emission, at most 2× v1 | One effect: 1.2956×; 32 dependent additions: 1.3064×. |
 | Serialized overhead, at most 1.5× plus 4 KiB | All twenty frozen images passed even when every v2 constant byte was conservatively counted as overhead. |
 
 Warm measurements include input copying, admission, execution to the first
@@ -28,20 +28,20 @@ payloads were compared through the pure BPI1 value conversion before timing.
 
 | Workload | v1 median ms | v2 median ms | v2/v1 |
 |---|---:|---:|---:|
-| Integer and Boolean operations | 0.06900 | 0.03012 | 0.4366 |
-| Algebraic collections | 0.12069 | 0.05412 | 0.4485 |
-| Portable values | 0.03526 | 0.01357 | 0.3850 |
-| Recursion, initial zero | 0.32413 | 0.01434 | 0.0442 |
-| Recursion, initial 32 | 10.62359 | 0.04454 | 0.0042 |
-| Residual request | 0.04534 | 0.04063 | 0.8962 |
-| Authored yield | 0.02352 | 0.01163 | 0.4944 |
+| Integer and Boolean operations | 0.07171 | 0.03585 | 0.4999 |
+| Algebraic collections | 0.12911 | 0.06063 | 0.4696 |
+| Portable values | 0.03733 | 0.01452 | 0.3889 |
+| Recursion, initial zero | 0.34038 | 0.01579 | 0.0464 |
+| Recursion, initial 32 | 11.39883 | 0.04855 | 0.0043 |
+| Residual request | 0.04716 | 0.04456 | 0.9447 |
+| Authored yield | 0.02649 | 0.01305 | 0.4928 |
 
 The recursion ratios include v1's repeated admission and serialization of its
 internal progress records. They are not measurements of scalar instruction
 dispatch alone. The fixed public v1 kernel occupies 161,021,952 bytes of linear
 memory on these workloads; v2 occupies 1,310,720 bytes. These reservations are
 reported separately from live native working allocation. Kernel sizes are
-682,943 and 388,181 bytes respectively.
+682,943 and 388,431 bytes respectively.
 
 Native working peaks include PKI decoding, image admission, execution, snapshot
 production, and PKO encoding. They count simultaneously live allocator payload;
@@ -104,7 +104,7 @@ State and make no historical execution claim.
 
 `setup.json` separates five cold kernel builds from module compilation and
 instance creation in JavaScript and Wasmtime. Every build emitted the same
-388,181-byte kernel. Each JavaScript compilation uses a fresh process; each
+388,431-byte kernel. Each JavaScript compilation uses a fresh process; each
 Wasmtime compilation uses a fresh engine without enabling its code cache.
 Instance measurements have five warmups and 21 samples per module. Startup of
 the process, Python binding and engine itself is excluded from those timers.

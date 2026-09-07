@@ -22,11 +22,24 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
     });
+    const borrow_returns = b.createModule(.{
+        .root_source_file = .{
+            .cwd_relative = b.pathJoin(&.{ boundary_source, "test/v2/borrow_returns.zig" }),
+        },
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "boundary", .module = boundary }},
+    });
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, "test/v2/source_agreement.zig" }) },
         .target = b.graph.host,
         .optimize = optimize,
-        .imports = &.{ .{ .name = "world", .module = world }, .{ .name = "boundary_data_v2", .module = data }, .{ .name = "boundary", .module = boundary } },
+        .imports = &.{
+            .{ .name = "world", .module = world },
+            .{ .name = "boundary_data_v2", .module = data },
+            .{ .name = "boundary", .module = boundary },
+            .{ .name = "borrow_return_fixtures", .module = borrow_returns },
+        },
     }) });
     b.getInstallStep().dependOn(&b.addRunArtifact(tests).step);
 }

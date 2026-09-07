@@ -5,84 +5,91 @@ const source = boundary.computation;
 
 fn program(b: *source.Builder) !source.Module {
     const unit = try b.scalar(void);
-    const integer = try b.scalar(i64);
-    const boolean = try b.scalar(bool);
+    const integer = try b.scalar(u64);
     const pair = try b.schema(.{ .product = &.{ integer, integer } });
-    const answer = try b.schema(.{ .product = &.{ boolean, boolean } });
-    const precedes = try b.effect(.{
-        .identity = "ordering/precedes",
+    const toggle = try b.effect(.{
+        .identity = "bitmask/toggle",
         .payload = pair,
-        .result = boolean,
+        .result = integer,
         .external = false,
     });
-    const capability = try b.schema(.{ .internal = .{ .capability = precedes } });
+    const capability = try b.schema(.{ .internal = .{ .capability = toggle } });
     const token = try b.schema(.{ .internal = .{ .resumption = .{
-        .effect = precedes,
-        .input = boolean,
-        .answer = answer,
-        .capture_bound = &.{ unit, integer, boolean, pair, answer, capability },
-        .handled = &.{precedes},
+        .effect = toggle,
+        .input = integer,
+        .answer = pair,
+        .capture_bound = &.{ unit, integer, pair, capability },
+        .handled = &.{toggle},
         .mode = .deep,
         .use = .linear,
     } } });
-    const returns = try b.declare(&.{answer}, answer, &.{}, &.{});
+    const returns = try b.declare(&.{pair}, pair, &.{}, &.{});
     try b.define(returns, try b.pure(try b.reference(b.parameter(returns, 0))));
-    const clause = try b.declare(&.{ pair, token }, answer, &.{}, &.{});
+    const clause = try b.declare(&.{ pair, token }, pair, &.{}, &.{});
     const payload = try b.reference(b.parameter(clause, 0));
-    const comparison = try b.primitive(boolean, .less, &.{
+    const toggled = try b.primitive(integer, .integer_bit_xor, &.{
         try b.primitive(integer, .field, &.{payload}, 0),
         try b.primitive(integer, .field, &.{payload}, 1),
     }, 0);
     try b.define(clause, try b.term(.{ .resume_value = .{
         .resumption = try b.reference(b.parameter(clause, 1)),
-        .argument = comparison,
+        .argument = toggled,
     } }));
     const handler = try b.handler(.{
         .mode = .deep,
-        .input = answer,
-        .answer = answer,
+        .input = pair,
+        .answer = pair,
         .return_function = returns,
-        .clauses = &.{.{ .effect = precedes, .function = clause, .resumption = token }},
+        .clauses = &.{.{ .effect = toggle, .function = clause, .resumption = token }},
     });
-    return application(b, unit, boolean, pair, answer, precedes, capability, handler);
+    return application(b, unit, integer, pair, toggle, capability, handler);
 }
 
 fn application(
     b: *source.Builder,
     unit: u64,
-    boolean: u64,
+    integer: u64,
     pair: u64,
-    answer: u64,
-    precedes: u64,
+    toggle: u64,
     capability: u64,
     handler: u64,
 ) !source.Module {
-    const body = try b.declare(&.{ capability, pair, pair }, answer, &.{precedes}, &.{});
-    const first = try b.variable(boolean);
-    const second = try b.variable(boolean);
-    var requests: [2]u64 = undefined;
-    for (&requests, 0..) |*request, index| request.* = try b.term(.{ .perform = .{
-        .effect = precedes,
+    const body = try b.declare(&.{ capability, integer, integer, integer }, pair, &.{toggle}, &.{});
+    const first = try b.variable(integer);
+    const second = try b.variable(integer);
+    const request = try b.term(.{ .perform = .{
+        .effect = toggle,
         .capability = try b.reference(b.parameter(body, 0)),
-        .payload = try b.reference(b.parameter(body, index + 1)),
+        .payload = try b.primitive(pair, .product, &.{
+            try b.reference(b.parameter(body, 1)),
+            try b.reference(b.parameter(body, 2)),
+        }, 0),
     } });
-    const result = try b.pure(try b.primitive(answer, .product, &.{
+    const next = try b.term(.{ .perform = .{
+        .effect = toggle,
+        .capability = try b.reference(b.parameter(body, 0)),
+        .payload = try b.primitive(pair, .product, &.{
+            try b.reference(first), try b.reference(b.parameter(body, 3)),
+        }, 0),
+    } });
+    const result = try b.pure(try b.primitive(pair, .product, &.{
         try b.reference(first), try b.reference(second),
     }, 0));
-    const after_yield = try b.bind(second, requests[1], result);
-    try b.define(body, try b.bind(first, requests[0], try b.term(.{ .yield_then = after_yield })));
+    const after_yield = try b.bind(second, next, result);
+    try b.define(body, try b.bind(first, request, try b.term(.{ .yield_then = after_yield })));
     const body_type = try b.schema(.{ .internal = .{ .computation = .{
-        .parameters = &.{ capability, pair, pair },
-        .result = answer,
-        .effects = &.{precedes},
+        .parameters = &.{ capability, integer, integer, integer },
+        .result = pair,
+        .effects = &.{toggle},
     } } });
-    const entry = try b.declare(&.{ pair, pair }, answer, &.{}, &.{});
+    const entry = try b.declare(&.{ integer, integer, integer }, pair, &.{}, &.{});
     try b.define(entry, try b.term(.{ .handle = .{
         .handler = handler,
         .body = try b.lambda(body, body_type),
         .arguments = &.{
             try b.reference(b.parameter(entry, 0)),
             try b.reference(b.parameter(entry, 1)),
+            try b.reference(b.parameter(entry, 2)),
         },
     } }));
     return b.module(entry, unit);

@@ -9,14 +9,14 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
+          "executableSha256": "ea937eb71cdc173015faebc20e8be0a9e68b8b55a5e3d9ce413fa5fb7aa1d516",
           "phaseMediansNs": {
-            "initialization_ns": 167,
+            "initialization_ns": 166,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 333,
             "multi_template_capture_ns": 0,
             "branch_creation_transition_ns": 0,
-            "execution_ns": 1582,
+            "execution_ns": 1539,
             "unwind_ns": 0,
             "collection_ns": 1417,
             "snapshot_validation_encoding_ns": 0,
@@ -58,16 +58,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
+          "executableSha256": "ea937eb71cdc173015faebc20e8be0a9e68b8b55a5e3d9ce413fa5fb7aa1d516",
           "phaseMediansNs": {
-            "initialization_ns": 208,
+            "initialization_ns": 167,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 0,
-            "multi_template_capture_ns": 1125,
-            "branch_creation_transition_ns": 4708,
-            "execution_ns": 6459,
+            "multi_template_capture_ns": 1043,
+            "branch_creation_transition_ns": 4459,
+            "execution_ns": 6042,
             "unwind_ns": 0,
-            "collection_ns": 8253,
+            "collection_ns": 7915,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 84
           },
@@ -107,16 +107,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
+          "executableSha256": "ea937eb71cdc173015faebc20e8be0a9e68b8b55a5e3d9ce413fa5fb7aa1d516",
           "phaseMediansNs": {
             "initialization_ns": 250,
             "direct_clause_ns": 1042,
             "one_shot_capture_ns": 0,
-            "multi_template_capture_ns": 375,
-            "branch_creation_transition_ns": 5041,
-            "execution_ns": 5376,
+            "multi_template_capture_ns": 334,
+            "branch_creation_transition_ns": 4875,
+            "execution_ns": 5166,
             "unwind_ns": 0,
-            "collection_ns": 14041,
+            "collection_ns": 13832,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 125
           },
@@ -156,16 +156,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
+          "executableSha256": "ea937eb71cdc173015faebc20e8be0a9e68b8b55a5e3d9ce413fa5fb7aa1d516",
           "phaseMediansNs": {
             "initialization_ns": 250,
             "direct_clause_ns": 1084,
             "one_shot_capture_ns": 0,
-            "multi_template_capture_ns": 334,
-            "branch_creation_transition_ns": 1750,
-            "execution_ns": 4668,
+            "multi_template_capture_ns": 375,
+            "branch_creation_transition_ns": 1791,
+            "execution_ns": 4625,
             "unwind_ns": 0,
-            "collection_ns": 10081,
+            "collection_ns": 10167,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 125
           },
@@ -205,18 +205,18 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
+          "executableSha256": "ea937eb71cdc173015faebc20e8be0a9e68b8b55a5e3d9ce413fa5fb7aa1d516",
           "phaseMediansNs": {
             "initialization_ns": 708,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 959,
-            "branch_creation_transition_ns": 4791,
-            "execution_ns": 20247,
+            "branch_creation_transition_ns": 4708,
+            "execution_ns": 19959,
             "unwind_ns": 0,
-            "collection_ns": 39792,
-            "snapshot_validation_encoding_ns": 287333,
-            "outcome_encoding_ns": 208
+            "collection_ns": 39749,
+            "snapshot_validation_encoding_ns": 291083,
+            "outcome_encoding_ns": 166
           },
           "statistics": {
             "transitions": 42,
@@ -254,17 +254,17 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
+          "executableSha256": "ea937eb71cdc173015faebc20e8be0a9e68b8b55a5e3d9ce413fa5fb7aa1d516",
           "phaseMediansNs": {
             "initialization_ns": 500,
             "direct_clause_ns": 0,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 0,
             "branch_creation_transition_ns": 0,
-            "execution_ns": 3208,
-            "unwind_ns": 2500,
-            "collection_ns": 9418,
-            "snapshot_validation_encoding_ns": 28542,
+            "execution_ns": 3292,
+            "unwind_ns": 2543,
+            "collection_ns": 9584,
+            "snapshot_validation_encoding_ns": 28708,
             "outcome_encoding_ns": 167
           },
           "statistics": {
@@ -303,16 +303,16 @@
       "variants": [
         {
           "label": "after",
-          "executableSha256": "56eb5a25b2c043890839613fdd391474b916f55b8ceb7dc5af0a3d02676ad57c",
+          "executableSha256": "ea937eb71cdc173015faebc20e8be0a9e68b8b55a5e3d9ce413fa5fb7aa1d516",
           "phaseMediansNs": {
-            "initialization_ns": 125,
-            "direct_clause_ns": 10998,
+            "initialization_ns": 167,
+            "direct_clause_ns": 11499,
             "one_shot_capture_ns": 0,
             "multi_template_capture_ns": 0,
             "branch_creation_transition_ns": 0,
-            "execution_ns": 75832,
+            "execution_ns": 78712,
             "unwind_ns": 0,
-            "collection_ns": 101412,
+            "collection_ns": 107259,
             "snapshot_validation_encoding_ns": 0,
             "outcome_encoding_ns": 125
           },

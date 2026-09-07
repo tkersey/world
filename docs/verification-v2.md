@@ -42,7 +42,7 @@ records exact target inputs/outputs in `world-v2-conformance.json` and `.bin`.
 | H22 | Native `tests.zig` and transfer harnesses compare `advance` and `run` at the same observable boundary. |
 | H23 | Native failure-injection tests plus `capacity.mjs`: admission, capture/branch creation, unwinding, image emission and output encoding retain unchanged retry inputs. |
 | H24 | Recursive/yielding source and native workloads reach externally selected lengths; dead control slots are reused without semantic fuel. |
-| H25 / O03 | `test/v2/external/ordering` was authored after `external/freeze.json`: its new signed-order operation and deep handler passed 45 exact records under the recorded kernel digest. |
+| H25 / O03 | `test/v2/external/bitmask` was authored after `external/freeze.json`: its new bitmask operation and deep handler passed 54 exact records, chaining both results through a yield under the recorded kernel digest. |
 | H26 | `bpi1_agreement.mjs`: pure lifted data agrees with the frozen public v1 interpreter; no v1 evaluator is in the v2 package. |
 
 The integrated solver explores columns 1–4, reports `[2,4,1,3]` then
@@ -80,6 +80,11 @@ older capability across clause suspension; source checks reject passing the
 selected attachment itself, directly and through a helper. The handler and
 protection operand-order fixtures each produce `7` after ordered cell writes
 in computation construction and argument evaluation.
+Return-clause write regressions preserve older references and reject younger
+ones supplied through handler state, resumed-body results and selected product
+fields, including delegated writers. Saved-State substitutions retain the same
+constraints. Boundary's source-only oracle cases also preserve enclosing handlers
+when cleanup runs after cancellation or explicit resumption disposal.
 
 `emit_rejections.zig` starts from valid source-derived states before changing
 pending contracts, identities, blob types, delimiters, local aliases or token

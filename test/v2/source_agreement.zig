@@ -3,6 +3,135 @@ const std = @import("std");
 const boundary = @import("boundary");
 const data = @import("boundary_data_v2");
 const world = @import("world").process_v2;
+const borrow_returns = @import("borrow_return_fixtures");
+
+test "initial and successor return clauses preserve older references through execution" {
+    for (std.enums.values(borrow_returns.ResultFrom)) |from| {
+        for ([_]bool{ false, true }) |initial| {
+            for ([_]bool{ false, true }) |delegated| {
+                var b = boundary.source.Builder.init(std.testing.allocator);
+                defer b.deinit();
+                const module = try borrow_returns.scenario(&b, from, initial, false, delegated);
+                try expectBindingExecution(module, &.{}, .{ .completed = &.{} });
+            }
+        }
+    }
+}
+
+fn changeSuccessorBorrow(
+    program: data.program.Program,
+    state: data.graph.State,
+    from: borrow_returns.ResultFrom,
+) !void {
+    // The caller owns this freshly decoded graph; the original bytes stay intact.
+    const nodes = @constCast(state.nodes);
+    const current = state.roots.current orelse return error.ExpectedControl;
+    const control = nodes[@intCast(current.id)].control;
+    const resumed = program.blocks[@intCast(control.block)].terminator.resume_with;
+    const older = control.arguments[@intCast(resumed.state[0])];
+    const younger = control.evidence orelse return error.ExpectedYoungerHandler;
+    try std.testing.expect(older.body == .reference);
+    try std.testing.expect(older.body.reference.id != younger.id);
+    if (from == .state) {
+        @constCast(control.arguments)[@intCast(resumed.state[0])] = .{
+            .schema = older.schema,
+            .body = .{ .reference = younger },
+        };
+        return;
+    }
+    const value = control.arguments[@intCast(resumed.resumption)];
+    try std.testing.expect(value.body == .owned);
+    const token = nodes[@intCast(value.body.owned.node.id)].one_shot;
+    const captured = nodes[@intCast(token.capture.?.id)].continuation;
+    var changed: usize = 0;
+    for (@constCast(captured.arguments)) |*argument| if (argument.*) |item| {
+        if (item.schema != older.schema or item.body != .reference) continue;
+        if (item.body.reference.id != older.body.reference.id) continue;
+        argument.* = .{ .schema = item.schema, .body = .{ .reference = younger } };
+        changed += 1;
+    };
+    try std.testing.expect(changed != 0);
+}
+
+fn checkSuccessorBorrowState(
+    program: data.program.Program,
+    image: []const u8,
+    snapshot: []const u8,
+    from: borrow_returns.ResultFrom,
+) !bool {
+    const allocator = std.testing.allocator;
+    var saved = try data.snapshot.decodeGraph(allocator, snapshot);
+    defer saved.deinit();
+    const current = saved.state.roots.current orelse return false;
+    const record = saved.state.nodes[@intCast(current.id)];
+    if (record != .control) return false;
+    if (program.blocks[@intCast(record.control.block)].terminator != .resume_with) return false;
+    try data.state_admission.validate(allocator, program, saved.state);
+    const before = try allocator.dupe(u8, snapshot);
+    defer allocator.free(before);
+    try changeSuccessorBorrow(program, saved.state, from);
+    try std.testing.expectError(error.InvalidScope, data.state_admission.validate(
+        allocator,
+        program,
+        saved.state,
+    ));
+    var encoded = try data.snapshot.emit(allocator, saved.state, allocator, null);
+    defer encoded.normalized.deinit();
+    defer allocator.free(encoded.bytes);
+    inline for (.{ world.run, world.advance }) |execute| {
+        try std.testing.expectError(error.InvalidScope, execute(allocator, .{
+            .program = .{ .records = program },
+            .instance = .{ .records = saved.state },
+        }));
+        try std.testing.expectError(error.InvalidScope, execute(allocator, .{
+            .program = .{ .image = image },
+            .instance = .{ .snapshot = encoded.bytes },
+        }));
+    }
+    try std.testing.expectEqualSlices(u8, before, snapshot);
+    return true;
+}
+
+test "restored successor state and body results retain their return-clause borrow constraints" {
+    const allocator = std.testing.allocator;
+    for (std.enums.values(borrow_returns.ResultFrom)) |from| {
+        for ([_]bool{ false, true }) |delegated| {
+            var b = boundary.source.Builder.init(allocator);
+            defer b.deinit();
+            const module = try borrow_returns.scenario(&b, from, false, false, delegated);
+            var compiled = try boundary.program.compile(allocator, module);
+            defer compiled.deinit();
+            const image = try allocator.alloc(u8, try data.image.encodedLength(compiled.program));
+            defer allocator.free(image);
+            _ = try compiled.encode(allocator, image);
+            var step = try world.advance(allocator, .{
+                .program = .{ .records = compiled.program },
+                .instance = .{ .initial_args = &.{} },
+            });
+            defer step.deinit();
+            var checked = false;
+            for (0..128) |_| {
+                if (step.record != .progressed) break;
+                if (try checkSuccessorBorrowState(
+                    compiled.program,
+                    image,
+                    step.record.progressed,
+                    from,
+                )) {
+                    checked = true;
+                    break;
+                }
+                const next = try world.advance(allocator, .{
+                    .program = .{ .records = compiled.program },
+                    .instance = .{ .snapshot = step.record.progressed },
+                });
+                step.deinit();
+                step = next;
+            }
+            try std.testing.expect(checked);
+        }
+    }
+}
 
 const BindingForm = enum { bind, sum_zero, sum_one, product };
 const BindingConsumer = enum { value, call, closure };
