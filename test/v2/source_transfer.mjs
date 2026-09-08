@@ -40,25 +40,37 @@ try {
   {
     const source = JSON.parse(await readFile(join(fixtures, "source-borrow-operands.json"), "utf8"));
     const image = new Uint8Array(await readFile(join(fixtures, "source-borrow-operands.bpi2")));
-    for (let index = 0; index < 20; index++) {
-      const oracle = execute(source, [index]);
+    for (let index = 0; index < 42; index++) {
+      const oracle = execute(source, [index], index >= 32 ? [[], []] : []);
       const populated = index % 2 === 1, owned = index >= 12;
       const kind = owned || !populated ? "Failed" : "Completed";
-      const value = Uint8Array.of(owned ? (populated ? 8 : 9) : (populated ? 7 : 8), 0, 0, 0, 0, 0, 0, 0);
+      const value = Uint8Array.of(index >= 20 ? 8 : owned ? (populated ? 8 : 9) : (populated ? 7 : 8), 0, 0, 0, 0, 0, 0, 0);
       assert.equal(oracle.kind, kind);
       assert.deepEqual(Uint8Array.from(oracle.value), value);
       for (const mode of ["advance", "run"]) {
         const trace = [];
         let step = await compare(mode, { image, initialArgs: Uint8Array.of(index) });
         let transitions = 0;
-        while (step.kind === "Progressed" || step.kind === "Yielded") {
+        while (["Progressed", "Yielded", "Requested"].includes(step.kind)) {
           assert.ok(transitions++ < 128, "finite operand fixture exceeded its test horizon");
           if (step.kind === "Yielded") trace.push({ kind: "Yielded" });
-          step = await compare(mode, { image, state: step.state });
+          let response;
+          if (step.kind === "Requested") {
+            const request = decodeRequest(step.request);
+            trace.push({ kind: "Requested", identity: request.semanticIdentity, payload: [...request.payload] });
+            response = encodeResult(step.request, new Uint8Array());
+          }
+          step = await compare(mode, { image, state: step.state, result: response });
         }
         assert.equal(step.kind, kind);
         assert.deepEqual(step.value, value);
-        assert.deepEqual(trace, kind === "Failed" ? [{ kind: "Yielded" }] : []);
+        const expectedTrace = kind === "Failed" ? [{ kind: "Yielded" }] : [];
+        if (index >= 32) {
+          for (const label of index === 33 || index === 35 || index >= 36 ? [2, 1] : [1, 2]) {
+            expectedTrace.push({ kind: "Requested", identity: "custody/release", payload: [label, 0, 0, 0, 0, 0, 0, 0] });
+          }
+        }
+        assert.deepEqual(trace, expectedTrace);
         assert.deepEqual(trace, oracle.trace);
       }
     }

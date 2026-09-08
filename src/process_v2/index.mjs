@@ -1,11 +1,12 @@
 // Copyright (c) 2026 World contributors. MIT license.
 import { createHash } from "node:crypto";
-import { inspectProcessKernelWasm, wasmRange } from "./wasm.mjs";
+import { assertProcessKernelByteLength, inspectProcessKernelWasm, wasmRange } from "./wasm.mjs";
 import { encodeInput, decodeOutcome } from "./codec.mjs";
 import { readProcessKernelFile } from "./kernel_file.mjs";
 export { encodeInput, decodeOutcome, decodeRequest, encodeResult, validateValue } from "./codec.mjs";
 
 export const packageVersion = "5.0.0-dev.0";
+const typedArray = Object.getOwnPropertyDescriptors(Object.getPrototypeOf(Uint8Array.prototype));
 
 /** Load the bundled, manifest-bound kernel or an explicitly digest-bound file. */
 export async function loadProcessKernel(options) {
@@ -18,7 +19,11 @@ export async function run(input, options) { return (await loadProcessKernel(opti
 
 export async function admitProcessKernel(input, { expectedSha256 } = {}) {
   if (!(input instanceof Uint8Array)) throw new TypeError("kernel must be bytes");
-  const bytes = Uint8Array.from(input);
+  const byteLength = typedArray.byteLength.get.call(input);
+  assertProcessKernelByteLength(byteLength);
+  // Fix the view length before copying, including length-tracking shared views.
+  const view = new Uint8Array(typedArray.buffer.get.call(input), typedArray.byteOffset.get.call(input), byteLength);
+  const bytes = new Uint8Array(view);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   if (!/^[a-f0-9]{64}$/.test(expectedSha256 ?? "") || expectedSha256 !== sha256) throw new Error("KernelIdentityMismatch");
   const inspection = inspectProcessKernelWasm(bytes);

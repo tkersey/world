@@ -2,7 +2,7 @@
   "format": "world-v2-working-memory/v1",
   "method": "same native pointer width and inputs; v2 exact peak simultaneously live allocator payload includes PKI2 decoding, admission, execution, snapshot and PKO2 encoding; allocator metadata demand is separately a lower bound; v1 mandatory ValidationWorkspace is an unconditional working-allocation lower bound, excluding its additionally measured buffer demands; unused backing reservations are reported separately",
   "probes": {
-    "v1Sha256": "e8d9579952d2435dd9a7227d75c2c6b5e10958ea2c6e11aff1f56413ef55fd7f",
+    "v1Sha256": "23ec12c3373e1e6dcbd59b56ac5241e600a56ff668ba925354db530c140381c6",
     "v2Sha256": "22e761aca0feab0e14ccb0b616a780946dedf8ff60053de95677f1275a684058"
   },
   "workloads": [
@@ -705,7 +705,7 @@
     {
       "file": "source-scheduler.bpi2",
       "imageBytes": 1437,
-      "imageSha256": "2b95aa8aed432fbacdfee56a637a7cc484eb6adf3129ca842a777a11fcfbfe0f",
+      "imageSha256": "0979cb05ad2132065e72c967b227d47d547b625a5a11518637bf28422ea8ed04",
       "platform": "aarch64",
       "pointer_bytes": 8,
       "peak_working_payload_bytes": 150938,
@@ -713,7 +713,7 @@
       "working_reservation_bytes": 16777216,
       "outcome": "yielded",
       "output_bytes": 300,
-      "output_sha256": "df9dfe158a88fbc8aec9d514ce800eca20c39c936d7cda450923b3580944e519",
+      "output_sha256": "6c43142fd0b4ac27559aada9402018f2dc71a941582c5b01e2771c07a304acfd",
       "statistics": {
         "transitions": 26,
         "direct_clauses": 2,

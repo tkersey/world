@@ -119,6 +119,12 @@ Optional `result` is a complete ERS2; optional `cancel` is a string or byte arra
 Result and cancellation cannot both be supplied. Returned objects include the
 decoded outcome and the complete copied PKO2 in `bytes`.
 
+Kernel admission checks the 64 MiB byte limit before copying or hashing.
+`loadProcessKernel({ kernelPath, expectedSha256 })` accepts a regular-file path,
+file URL, or symlink to a regular file. It checks the opened file before
+allocation, bounds reads to its initial size, and rejects changes during the
+read. Omitting these options selects the bundled kernel and identity manifest.
+
 `decodeRequest` validates canonical descriptors, payload, and request hashes.
 `encodeResult` validates a typed value against that request and binds the ERS2.
 `decodeOutcome` checks the PKO2 frame and its nested request-to-State digest

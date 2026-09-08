@@ -44,13 +44,7 @@ export function inspectProcessKernelWasm(bytes) {
       "Process kernel bytes must be a Uint8Array",
     );
   }
-  if (bytes.byteLength > MAXIMUM_KERNEL_BYTES) {
-    throw worldError(
-      "WORLD_KERNEL_TOO_LARGE",
-      "Process kernel exceeds the admission byte limit",
-      { byteLength: bytes.byteLength, maximumByteLength: MAXIMUM_KERNEL_BYTES },
-    );
-  }
+  assertProcessKernelByteLength(bytes.byteLength);
   if (bytes.byteLength < 8 ||
       bytes[0] !== 0x00 || bytes[1] !== 0x61 ||
       bytes[2] !== 0x73 || bytes[3] !== 0x6d ||
@@ -70,6 +64,16 @@ export function inspectProcessKernelWasm(bytes) {
     throw worldError(
       "WORLD_KERNEL_WASM_INVALID",
       "Process kernel WebAssembly structure is malformed",
+    );
+  }
+}
+
+export function assertProcessKernelByteLength(byteLength) {
+  if (byteLength > MAXIMUM_KERNEL_BYTES) {
+    throw worldError(
+      "WORLD_KERNEL_TOO_LARGE",
+      "Process kernel exceeds the admission byte limit",
+      { byteLength, maximumByteLength: MAXIMUM_KERNEL_BYTES },
     );
   }
 }

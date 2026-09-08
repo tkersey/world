@@ -1,6 +1,6 @@
 # World 5 development economy measurements
 
-These are development measurements from September 7, 2026 UTC. Release acceptance
+These are development measurements from September 8, 2026 UTC. Release acceptance
 must bind the final source and delivered kernel separately. The measured kernel
 is `bb401ca875cb731eb9689afdb1271369bba1cc4493aabb8b43012e006e9c17e8`.
 Raw samples and allocation observations are in
@@ -13,9 +13,9 @@ used ReleaseSmall and a 256 MiB maximum. No operational ceiling was increased.
 
 | Gate | Observation |
 |---|---|
-| Warm execution, at most 2× v1 | All seven matched workloads passed; worst median ratio 0.9476. |
+| Warm execution, at most 2× v1 | All seven matched workloads passed; worst median ratio 0.9150. |
 | Peak working allocation, at most 2× v1 | The seven matched workloads peaked at 78,703 bytes, below the 261,408-byte mandatory v1 validation workspace alone. |
-| Cold compile and emission, at most 2× v1 | One effect: 1.3085×; 32 dependent additions: 1.2755×. |
+| Cold compile and emission, at most 2× v1 | One effect: 1.3172×; 32 dependent additions: 1.2961×. |
 | Serialized overhead, at most 1.5× plus 4 KiB | All twenty frozen images passed even when every v2 constant byte was conservatively counted as overhead. |
 
 Warm measurements include input copying, admission, execution to the first
@@ -28,13 +28,13 @@ payloads were compared through the pure BPI1 value conversion before timing.
 
 | Workload | v1 median ms | v2 median ms | v2/v1 |
 |---|---:|---:|---:|
-| Integer and Boolean operations | 0.07436 | 0.03876 | 0.5212 |
-| Algebraic collections | 0.12914 | 0.05813 | 0.4501 |
-| Portable values | 0.03872 | 0.01459 | 0.3769 |
-| Recursion, initial zero | 0.35007 | 0.01575 | 0.0450 |
-| Recursion, initial 32 | 11.69827 | 0.04960 | 0.0042 |
-| Residual request | 0.05299 | 0.05021 | 0.9476 |
-| Authored yield | 0.02607 | 0.01277 | 0.4897 |
+| Integer and Boolean operations | 0.06943 | 0.03220 | 0.4638 |
+| Algebraic collections | 0.12446 | 0.05676 | 0.4561 |
+| Portable values | 0.03754 | 0.01463 | 0.3896 |
+| Recursion, initial zero | 0.32934 | 0.01529 | 0.0464 |
+| Recursion, initial 32 | 10.64052 | 0.04663 | 0.0044 |
+| Residual request | 0.04523 | 0.04139 | 0.9150 |
+| Authored yield | 0.02364 | 0.01177 | 0.4979 |
 
 The recursion ratios include v1's repeated admission and serialization of its
 internal progress records. They are not measurements of scalar instruction
@@ -57,8 +57,8 @@ caches. Immutable dependency sources are acquired before timing. The OS file
 cache is uncontrolled. Five samples per version and workload include the build
 driver, Zig compilation and image emission. The frozen compiler is Boundary
 1.8.2 commit `999e936c4a865cd31948b52b2af2baeacf84c9f1`.
-Cold compilation and compiler phase samples were retained from the earlier
-measurement window after verifying that their Boundary inputs were unchanged.
+All compiler and runtime measurement lanes were rerun against the current
+compiler, loader and unchanged kernel inputs.
 
 ## Structural checks and phase costs
 

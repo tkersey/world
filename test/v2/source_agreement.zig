@@ -9,10 +9,10 @@ test "borrowed operand evaluation preserves failure custody across native snapsh
     var b = boundary.source.Builder.init(std.testing.allocator);
     defer b.deinit();
     const module = try boundary.source.examples.borrowOperands(&b);
-    for (0..20) |index| {
+    for (0..32) |index| {
         const populated = index % 2 == 1;
         const owned = index >= 12;
-        const reason: u8 = if (owned) (if (populated) 8 else 9) else (if (populated) 7 else 8);
+        const reason: u8 = if (index >= 20) 8 else if (owned) (if (populated) 8 else 9) else (if (populated) 7 else 8);
         const value = [_]u8{ reason, 0, 0, 0, 0, 0, 0, 0 };
         const expected: BindingExit = if (owned or !populated)
             .{ .failed = &value }
@@ -20,6 +20,60 @@ test "borrowed operand evaluation preserves failure custody across native snapsh
             .{ .completed = &value };
         try expectBindingExecution(module, &.{@intCast(index)}, expected);
     }
+}
+
+test "retained owners preserve scope and temporary-value cleanup order" {
+    const allocator = std.testing.allocator;
+    var b = boundary.source.Builder.init(allocator);
+    defer b.deinit();
+    var compiled = try boundary.program.compile(allocator, try boundary.source.examples.borrowOperands(&b));
+    defer compiled.deinit();
+    const image = try allocator.alloc(u8, try data.image.encodedLength(compiled.program));
+    defer allocator.free(image);
+    _ = try compiled.encode(allocator, image);
+    for (32..42) |index| inline for (.{ world.run, world.advance }) |execute| {
+        inline for (.{ false, true }) |records| {
+            const program: world.ProgramInput = if (records) .{ .records = compiled.program } else .{ .image = image };
+            var step = try execute(allocator, .{ .program = program, .instance = .{ .initial_args = &.{@intCast(index)} } });
+            defer step.deinit();
+            var requests: usize = 0;
+            var yields: usize = 0;
+            for (0..128) |_| {
+                var control: data.protocol.Control = .{ .continue_value = null };
+                var encoded: ?[]u8 = null;
+                defer if (encoded) |bytes| allocator.free(bytes);
+                const saved = switch (step.record) {
+                    .progressed => |state| state,
+                    .yielded => |state| blk: {
+                        yields += 1;
+                        break :blk state;
+                    },
+                    .requested => |request| blk: {
+                        const decoded = try data.protocol.decode(data.protocol.Request, allocator, request.request);
+                        try std.testing.expect(requests < 2);
+                        const reversed = index == 33 or index == 35 or index >= 36;
+                        const label: u64 = if (reversed) 2 - requests else requests + 1;
+                        try std.testing.expectEqualStrings("custody/release", decoded.semantic_identity);
+                        try std.testing.expectEqual(label, std.mem.readInt(u64, decoded.payload[0..8], .little));
+                        const response: data.protocol.Result = .{ .request_identity = decoded.request_identity, .resume_schema_digest = data.wire.digest(decoded.resume_schema), .value = &.{} };
+                        encoded = try allocator.alloc(u8, try data.protocol.encodedLength(data.protocol.Result, response));
+                        _ = try data.protocol.encode(data.protocol.Result, allocator, response, encoded.?);
+                        control = .{ .continue_value = encoded.? };
+                        requests += 1;
+                        break :blk request.state;
+                    },
+                    else => break,
+                };
+                const next = try execute(allocator, .{ .program = program, .instance = .{ .snapshot = saved }, .control = control });
+                step.deinit();
+                step = next;
+            }
+            try std.testing.expect(step.record == .failed);
+            try std.testing.expectEqualSlices(u8, &.{ 8, 0, 0, 0, 0, 0, 0, 0 }, step.record.failed.value);
+            try std.testing.expectEqual(@as(usize, 2), requests);
+            try std.testing.expectEqual(@as(usize, 1), yields);
+        }
+    };
 }
 
 test "yielded cleanup cancellation resumes internal transitions in every native input mode" {

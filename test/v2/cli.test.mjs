@@ -1,16 +1,120 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, writeFile, rm, mkdir, cp, symlink } from "node:fs/promises";
+import fs, { mkdtemp, readFile, writeFile, rm, mkdir, cp, symlink, truncate } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { parseArguments, executeCli } from "../../src/process_v2/cli.mjs";
-import { packageVersion } from "../../src/process_v2/index.mjs";
+import { loadProcessKernel, packageVersion } from "../../src/process_v2/index.mjs";
+import { readProcessKernelFile } from "../../src/process_v2/kernel_file.mjs";
+import { MAXIMUM_KERNEL_BYTES } from "../../src/process_v2/wasm.mjs";
 import { frame } from "../../src/process_v2/codec.mjs";
 import { kernel } from "./wasm_fixture.mjs";
 
 const base = ["process", "run", "--image", "image", "--initial", "initial", "--output", "outcome"];
+test("kernel files accept regular paths, file URLs and symlinks with their selected identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "world-v2-kernel-"));
+  try {
+    const bytes = kernel();
+    const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
+    const path = join(root, "kernel.wasm");
+    const alias = join(root, "kernel-link.wasm");
+    await writeFile(path, bytes);
+    await symlink(path, alias);
+    for (const kernelPath of [path, pathToFileURL(path), alias, pathToFileURL(alias)]) {
+      const selected = await readProcessKernelFile({ kernelPath, expectedSha256 }, packageVersion);
+      assert.deepEqual(selected.bytes, Buffer.from(bytes));
+      assert.equal(selected.expectedSha256, expectedSha256);
+      assert.deepEqual(selected.files, [kernelPath]);
+      assert.equal((await loadProcessKernel({ kernelPath, expectedSha256 })).sha256, expectedSha256);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("oversized sparse kernels reject before allocating or reading their contents", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "world-v2-kernel-size-"));
+  const path = join(root, "oversized.wasm");
+  const originalOpen = fs.open;
+  let closes = 0;
+  try {
+    await writeFile(path, "");
+    await truncate(path, MAXIMUM_KERNEL_BYTES + 1);
+    t.mock.method(fs, "open", async (...args) => {
+      const file = await originalOpen(...args);
+      return {
+        stat: (...args) => file.stat(...args),
+        read: () => assert.fail("oversized contents must not be read"),
+        close: async () => { closes++; await file.close(); },
+      };
+    });
+    t.mock.method(Buffer, "alloc", () => assert.fail("oversized contents must not be allocated"));
+    syncBuiltinESMExports();
+    await assert.rejects(readProcessKernelFile({ kernelPath: path }, packageVersion), { code: "WORLD_KERNEL_TOO_LARGE" });
+    assert.equal(closes, 1);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("kernel reads stay bounded when an opened file grows or shrinks", async (t) => {
+  try {
+    for (const changedSize of [0n, 5n, BigInt(MAXIMUM_KERNEL_BYTES) + 1n]) {
+      let stats = 0;
+      let closes = 0;
+      let readBytes = 0;
+      t.mock.method(fs, "open", async () => ({
+        stat: async () => ({ isFile: () => true, size: stats++ === 0 ? 4n : changedSize, mtimeNs: 0n, ctimeNs: 0n }),
+        read: async (bytes, offset, length, position) => {
+          assert.equal(bytes.length, 4);
+          assert.equal(position, offset);
+          assert.equal(length, 4 - offset);
+          if (changedSize === 0n) return { bytesRead: 0 };
+          bytes[offset] = 0;
+          readBytes++;
+          return { bytesRead: 1 };
+        },
+        close: async () => { closes++; },
+      }));
+      syncBuiltinESMExports();
+      await assert.rejects(readProcessKernelFile({ kernelPath: "changing.wasm" }, packageVersion), {
+        code: changedSize > MAXIMUM_KERNEL_BYTES ? "WORLD_KERNEL_TOO_LARGE" : "WORLD_FILE_CHANGED",
+      });
+      assert.equal(readBytes, changedSize === 0n ? 0 : 4);
+      assert.equal(closes, 1);
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test("kernel loading rejects directories and FIFOs without blocking", { skip: process.platform === "win32" }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "world-v2-kernel-kind-"));
+  try {
+    const fifo = join(root, "kernel.fifo");
+    const alias = join(root, "kernel-link.fifo");
+    const made = spawnSync("mkfifo", [fifo], { encoding: "utf8", timeout: 2000 });
+    assert.equal(made.status, 0, made.error?.message ?? made.stderr);
+    await symlink(fifo, alias);
+    const module = new URL("../../src/process_v2/index.mjs", import.meta.url).href;
+    const script = `import assert from "node:assert/strict";
+      import { loadProcessKernel } from ${JSON.stringify(module)};
+      await assert.rejects(loadProcessKernel({ kernelPath: process.env.WORLD_TEST_KERNEL, expectedSha256: "0".repeat(64) }),
+        { code: "WORLD_FILE_NOT_REGULAR" });`;
+    for (const path of [root, fifo, alias]) {
+      const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+        encoding: "utf8", timeout: 2000, env: { ...process.env, WORLD_TEST_KERNEL: path },
+      });
+      assert.equal(result.error, undefined, result.error?.message);
+      assert.equal(result.status, 0, result.stderr);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("CLI rejects ambiguous controls, duplicate and unknown options, and unbound kernels", () => {
   for (const extra of [["--result", "result"], ["--state", "state"], ["--cancel", "stop"], ["--image", "again"],
     ["--fuel", "2"], ["--kernel", "kernel"], ["--kernel-sha256", "a".repeat(64)], ["--result"]]) {

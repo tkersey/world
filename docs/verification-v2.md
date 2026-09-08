@@ -86,6 +86,16 @@ fields, including delegated writers. Saved-State substitutions retain the same
 constraints. Boundary's source-only oracle cases also preserve enclosing handlers
 when cleanup runs after cancellation or explicit resumption disposal.
 
+`borrow-operands` retains named and temporary owners through binding, branch,
+call, application, match and product continuations that later fail. Ten cases
+with independent suspended generators compare cleanup request order against
+the source oracle: parameter order, reversed arguments, nested bindings, and
+owners used only by the continuation. Consuming container, move and closure
+operations transfer custody to their result; the source oracle deactivates the
+old owner and retains intermediate owners until disposition. Native
+`run`/`advance`, logical/image inputs and fresh-State transfer preserve the same
+order. Boundary still rejects ordinary owner discard and duplicate consumption.
+
 `emit_rejections.zig` starts from valid source-derived states before changing
 pending contracts, identities, blob types, delimiters, local aliases or token
 custody. Native, JavaScript WASM and Wasmtime reject the same serialized inputs.
@@ -93,6 +103,9 @@ custody. Native, JavaScript WASM and Wasmtime reject the same serialized inputs.
 each actual guest arena to exhaust, checks that no State is published, and
 retries identical bytes with adequate physical capacity. Harness deadlines and
 malformed-input bounds are not evaluator fuel.
+Kernel-loading tests reject oversized files before allocation or content reads
+and oversized byte views before copying or hashing. Regular files and subviews
+remain accepted; file changes and special files reject with bounded reads.
 
 Compact collections preserve their full `u64` cardinality independently of
 encoded storage. Native tests exercise sequence, bounded-vector and fixed-array
