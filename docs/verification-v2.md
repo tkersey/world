@@ -106,6 +106,8 @@ malformed-input bounds are not evaluator fuel.
 Kernel-loading tests reject oversized files before allocation or content reads
 and oversized byte views before copying or hashing. Regular files and subviews
 remain accepted; file changes and special files reject with bounded reads.
+The CLI checks every data-input flag with directories, FIFOs and FIFO symlinks;
+the bundled identity also rejects a FIFO. Rejection preserves existing output.
 
 Compact collections preserve their full `u64` cardinality independently of
 encoded storage. Native tests exercise sequence, bounded-vector and fixed-array

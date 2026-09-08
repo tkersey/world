@@ -24,6 +24,9 @@ and optionally `--result`; cancel saved State with `--cancel TEXT` or
 kernel with an explicit expected digest. Unknown, repeated and incompatible
 options reject. Invocation failures leave an existing output unchanged.
 
+Input paths must resolve to regular files. Symlinks to regular files are allowed;
+reads stay within the opened file's initial size and reject observed changes.
+
 JavaScript consumers import `@tkersey/world/process-v2`:
 
 ```js

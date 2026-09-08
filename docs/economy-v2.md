@@ -13,9 +13,9 @@ used ReleaseSmall and a 256 MiB maximum. No operational ceiling was increased.
 
 | Gate | Observation |
 |---|---|
-| Warm execution, at most 2× v1 | All seven matched workloads passed; worst median ratio 0.9150. |
+| Warm execution, at most 2× v1 | All seven matched workloads passed; worst median ratio 0.8854. |
 | Peak working allocation, at most 2× v1 | The seven matched workloads peaked at 78,703 bytes, below the 261,408-byte mandatory v1 validation workspace alone. |
-| Cold compile and emission, at most 2× v1 | One effect: 1.3172×; 32 dependent additions: 1.2961×. |
+| Cold compile and emission, at most 2× v1 | One effect: 1.3204×; 32 dependent additions: 1.2952×. |
 | Serialized overhead, at most 1.5× plus 4 KiB | All twenty frozen images passed even when every v2 constant byte was conservatively counted as overhead. |
 
 Warm measurements include input copying, admission, execution to the first
@@ -28,13 +28,13 @@ payloads were compared through the pure BPI1 value conversion before timing.
 
 | Workload | v1 median ms | v2 median ms | v2/v1 |
 |---|---:|---:|---:|
-| Integer and Boolean operations | 0.06943 | 0.03220 | 0.4638 |
-| Algebraic collections | 0.12446 | 0.05676 | 0.4561 |
-| Portable values | 0.03754 | 0.01463 | 0.3896 |
-| Recursion, initial zero | 0.32934 | 0.01529 | 0.0464 |
-| Recursion, initial 32 | 10.64052 | 0.04663 | 0.0044 |
-| Residual request | 0.04523 | 0.04139 | 0.9150 |
-| Authored yield | 0.02364 | 0.01177 | 0.4979 |
+| Integer and Boolean operations | 0.07012 | 0.03417 | 0.4874 |
+| Algebraic collections | 0.12368 | 0.05454 | 0.4410 |
+| Portable values | 0.03572 | 0.01393 | 0.3900 |
+| Recursion, initial zero | 0.32829 | 0.01463 | 0.0446 |
+| Recursion, initial 32 | 10.75538 | 0.04696 | 0.0044 |
+| Residual request | 0.04683 | 0.04146 | 0.8854 |
+| Authored yield | 0.02412 | 0.01195 | 0.4955 |
 
 The recursion ratios include v1's repeated admission and serialization of its
 internal progress records. They are not measurements of scalar instruction

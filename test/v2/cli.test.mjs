@@ -125,6 +125,57 @@ test("CLI rejects ambiguous controls, duplicate and unknown options, and unbound
   assert.throws(() => parseArguments([...state, "--cancel", "stop", "--result", "result"]), { code: "WORLD_CLI_USAGE" });
 });
 
+test("every CLI data input rejects nonregular files before reading", { skip: process.platform === "win32" }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "world-v2-cli-file-kind-"));
+  try {
+    const fifo = join(root, "input.fifo"), alias = join(root, "input-link.fifo");
+    const made = spawnSync("mkfifo", [fifo], { encoding: "utf8", timeout: 2000 });
+    assert.equal(made.status, 0, made.error?.message ?? made.stderr);
+    await symlink(fifo, alias);
+    const regular = join(root, "input.bin"), output = join(root, "output");
+    await writeFile(regular, "");
+    await writeFile(output, "previous output");
+    const module = new URL("../../src/process_v2/cli.mjs", import.meta.url).href;
+    const script = `import assert from "node:assert/strict";
+      import { executeCli } from ${JSON.stringify(module)};
+      await assert.rejects(executeCli(JSON.parse(process.env.WORLD_TEST_ARGS)),
+        { code: "WORLD_FILE_NOT_REGULAR" });`;
+    for (const flag of ["--image", "--initial", "--state", "--result", "--cancel-bytes"]) {
+      for (const path of [root, fifo, alias]) {
+        const state = ["--state", "--result", "--cancel-bytes"].includes(flag);
+        const args = ["process", "step", "--image", flag === "--image" ? path : regular,
+          state ? "--state" : "--initial", ["--state", "--initial"].includes(flag) ? path : regular,
+          "--output", output];
+        if (["--result", "--cancel-bytes"].includes(flag)) args.push(flag, path);
+        const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+          encoding: "utf8", timeout: 2000, env: { ...process.env, WORLD_TEST_ARGS: JSON.stringify(args) },
+        });
+        assert.equal(result.error, undefined, result.error?.message);
+        assert.equal(result.status, 0, `${flag}: ${result.stderr}`);
+        assert.equal(await readFile(output, "utf8"), "previous output");
+        assert.equal(await readFile(regular, "utf8"), "");
+      }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("bundled identity admission rejects a FIFO before reading metadata", { skip: process.platform === "win32" }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "world-v2-identity-kind-"));
+  try {
+    await mkdir(join(root, "src"));
+    await cp(resolve(import.meta.dirname, "../../src/process_v2"), join(root, "src/process_v2"), { recursive: true });
+    const made = spawnSync("mkfifo", [join(root, "world-runtime-identity.json")], { encoding: "utf8", timeout: 2000 });
+    assert.equal(made.status, 0, made.error?.message ?? made.stderr);
+    const module = pathToFileURL(join(root, "src/process_v2/index.mjs")).href;
+    const script = `import assert from "node:assert/strict";
+      import { loadProcessKernel } from ${JSON.stringify(module)};
+      await assert.rejects(loadProcessKernel(), { code: "WORLD_FILE_NOT_REGULAR" });`;
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8", timeout: 2000 });
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, result.stderr);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("rejected kernel admission leaves an existing output byte-identical", async () => {
   const root = await mkdtemp(join(tmpdir(), "world-v2-cli-"));
   try {

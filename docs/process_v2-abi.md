@@ -124,6 +124,8 @@ Kernel admission checks the 64 MiB byte limit before copying or hashing.
 file URL, or symlink to a regular file. It checks the opened file before
 allocation, bounds reads to its initial size, and rejects changes during the
 read. Omitting these options selects the bundled kernel and identity manifest.
+CLI data inputs and the bundled identity use the same regular-file reader;
+their reads stay within the opened extent and reject observed changes.
 
 `decodeRequest` validates canonical descriptors, payload, and request hashes.
 `encodeResult` validates a typed value against that request and binds the ERS2.

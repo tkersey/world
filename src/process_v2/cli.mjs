@@ -1,9 +1,10 @@
 // Copyright (c) 2026 World contributors. MIT license.
-import { readFile, writeFile, rename, rm, realpath } from "node:fs/promises";
+import { writeFile, rename, rm, realpath } from "node:fs/promises";
 import { resolve, dirname, basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { admitProcessKernel, encodeInput, packageVersion } from "./index.mjs";
 import { readProcessKernelFile } from "./kernel_file.mjs";
+import { readRegularFile } from "./file_input.mjs";
 
 export const help = `Usage: world process <step|run> --image FILE (--initial FILE | --state FILE) --output FILE
   --kernel FILE --kernel-sha256 HEX  Use an explicitly digest-bound kernel
@@ -52,7 +53,7 @@ export async function executeCli(args, stdout = process.stdout) {
   const input = {};
   for (const key of ["image", "initialArgs", "state", "result", "cancelBytes"]) if (options[key] !== undefined) {
     await checkInputPath(options[key]);
-    input[key === "cancelBytes" ? "cancel" : key] = await readFile(options[key]);
+    input[key === "cancelBytes" ? "cancel" : key] = await readRegularFile(options[key]);
   }
   if (options.cancel !== undefined) input.cancel = options.cancel;
   encodeInput({ ...input, mode: options.mode });
