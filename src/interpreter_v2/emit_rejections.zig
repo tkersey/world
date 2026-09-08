@@ -196,6 +196,20 @@ pub fn main(init: std.process.Init) !void {
     try pendingCases(&collector);
     try blobCases(&collector);
     try captureCases(&collector);
+    const return_paths = @import("return_path_tests.zig");
+    for (std.enums.values(return_paths.Kind)) |kind| {
+        var example = try return_paths.witness(a, kind);
+        defer example.deinit();
+        const name = try std.fmt.allocPrint(a, "return-path-{s}", .{@tagName(kind)});
+        try collector.emit(name, example.program.program, example.state.state);
+    }
+    const capture_states = @import("capture_state_tests.zig");
+    for ([_]bool{ false, true }) |multi| {
+        var example = try capture_states.witness(a, multi, false);
+        defer example.deinit();
+        const name = if (multi) "multi-captured-handler-state" else "one-shot-captured-handler-state";
+        try collector.emit(name, example.program.program, example.state.state);
+    }
     try duplicateToken(&collector, image);
     var output_buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writer(init.io, &output_buffer);

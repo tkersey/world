@@ -1,8 +1,8 @@
 {
   "format": "world-v2-external-consumer-freeze/v1",
-  "frozenAt": "2026-09-08T19:12:27.223Z",
-  "kernelSha256": "af50d3d64173e7f4f6be5f842fd9d6d2b3a795d07ef41a21ce29048ef06f1239",
-  "kernelBytes": 392330,
+  "frozenAt": "2026-09-08T23:32:59.107Z",
+  "kernelSha256": "39f2d13ce12463f96b87eadef473e57516b5a95433eb35ef01f16b44f357d6db",
+  "kernelBytes": 393386,
   "abi": 2,
   "profile": 1,
   "memory": {
@@ -14,8 +14,8 @@
   "sourceInputs": {
     "boundary": {
       "git": {
-        "head": "a82989c62fd2535f536dc374c3061ffa12c4d6b4",
-        "tree": "60161713cc78090609b18cd035fcffaa54ea8f09",
+        "head": "89d7489f42a6118d3579f38f9df514582a4e1f9e",
+        "tree": "192e961e78e5654d242dc803d65a19e9f61d9c62",
         "dirty": false
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
@@ -118,7 +118,7 @@
         },
         {
           "name": "src/v2/data/state_admission.zig",
-          "sha256": "7ea1adf510fe71aea1965cb0b197c2ec6107aaca6ab2db6926f77caa13d370c8"
+          "sha256": "a25b37956716ea200c52177fc3ed9d871d3707dfcba394c89b0f7e2045181303"
         },
         {
           "name": "src/v2/data/state_effects.zig",
@@ -138,19 +138,19 @@
         },
         {
           "name": "src/v2/data/use_admission.zig",
-          "sha256": "bbd942e177bc328e2a7b10d5f81966448930f145e715802653444742805efb76"
+          "sha256": "518dbd772de921febcc2373660e452fe9314542c008900ac070c17eb9b814dba"
         },
         {
           "name": "src/v2/data/wire.zig",
           "sha256": "2cad2f4762b4aaaa472db9fda6e8f038b5cc01c969a5ee32a9efa1067ebe8a28"
         }
       ],
-      "filesSha256": "44fbf8da08fa74f8a4b62cbb4285a8f74ee291f9096e16cb7815c1911ca27f14"
+      "filesSha256": "6c53fb2669c2c5224666d7cb28f544cdc04d2565b688897f00feb479d12f4f2b"
     },
     "world": {
       "git": {
-        "head": "ca5c5c73afe2c2e16444ee3fcd08babce6ced6b4",
-        "tree": "1137c33766b7ba864b57ce60aacbcbda6a99ccb9",
+        "head": "936bbb653bc866254cf41bc774f7769d787d1584",
+        "tree": "fcec3e716b37ecde791c895c7927dc9396b050f6",
         "dirty": true
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
@@ -165,7 +165,7 @@
         },
         {
           "name": "src/interpreter_v2/abandon_tests.zig",
-          "sha256": "c0518065341e49a2b51477699dfbbdc3ebad199a3061e9ac5041c623650f83db"
+          "sha256": "edd8bed5655f7b999a22c720da2eb2c1dc2e169d55ab1933646ba3f1c2a34f7d"
         },
         {
           "name": "src/interpreter_v2/admission_tests.zig",
@@ -173,7 +173,7 @@
         },
         {
           "name": "src/interpreter_v2/arena.zig",
-          "sha256": "ddfc2125aa5cffbeb878dfdddbb914bacc8747bd358ef21d258d42a46662f9a8"
+          "sha256": "c0eed5f5a1427fe2bcc8ac817f863dd8fdb21ca518433921c2f404e8de410008"
         },
         {
           "name": "src/interpreter_v2/blobs.zig",
@@ -182,6 +182,10 @@
         {
           "name": "src/interpreter_v2/bounded_tests.zig",
           "sha256": "83d04ed7ff06f4e811981b905b79b68bcc6ec701d1f120f0018700d78f154bde"
+        },
+        {
+          "name": "src/interpreter_v2/capture_state_tests.zig",
+          "sha256": "6b783d534e62f99470115cf06ad3ae6247ff8f4ee71c2ee458c701514ae6abc9"
         },
         {
           "name": "src/interpreter_v2/choice_tests.zig",
@@ -213,7 +217,7 @@
         },
         {
           "name": "src/interpreter_v2/emit_rejections.zig",
-          "sha256": "933866316999d9bfb26cf7a8986688a3aa70df244bdb5aad78cb4e1aba232e37"
+          "sha256": "edd7017af3ed50a9dfe9a6d587c896215d45b1b8483e9ada0dc64bfa296c3c5d"
         },
         {
           "name": "src/interpreter_v2/handler_tests.zig",
@@ -236,6 +240,10 @@
           "sha256": "569d9908ea003fd6cc18887f51120ab28b285082c58131bfa90023e15f7e15c9"
         },
         {
+          "name": "src/interpreter_v2/return_path_tests.zig",
+          "sha256": "1f8f511852f41a616fc22f7a52dcc56248cefa3dbc43924dec64731b7ca6721d"
+        },
+        {
           "name": "src/interpreter_v2/shallow_tests.zig",
           "sha256": "9541f481784f0826c02fde85b9c38f888a69efd990b8da184d02f525b46236af"
         },
@@ -245,7 +253,7 @@
         },
         {
           "name": "src/interpreter_v2/tests.zig",
-          "sha256": "c31a512bcd98765bf0ff88ebf0e4fd7d74410644ddffa62ec0f4493dcd947654"
+          "sha256": "93f6421b05c3a7d81cefbb7801f6f4a7e8e2452602d576e85afd805e6b19a48e"
         },
         {
           "name": "src/interpreter_v2/unwind.zig",
@@ -264,7 +272,7 @@
           "sha256": "0ea81f7c02bfe17874a730c42ab42afcfdaea1e9832371a9f80dc004bec4d07e"
         }
       ],
-      "filesSha256": "918782a17c5a81547396c3635f7092d54311e883904bbfa42d3608fd62baa993"
+      "filesSha256": "77418174ce2bc4c2364eb2c703695df7e5916020fe2d5acce35b31b3d9a950f3"
     }
   }
 }

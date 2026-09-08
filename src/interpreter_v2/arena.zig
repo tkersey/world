@@ -45,7 +45,9 @@ pub const Arena = struct {
         // Simultaneously live payload and mandatory metadata form a lower bound.
         // It intentionally does not promise a sufficient size under fragmentation.
         const overhead = @as(u64, @sizeOf(Block) + @sizeOf(usize));
-        self.required = @max(self.required, @as(u64, self.live_payload) + length + (@as(u64, self.live_blocks) + 1) * overhead);
+        const live_metadata = (@as(u64, self.live_blocks) +| 1) *| overhead;
+        const demand = @as(u64, self.live_payload) +| length +| live_metadata;
+        self.required = @max(self.required, demand);
         const requested_alignment = @max(alignment.toByteUnits(), @alignOf(usize));
         var cursor = self.first;
         var last: ?*Block = null;
@@ -127,4 +129,24 @@ test "out-of-order frees coalesce and permit reuse of the complete buffer" {
     try std.testing.expectEqual(@as(usize, 0), arena.live_blocks);
     const all = try allocator.alloc(u8, 8000);
     allocator.free(all);
+}
+
+test "unrepresentable allocation demand preserves live workspace contents" {
+    var buffer: [256]u8 align(64) = undefined;
+    var arena = Arena.init(&buffer);
+    const allocator = arena.allocator();
+    const live = try allocator.alloc(u8, 16);
+    defer allocator.free(live);
+    @memset(live, 0xa5);
+    const first = arena.first.?.*;
+    const tail = arena.first.?.next.?.*;
+    try std.testing.expectError(error.OutOfMemory, allocator.alloc(u8, std.math.maxInt(usize)));
+    try std.testing.expect(std.meta.eql(first, arena.first.?.*));
+    try std.testing.expect(std.meta.eql(tail, arena.first.?.next.?.*));
+    try std.testing.expectEqual(@as(usize, 16), arena.live_payload);
+    try std.testing.expectEqual(@as(usize, 1), arena.live_blocks);
+    try std.testing.expect(std.mem.allEqual(u8, live, 0xa5));
+    try std.testing.expect(arena.required >= std.math.maxInt(usize));
+    const next = try allocator.alloc(u8, 32);
+    allocator.free(next);
 }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import crypto from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import { inspectProcessKernelWasm, MAXIMUM_KERNEL_BYTES, wasmRange, wasmOffset } from '../../src/process_v2/wasm.mjs';
 import { admitProcessKernel } from '../../src/process_v2/index.mjs';
 
@@ -30,6 +31,16 @@ test('kernel snapshots preserve Buffer and Uint8Array views without invoking ite
     input[Symbol.iterator] = () => assert.fail('kernel admission must copy the byte view');
     assert.equal((await admitProcessKernel(input, { expectedSha256 })).sha256, expectedSha256);
   }
+});
+
+test('kernel admission preserves the cross-realm Uint8Array domain', async () => {
+  const bytes = kernel();
+  const foreign = runInNewContext('Uint8Array.from(values)', { values: [...bytes] });
+  const expectedSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  assert.deepEqual(inspectProcessKernelWasm(foreign), inspectProcessKernelWasm(bytes));
+  assert.equal((await admitProcessKernel(foreign, { expectedSha256 })).sha256, expectedSha256);
+  await assert.rejects(admitProcessKernel(Object.create(Uint8Array.prototype), { expectedSha256 }),
+    /kernel must be bytes/);
 });
 
 test('static ABI admission accepts the exact interface and rejects altered types, imports and names',()=>{

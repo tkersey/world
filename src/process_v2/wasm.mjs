@@ -1,5 +1,5 @@
 // Adapted from World 4.1.2 static WASM admission; MIT license.
-import { worldError } from "./errors.mjs";
+import { isUint8Array, worldError } from "./errors.mjs";
 
 export const MAXIMUM_KERNEL_BYTES = 64 * 1024 * 1024;
 export const MAXIMUM_MEMORY_PAGES = 65536;
@@ -38,7 +38,7 @@ export const PROCESS_KERNEL_EXPORT_NAMES = Object.freeze([
  * below recovers the exact ABI-relevant type and ownership facts.
  */
 export function inspectProcessKernelWasm(bytes) {
-  if (!(bytes instanceof Uint8Array)) {
+  if (!isUint8Array(bytes)) {
     throw worldError(
       "WORLD_INPUT_INVALID",
       "Process kernel bytes must be a Uint8Array",

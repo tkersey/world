@@ -181,4 +181,6 @@ test {
     _ = @import("handler_tests.zig");
     _ = @import("economy_tests.zig");
     _ = @import("admission_tests.zig");
+    _ = @import("return_path_tests.zig");
+    _ = @import("capture_state_tests.zig");
 }

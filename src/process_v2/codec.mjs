@@ -1,5 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
 import { createHash } from "node:crypto";
+import { isUint8Array } from "./errors.mjs";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const MAX_U64 = (1n << 64n) - 1n;
@@ -38,7 +39,7 @@ export function frame(magic, body) {
 }
 
 export function body(magic, bytes) {
-  if (!(bytes instanceof Uint8Array) || bytes.length < 20) throw new Error("Truncated");
+  if (!isUint8Array(bytes) || bytes.length < 20) throw new Error("Truncated");
   const actual = decoder.decode(bytes.subarray(0, 8));
   if (/^ABL_(BPI|PST|PKI|PKO|ERQ|ERS)1$/.test(actual)) throw new Error("UnsupportedFamily");
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -55,7 +56,7 @@ export class Reader {
     if (!Number.isSafeInteger(length) || length < 0 || this.position < 0 || this.position > this.bytes.length || length > this.bytes.length - this.position) throw new Error("Truncated");
     const start = this.position;
     this.position += length;
-    return this.bytes.slice(start, this.position);
+    return new Uint8Array(this.bytes.subarray(start, this.position));
   }
   natural() {
     let value = 0n;
@@ -85,7 +86,7 @@ export function encodeInput({ mode = "advance", image, initialArgs, state, resul
   if (result !== undefined && cancel !== undefined) throw new Error("InvalidControl");
   if (initialArgs !== undefined && (cancel !== undefined || result !== undefined)) throw new Error("InvalidControl");
   const copied = (value) => {
-    if (!(value instanceof Uint8Array)) throw new TypeError("expected bytes");
+    if (!isUint8Array(value)) throw new TypeError("expected bytes");
     return Uint8Array.from(value);
   };
   const instance = initialArgs === undefined ? concat(natural(1), field(copied(state))) : concat(natural(0), field(copied(initialArgs)));
@@ -181,7 +182,7 @@ export function decodeRequest(bytes) {
 
 export function encodeResult(requestBytes, value) {
   const request = decodeRequest(requestBytes);
-  if (!(value instanceof Uint8Array)) throw new TypeError("result must be canonical value bytes");
+  if (!isUint8Array(value)) throw new TypeError("result must be canonical value bytes");
   validateValue(request.resumeSchema, value);
   return frame("ABL_ERS2", concat(request.requestIdentity, digest(request.resumeSchema), field(value)));
 }

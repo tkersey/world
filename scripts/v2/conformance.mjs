@@ -60,7 +60,13 @@ try {
   const produced=spawnSync(rejectionsPath,[],{input:files.get(ownership.image),maxBuffer:16<<20,timeout:30000});
   assert.equal(produced.status,0,produced.stderr.toString());
   const malformed=JSON.parse(produced.stdout);assert.equal(malformed.format,'world-v2-state-rejections/v1');
-  const expectedNames=['pending-effect','pending-continuation','state-program-identity','state-root-status','blob-schema','blob-value','one-shot-delimiter','multi-delimiter','local-region-alias','duplicate-token-custody'];
+  const expectedNames=[
+    'pending-effect','pending-continuation','state-program-identity','state-root-status',
+    'blob-schema','blob-value','one-shot-delimiter','multi-delimiter','local-region-alias',
+    'return-path-active','return-path-yielded','return-path-continuation','return-path-normal_exit',
+    'return-path-protection','return-path-captured',
+    'one-shot-captured-handler-state','multi-captured-handler-state','duplicate-token-custody',
+  ];
   assert.deepEqual(malformed.cases.map((item)=>item.name).sort(),expectedNames.sort());
   for(const item of malformed.cases) {
     current=`state:${item.name}`;

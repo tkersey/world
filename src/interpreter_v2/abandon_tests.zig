@@ -4,7 +4,7 @@ const data = @import("boundary_data_v2");
 const p = data.program;
 const process = @import("process.zig");
 
-fn program(comptime failing: bool) p.Program {
+pub fn program(comptime failing: bool) p.Program {
     return .{
         .roots = .{ .entry = 0, .result = 1, .failure = 1 },
         .schemas = &.{

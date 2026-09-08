@@ -17,13 +17,13 @@ assert.equal(sha256(kernel), freeze.kernelSha256, 'kernel changed: author anothe
 assert.equal(kernel.length, freeze.kernelBytes);
 await mkdir(output, { recursive: true });
 const scratch = await mkdtemp(join(output, 'consumer-'));
-await cp(join(world, 'test/v2/external/prefix_maximum'), join(scratch, 'prefix_maximum'), {
+await cp(join(world, 'test/v2/external/parity_scan'), join(scratch, 'parity_scan'), {
   recursive: true,
 });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
 function compile(source) {
   const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
-    { cwd: join(scratch, 'prefix_maximum'), timeout: 180000, maxBuffer: 16 << 20 });
+    { cwd: join(scratch, 'parity_scan'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
 }
@@ -48,26 +48,17 @@ async function compare(input, mode) {
   return { ...decodeOutcome(bytes), bytes };
 }
 function expected(values) {
-  let maximum = 0n;
-  const value = Buffer.alloc(32);
-  values.forEach((item, index) => {
-    if (item > maximum) maximum = item;
-    value.writeBigUInt64LE(maximum, index * 8);
+  let ones = 0;
+  const parities = values.map(value => {
+    ones += Number(value);
+    return ones % 2;
   });
-  return { kind: 'Completed', value: [...value], trace: [{ kind: 'Yielded' }] };
+  return { kind: 'Completed', value: parities.reverse(), trace: [{ kind: 'Yielded' }] };
 }
 try {
-  const maximum = (1n << 64n) - 1n, highBit = 1n << 63n;
-  for (const values of [
-    [0n, 0n, 0n, 0n],
-    [1n, 2n, 3n, 4n],
-    [4n, 3n, 2n, 1n],
-    [highBit, 0n, maximum, 1n],
-    [maximum, highBit, highBit, maximum],
-    [maximum - 1n, maximum - 2n, maximum, 0n],
-  ]) {
-    const initialArgs = Buffer.alloc(32);
-    values.forEach((value, index) => initialArgs.writeBigUInt64LE(value, index * 8));
+  for (let bits = 0; bits < 16; bits++) {
+    const values = Array.from({ length: 4 }, (_, index) => Boolean(bits & (1 << index)));
+    const initialArgs = Uint8Array.from(values, Number);
     const oracle = execute(source, [...initialArgs]), wanted = expected(values);
     assert.equal(oracle.kind, wanted.kind);
     assert.deepEqual(oracle.trace, wanted.trace);
@@ -97,23 +88,23 @@ try {
 const finalKernel = await readFile(kernelPath);
 assert.equal(sha256(finalKernel), freeze.kernelSha256);
 assert.equal(finalKernel.length, freeze.kernelBytes);
-await writeFile(join(output, 'prefix-maximum.bpi2'), image);
-await writeFile(join(output, 'prefix-maximum-source.json'), sourceBytes);
+await writeFile(join(output, 'parity-scan.bpi2'), image);
+await writeFile(join(output, 'parity-scan-source.json'), sourceBytes);
 await writeFile(join(output, 'external.json'), json({
   format: 'world-v2-external-consumer/v1', freeze, checkedAt: new Date().toISOString(),
-  consumer: 'prefix-maximum',
-  consumerSourceSha256: sha256(await readFile(join(scratch, 'prefix_maximum/main.zig'))),
+  consumer: 'parity-scan',
+  consumerSourceSha256: sha256(await readFile(join(scratch, 'parity_scan/main.zig'))),
   imageSha256: sha256(image), imageBytes: image.length, sourceSha256: sha256(sourceBytes),
   kernelSha256: freeze.kernelSha256, nativeSha256: native ? sha256(await readFile(native)) : null,
   embeddings: native ? ['native', 'javascript', 'wasmtime'] : ['javascript', 'wasmtime'],
   observations: [
-    'new operation and shallow state-passing handler compiled using only the public Boundary module',
-    'independent source semantics and BigInt prefix-maximum expectations agreed',
+    'new parity operation and composed shallow/deep handlers compiled using only the public Boundary module',
+    'independent source semantics and exhaustive Boolean prefix-parity expectations agreed',
     'fresh producers alternated through every advance boundary',
     'run matched advance records; explicit handler state survived yield and transfer',
-    'zero, permutations, duplicates and full-width u64 comparisons preserved exact results',
+    'all 16 four-Boolean inputs preserved prefix parities and outer-handler answer reversal',
     'runtime boundary kinds matched the independently expected single yield and completion',
   ], records,
 }));
-console.log(`post-freeze prefix-maximum consumer: ${records.length} exact records under ` +
+console.log(`post-freeze parity-scan consumer: ${records.length} exact records under ` +
   freeze.kernelSha256);
