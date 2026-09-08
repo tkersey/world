@@ -1,8 +1,8 @@
 {
   "format": "world-v2-external-consumer-freeze/v1",
-  "frozenAt": "2026-09-07T23:45:51.749Z",
-  "kernelSha256": "bb401ca875cb731eb9689afdb1271369bba1cc4493aabb8b43012e006e9c17e8",
-  "kernelBytes": 392401,
+  "frozenAt": "2026-09-08T19:12:27.223Z",
+  "kernelSha256": "af50d3d64173e7f4f6be5f842fd9d6d2b3a795d07ef41a21ce29048ef06f1239",
+  "kernelBytes": 392330,
   "abi": 2,
   "profile": 1,
   "memory": {
@@ -14,8 +14,8 @@
   "sourceInputs": {
     "boundary": {
       "git": {
-        "head": "7a4d10ec656cf70bbab99281dd71e3ec493daa0c",
-        "tree": "6caee2ec1cebf3b24a710e84bceae2e5a0570255",
+        "head": "a82989c62fd2535f536dc374c3061ffa12c4d6b4",
+        "tree": "60161713cc78090609b18cd035fcffaa54ea8f09",
         "dirty": false
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
@@ -46,7 +46,7 @@
         },
         {
           "name": "src/v2/data/borrow_flow.zig",
-          "sha256": "ec0401eb2cce9d055df569e28ad5a6659817c28bdbd1a549dbc82fa6e9c45c0d"
+          "sha256": "1bdfd9968116e498a7040a617e65062b7c488e792bf3c6f1f2d047d6e322681e"
         },
         {
           "name": "src/v2/data/canonical.zig",
@@ -130,7 +130,7 @@
         },
         {
           "name": "src/v2/data/tests.zig",
-          "sha256": "75f6ab949190a7f31663caaee122b582aff10ddab18d0f18cf27b61127ef64f4"
+          "sha256": "b6d936256d3157583a3a89339c34d2fc17d1112eafff426a4724127e2b3e70f1"
         },
         {
           "name": "src/v2/data/traits.zig",
@@ -145,12 +145,12 @@
           "sha256": "2cad2f4762b4aaaa472db9fda6e8f038b5cc01c969a5ee32a9efa1067ebe8a28"
         }
       ],
-      "filesSha256": "4f13caca70433d1a402e7aa0340aeaafede278b80c70f310c8286eb5161f130e"
+      "filesSha256": "44fbf8da08fa74f8a4b62cbb4285a8f74ee291f9096e16cb7815c1911ca27f14"
     },
     "world": {
       "git": {
-        "head": "699a3147088274d2bf742c6ecb4cb70a5faea631",
-        "tree": "2139100b1a42bc12886bbcceac836a466b43ee67",
+        "head": "ca5c5c73afe2c2e16444ee3fcd08babce6ced6b4",
+        "tree": "1137c33766b7ba864b57ce60aacbcbda6a99ccb9",
         "dirty": true
       },
       "fileScope": "pure data admission and runtime kernel sources with their build descriptions",

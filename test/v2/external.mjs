@@ -17,13 +17,13 @@ assert.equal(sha256(kernel), freeze.kernelSha256, 'kernel changed: author anothe
 assert.equal(kernel.length, freeze.kernelBytes);
 await mkdir(output, { recursive: true });
 const scratch = await mkdtemp(join(output, 'consumer-'));
-await cp(join(world, 'test/v2/external/sort_three'), join(scratch, 'sort_three'), {
+await cp(join(world, 'test/v2/external/prefix_maximum'), join(scratch, 'prefix_maximum'), {
   recursive: true,
 });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
 function compile(source) {
   const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
-    { cwd: join(scratch, 'sort_three'), timeout: 180000, maxBuffer: 16 << 20 });
+    { cwd: join(scratch, 'prefix_maximum'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
 }
@@ -48,22 +48,25 @@ async function compare(input, mode) {
   return { ...decodeOutcome(bytes), bytes };
 }
 function expected(values) {
-  const sorted = [...values].sort((left, right) => left > right ? -1 : left < right ? 1 : 0);
-  const value = Buffer.alloc(24);
-  sorted.forEach((item, index) => value.writeBigUInt64LE(item, index * 8));
+  let maximum = 0n;
+  const value = Buffer.alloc(32);
+  values.forEach((item, index) => {
+    if (item > maximum) maximum = item;
+    value.writeBigUInt64LE(maximum, index * 8);
+  });
   return { kind: 'Completed', value: [...value], trace: [{ kind: 'Yielded' }] };
 }
 try {
   const maximum = (1n << 64n) - 1n, highBit = 1n << 63n;
   for (const values of [
-    [0n, 0n, 0n],
-    [1n, 2n, 3n],
-    [3n, 2n, 1n],
-    [highBit, 0n, maximum],
-    [maximum, highBit, highBit],
-    [maximum - 1n, maximum - 2n, maximum],
+    [0n, 0n, 0n, 0n],
+    [1n, 2n, 3n, 4n],
+    [4n, 3n, 2n, 1n],
+    [highBit, 0n, maximum, 1n],
+    [maximum, highBit, highBit, maximum],
+    [maximum - 1n, maximum - 2n, maximum, 0n],
   ]) {
-    const initialArgs = Buffer.alloc(24);
+    const initialArgs = Buffer.alloc(32);
     values.forEach((value, index) => initialArgs.writeBigUInt64LE(value, index * 8));
     const oracle = execute(source, [...initialArgs]), wanted = expected(values);
     assert.equal(oracle.kind, wanted.kind);
@@ -94,23 +97,23 @@ try {
 const finalKernel = await readFile(kernelPath);
 assert.equal(sha256(finalKernel), freeze.kernelSha256);
 assert.equal(finalKernel.length, freeze.kernelBytes);
-await writeFile(join(output, 'sort-three.bpi2'), image);
-await writeFile(join(output, 'sort-three-source.json'), sourceBytes);
+await writeFile(join(output, 'prefix-maximum.bpi2'), image);
+await writeFile(join(output, 'prefix-maximum-source.json'), sourceBytes);
 await writeFile(join(output, 'external.json'), json({
   format: 'world-v2-external-consumer/v1', freeze, checkedAt: new Date().toISOString(),
-  consumer: 'sort-three',
-  consumerSourceSha256: sha256(await readFile(join(scratch, 'sort_three/main.zig'))),
+  consumer: 'prefix-maximum',
+  consumerSourceSha256: sha256(await readFile(join(scratch, 'prefix_maximum/main.zig'))),
   imageSha256: sha256(image), imageBytes: image.length, sourceSha256: sha256(sourceBytes),
   kernelSha256: freeze.kernelSha256, nativeSha256: native ? sha256(await readFile(native)) : null,
   embeddings: native ? ['native', 'javascript', 'wasmtime'] : ['javascript', 'wasmtime'],
   observations: [
-    'new operation and deep handler compiled using only the public Boundary module',
-    'independent source semantics and BigInt descending-sort expectations agreed',
+    'new operation and shallow state-passing handler compiled using only the public Boundary module',
+    'independent source semantics and BigInt prefix-maximum expectations agreed',
     'fresh producers alternated through every advance boundary',
-    'run matched advance records; the sorting network retained both ordered pairs through yield',
+    'run matched advance records; explicit handler state survived yield and transfer',
     'zero, permutations, duplicates and full-width u64 comparisons preserved exact results',
     'runtime boundary kinds matched the independently expected single yield and completion',
   ], records,
 }));
-console.log(`post-freeze sort-three consumer: ${records.length} exact records under ` +
+console.log(`post-freeze prefix-maximum consumer: ${records.length} exact records under ` +
   freeze.kernelSha256);
