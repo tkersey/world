@@ -72,7 +72,7 @@ test('self-consistent example archives cannot replace any executable source inpu
 test('runtime source authentication preserves bytes and executable modes', () => {
   const source = [
     { name: 'bin/world.mjs', bytes: Buffer.from('#!/usr/bin/env node\n'), executable: true },
-    { name: 'package.json', bytes: Buffer.from('{}'), executable: false },
+    { name: 'package.json', bytes: json({ files: ['bin/'] }), executable: false },
   ];
   const generated = ['world-process-kernel-v2.wasm', 'world-runtime-identity.json', 'SHA256SUMS']
     .map(name => ({ name, bytes: Buffer.from('generated'), executable: false }));
@@ -90,6 +90,29 @@ test('runtime source authentication preserves bytes and executable modes', () =>
     /runtime source mismatch/);
   assert.throws(() => verifyRuntimeSources(readTarGzip(tarGzip(entries)), source.slice(1)),
     /runtime source mismatch/);
+});
+
+test('runtime distribution admits exactly the authenticated package inventory', () => {
+  const source = [
+    { name: 'package.json', bytes: json({ files: ['bin/', 'src/process_v2/', 'docs/abi.md'] }), executable: false },
+    { name: 'bin/world.mjs', bytes: Buffer.from('CLI'), executable: true },
+    { name: 'src/process_v2/index.mjs', bytes: Buffer.from('runtime'), executable: false },
+    { name: 'src/process_v2/nested/value.mjs', bytes: Buffer.from('codec'), executable: false },
+    { name: 'docs/abi.md', bytes: Buffer.from('API'), executable: false },
+    { name: 'test/v2/legacy/process_v1/kernel.mjs', bytes: Buffer.from('legacy evaluator'), executable: false },
+    { name: 'src/process_v2-extra/leak.mjs', bytes: Buffer.from('prefix sibling'), executable: false },
+    { name: 'docs/private.md', bytes: Buffer.from('unselected documentation'), executable: false },
+  ];
+  const entries = [...source.slice(0, 5), ...['world-process-kernel-v2.wasm', 'world-runtime-identity.json', 'SHA256SUMS']
+    .map(name => ({ name, bytes: Buffer.from('generated'), executable: false }))];
+  const verify = rows => verifyRuntimeSources(readTarGzip(tarGzip(rows)), source);
+  verify(entries);
+  // Each extra file has authentic source bytes and modes, but is not distributed.
+  for (const extra of source.slice(5)) assert.throws(() => verify([...entries, extra]), /runtime source mismatch/);
+  for (const omitted of entries) assert.throws(() => verify(entries.filter(row => row !== omitted)), /runtime source mismatch/);
+  const broadened = entries.map(row => row.name === 'package.json'
+    ? { ...row, bytes: json({ files: ['bin/', 'src/', 'docs/', 'test/'] }) } : row);
+  assert.throws(() => verify([...broadened, source[5]]), /runtime source mismatch/);
 });
 
 test('indexed data requires exact offsets, names, lengths and byte digests', () => {

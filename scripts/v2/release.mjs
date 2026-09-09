@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { bounded } from './bounded.mjs';
 import { inspectProcessKernelWasm } from '../../src/process_v2/wasm.mjs';
-import { sha256, json, safeName, tarGzip, readTarGzip, sourceIdentity, readSource, writeAssets, verifyAssets } from './assets.mjs';
+import { sha256, json, tarGzip, readTarGzip, sourceIdentity, readSource, runtimeSourceEntries, writeAssets, verifyAssets } from './assets.mjs';
 
 const [kernelArg,nativeArg,rejectionsArg,boundaryArg,boundaryAssetsArg,projectArg,outputArg]=process.argv.slice(2);
 if(process.argv.length!==9)throw new Error('expected kernel, native embedding, malformed-State producer, Boundary source, Boundary assets, Wasmtime project, output');
@@ -38,14 +38,7 @@ const identity={format:'world-runtime-identity/v2',version,abi:2,profile:1,sourc
 const entries=new Map([['package.json',{name:'package.json',bytes:packageBytes}],
   ['world-process-kernel-v2.wasm',{name:'world-process-kernel-v2.wasm',bytes:kernel}],
   ['world-runtime-identity.json',{name:'world-runtime-identity.json',bytes:json(identity)}]]);
-function include(name) {
-  safeName(name);
-  if(entries.has(name)||name==='SHA256SUMS')return;
-  const selected=[...sourceFiles.values()].filter(entry=>entry.name===name||entry.name.startsWith(`${name}/`));
-  if(!selected.length)throw new Error(`package entry absent from verified source: ${name}`);
-  for(const entry of selected)if(!entries.has(entry.name))entries.set(entry.name,entry);
-}
-for(const name of pkg.files)include(name.replace(/\/$/,''));
+for(const entry of runtimeSourceEntries([...sourceFiles.values()]))entries.set(entry.name,entry);
 for(const name of [...Object.values(pkg.exports),...Object.values(pkg.bin)])assert.ok(entries.has(name.replace(/^\.\//,'')),`missing exported entry: ${name}`);
 const innerSums=[...entries.values()].sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0).map(({name,bytes})=>`${sha256(bytes)}  ${name}\n`).join('');
 entries.set('SHA256SUMS',{name:'SHA256SUMS',bytes:Buffer.from(innerSums)});

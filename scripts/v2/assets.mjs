@@ -155,10 +155,28 @@ export function verifyExampleSources(examples, compilerFiles) {
     if (!entry || !expected || entry.executable || !entry.bytes.equals(expected)) throw new Error(`example source mismatch: ${name}`);
   }
 }
-export function verifyRuntimeSources(entries, sourceFiles) {
+const generatedRuntimeFiles = ['world-process-kernel-v2.wasm', 'world-runtime-identity.json', 'SHA256SUMS'];
+export function runtimeSourceEntries(sourceFiles) {
   const source = new Map(sourceFiles.map(entry => [entry.name, entry]));
+  const manifest = source.get('package.json');
+  if (!manifest) throw new Error('runtime source mismatch: package.json');
+  const selected = new Map([['package.json', manifest]]);
+  for (const path of JSON.parse(manifest.bytes).files) {
+    const name = safeName(path.replace(/\/$/, ''));
+    if (generatedRuntimeFiles.includes(name)) continue;
+    const matches = sourceFiles.filter(entry => entry.name === name || entry.name.startsWith(`${name}/`));
+    if (!matches.length) throw new Error(`runtime source mismatch: absent package entry ${name}`);
+    for (const entry of matches) selected.set(entry.name, entry);
+  }
+  return [...selected.values()];
+}
+export function verifyRuntimeSources(entries, sourceFiles) {
+  const source = new Map(runtimeSourceEntries(sourceFiles).map(entry => [entry.name, entry]));
+  const expectedNames = [...source.keys(), ...generatedRuntimeFiles].sort();
+  if (JSON.stringify(entries.map(entry => entry.name).sort()) !== JSON.stringify(expectedNames))
+    throw new Error('runtime source mismatch: package inventory');
   for (const entry of entries) {
-    if (['world-process-kernel-v2.wasm', 'world-runtime-identity.json', 'SHA256SUMS'].includes(entry.name)) {
+    if (generatedRuntimeFiles.includes(entry.name)) {
       if (entry.executable) throw new Error(`runtime source mismatch: ${entry.name}`);
       continue;
     }
