@@ -42,6 +42,9 @@ assert.equal(wm.binarySha256,sha256(w.get('world-v2-conformance.bin')));const wf
 await mkdir(output,{recursive:true});const scratch=await mkdtemp(join(output,'packages-')),runtime=join(scratch,'runtime'),exampleRoot=join(scratch,'examples');
 async function extract(entries,directory){for(const entry of entries){const path=join(directory,safeName(entry.name));await mkdir(dirname(path),{recursive:true});await writeFile(path,entry.bytes,{flag:'wx',mode:entry.executable?0o755:0o644});}}
 await extract(runtimeEntries,runtime);await extract(examples,exampleRoot);
+// Keep the child bound to the verified buffers while the original assets may change.
+const conformance=join(scratch,'conformance');
+await extract(['world-v2-conformance.json','world-v2-conformance.bin'].map(name=>({name,bytes:w.get(name)})),conformance);
 // Populate the compiler from receipt-bound regular source bytes, before executing
 // its build script. The receipt is bound to the expected public commit above.
 await extract(compilerFiles,join(scratch,'boundary'));
@@ -52,7 +55,7 @@ const first=bm.cases[0],program=bm.programs.find((program)=>program.name===first
 await writeFile(join(scratch,'image.bpi2'),bf.get(program.image));await writeFile(join(scratch,'initial.bin'),bf.get(first.initial));
 const cli=spawnSync(process.execPath,[join(runtime,'bin/world.mjs'),'process','run','--image',join(scratch,'image.bpi2'),'--initial',join(scratch,'initial.bin'),'--output',join(scratch,'outcome.pko2')],{cwd:runtime,timeout:30000,maxBuffer:16<<20});
 assert.equal(cli.status,0,cli.stderr.toString());assert.deepEqual(await readFile(join(scratch,'outcome.pko2')),wf.get(wm.checks.find((check)=>check.case===first.name).output));
-await bounded(process.execPath,[join(ownRoot,'scripts/v2/replay.mjs'),runtime,worldAssets,join(ownRoot,'test/v2/wasmtime'),identity.kernel.sha256],{cwd:ownRoot,timeout:180000});
+await bounded(process.execPath,[join(ownRoot,'scripts/v2/replay.mjs'),runtime,conformance,join(ownRoot,'test/v2/wasmtime'),identity.kernel.sha256],{cwd:ownRoot,timeout:180000});
 // Run the fresh consumer from verified source in a fresh process. The selected
 // runtime package supplies the JavaScript embedding; no native World build is needed.
 const verifiedWorld=join(scratch,'world-source'),externalOutput=join(scratch,'external-result');
