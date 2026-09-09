@@ -1,0 +1,349 @@
+{
+  "format": "world-v2-phase-economy/v1",
+  "method": "21 native ReleaseSafe samples after five warmups; one shared admitted image; initialization, transition categories, collection and serialization timed independently; branch creation includes activation and return-continuation setup; whole-invocation working peaks; no environmental effects resolved",
+  "workloads": [
+    {
+      "name": "one-shot",
+      "file": "source-deep.bpi2",
+      "imageSha256": "36b5e425ce4b8cd77e38559045474768fe3d918203f5274d1a26264d19ecbfee",
+      "variants": [
+        {
+          "label": "after",
+          "executableSha256": "fe80d58c9a84929b0e25c803383e1d35298dc9d5dfbb9142cca8cc66680edd15",
+          "phaseMediansNs": {
+            "initialization_ns": 166,
+            "direct_clause_ns": 0,
+            "one_shot_capture_ns": 333,
+            "multi_template_capture_ns": 0,
+            "branch_creation_transition_ns": 0,
+            "execution_ns": 1542,
+            "unwind_ns": 0,
+            "collection_ns": 1417,
+            "snapshot_validation_encoding_ns": 0,
+            "outcome_encoding_ns": 84
+          },
+          "statistics": {
+            "transitions": 8,
+            "direct_clauses": 0,
+            "one_shot_captures": 1,
+            "multi_templates": 0,
+            "branch_activations": 0,
+            "storage": {
+              "added_nodes": 16,
+              "copied_blob_bytes": 0,
+              "traced_nodes": 27,
+              "traced_edges": 38,
+              "swept_slots": 53
+            },
+            "snapshot": {
+              "nodes": 0,
+              "edges": 0,
+              "blobs": 0,
+              "remapped_nodes": 0,
+              "stored_payload_bytes": 0,
+              "interning_hash_bytes": 0,
+              "interning_comparisons": 0
+            }
+          },
+          "peakWorkingBytes": 2225,
+          "outputBytes": 30,
+          "outputSha256": "c207c5e2b875ea94c2bc8d70aac891a420a40c3fb8813886de40bbeae335c7bd"
+        }
+      ]
+    },
+    {
+      "name": "multi",
+      "file": "source-choices-all.bpi2",
+      "imageSha256": "6304dfe46d30fa4f0c346558d6d5c2a41f69fdd947e9e41c5e302499ba496dee",
+      "variants": [
+        {
+          "label": "after",
+          "executableSha256": "fe80d58c9a84929b0e25c803383e1d35298dc9d5dfbb9142cca8cc66680edd15",
+          "phaseMediansNs": {
+            "initialization_ns": 167,
+            "direct_clause_ns": 0,
+            "one_shot_capture_ns": 0,
+            "multi_template_capture_ns": 1000,
+            "branch_creation_transition_ns": 4458,
+            "execution_ns": 5001,
+            "unwind_ns": 0,
+            "collection_ns": 7420,
+            "snapshot_validation_encoding_ns": 0,
+            "outcome_encoding_ns": 84
+          },
+          "statistics": {
+            "transitions": 25,
+            "direct_clauses": 0,
+            "one_shot_captures": 0,
+            "multi_templates": 3,
+            "branch_activations": 6,
+            "storage": {
+              "added_nodes": 54,
+              "copied_blob_bytes": 39,
+              "traced_nodes": 166,
+              "traced_edges": 297,
+              "swept_slots": 354
+            },
+            "snapshot": {
+              "nodes": 0,
+              "edges": 0,
+              "blobs": 0,
+              "remapped_nodes": 0,
+              "stored_payload_bytes": 0,
+              "interning_hash_bytes": 0,
+              "interning_comparisons": 0
+            }
+          },
+          "peakWorkingBytes": 4841,
+          "outputBytes": 31,
+          "outputSha256": "daaf63cc1644fd63dd52531ae45386d056c4167f6488d789538c54e8a918560e"
+        }
+      ]
+    },
+    {
+      "name": "local-cells",
+      "file": "source-state-local.bpi2",
+      "imageSha256": "7fefd347007d87ec39077c2bee9a36045a2e5a8cf95002e1287725c7d8dd2219",
+      "variants": [
+        {
+          "label": "after",
+          "executableSha256": "fe80d58c9a84929b0e25c803383e1d35298dc9d5dfbb9142cca8cc66680edd15",
+          "phaseMediansNs": {
+            "initialization_ns": 250,
+            "direct_clause_ns": 1001,
+            "one_shot_capture_ns": 0,
+            "multi_template_capture_ns": 333,
+            "branch_creation_transition_ns": 4791,
+            "execution_ns": 5081,
+            "unwind_ns": 0,
+            "collection_ns": 13584,
+            "snapshot_validation_encoding_ns": 0,
+            "outcome_encoding_ns": 84
+          },
+          "statistics": {
+            "transitions": 30,
+            "direct_clauses": 4,
+            "one_shot_captures": 0,
+            "multi_templates": 1,
+            "branch_activations": 2,
+            "storage": {
+              "added_nodes": 68,
+              "copied_blob_bytes": 26,
+              "traced_nodes": 347,
+              "traced_edges": 719,
+              "swept_slots": 610
+            },
+            "snapshot": {
+              "nodes": 0,
+              "edges": 0,
+              "blobs": 0,
+              "remapped_nodes": 0,
+              "stored_payload_bytes": 0,
+              "interning_hash_bytes": 0,
+              "interning_comparisons": 0
+            }
+          },
+          "peakWorkingBytes": 7853,
+          "outputBytes": 39,
+          "outputSha256": "483cc00bc132ac9437d2a3b837598b82daeda4e2a23cd54113b31556412ba74e"
+        }
+      ]
+    },
+    {
+      "name": "shared-cells",
+      "file": "source-state-shared.bpi2",
+      "imageSha256": "9a8065e9112ceb6834b62abf1cfbd8c048b9b1daa714ad10b8d6d1119dd9f9b2",
+      "variants": [
+        {
+          "label": "after",
+          "executableSha256": "fe80d58c9a84929b0e25c803383e1d35298dc9d5dfbb9142cca8cc66680edd15",
+          "phaseMediansNs": {
+            "initialization_ns": 250,
+            "direct_clause_ns": 1083,
+            "one_shot_capture_ns": 0,
+            "multi_template_capture_ns": 334,
+            "branch_creation_transition_ns": 1791,
+            "execution_ns": 4541,
+            "unwind_ns": 0,
+            "collection_ns": 9956,
+            "snapshot_validation_encoding_ns": 0,
+            "outcome_encoding_ns": 125
+          },
+          "statistics": {
+            "transitions": 24,
+            "direct_clauses": 4,
+            "one_shot_captures": 0,
+            "multi_templates": 1,
+            "branch_activations": 2,
+            "storage": {
+              "added_nodes": 48,
+              "copied_blob_bytes": 35,
+              "traced_nodes": 232,
+              "traced_edges": 549,
+              "swept_slots": 379
+            },
+            "snapshot": {
+              "nodes": 0,
+              "edges": 0,
+              "blobs": 0,
+              "remapped_nodes": 0,
+              "stored_payload_bytes": 0,
+              "interning_hash_bytes": 0,
+              "interning_comparisons": 0
+            }
+          },
+          "peakWorkingBytes": 4807,
+          "outputBytes": 39,
+          "outputSha256": "de4e740067475ea797fc3eba327358b009ef6f2dd7de319738180b6d365703ad"
+        }
+      ]
+    },
+    {
+      "name": "retained-search",
+      "file": "source-queens-dfs.bpi2",
+      "imageSha256": "0466e486b9abd73c5f8b96dcbce7cd5d2037723ebe715f3f92e58ab7327cfba4",
+      "variants": [
+        {
+          "label": "after",
+          "executableSha256": "fe80d58c9a84929b0e25c803383e1d35298dc9d5dfbb9142cca8cc66680edd15",
+          "phaseMediansNs": {
+            "initialization_ns": 708,
+            "direct_clause_ns": 0,
+            "one_shot_capture_ns": 0,
+            "multi_template_capture_ns": 916,
+            "branch_creation_transition_ns": 4834,
+            "execution_ns": 19627,
+            "unwind_ns": 0,
+            "collection_ns": 39712,
+            "snapshot_validation_encoding_ns": 173625,
+            "outcome_encoding_ns": 208
+          },
+          "statistics": {
+            "transitions": 42,
+            "direct_clauses": 0,
+            "one_shot_captures": 0,
+            "multi_templates": 2,
+            "branch_activations": 2,
+            "storage": {
+              "added_nodes": 96,
+              "copied_blob_bytes": 2,
+              "traced_nodes": 829,
+              "traced_edges": 2001,
+              "swept_slots": 1003
+            },
+            "snapshot": {
+              "nodes": 30,
+              "edges": 78,
+              "blobs": 2,
+              "remapped_nodes": 30,
+              "stored_payload_bytes": 2,
+              "interning_hash_bytes": 3,
+              "interning_comparisons": 0
+            }
+          },
+          "peakWorkingBytes": 79232,
+          "outputBytes": 425,
+          "outputSha256": "c05280c6dc7c3464d671efa756620ada9ba6f43a59bbbd808f57e1d41d83b408"
+        }
+      ]
+    },
+    {
+      "name": "cleanup",
+      "file": "source-unwind.bpi2",
+      "imageSha256": "466e09caa192162fed0d509e3f3fa9b053f59347995d484b03833d86a35b876f",
+      "variants": [
+        {
+          "label": "after",
+          "executableSha256": "fe80d58c9a84929b0e25c803383e1d35298dc9d5dfbb9142cca8cc66680edd15",
+          "phaseMediansNs": {
+            "initialization_ns": 500,
+            "direct_clause_ns": 0,
+            "one_shot_capture_ns": 0,
+            "multi_template_capture_ns": 0,
+            "branch_creation_transition_ns": 0,
+            "execution_ns": 3334,
+            "unwind_ns": 2418,
+            "collection_ns": 9542,
+            "snapshot_validation_encoding_ns": 21625,
+            "outcome_encoding_ns": 167
+          },
+          "statistics": {
+            "transitions": 12,
+            "direct_clauses": 0,
+            "one_shot_captures": 0,
+            "multi_templates": 0,
+            "branch_activations": 0,
+            "storage": {
+              "added_nodes": 39,
+              "copied_blob_bytes": 60,
+              "traced_nodes": 158,
+              "traced_edges": 171,
+              "swept_slots": 241
+            },
+            "snapshot": {
+              "nodes": 11,
+              "edges": 14,
+              "blobs": 1,
+              "remapped_nodes": 11,
+              "stored_payload_bytes": 19,
+              "interning_hash_bytes": 19,
+              "interning_comparisons": 0
+            }
+          },
+          "peakWorkingBytes": 28029,
+          "outputBytes": 452,
+          "outputSha256": "dcda029ad67275da929017901c951f858e4312ca2780fcf06b1ad81c2c321aaa"
+        }
+      ]
+    },
+    {
+      "name": "install-64",
+      "file": "economy-64.bpi2",
+      "imageSha256": "b30dfa7ec3091ff54b9b9480bdb9ae9b4e813c77fa1d8fcab37ca901819e5c12",
+      "variants": [
+        {
+          "label": "after",
+          "executableSha256": "fe80d58c9a84929b0e25c803383e1d35298dc9d5dfbb9142cca8cc66680edd15",
+          "phaseMediansNs": {
+            "initialization_ns": 167,
+            "direct_clause_ns": 11038,
+            "one_shot_capture_ns": 0,
+            "multi_template_capture_ns": 0,
+            "branch_creation_transition_ns": 0,
+            "execution_ns": 77162,
+            "unwind_ns": 0,
+            "collection_ns": 104492,
+            "snapshot_validation_encoding_ns": 0,
+            "outcome_encoding_ns": 125
+          },
+          "statistics": {
+            "transitions": 321,
+            "direct_clauses": 64,
+            "one_shot_captures": 0,
+            "multi_templates": 0,
+            "branch_activations": 0,
+            "storage": {
+              "added_nodes": 641,
+              "copied_blob_bytes": 0,
+              "traced_nodes": 832,
+              "traced_edges": 1152,
+              "swept_slots": 2240
+            },
+            "snapshot": {
+              "nodes": 0,
+              "edges": 0,
+              "blobs": 0,
+              "remapped_nodes": 0,
+              "stored_payload_bytes": 0,
+              "interning_hash_bytes": 0,
+              "interning_comparisons": 0
+            }
+          },
+          "peakWorkingBytes": 8913,
+          "outputBytes": 30,
+          "outputSha256": "690bd37ca81b1f51cff3fee4bb3a2d0b8ddab7f918b33a1281ff75a5a04bba34"
+        }
+      ]
+    }
+  ]
+}

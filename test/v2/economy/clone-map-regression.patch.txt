@@ -1,0 +1,119 @@
+--- src/interpreter_v2/clone.zig	2026-09-06 00:33:14
++++ .cache/v2/clone-unified-rejected.zig	2026-09-06 00:33:14
+@@ -6,7 +6,12 @@
+ const g = data.graph;
+ const Store = @import("store.zig").Store;
+ const Error = @import("process.zig").Error;
+-const Map = std.AutoHashMap(p.Id, g.NodeRef);
++const Entry = struct {
++    copy: ?g.NodeRef = null,
++    discovered: bool = false,
++    parents: std.ArrayList(g.NodeRef) = .empty,
++};
++const Map = std.AutoHashMap(p.Id, Entry);
+ 
+ pub fn instantiate(allocator: std.mem.Allocator, store: *Store, template: g.Capture) Error!g.Capture {
+     var arena = std.heap.ArenaAllocator.init(allocator);
+@@ -18,8 +23,6 @@
+         .map = Map.init(scratch),
+         .waiting = std.AutoHashMap(p.Id, std.ArrayList(g.NodeRef)).init(scratch),
+         .considered = std.AutoHashMap(p.Id, void).init(scratch),
+-        .discovered = std.AutoHashMap(p.Id, void).init(scratch),
+-        .dependents = std.AutoHashMap(p.Id, std.ArrayList(g.NodeRef)).init(scratch),
+     };
+     try copy.capture(template, false);
+     var index: usize = 0;
+@@ -33,7 +36,7 @@
+         if (propagated < copy.originals.items.len) {
+             const changed = copy.originals.items[propagated];
+             propagated += 1;
+-            if (copy.dependents.get(changed.id)) |parents| for (parents.items) |parent| try copy.include(parent);
++            for (copy.map.get(changed.id).?.parents.items) |parent| try copy.include(parent);
+             continue;
+         }
+         const original = copy.pending.items[index];
+@@ -60,7 +63,7 @@
+     }
+     for (copy.originals.items) |ref| {
+         const changed = try rebase(g.Node, scratch, try store.get(ref), copy.map);
+-        try store.replace(copy.map.get(ref.id).?, changed);
++        try store.replace(copy.map.get(ref.id).?.copy.?, changed);
+     }
+     var result = try rebase(g.Capture, scratch, template, copy.map);
+     result.use_site_capabilities = try allocator.dupe(g.Value, result.use_site_capabilities);
+@@ -75,28 +78,39 @@
+     templates: std.ArrayList(g.NodeRef) = .empty,
+     waiting: std.AutoHashMap(p.Id, std.ArrayList(g.NodeRef)),
+     considered: std.AutoHashMap(p.Id, void),
+-    discovered: std.AutoHashMap(p.Id, void),
+     pending: std.ArrayList(g.NodeRef) = .empty,
+-    dependents: std.AutoHashMap(p.Id, std.ArrayList(g.NodeRef)),
+ 
+     fn discover(self: *Cloner, ref: g.NodeRef) Error!void {
+-        const entry = try self.discovered.getOrPut(ref.id);
+-        if (!entry.found_existing) try self.pending.append(self.allocator, ref);
++        const entry = try self.map.getOrPut(ref.id);
++        if (!entry.found_existing) entry.value_ptr.* = .{};
++        if (!entry.value_ptr.discovered) {
++            entry.value_ptr.discovered = true;
++            try self.pending.append(self.allocator, ref);
++        }
+     }
+ 
+     fn addDependency(self: *Cloner, child: g.NodeRef, parent: g.NodeRef) Error!void {
+-        const entry = try self.dependents.getOrPut(child.id);
+-        if (!entry.found_existing) entry.value_ptr.* = .empty;
+-        try entry.value_ptr.append(self.allocator, parent);
+-        if (self.map.contains(child.id)) try self.include(parent);
++        const entry = try self.map.getOrPut(child.id);
++        if (!entry.found_existing) entry.value_ptr.* = .{};
++        try entry.value_ptr.parents.append(self.allocator, parent);
++        if (entry.value_ptr.copy != null) try self.include(parent);
+     }
+ 
++    fn isCopied(self: *Cloner, ref: g.NodeRef) bool {
++        return if (self.map.get(ref.id)) |entry| entry.copy != null else false;
++    }
++
+     fn include(self: *Cloner, ref: g.NodeRef) Error!void {
+-        if (self.map.contains(ref.id)) return;
++        const entry = try self.map.getOrPut(ref.id);
++        if (!entry.found_existing) entry.value_ptr.* = .{};
++        if (entry.value_ptr.copy != null) return;
+         const copied = try self.store.add(try self.store.get(ref));
+-        try self.map.put(ref.id, copied);
++        entry.value_ptr.copy = copied;
+         try self.originals.append(self.allocator, ref);
+-        try self.discover(ref);
++        if (!entry.value_ptr.discovered) {
++            entry.value_ptr.discovered = true;
++            try self.pending.append(self.allocator, ref);
++        }
+         if (self.waiting.fetchRemove(ref.id)) |waiting| try self.templates.appendSlice(self.allocator, waiting.value.items);
+     }
+ 
+@@ -127,13 +141,13 @@
+     }
+ 
+     fn template(self: *Cloner, ref: g.NodeRef) Error!void {
+-        if (self.map.contains(ref.id)) return;
++        if (self.isCopied(ref)) return;
+         const saved = (try self.store.get(ref)).multi_template;
+         const delimiter = (try self.store.get(saved.delimiter)).attachment;
+         const activation = (try self.store.get(delimiter.handler)).handler;
+         const dependencies = [_]?g.NodeRef{ delimiter.outer, activation.region };
+         for (dependencies) |dependency| if (dependency) |owner| {
+-            if (self.map.contains(owner.id)) {
++            if (self.isCopied(owner)) {
+                 // A nested template borrows from this capture. Rebase its frozen
+                 // graph too; templates whose owners are outside retain identity.
+                 try self.include(ref);
+@@ -152,7 +166,7 @@
+ };
+ 
+ fn rebase(comptime T: type, allocator: std.mem.Allocator, value: T, map: Map) Error!T {
+-    if (T == g.NodeRef) return map.get(value.id) orelse value;
++    if (T == g.NodeRef) return if (map.get(value.id)) |entry| entry.copy orelse value else value;
+     if (T == g.BlobRef) return value;
+     return switch (@typeInfo(T)) {
+         .pointer => |info| blk: {

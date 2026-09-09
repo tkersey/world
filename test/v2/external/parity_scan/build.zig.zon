@@ -1,0 +1,8 @@
+.{
+    .name = .parity_scan,
+    .fingerprint = 0xd1cf400bf188276b, // Changing this has security and trust implications.
+    .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{ .boundary = .{ .path = "../boundary" } },
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig", "README.md" },
+}
