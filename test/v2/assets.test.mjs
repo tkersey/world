@@ -4,7 +4,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { tarGzip, readTarGzip, indexedBundle, readBundle, writeAssets, verifyAssets, sourceIdentity, readSource, verifyExampleSources, sha256, json } from '../../scripts/v2/assets.mjs';
+import { tarGzip, readTarGzip, indexedBundle, readBundle, writeAssets, verifyAssets, sourceIdentity, readSource, verifyExampleSources, verifyRuntimeSources, sha256, json } from '../../scripts/v2/assets.mjs';
 
 const files = [{ name: 'z/data.bin', bytes: Buffer.from([0, 255]) }, { name: 'a/run', bytes: Buffer.from('hello'), executable: true }];
 function repairChecksum(bytes) {
@@ -67,6 +67,29 @@ test('self-consistent example archives cannot replace any executable source inpu
     assert.throws(() => verifyExampleSources(readTarGzip(tarGzip(archive.filter((_, i) => i !== index))), source), /example source mismatch/);
     assert.throws(() => verifyExampleSources(readTarGzip(tarGzip(archive)), source.filter((_, i) => i !== index)), /example source mismatch/);
   }
+});
+
+test('runtime source authentication preserves bytes and executable modes', () => {
+  const source = [
+    { name: 'bin/world.mjs', bytes: Buffer.from('#!/usr/bin/env node\n'), executable: true },
+    { name: 'package.json', bytes: Buffer.from('{}'), executable: false },
+  ];
+  const generated = ['world-process-kernel-v2.wasm', 'world-runtime-identity.json', 'SHA256SUMS']
+    .map(name => ({ name, bytes: Buffer.from('generated'), executable: false }));
+  const entries = [...source, ...generated];
+  verifyRuntimeSources(readTarGzip(tarGzip(entries)), source);
+  for (let index = 0; index < entries.length; index++) {
+    const changed = entries.map(entry => ({ ...entry }));
+    changed[index].executable = !changed[index].executable;
+    assert.throws(() => verifyRuntimeSources(readTarGzip(tarGzip(changed)), source),
+      /runtime source mismatch/);
+  }
+  const altered = source.map(entry => ({ ...entry }));
+  altered[0].bytes = Buffer.from('substituted executable');
+  assert.throws(() => verifyRuntimeSources(readTarGzip(tarGzip(altered)), source),
+    /runtime source mismatch/);
+  assert.throws(() => verifyRuntimeSources(readTarGzip(tarGzip(entries)), source.slice(1)),
+    /runtime source mismatch/);
 });
 
 test('indexed data requires exact offsets, names, lengths and byte digests', () => {

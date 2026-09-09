@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdir, mkdtemp } from 'node:fs/promises';
 import { dirname,join,resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { sha256,json,readTarGzip,readBundle,verifyAssets,safeName,readSource,verifyExampleSources } from './assets.mjs';
+import { sha256,json,readTarGzip,readBundle,verifyAssets,safeName,readSource,verifyExampleSources,verifyRuntimeSources } from './assets.mjs';
 import { inspectProcessKernelWasm } from '../../src/process_v2/wasm.mjs';
 import { bounded } from './bounded.mjs';
 const [boundaryArg,worldArg,boundarySourceArg,outputArg,expectedBoundaryCommit,expectedWorldCommit]=process.argv.slice(2);
@@ -20,9 +20,9 @@ assert.equal(wr.boundary.source.filesSha256,br.source.filesSha256);
 assert.deepEqual(wr.protected,br.protected);
 if(expectedBoundaryCommit){assert.equal(br.source.git.dirty,false);assert.equal(br.source.git.head,expectedBoundaryCommit);assert.equal(wr.source.git.dirty,false);assert.equal(wr.source.git.head,expectedWorldCommit);}
 const compilerFiles=await readSource(boundarySource,br.source,expectedBoundaryCommit);
-const worldSourceFiles=new Map((await readSource(ownRoot,wr.source,expectedWorldCommit)).map(({name,bytes})=>[name,bytes]));
+const worldSourceFiles=await readSource(ownRoot,wr.source,expectedWorldCommit);
 const runtimeEntries=readTarGzip(w.get('world-v5.0.0-process-runtime.tar.gz')),runtimeMap=new Map(runtimeEntries.map((entry)=>[entry.name,entry.bytes]));
-for(const [name,bytes] of runtimeMap)if(!['world-process-kernel-v2.wasm','world-runtime-identity.json','SHA256SUMS'].includes(name))assert.deepEqual(bytes,worldSourceFiles.get(name),`runtime source ${name}`);
+verifyRuntimeSources(runtimeEntries,worldSourceFiles);
 const identity=JSON.parse(runtimeMap.get('world-runtime-identity.json')),pkg=JSON.parse(runtimeMap.get('package.json'));
 assert.equal(identity.format,'world-runtime-identity/v2');assert.equal(identity.version,wr.version);assert.equal(pkg.version,wr.version);
 assert.equal(identity.kernel.sha256,sha256(w.get('world-process-kernel-v2.wasm')));
@@ -44,7 +44,7 @@ async function extract(entries,directory){for(const entry of entries){const path
 await extract(runtimeEntries,runtime);await extract(examples,exampleRoot);
 // Populate the compiler from receipt-bound regular source bytes, before executing
 // its build script. The receipt is bound to the expected public commit above.
-for(const {name,bytes} of compilerFiles){const path=join(scratch,'boundary',name);await mkdir(dirname(path),{recursive:true});await writeFile(path,bytes,{flag:'wx'});}
+await extract(compilerFiles,join(scratch,'boundary'));
 const compiler=spawnSync('zig',['build','emit','-Dexample=14','--cache-dir',join(scratch,'zig-local'),'--global-cache-dir',join(scratch,'zig-global')],{cwd:exampleRoot,maxBuffer:16<<20,timeout:180000});
 assert.equal(compiler.status,0,compiler.stderr.toString());
 assert.deepEqual(compiler.stdout,bf.get(bm.programs.find((program)=>program.name==='queens-dfs').image));
@@ -56,7 +56,7 @@ await bounded(process.execPath,[join(ownRoot,'scripts/v2/replay.mjs'),runtime,wo
 // Run the fresh consumer from verified source in a fresh process. The selected
 // runtime package supplies the JavaScript embedding; no native World build is needed.
 const verifiedWorld=join(scratch,'world-source'),externalOutput=join(scratch,'external-result');
-await extract([...worldSourceFiles].map(([name,bytes])=>({name,bytes})),verifiedWorld);
+await extract(worldSourceFiles,verifiedWorld);
 await bounded(process.execPath,[join(verifiedWorld,'test/v2/external.mjs'),join(scratch,'boundary'),join(runtime,'world-process-kernel-v2.wasm'),'-',externalOutput,runtime],{cwd:verifiedWorld,timeout:180000});
 const external=JSON.parse(await readFile(join(externalOutput,'external.json')));
 assert.equal(external.kernelSha256,identity.kernel.sha256);

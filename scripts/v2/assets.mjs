@@ -155,6 +155,18 @@ export function verifyExampleSources(examples, compilerFiles) {
     if (!entry || !expected || entry.executable || !entry.bytes.equals(expected)) throw new Error(`example source mismatch: ${name}`);
   }
 }
+export function verifyRuntimeSources(entries, sourceFiles) {
+  const source = new Map(sourceFiles.map(entry => [entry.name, entry]));
+  for (const entry of entries) {
+    if (['world-process-kernel-v2.wasm', 'world-runtime-identity.json', 'SHA256SUMS'].includes(entry.name)) {
+      if (entry.executable) throw new Error(`runtime source mismatch: ${entry.name}`);
+      continue;
+    }
+    const expected = source.get(entry.name);
+    if (!expected || entry.executable !== expected.executable || !entry.bytes.equals(expected.bytes))
+      throw new Error(`runtime source mismatch: ${entry.name}`);
+  }
+}
 export async function writeAssets(directory, entries) {
   await mkdir(directory,{recursive:true});
   for(const {name,bytes} of entries) {
