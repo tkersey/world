@@ -5,6 +5,13 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const MAX_U64 = (1n << 64n) - 1n;
 
+function snapshotBytes(value) {
+  if (!isUint8Array(value)) throw new TypeError("expected bytes");
+  // The typed-array constructor copies intrinsic view bytes without invoking
+  // caller-defined iterators, properties, subarray methods or species.
+  return new Uint8Array(value);
+}
+
 export function natural(value) {
   if (typeof value === "number" && !Number.isSafeInteger(value)) throw new RangeError("inexact integer");
   let remaining = BigInt(value);
@@ -39,7 +46,9 @@ export function frame(magic, body) {
 }
 
 export function body(magic, bytes) {
-  if (!isUint8Array(bytes) || bytes.length < 20) throw new Error("Truncated");
+  if (!isUint8Array(bytes)) throw new Error("Truncated");
+  bytes = snapshotBytes(bytes);
+  if (bytes.length < 20) throw new Error("Truncated");
   const actual = decoder.decode(bytes.subarray(0, 8));
   if (/^ABL_(BPI|PST|PKI|PKO|ERQ|ERS)1$/.test(actual)) throw new Error("UnsupportedFamily");
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -51,7 +60,7 @@ export function body(magic, bytes) {
 }
 
 export class Reader {
-  constructor(bytes) { this.bytes = bytes; this.position = 0; }
+  constructor(bytes) { this.bytes = snapshotBytes(bytes); this.position = 0; }
   take(length) {
     if (!Number.isSafeInteger(length) || length < 0 || this.position < 0 || this.position > this.bytes.length || length > this.bytes.length - this.position) throw new Error("Truncated");
     const start = this.position;
@@ -85,20 +94,16 @@ export function encodeInput({ mode = "advance", image, initialArgs, state, resul
   if ((initialArgs !== undefined) === (state !== undefined)) throw new Error("InvalidInstance");
   if (result !== undefined && cancel !== undefined) throw new Error("InvalidControl");
   if (initialArgs !== undefined && (cancel !== undefined || result !== undefined)) throw new Error("InvalidControl");
-  const copied = (value) => {
-    if (!isUint8Array(value)) throw new TypeError("expected bytes");
-    return Uint8Array.from(value);
-  };
-  const instance = initialArgs === undefined ? concat(natural(1), field(copied(state))) : concat(natural(0), field(copied(initialArgs)));
+  const instance = initialArgs === undefined ? concat(natural(1), field(snapshotBytes(state))) : concat(natural(0), field(snapshotBytes(initialArgs)));
   let control;
   if (cancel !== undefined) {
     if (typeof cancel === "string" && !cancel.isWellFormed()) throw new Error("InvalidUtf8");
-    const reason = typeof cancel === "string" ? concat(natural(0), field(encoder.encode(cancel))) : concat(natural(1), field(copied(cancel)));
+    const reason = typeof cancel === "string" ? concat(natural(0), field(encoder.encode(cancel))) : concat(natural(1), field(snapshotBytes(cancel)));
     control = concat(natural(1), reason);
   } else {
-    control = concat(natural(0), natural(result === undefined ? 0 : 1), result === undefined ? new Uint8Array() : field(copied(result)));
+    control = concat(natural(0), natural(result === undefined ? 0 : 1), result === undefined ? new Uint8Array() : field(snapshotBytes(result)));
   }
-  return frame("ABL_PKI2", concat(natural(mode === "advance" ? 0 : 1), field(copied(image)), instance, control));
+  return frame("ABL_PKI2", concat(natural(mode === "advance" ? 0 : 1), field(snapshotBytes(image)), instance, control));
 }
 
 export function decodeOutcome(bytes) {
@@ -183,12 +188,14 @@ export function decodeRequest(bytes) {
 export function encodeResult(requestBytes, value) {
   const request = decodeRequest(requestBytes);
   if (!isUint8Array(value)) throw new TypeError("result must be canonical value bytes");
+  value = snapshotBytes(value);
   validateValue(request.resumeSchema, value);
   return frame("ABL_ERS2", concat(request.requestIdentity, digest(request.resumeSchema), field(value)));
 }
 
 function decodeSchema(bytes) {
   const reader = new Reader(bytes);
+  bytes = reader.bytes;
   if (reader.natural() !== 0n) throw new Error("NonCanonical");
   const count = reader.natural();
   if (count === 0n || count > BigInt(bytes.length - reader.position)) throw new Error("InvalidSchema");
@@ -266,6 +273,7 @@ function decodeSchema(bytes) {
 export function validateValue(schema, bytes) {
   const types = decodeSchema(schema);
   const reader = new Reader(bytes);
+  bytes = reader.bytes;
   const pending = [[0, 1n]];
   while (pending.length) {
     const [id, count] = pending.pop();
