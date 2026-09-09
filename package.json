@@ -1,6 +1,6 @@
 {
   "name": "@tkersey/world",
-  "version": "5.0.0-dev.0",
+  "version": "5.0.0",
   "type": "module",
   "private": false,
   "license": "MIT",

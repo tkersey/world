@@ -8,3 +8,4 @@ node_modules/
 .cache/
 .zig-cache/
 zig-out/
+zig-pkg/

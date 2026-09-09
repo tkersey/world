@@ -3,8 +3,14 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const source = b.option([]const u8, "boundary-v2-source", "Exact isolated Boundary 2 source snapshot") orelse
-        std.process.fatal("provide -Dboundary-v2-source=/absolute/isolated/source", .{});
+    const source = b.option([]const u8, "boundary-v2-source", "Override the pinned Boundary 2 source") orelse pinned: {
+        const dependency = b.lazyDependency("boundary_v2", .{
+            .target = target,
+            .optimize = optimize,
+            .@"data-only" = true,
+        }) orelse return;
+        break :pinned dependency.path(".").getPath(b);
+    };
     if (!std.Io.Dir.path.isAbsolute(source)) std.process.fatal("Boundary source path must be absolute", .{});
     const data = b.createModule(.{
         .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ source, "src/v2/data/root.zig" }) },

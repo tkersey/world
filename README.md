@@ -5,7 +5,7 @@ compiled natively and to an import-free WASM kernel. Computations, handlers,
 search and scheduling policies are program data. Environmental effects are
 returned as typed requests for the caller to resolve.
 
-The current development version is `5.0.0-dev.0`, using Zig `0.16.0`.
+World `5.0.0` uses Zig `0.16.0` and pins the released Boundary `2.0.0` source.
 
 ## Run a program
 
@@ -47,7 +47,14 @@ dependency contains only Boundary's pure `boundary_data_v2` module.
 
 ## Build and verify
 
-During coordinated development, select exact independent inputs:
+The production build fetches the exact public Boundary source and package hash
+in `build.zig.zon`, requesting only its pure data module:
+
+```sh
+zig build build-v2-kernel
+```
+
+For development or conformance checks, select exact independent inputs:
 
 ```sh
 zig build build-v2-kernel -Dboundary-v2-source=/absolute/boundary-source
@@ -67,7 +74,9 @@ Portability checks use Node and independently implemented Wasmtime 48.0.0
 embedding calls, with Python dependencies pinned by `test/v2/wasmtime/uv.lock`
 and run through `uv`. Requested external checks execute unconditionally.
 
-Emit both candidates with Boundary's assets already available:
+Emit the runtime with the matching Boundary release assets already available.
+Release emission and source authentication require actual clean Git checkouts;
+ordinary kernel builds and runtime consumers do not require Git:
 
 ```sh
 zig build emit-world-v2-release \

@@ -1,7 +1,14 @@
 .{
     .name = .world,
-    .version = "5.0.0-dev.0",
+    .version = "5.0.0",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x3a771143074dc2bd,
+    .dependencies = .{
+        .boundary_v2 = .{
+            .url = "https://github.com/tkersey/boundary/archive/55e8feedcae0b9ee1492da11f9fbd4a1ac7ff328.tar.gz",
+            .hash = "boundary-2.0.0-flclaClZFgDwMISRm-AxbK_h-6moI0XEDfyW7S8B5CCJ",
+            .lazy = true,
+        },
+    },
     .paths = .{ "LICENSE", "README.md", "build.zig", "build.zig.zon", "package.json", "bin", "scripts", "src", "test", "docs", "conformance" },
 }
