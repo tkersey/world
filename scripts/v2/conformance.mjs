@@ -66,6 +66,7 @@ try {
     'return-path-active','return-path-yielded','return-path-continuation','return-path-normal_exit',
     'return-path-protection','return-path-captured',
     'one-shot-captured-handler-state','multi-captured-handler-state','duplicate-token-custody',
+    'captured-attachment-kind',
   ];
   assert.deepEqual(malformed.cases.map((item)=>item.name).sort(),expectedNames.sort());
   for(const item of malformed.cases) {

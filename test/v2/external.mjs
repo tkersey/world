@@ -17,13 +17,13 @@ assert.equal(sha256(kernel), freeze.kernelSha256, 'kernel changed: author anothe
 assert.equal(kernel.length, freeze.kernelBytes);
 await mkdir(output, { recursive: true });
 const scratch = await mkdtemp(join(output, 'consumer-'));
-await cp(join(world, 'test/v2/external/parity_scan'), join(scratch, 'parity_scan'), {
+await cp(join(world, 'test/v2/external/consent_scan'), join(scratch, 'consent_scan'), {
   recursive: true,
 });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
 function compile(source) {
   const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
-    { cwd: join(scratch, 'parity_scan'), timeout: 180000, maxBuffer: 16 << 20 });
+    { cwd: join(scratch, 'consent_scan'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
 }
@@ -48,12 +48,9 @@ async function compare(input, mode) {
   return { ...decodeOutcome(bytes), bytes };
 }
 function expected(values) {
-  let ones = 0;
-  const parities = values.map(value => {
-    ones += Number(value);
-    return ones % 2;
-  });
-  return { kind: 'Completed', value: parities.reverse(), trace: [{ kind: 'Yielded' }] };
+  const refused = values.map((_, index) =>
+    Number(values.slice(0, index + 1).some(value => !value)));
+  return { kind: 'Completed', value: refused.reverse(), trace: [{ kind: 'Yielded' }] };
 }
 try {
   for (let bits = 0; bits < 16; bits++) {
@@ -88,23 +85,23 @@ try {
 const finalKernel = await readFile(kernelPath);
 assert.equal(sha256(finalKernel), freeze.kernelSha256);
 assert.equal(finalKernel.length, freeze.kernelBytes);
-await writeFile(join(output, 'parity-scan.bpi2'), image);
-await writeFile(join(output, 'parity-scan-source.json'), sourceBytes);
+await writeFile(join(output, 'consent-scan.bpi2'), image);
+await writeFile(join(output, 'consent-scan-source.json'), sourceBytes);
 await writeFile(join(output, 'external.json'), json({
   format: 'world-v2-external-consumer/v1', freeze, checkedAt: new Date().toISOString(),
-  consumer: 'parity-scan',
-  consumerSourceSha256: sha256(await readFile(join(scratch, 'parity_scan/main.zig'))),
+  consumer: 'consent-scan',
+  consumerSourceSha256: sha256(await readFile(join(scratch, 'consent_scan/main.zig'))),
   imageSha256: sha256(image), imageBytes: image.length, sourceSha256: sha256(sourceBytes),
   kernelSha256: freeze.kernelSha256, nativeSha256: native ? sha256(await readFile(native)) : null,
   embeddings: native ? ['native', 'javascript', 'wasmtime'] : ['javascript', 'wasmtime'],
   observations: [
-    'new parity operation and composed shallow/deep handlers compiled using only the public Boundary module',
-    'independent source semantics and exhaustive Boolean prefix-parity expectations agreed',
+    'new prefix-consent operation and composed shallow/deep handlers compiled using only the public Boundary module',
+    'independent source semantics and exhaustive Boolean prefix-consent expectations agreed',
     'fresh producers alternated through every advance boundary',
     'run matched advance records; explicit handler state survived yield and transfer',
-    'all 16 four-Boolean inputs preserved prefix parities and outer-handler answer reversal',
+    'all 16 four-Boolean inputs preserved prefix consent and outer-handler answer reversal/negation',
     'runtime boundary kinds matched the independently expected single yield and completion',
   ], records,
 }));
-console.log(`post-freeze parity-scan consumer: ${records.length} exact records under ` +
+console.log(`post-freeze consent-scan consumer: ${records.length} exact records under ` +
   freeze.kernelSha256);

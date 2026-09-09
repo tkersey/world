@@ -210,6 +210,11 @@ pub fn main(init: std.process.Init) !void {
         const name = if (multi) "multi-captured-handler-state" else "one-shot-captured-handler-state";
         try collector.emit(name, example.program.program, example.state.state);
     }
+    {
+        var example = try capture_states.wrongHandlerKind(a);
+        defer example.deinit();
+        try collector.emit("captured-attachment-kind", example.program.program, example.state.state);
+    }
     try duplicateToken(&collector, image);
     var output_buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writer(init.io, &output_buffer);

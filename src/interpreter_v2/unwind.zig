@@ -59,12 +59,11 @@ pub fn fail(machine: *Machine, value: g.Value, control: g.Control, slots: []cons
     defer scratch.deinit();
     const used = try scratch.allocator().alloc(bool, slots.len);
     @memset(used, false);
-    for (executed) |instruction| switch (instruction.opcode) {
-        .variant_tag, .sequence_length, .sequence_get => {},
-        else => for (instruction.operands) |operand| {
+    for (executed) |instruction| {
+        if (!instruction.opcode.borrowsOperands()) for (instruction.operands) |operand| {
             used[@intCast(operand)] = true;
-        },
-    };
+        };
+    }
     var values: std.ArrayList(g.Value) = .empty;
     for (slots, used) |slot, consumed| if (!consumed and slot.body == .owned) try values.append(scratch.allocator(), slot);
     if (machine.roots.exit != null) try rememberFailure(machine, value);

@@ -211,3 +211,47 @@ test "captured activation values obey one-shot and multi capture bounds" {
         try std.testing.expectEqualSlices(u8, expected, result.record.completed);
     }
 }
+
+pub fn wrongHandlerKind(allocator: std.mem.Allocator) !Witness {
+    var example = try witness(allocator, false, true);
+    errdefer example.deinit();
+    try data.state_admission.validate(allocator, example.program.program, example.state.state);
+    const nodes = @constCast(example.state.state.nodes);
+    const attachment = nodes[nodes.len - 1].attachment;
+    nodes[@intCast(attachment.handler.id)] = .{ .environment = .{
+        .values = &.{},
+        .tail = null,
+    } };
+    return example;
+}
+
+test "captured handler links reject every different node kind before semantic traversal" {
+    const allocator = std.testing.allocator;
+    var example = try witness(allocator, false, true);
+    defer example.deinit();
+    const nodes = @constCast(example.state.state.nodes);
+    const index: usize = @intCast(nodes[nodes.len - 1].attachment.handler.id);
+    const original = nodes[index];
+    inline for (@typeInfo(g.Node).@"union".fields) |field| {
+        if (comptime !std.mem.eql(u8, field.name, "handler")) {
+            nodes[index] = @unionInit(g.Node, field.name, emptyPayload(field.type));
+            defer nodes[index] = original;
+            if (data.state_admission.validate(allocator, example.program.program, example.state.state)) |_| {
+                return error.ExpectedRejection;
+            } else |err| if (err == error.OutOfMemory) return err;
+        }
+    }
+    try data.state_admission.validate(allocator, example.program.program, example.state.state);
+}
+
+fn emptyPayload(comptime T: type) T {
+    return switch (@typeInfo(T)) {
+        .@"struct" => |info| blk: {
+            var value: T = undefined;
+            inline for (info.fields) |field| @field(value, field.name) = emptyPayload(field.type);
+            break :blk value;
+        },
+        .@"union" => |info| @unionInit(T, info.fields[0].name, emptyPayload(info.fields[0].type)),
+        else => std.mem.zeroes(T),
+    };
+}

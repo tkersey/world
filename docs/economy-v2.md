@@ -1,8 +1,8 @@
 # World 5 development economy measurements
 
-These are development measurements from September 8, 2026 UTC. Release acceptance
+These are development measurements from September 9, 2026 UTC. Release acceptance
 must bind the final source and delivered kernel separately. The measured kernel
-is `39f2d13ce12463f96b87eadef473e57516b5a95433eb35ef01f16b44f357d6db`.
+is `c372950bfc184f04e54f0e9ce8339c931634c616a69c4e07e82803980745b17d`.
 Raw samples and allocation observations are in
 [`test/v2/economy/results`](../test/v2/economy/results/).
 
@@ -13,9 +13,9 @@ used ReleaseSmall and a 256 MiB maximum. No operational ceiling was increased.
 
 | Gate | Observation |
 |---|---|
-| Warm execution, at most 2× v1 | All seven matched workloads passed; worst median ratio 0.8907. |
+| Warm execution, at most 2× v1 | All seven matched workloads passed; worst median ratio 0.8701. |
 | Peak working allocation, at most 2× v1 | The seven matched workloads peaked at 78,703 bytes, below the 261,408-byte mandatory v1 validation workspace alone. |
-| Cold compile and emission, at most 2× v1 | One effect: 1.3556×; 32 dependent additions: 1.3833×. |
+| Cold compile and emission, at most 2× v1 | One effect: 1.3677×; 32 dependent additions: 1.3499×. |
 | Serialized overhead, at most 1.5× plus 4 KiB | All twenty frozen images passed even when every v2 constant byte was conservatively counted as overhead. |
 
 Warm measurements include input copying, admission, execution to the first
@@ -28,20 +28,20 @@ payloads were compared through the pure BPI1 value conversion before timing.
 
 | Workload | v1 median ms | v2 median ms | v2/v1 |
 |---|---:|---:|---:|
-| Integer and Boolean operations | 0.07081 | 0.03516 | 0.4965 |
-| Algebraic collections | 0.12498 | 0.05661 | 0.4529 |
-| Portable values | 0.03664 | 0.01431 | 0.3905 |
-| Recursion, initial zero | 0.33047 | 0.01451 | 0.0439 |
-| Recursion, initial 32 | 10.85671 | 0.04811 | 0.0044 |
-| Residual request | 0.04849 | 0.04319 | 0.8907 |
-| Authored yield | 0.02522 | 0.01267 | 0.5024 |
+| Integer and Boolean operations | 0.06885 | 0.03492 | 0.5072 |
+| Algebraic collections | 0.12151 | 0.05443 | 0.4480 |
+| Portable values | 0.03553 | 0.01410 | 0.3969 |
+| Recursion, initial zero | 0.32208 | 0.01383 | 0.0430 |
+| Recursion, initial 32 | 10.61005 | 0.04543 | 0.0043 |
+| Residual request | 0.04681 | 0.04073 | 0.8701 |
+| Authored yield | 0.02351 | 0.01198 | 0.5093 |
 
 The recursion ratios include v1's repeated admission and serialization of its
 internal progress records. They are not measurements of scalar instruction
 dispatch alone. The fixed public v1 kernel occupies 161,021,952 bytes of linear
 memory on these workloads; v2 occupies 1,310,720 bytes. These reservations are
 reported separately from live native working allocation. Kernel sizes are
-682,943 and 393,386 bytes respectively.
+682,943 and 393,407 bytes respectively.
 
 Native working peaks include PKI decoding, image admission, execution, snapshot
 production, and PKO encoding. They count simultaneously live allocator payload;
@@ -80,12 +80,13 @@ source identities and conformance hashes are in
 
 That correction reduced its kernel by 71 bytes. The current kernel additionally
 checks captured handler state, normal-return destinations and saved resumption
-entries, and saturates unrepresentable allocation demand. Those changes add
-1,056 bytes to the optimized baseline without changing memory limits.
+entries, validates attachment links before graph traversal, and saturates
+unrepresentable allocation demand. Those changes add 1,077 bytes to the
+optimized baseline without changing memory limits.
 
-After the final freeze, a new public-API parity consumer composed a shallow
-state-passing handler with an outer deep answer transformation. All 16 Boolean
-input combinations, one yield and cross-engine transfer passed 432 exact
+After the final freeze, a new public-API consent consumer composed a shallow
+state-passing handler with an outer deep answer reversal and negation. All 16
+Boolean input combinations, one yield and cross-engine transfer passed 432 exact
 records without changing the kernel.
 
 ## Structural checks and phase costs
@@ -134,7 +135,7 @@ State and make no historical execution claim.
 
 `setup.json` separates five cold kernel builds from module compilation and
 instance creation in JavaScript and Wasmtime. Every build emitted the same
-393,386-byte kernel. Each JavaScript compilation uses a fresh process; each
+393,407-byte kernel. Each JavaScript compilation uses a fresh process; each
 Wasmtime compilation uses a fresh engine without enabling its code cache.
 Instance measurements have five warmups and 21 samples per module. Startup of
 the process, Python binding and engine itself is excluded from those timers.
