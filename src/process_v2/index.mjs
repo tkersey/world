@@ -6,7 +6,7 @@ import { encodeInput, decodeOutcome } from "./codec.mjs";
 import { readProcessKernelFile } from "./kernel_file.mjs";
 export { encodeInput, decodeOutcome, decodeRequest, encodeResult, validateValue } from "./codec.mjs";
 
-export const packageVersion = "5.0.0-dev.0";
+export const packageVersion = "5.0.0";
 const typedArray = Object.getOwnPropertyDescriptors(Object.getPrototypeOf(Uint8Array.prototype));
 
 /** Load the bundled, manifest-bound kernel or an explicitly digest-bound file. */
