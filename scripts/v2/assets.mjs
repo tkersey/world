@@ -143,14 +143,24 @@ export async function readSource(root, identity, expectedCommit) {
 }
 // These are the entry points and transitive local source inputs of the example
 // build. Its dependency is the separately authenticated sibling compiler.
-export function verifyExampleSources(examples, compilerFiles) {
+export function verifyExampleSources(examples, compilerFiles, fixtureFiles) {
   const archive = new Map(examples.map(entry => [entry.name, entry]));
   const source = new Map(compilerFiles.map(entry => [entry.name, entry.bytes]));
-  for (const [name, path] of [
+  const sourcePaths = [
     ['build.zig', 'tools/v2/examples/build.zig'],
     ['build.zig.zon', 'tools/v2/examples/build.zig.zon'],
     ['main.zig', 'test/v2/emit_source.zig'],
-  ]) {
+    ['LICENSE', 'LICENSE'],
+  ];
+  const expectedNames = [...sourcePaths.map(([name]) => name), 'README.md', ...fixtureFiles.keys()].sort();
+  if (JSON.stringify(examples.map(entry => entry.name).sort()) !== JSON.stringify(expectedNames))
+    throw new Error('example source mismatch: package inventory');
+  for (const entry of examples) {
+    if (entry.executable) throw new Error(`example source mismatch: ${entry.name}`);
+    if (fixtureFiles.has(entry.name) && !entry.bytes.equals(fixtureFiles.get(entry.name)))
+      throw new Error(`example source mismatch: ${entry.name}`);
+  }
+  for (const [name, path] of sourcePaths) {
     const entry = archive.get(name), expected = source.get(path);
     if (!entry || !expected || entry.executable || !entry.bytes.equals(expected)) throw new Error(`example source mismatch: ${name}`);
   }

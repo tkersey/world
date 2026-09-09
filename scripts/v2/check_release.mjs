@@ -34,9 +34,9 @@ for(const line of runtimeMap.get('SHA256SUMS').toString().trimEnd().split('\n'))
 assert.equal(sums.size,runtimeMap.size-1);
 for(const [name,bytes] of runtimeMap)if(name!=='SHA256SUMS')assert.equal(sha256(bytes),sums.get(name));
 const examples=readTarGzip(b.get('boundary-v2-examples.tar.gz'));
-verifyExampleSources(examples,compilerFiles);
 const bm=JSON.parse(b.get('boundary-v2-semantic-fixtures.json')),bf=readBundle(bm,b.get('boundary-v2-semantic-fixtures.bin'));
 assert.equal(bm.binarySha256,sha256(b.get('boundary-v2-semantic-fixtures.bin')));
+verifyExampleSources(examples,compilerFiles,new Map([...bf,['fixtures.json',b.get('boundary-v2-semantic-fixtures.json')]]));
 const wm=JSON.parse(w.get('world-v2-conformance.json'));assert.equal(wm.kernelSha256,identity.kernel.sha256);assert.equal(wm.boundary.fixturesSha256,sha256(b.get('boundary-v2-semantic-fixtures.json')));
 assert.equal(wm.binarySha256,sha256(w.get('world-v2-conformance.bin')));const wf=readBundle(wm,w.get('world-v2-conformance.bin'));
 await mkdir(output,{recursive:true});const scratch=await mkdtemp(join(output,'packages-')),runtime=join(scratch,'runtime'),exampleRoot=join(scratch,'examples');

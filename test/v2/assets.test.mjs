@@ -54,18 +54,25 @@ test('self-consistent example archives cannot replace any executable source inpu
     ['build.zig', 'tools/v2/examples/build.zig', 'trusted build instructions'],
     ['build.zig.zon', 'tools/v2/examples/build.zig.zon', 'trusted dependency paths'],
     ['main.zig', 'test/v2/emit_source.zig', 'trusted example program'],
+    ['LICENSE', 'LICENSE', 'license'],
   ];
   const source = inputs.map(([, name, text]) => ({ name, bytes: Buffer.from(text) }));
-  const archive = inputs.map(([name, , text]) => ({ name, bytes: Buffer.from(text) }));
-  verifyExampleSources(readTarGzip(tarGzip(archive)), source);
+  const fixtureFiles = new Map([['fixtures.json', Buffer.from('{}')], ['cases/example.bin', Buffer.from([1, 2])]]);
+  const archive = [...inputs.map(([name, , text]) => ({ name, bytes: Buffer.from(text) })),
+    { name: 'README.md', bytes: Buffer.from('generated guide') },
+    ...[...fixtureFiles].map(([name, bytes]) => ({ name, bytes }))];
+  const verify = (entries, files = source) => verifyExampleSources(readTarGzip(tarGzip(entries)), files, fixtureFiles);
+  verify(archive);
+  assert.throws(() => verify([...archive, { name: 'extra.mjs', bytes: Buffer.from('unaccounted source') }]), /example source mismatch/);
   for (let index = 0; index < archive.length; index++) {
     const changed = archive.map(entry => ({ ...entry }));
     changed[index].bytes = Buffer.from('replacement with fresh archive checksums');
     // The tar writer repairs container checksums; independent source binding
     // must still reject the changed file before any compiler invocation.
-    assert.throws(() => verifyExampleSources(readTarGzip(tarGzip(changed)), source), /example source mismatch/);
-    assert.throws(() => verifyExampleSources(readTarGzip(tarGzip(archive.filter((_, i) => i !== index))), source), /example source mismatch/);
-    assert.throws(() => verifyExampleSources(readTarGzip(tarGzip(archive)), source.filter((_, i) => i !== index)), /example source mismatch/);
+    if (archive[index].name !== 'README.md') assert.throws(() => verify(changed), /example source mismatch/);
+    assert.throws(() => verify(archive.filter((_, i) => i !== index)), /example source mismatch/);
+    if (index < source.length) assert.throws(() => verify(archive, source.filter((_, i) => i !== index)), /example source mismatch/);
+    assert.throws(() => verify(archive.map((row, i) => i === index ? { ...row, executable: true } : row)), /example source mismatch/);
   }
 });
 
