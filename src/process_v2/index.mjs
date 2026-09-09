@@ -11,14 +11,28 @@ const typedArray = Object.getOwnPropertyDescriptors(Object.getPrototypeOf(Uint8A
 
 /** Load the bundled, manifest-bound kernel or an explicitly digest-bound file. */
 export async function loadProcessKernel(options) {
-  const selected = await readProcessKernelFile(options, packageVersion);
-  return admitProcessKernel(selected.bytes, { expectedSha256: selected.expectedSha256 });
+  return publicHost(await loadCompiledKernel(options));
 }
 
-export async function advance(input, options) { return (await loadProcessKernel(options)).advance(input); }
-export async function run(input, options) { return (await loadProcessKernel(options)).run(input); }
+export async function advance(input, options) {
+  const bytes = encodeInput({ ...input, mode: "advance" });
+  return invoke((await loadCompiledKernel(options)).module, bytes);
+}
+export async function run(input, options) {
+  const bytes = encodeInput({ ...input, mode: "run" });
+  return invoke((await loadCompiledKernel(options)).module, bytes);
+}
 
-export async function admitProcessKernel(input, { expectedSha256 } = {}) {
+async function loadCompiledKernel(options) {
+  const selected = await readProcessKernelFile(options, packageVersion);
+  return compileKernel(selected.bytes, { expectedSha256: selected.expectedSha256 });
+}
+
+export async function admitProcessKernel(input, options) {
+  return publicHost(await compileKernel(input, options));
+}
+
+async function compileKernel(input, { expectedSha256 } = {}) {
   if (!isUint8Array(input)) throw new TypeError("kernel must be bytes");
   const byteLength = typedArray.byteLength.get.call(input);
   assertProcessKernelByteLength(byteLength);
@@ -29,25 +43,32 @@ export async function admitProcessKernel(input, { expectedSha256 } = {}) {
   if (!/^[a-f0-9]{64}$/.test(expectedSha256 ?? "") || expectedSha256 !== sha256) throw new Error("KernelIdentityMismatch");
   const inspection = inspectProcessKernelWasm(bytes);
   const module = await WebAssembly.compile(bytes);
-  const invoke = async (mode, input) => {
-    const bytes = encodeInput({ ...input, mode });
-    const { exports } = await WebAssembly.instantiate(module, {});
-    if (exports.world_process_v2_abi_version() !== 2) throw new Error("InvalidAbiVersion");
-    const prepared = exports.world_process_v2_prepare_input(BigInt(bytes.length));
-    if (prepared !== 0 && prepared !== 1) throw failure(exports);
-    if (prepared === 0) {
-      const capacity = BigInt.asUintN(64, exports.world_process_v2_input_capacity());
-      if (BigInt(bytes.length) > capacity) throw new Error("InputCapacityMismatch");
-      const input = wasmRange(exports.memory, exports.world_process_v2_input_ptr(), BigInt(bytes.length), "input");
-      input.set(bytes);
-      if (exports.world_process_v2_execute(BigInt(bytes.length)) !== 0) throw failure(exports);
-    }
-    const result = wasmRange(exports.memory, exports.world_process_v2_output_ptr(), BigInt.asUintN(64, exports.world_process_v2_output_len()), "output").slice();
-    const decoded = decodeOutcome(result);
-    if (prepared === 1 && decoded.kind !== "NeedsCapacity") throw new Error("InvalidPreflightOutcome");
-    return Object.freeze({ ...decoded, bytes: result });
-  };
-  return Object.freeze({ sha256, inspection, advance: (input) => invoke("advance", input), run: (input) => invoke("run", input) });
+  return { sha256, inspection, module };
+}
+
+function publicHost({ sha256, inspection, module }) {
+  return Object.freeze({ sha256, inspection,
+    advance: async (input) => invoke(module, encodeInput({ ...input, mode: "advance" })),
+    run: async (input) => invoke(module, encodeInput({ ...input, mode: "run" })),
+  });
+}
+
+async function invoke(module, bytes) {
+  const { exports } = await WebAssembly.instantiate(module, {});
+  if (exports.world_process_v2_abi_version() !== 2) throw new Error("InvalidAbiVersion");
+  const prepared = exports.world_process_v2_prepare_input(BigInt(bytes.length));
+  if (prepared !== 0 && prepared !== 1) throw failure(exports);
+  if (prepared === 0) {
+    const capacity = BigInt.asUintN(64, exports.world_process_v2_input_capacity());
+    if (BigInt(bytes.length) > capacity) throw new Error("InputCapacityMismatch");
+    const input = wasmRange(exports.memory, exports.world_process_v2_input_ptr(), BigInt(bytes.length), "input");
+    input.set(bytes);
+    if (exports.world_process_v2_execute(BigInt(bytes.length)) !== 0) throw failure(exports);
+  }
+  const result = wasmRange(exports.memory, exports.world_process_v2_output_ptr(), BigInt.asUintN(64, exports.world_process_v2_output_len()), "output").slice();
+  const decoded = decodeOutcome(result);
+  if (prepared === 1 && decoded.kind !== "NeedsCapacity") throw new Error("InvalidPreflightOutcome");
+  return Object.freeze({ ...decoded, bytes: result });
 }
 
 function failure(exports) {

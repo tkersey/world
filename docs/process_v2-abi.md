@@ -119,6 +119,10 @@ Optional `result` is a complete ERS2; optional `cancel` is a string or byte arra
 Result and cancellation cannot both be supplied. Returned objects include the
 decoded outcome and the complete copied PKO2 in `bytes`.
 
+Top-level `advance`/`run` and admitted-host methods capture invocation bytes
+before their first asynchronous suspension. Later caller mutations do not change
+the pending invocation, including while the bundled kernel is loading.
+
 Kernel admission checks the 64 MiB byte limit before copying or hashing.
 `loadProcessKernel({ kernelPath, expectedSha256 })` accepts a regular-file path,
 file URL, or symlink to a regular file. It checks the opened file before

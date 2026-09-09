@@ -8,13 +8,61 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { parseArguments, executeCli } from "../../src/process_v2/cli.mjs";
-import { loadProcessKernel, packageVersion } from "../../src/process_v2/index.mjs";
+import { loadProcessKernel, advance, run, encodeInput, packageVersion } from "../../src/process_v2/index.mjs";
 import { readProcessKernelFile } from "../../src/process_v2/kernel_file.mjs";
 import { MAXIMUM_KERNEL_BYTES } from "../../src/process_v2/wasm.mjs";
 import { frame } from "../../src/process_v2/codec.mjs";
 import { kernel } from "./wasm_fixture.mjs";
 
 const base = ["process", "run", "--image", "image", "--initial", "initial", "--output", "outcome"];
+test("top-level and admitted invocations capture bytes before asynchronous loading", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "world-v2-capture-"));
+  const originalInstantiate = WebAssembly.instantiate;
+  const captured = [];
+  try {
+    const bytes = kernel({ outcome: frame("ABL_PKO2", Uint8Array.of(3, 0)) });
+    const kernelPath = join(root, "kernel.wasm");
+    await writeFile(kernelPath, bytes);
+    const options = { kernelPath, expectedSha256: createHash("sha256").update(bytes).digest("hex") };
+    t.mock.method(WebAssembly, "instantiate", async (...args) => {
+      const instance = await originalInstantiate(...args);
+      const original = instance.exports;
+      return { exports: { ...original, world_process_v2_execute(length) {
+        captured.push(new Uint8Array(original.memory.buffer, 0, Number(length)).slice());
+        return original.world_process_v2_execute(length);
+      } } };
+    });
+    const host = await loadProcessKernel(options);
+    for (const mode of ["advance", "run"]) for (const method of [host[mode], input => ({ advance, run })[mode](input, options)]) {
+      for (const fields of [
+        { image: [1, 2], initialArgs: [3, 4] },
+        { image: [1, 2], state: [3, 4], result: [5, 6] },
+        { image: [1, 2], state: [3, 4], cancel: [5, 6] },
+      ]) for (const transfer of [false, true]) {
+        const input = Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, Uint8Array.from(value)]));
+        const expected = encodeInput({ ...input, mode });
+        const pending = method(input);
+        for (const [key, value] of Object.entries(input)) {
+          if (transfer) structuredClone(value, { transfer: [value.buffer] });
+          else value.fill(0);
+          input[key] = Uint8Array.of(99);
+        }
+        assert.equal((await pending).kind, "Completed");
+        assert.deepEqual(captured.at(-1), expected);
+      }
+    }
+    assert.equal(captured.length, 24);
+    for (const method of [host.run, input => run(input, options)]) {
+      let pending;
+      assert.doesNotThrow(() => { pending = method({}); });
+      await assert.rejects(pending, /InvalidInstance/);
+    }
+  } finally {
+    t.mock.restoreAll();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("kernel files accept regular paths, file URLs and symlinks with their selected identity", async () => {
   const root = await mkdtemp(join(tmpdir(), "world-v2-kernel-"));
   try {
