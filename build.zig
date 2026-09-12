@@ -113,6 +113,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{ .{ .name = "boundary_data_v2", .module = data }, .{ .name = "world", .module = world } },
     }) });
+    const certification = b.step("build-v2-certification", "Install the native record adapter and WASM kernel for external proof checking");
+    certification.dependOn(&b.addInstallArtifact(native_records, .{}).step);
+    certification.dependOn(&install.step);
     const probe = b.addExecutable(.{ .name = "v2-economy-probe", .root_module = b.createModule(.{
         .root_source_file = b.path("test/v2/economy_probe.zig"),
         .target = target,
