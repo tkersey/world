@@ -392,6 +392,7 @@ pub const Machine = struct {
                 .injection => |injected| try self.resumeContinuation(injected.continuation, value),
                 .protection => |protection| try @import("unwind.zig").begin(self, .{ .normal = value }, ref, protection.return_to, &.{}),
                 .cleanup_return => try @import("unwind.zig").returned(self, ref),
+                .disposal_return => |disposal| try @import("unwind.zig").returnedDisposal(self, disposal, value),
                 else => return error.InvalidState,
             }
             return null;

@@ -148,6 +148,72 @@ pub fn returned(machine: *Machine, reference: g.NodeRef) Error!void {
     try position(machine, frame.parent, &.{});
 }
 
+fn unlinkSuspendedExit(machine: *Machine, retired: g.NodeRef) Error!void {
+    const prior = (try machine.store.get(retired)).exit;
+    var cursor = machine.roots.exit orelse return error.InvalidState;
+    if (cursor.id == retired.id) return;
+    for (0..machine.store.nodes.items.len) |_| {
+        var record = (try machine.store.get(cursor)).exit;
+        const outer = record.outer orelse return error.InvalidState;
+        if (outer.id == retired.id) {
+            record.outer = prior.outer;
+            try machine.store.replace(cursor, .{ .exit = record });
+            if (prior.reason == .failure or prior.reason == .cancellation or prior.cancellation != null) {
+                const active = machine.roots.exit.?;
+                var current = (try machine.store.get(active)).exit;
+                var failures: std.ArrayList(g.Value) = .empty;
+                defer failures.deinit(machine.allocator);
+                try failures.appendSlice(machine.allocator, prior.cleanup_failures);
+                try failures.appendSlice(machine.allocator, current.cleanup_failures);
+                current.reason = if (prior.reason == .failure) prior.reason else .cancellation;
+                current.cancellation = prior.cancellation orelse current.cancellation;
+                current.cleanup_failures = failures.items;
+                current.stop = null;
+                try machine.store.replace(active, .{ .exit = current });
+            }
+            return;
+        }
+        cursor = outer;
+    }
+    return error.InvalidState;
+}
+
+pub fn returnedDisposal(machine: *Machine, frame: anytype, value: g.Value) Error!void {
+    var remaining: std.ArrayList(g.Value) = .empty;
+    defer remaining.deinit(machine.allocator);
+    if (value.body == .owned) try remaining.append(machine.allocator, value);
+    try remaining.appendSlice(machine.allocator, frame.values);
+    try position(machine, frame.parent, remaining.items);
+}
+
+fn crossedCleanupReturn(machine: *Machine, frame: anytype, exit: g.Exit) Error!void {
+    var obligation = (try machine.store.get(frame.obligation.node)).obligation;
+    if (exit.reason == .abandoned) {
+        const suspended = (try machine.store.get(frame.exit)).exit;
+        const discarded = try discardedNormal(machine, suspended);
+        defer machine.allocator.free(discarded);
+        try unlinkSuspendedExit(machine, frame.exit);
+        obligation.status = .completed;
+        try machine.store.replace(frame.obligation.node, .{ .obligation = obligation });
+        try position(machine, frame.parent, discarded);
+        return;
+    }
+    if (exit.reason != .failure) return error.InvalidState;
+    obligation.status = .{ .failed = exit.reason.failure };
+    try machine.store.replace(frame.obligation.node, .{ .obligation = obligation });
+    var parent_exit = (try machine.store.get(frame.exit)).exit;
+    if (parent_exit.reason == .normal or parent_exit.reason == .abandoned) {
+        const discarded = try discardedNormal(machine, parent_exit);
+        defer machine.allocator.free(discarded);
+        parent_exit.reason = exit.reason;
+        parent_exit.stop = null;
+        parent_exit.discarded = discarded;
+        try machine.store.replace(frame.exit, .{ .exit = parent_exit });
+    }
+    machine.roots.exit = frame.exit;
+    try position(machine, frame.parent, &.{});
+}
+
 pub fn step(machine: *Machine) Error!?Outcome {
     var scratch = std.heap.ArenaAllocator.init(machine.allocator);
     defer scratch.deinit();
@@ -230,25 +296,7 @@ pub fn step(machine: *Machine) Error!?Outcome {
             const arguments = if (resource) |owned| &[_]g.Value{ info, owned } else &[_]g.Value{info};
             try machine.applyComputation(cleanup, arguments, frame, protection.evidence, protection.region);
         },
-        .cleanup_return => |frame| {
-            // A failure crosses a running finalizer only after its inner scopes
-            // have unwound. The enclosing exit keeps its original priority.
-            if (exit.reason != .failure) return error.InvalidState;
-            var obligation = (try machine.store.get(frame.obligation.node)).obligation;
-            obligation.status = .{ .failed = exit.reason.failure };
-            try machine.store.replace(frame.obligation.node, .{ .obligation = obligation });
-            var parent_exit = (try machine.store.get(frame.exit)).exit;
-            if (parent_exit.reason == .normal or parent_exit.reason == .abandoned) {
-                const discarded = try discardedNormal(machine, parent_exit);
-                defer machine.allocator.free(discarded);
-                parent_exit.reason = exit.reason;
-                parent_exit.stop = null;
-                parent_exit.discarded = discarded;
-                try machine.store.replace(frame.exit, .{ .exit = parent_exit });
-            }
-            machine.roots.exit = frame.exit;
-            try position(machine, frame.parent, &.{});
-        },
+        .cleanup_return => |frame| try crossedCleanupReturn(machine, frame, exit),
         else => return error.InvalidState,
     }
     return null;

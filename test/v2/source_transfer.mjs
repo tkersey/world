@@ -37,6 +37,48 @@ async function compare(mode, input) {
   return result;
 }
 try {
+  for (const name of ["cleanup-disposal", "cleanup-disposal-running", "cleanup-disposal-failure", "cleanup-disposal-owned"]) {
+    const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
+    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi2`)));
+    const expected = execute(source, []);
+    const checkTerminal = (result) => {
+      assert.equal(result.kind, expected.kind, name);
+      assert.deepEqual(Array.from(result.value), expected.value, name);
+      if (result.kind === "Failed") assert.deepEqual(result.cleanupFailures, [], name);
+    };
+    const states = [];
+    for (const mode of ["run", "advance"]) {
+      let result = await compare(mode, { image, initialArgs: new Uint8Array() });
+      let yielded = 0, count = 0;
+      while (result.kind === "Progressed" || result.kind === "Yielded") {
+        assert.ok(count++ < 1000, `${name}: inconclusive test transition limit`);
+        if (mode === "advance") states.push(result.state);
+        if (result.kind === "Yielded") {
+          yielded++;
+          assert.equal(name, "cleanup-disposal-failure");
+          let cancelled = await compare("advance", { image, state: result.state, cancel: "stop" });
+          if (cancelled.kind === "Progressed" || cancelled.kind === "Yielded")
+            cancelled = await compare("run", { image, state: cancelled.state, cancel: "later" });
+          assert.equal(cancelled.kind, "Failed");
+          assert.deepEqual(Array.from(cancelled.value), []);
+          assert.deepEqual(cancelled.cleanupFailures, []);
+          assert.equal(cancelled.cancellation, "stop");
+        }
+        result = await compare(mode, { image, state: result.state });
+      }
+      assert.equal(yielded, name === "cleanup-disposal-failure" ? 1 : 0);
+      checkTerminal(result);
+    }
+    if (name === "cleanup-disposal" || name === "cleanup-disposal-owned") {
+      assert.ok(states.length > 20, "disposal cancellation frontiers missing");
+      for (const state of states) {
+        const cancelled = await compare("run", { image, state, cancel: "stop" });
+        assert.equal(cancelled.kind, "Cancelled");
+        assert.equal(cancelled.reason, "stop");
+        assert.deepEqual(cancelled.cleanupFailures, []);
+      }
+    }
+  }
   {
     const source = JSON.parse(await readFile(join(fixtures, "source-borrow-operands.json"), "utf8"));
     const image = new Uint8Array(await readFile(join(fixtures, "source-borrow-operands.bpi2")));
@@ -266,6 +308,6 @@ try {
       assert.deepEqual(trace, oracle.trace);
     }
   }
-  console.log("source oracle/native/WASM agreement and fresh transfers passed for thirty-seven compiled source examples and cancellation scenarios");
+  console.log("source oracle/native/WASM agreement and fresh transfers passed for forty-one compiled source examples and cancellation scenarios");
   if (peer) console.log(`Wasmtime ${peer.identity.wasmtime} matched all source checkpoints; kernel ${peer.identity.kernel_sha256}`);
 } finally { if (peer) await peer.close(); }
