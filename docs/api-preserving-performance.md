@@ -1,7 +1,89 @@
 # API-preserving performance work (draft)
 
+## Committed-candidate measurements
+
+Measured inputs are Boundary `b599e664c57ca455395038bd28b703837f870030` and World
+`24867d20afd2076136c0cb14d64fee3a951d0f96`, versus B0/W0 below. Both candidate
+trees were clean. Two separated windows used five warmup batches, 21 alternating
+AB/BA pairs and 200 full loaded-host calls per batch, with a fresh WASM instance
+for every invocation. No builds or other benchmarks overlapped runtime timing.
+The intervening cold-build guard used five fresh-cache pairs per workload.
+Native builds use ReleaseSafe. Both guest kernels retain the repository's fixed
+ReleaseSmall setting; no optimization mode or memory default was changed.
+
+| Public call | Window 1, B0/W0 → candidate (ms) | Ratio | Window 2 (ms) | Ratio |
+|---|---:|---:|---:|---:|
+| Small invocation | 0.1010 → 0.1005 | 0.995 | 0.0948 → 0.0912 | 0.963 |
+| 64 installations, run | 0.7350 → 0.6320 | 0.860 | 0.7073 → 0.6011 | 0.850 |
+| Retained search to first boundary | 0.6243 → 0.6047 | 0.969 | 0.5962 → 0.5721 | 0.960 |
+| Saved search response | 1.2046 → 0.9086 | 0.754 | 1.1478 → 0.8615 | 0.751 |
+
+The installation and saved-response improvements reproduce in both windows.
+Small-call changes remain sensitive to host overhead; no uniform scalar speedup
+is claimed. [Window 1](performance/final-window-1.json),
+[window 2](performance/final-window-2.json), and
+[paired bootstrap summaries](performance/final-runtime-summary.json) retain all
+primary rows. Intervals describe these samples, not a p99 guarantee or universal
+non-regression proof. Module-admission setup is recorded separately and is not
+used as a statistically established startup improvement.
+
+[Secondary measurements](performance/final-secondary.json) cover 8 installations,
+64 KiB blob capture, lexical captures, local/shared state, shallow multishot,
+generator, scheduler, owned cleanup, recursion and repeated advance. The complete
+321-transition advance sequence measured 266.2 → 265.0 ms: effectively unchanged,
+with every checkpoint hash equal. The 10,000-call recursive case measured
+7.67 → 5.41 ms. These are one secondary window, not the two-window primary claim.
+The initial secondary harness used an invalid empty blob argument; its
+[aborted run](performance/secondary-aborted-run.json) receives no acceptance
+credit. The corrected harness persists rows as it completes them.
+
+[Larger fixtures](performance/final-large.json) cover 128 installations across
+the ULEB slot-width boundary and a stored 64 KiB constant referenced twice.
+B0/B1 emitted identical 30,141-byte and 65,652-byte images respectively.
+The 128-installation call measured 1.922 → 1.660 ms; the constant call was
+effectively unchanged at 0.499 → 0.497 ms. The constant remains one stored
+payload. Fixture source and hashes are retained alongside the measurements.
+
+| Complete native invocation peak, bytes | B0/W0 | Candidate |
+|---|---:|---:|
+| 1 installation | 19,153 | 9,042 |
+| 8 installations | 27,333 | 16,590 |
+| 64 installations | 218,915 | 140,036 |
+| 128 installations | 1,422,367 | 660,850 |
+| Local state | 56,851 | 25,906 |
+| Stored 64 KiB constant | 493,193 | 493,193 |
+
+[Full invocation counters](performance/final-invocation-memory.json) use the
+existing 16 MiB native probe reservation and include PKI2 decoding, Program
+preparation, execution and output encoding. They are allocator-requested working
+payload, not RSS; the final output buffer has separate caller ownership.
+[Decoder-only measurements](performance/final-decoder-memory.json) use the same
+fixed 1 MiB Workspace on both sides. Baseline 128-installation decoding exhausts
+that capacity; the candidate completes with a 660,850-byte peak. Large-constant
+decoder peak rises by 1,384 bytes due to separated scratch, while its complete
+invocation peak remains unchanged. No universal memory reduction is claimed.
+
+The synthetic retained-search workload is the public four-queens composition:
+retained search branches, local/shared cells, repeated typed acquire/use/release
+interactions, owned resources, yielding and cleanup. It is not production Agent
+evidence. All portable outcome sizes and hashes remain identical for the same
+image. Review convergence is tracked on the draft PRs and in native review receipts.
+
+[CLI checks](performance/cli-compatibility.json) preserve help, version, usage
+errors and exact execution bytes. [External crossings](performance/external-crossing.json)
+compare the complete 813-record sequence produced with B0 authoring/W0 native
+execution to the candidate path; the sequence is identical. Its full synthetic
+records are retained. [Large-fixture conformance](performance/large-conformance.json)
+also checks the independently calculated sum and constant bytes against W0
+native, candidate JavaScript and Wasmtime execution.
+
+The Review Fold historical corpus currently has an invalid store binding in
+both checkouts. No historical first-occurrence, recurrence or complete-corpus
+claim is made. Current tests and provider evidence remain available; native
+review convergence is a separate delivery requirement.
+
 This implements the September 14, 2026 Boundary 2 / World 5 API-preserving
-performance specification. The full milestone remains in progress. There is no
+performance specification. Review closure is recorded separately on the PRs. There is no
 API, ABI, protocol, default memory limit, kernel trust or JavaScript lifecycle
 change. No merge or release is part of this work.
 
@@ -19,13 +101,13 @@ jumps, calls, closure environments, initial arguments, captured-plus-explicit
 arguments and direct-clause successors now construct their final buffer once.
 Graph references retain their logical aliases. Borrowed `replace` still copies
 before releasing the previous node; the owned operation does not accept borrowed
-sub-slices. Remaining handler and cleanup construction sites still need review.
+sub-slices. Handler and cleanup construction use the same completed ownership path.
 
 Collection marks and traversal storage remain private to Store, reset before
 tracing and freed with Store. Collection cadence, exact roots and no-effects
-reclamation are unchanged. This addition is provisional: its isolated timing
-results did not establish an overall win. No allocation-pressure policy or
-stable-activation experiment has yet been implemented.
+reclamation are unchanged. Its isolated timing was inconclusive; the combined
+implementation is measured above. The separate pressure-collection and stable
+storage experiments below were tested and rejected.
 
 Response admission shares request construction with publication. It calls the
 existing protocol identity and validation functions without encoding and decoding
@@ -62,7 +144,7 @@ bytes. The search fixture first yields; setup follows those existing boundaries
 to its first pending request before measuring the saved response. The initial
 fixture expectation of an immediate request was corrected before timing.
 
-[Latest raw measurements](performance/combined-state-reuse-batched.json) include
+[Earlier raw measurements](performance/combined-state-reuse-batched.json) include
 kernel and input hashes, output hashes and sizes, all sample values and environment.
 Earlier runs remain alongside them: scratch alone, direct ownership plus initial
 request sharing, and combined Boundary changes before canonical-byte reuse.
@@ -76,23 +158,17 @@ node test/v2/performance_compare.mjs "$W0_KERNEL" "$W1_KERNEL" \
   "$BOUNDARY_FIXTURES" "$RESULT_JSON"
 ```
 
-## Proof and remaining work
+## Proof
 
 `zig build check-v2-native` passed against both B0 and candidate Boundary during
 implementation. It includes focused zero-copy ownership, overlapping borrowed
 replacement, cyclic garbage, freed-slot reuse and allocation-failure tests.
 Repeated same-payload requests reject stale results, and response failure sweeps
 preserve input and exact successful request bytes. Records and snapshot response
-paths have an explicit equality case. Source agreement passed against B0 before
-the final canonical-input reuse refinement; that lane requires a fresh run.
-
-Full native/WASM/source/Wasmtime crossing, release-consumer API fixtures, package
-identity checks, constrained capacities, peak memory and descriptor-copy
-attribution still need completion. Final measurements require committed inputs,
-two separated confirmation windows, cold-build guards and fixed workload coverage.
-The private stable-transfer and separate collection-cadence experiments remain
-required, as do Boundary metadata/size experiments and review convergence. These
-open requirements are not waived by the useful initial improvements.
+paths have an explicit equality case. The later full aggregate check and external
+consumer crossings are recorded below. Final paired measurements and experiment
+dispositions are now available; PR review records supply the separate closure
+evidence.
 
 The current combined candidate also passed `check-v2-native check-v2-wasm`:
 exact native/WASM outcomes and fresh transfers for handlers, regions, cleanup,
@@ -155,7 +231,9 @@ The baseline native embedding was built directly from the immutable W0 checkout'
 `test/v2/native_records.zig`, W0's public `world` module and B0's
 `boundary_data_v2`, with explicit `-O ReleaseSafe` on each module and Zig 0.16.0.
 This is cross-version restoration evidence, separate from performance timing.
-External package/CLI installation and final published-head checks remain open.
+The later aggregate includes physical package installations. Both external
+consumers also passed with B0 authoring, W0 native execution and the candidate
+guest, including all 813 complete records.
 
 ## Private transfer experiment, first variant
 
@@ -174,8 +252,8 @@ continuation with a result hole, which this exact-array rule does not address.
 The [prototype](performance/exact-handoff-prototype.patch.txt) was removed;
 [measurements](performance/exact-handoff-performance.json) and
 [public-path conformance](performance/exact-handoff-conformance.json) remain.
-The required broader private-storage experiment is still open; this narrow
-variant alone is not its final disposition.
+This narrow variant alone did not settle the storage question; the fuller
+continuation-view experiment below supplies its final measured disposition.
 
 ## Private continuation-view experiment: rejected
 

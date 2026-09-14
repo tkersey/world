@@ -308,7 +308,7 @@
     "previousFreeze": "freeze-2026-09-09.json",
     "newConsumer": "sum-squares"
   },
-  "checkedAt": "2026-09-14T18:13:52.086Z",
+  "checkedAt": "2026-09-14T18:18:28.028Z",
   "consumer": "consent-scan",
   "additionalConsumer": {
     "name": "sum-squares",
@@ -337,5 +337,6 @@
     "post-freeze sum-of-squares recursion matched the closed-form result for 0 through 16 and authored overflow at 2^32, across all advance states and run"
   ],
   "recordCount": 813,
-  "recordBytesSha256": "0f5ce12bfdae10cf59075db58ca2b60c11fbe8d87d44a366cdebd12acb0ef258"
+  "recordsFile": "post-freeze-external-records.json",
+  "recordBytesSha256": "11a01b85c08ff029896140d892bfc7693c1d7f8cc1f9f0e8472dd18c829b68f5"
 }

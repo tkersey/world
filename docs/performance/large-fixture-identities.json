@@ -1,0 +1,16 @@
+[
+  {
+    "file": "large-constant.bpi2",
+    "count": 0,
+    "bytes": 65652,
+    "sha256": "48fc05cf1faab064465d691ca50737e9bdc78052e3651042b521a3424ae5f96e",
+    "b0b1Equal": true
+  },
+  {
+    "file": "economy-128.bpi2",
+    "count": 128,
+    "bytes": 30141,
+    "sha256": "77aca7b6b90cdb7719b1fc1743d6158623679c356e2d45e5ca01b7741ce2e77a",
+    "b0b1Equal": true
+  }
+]

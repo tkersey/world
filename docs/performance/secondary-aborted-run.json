@@ -1,0 +1,14 @@
+{
+  "status": "aborted before a complete report",
+  "reason": "economy-0 blob-capture requires a canonical byte-string initial argument; the first harness supplied no arguments and received InvalidValue",
+  "completedConsoleRow": {
+    "name": "install-8",
+    "mediansMs": [
+      0.12650396,
+      0.11477687500000001
+    ],
+    "ratio": 0.9072986727055818
+  },
+  "acceptanceCredit": false,
+  "note": "Raw per-sample timings were not saved before the harness error; the corrected harness persists each completed row and uses the fixture-required 64 KiB byte-string input."
+}
