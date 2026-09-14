@@ -99,3 +99,43 @@ exact native/WASM outcomes and fresh transfers for handlers, regions, cleanup,
 full-width compact collections and 10,000 tail calls. The command used
 `-Dboundary-v2-source` pointing at the candidate and `-Doptimize=ReleaseSafe`;
 the guest remains built with the repository's standard ReleaseSmall setting.
+
+## Completing direct ownership
+
+Handler state, use-site capture vectors and cleanup discard positions now build
+final Store-owned buffers. Application and handler-entry argument construction
+fills captures and explicit arguments directly into one final call buffer.
+Cleanup failure replacement takes both newly prepared value buffers and a
+separately copied cancellation reason; borrowed replacement remains available
+for records containing aliases into the previous owner.
+
+An intermediate unpublished attempt omitted the nested cancellation text when
+transferring an Exit. The existing `body failure wins over later cancellation and
+both failing finalizers run` test crashed on the dangling text. The successor
+owns that nested buffer before replacement. The test now sweeps all allocation
+failures through both failing finalizers and checks primary failure, ordered
+cleanup failures, first cancellation and unchanged input. A focused test covers
+owned replacement of both value vectors and nested cancellation bytes. No claim
+or passing result from the failed intermediate version is retained as proof.
+
+The first 20-call-batch run showed a noisy scalar ratio of 1.094. GC diagnostic
+output showed repeated incremental collections during these short batches,
+including marking work of several milliseconds. The samples had two timing
+bands, and medians changed substantially with their proportions. The deciding
+harness now uses 200 fresh public calls per batch (still 21 AB/BA paired samples
+and five warmup batches), including the actual collection overhead rather than
+forcing collection outside the measured path. Workloads and public lifecycle
+are unchanged. Earlier observations remain in the report directory.
+
+The [longer-batch exploratory run](performance/complete-ownership-long-batches.json)
+reported candidate/baseline medians of 0.966 for the short scalar, 0.854 for
+64 installations, 0.973 for retained search and 0.746 for saved response. All
+four complete outcome byte strings matched the reference. These dirty-source
+results still need final committed-input confirmation and uncertainty estimates;
+they do not waive the cold-build, memory, stable-storage or cadence experiments.
+The [GC trace](performance/host-gc-diagnostic.txt) and its
+[instrumented measurements](performance/host-gc-diagnostic.json) are diagnostic
+only. They used the previous 20-call harness with `node --trace-gc`; the
+uninstrumented 200-call run is the current exploratory timing comparison.
+
+The completed ownership candidate passed `check-v2-native check-v2-wasmtime check-v2-capacity` with the candidate Boundary source and its emitted fixtures. Kernel `ac49497b5025fc72af20553811c43e29ce3dfc879d1d678e7ef67f092135be9c` matched all 41 source checkpoints, handwritten checkpoints and cancellation scenarios. Input, working and output exhaustion published no State; unchanged-input retries matched the unconstrained result.

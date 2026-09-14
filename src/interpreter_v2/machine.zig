@@ -267,11 +267,14 @@ pub const Machine = struct {
                 self.status = .parked;
             },
             .apply => |apply| {
-                const values = try self.allocator.alloc(g.Value, apply.arguments.len);
-                defer self.allocator.free(values);
-                for (values, apply.arguments) |*value, operand| value.* = slots[@intCast(operand)];
+                const target = try self.callee(slots[@intCast(apply.computation)]);
+                const values = try self.allocator.alloc(g.Value, target.captures.len + apply.arguments.len);
+                errdefer self.allocator.free(values);
+                @memcpy(values[0..target.captures.len], target.captures);
+                for (values[target.captures.len..], apply.arguments) |*value, operand|
+                    value.* = slots[@intCast(operand)];
                 const parent = try self.continuation(control.block, slots, control);
-                try self.applyComputation(slots[@intCast(apply.computation)], values, parent, control.evidence, control.region);
+                try self.enterOwned(target.function, values, parent, control.evidence, control.region);
             },
             .handle => |handle| try self.installHandler(handle, slots, control),
             .resume_value => |resuming| try self.resumeValue(resuming.resumption, resuming.argument, slots, control),
@@ -279,9 +282,7 @@ pub const Machine = struct {
                 const value = slots[@intCast(resuming.resumption)];
                 const token = try self.takeCapture(value);
                 defer if (self.isMulti(value)) self.allocator.free(token.use_site_capabilities);
-                const state = try scratch.allocator().alloc(g.Value, resuming.state.len);
-                for (state, resuming.state) |*item, slot| item.* = slots[@intCast(slot)];
-                const activation = try self.store.add(.{ .handler = .{ .definition = resuming.handler, .state = state, .evidence = control.evidence, .region = control.region } });
+                const activation = try self.captureHandler(resuming.handler, slots, resuming.state, control);
                 const after = try self.continuation(control.block, slots, control);
                 try self.store.replace(token.delimiter, .{ .attachment = .{ .handler = activation, .outer = control.evidence, .return_to = after, .region = control.region } });
                 try self.resumeContinuation(token.capture.?, slots[@intCast(resuming.argument)]);
@@ -347,31 +348,75 @@ pub const Machine = struct {
     }
 
     pub fn applyComputation(self: *Machine, value: g.Value, supplied: []const g.Value, parent: ?g.NodeRef, evidence: ?g.NodeRef, region: ?g.NodeRef) Error!void {
+        const target = try self.callee(value);
+        const arguments = try self.allocator.alloc(g.Value, target.captures.len + supplied.len);
+        errdefer self.allocator.free(arguments);
+        @memcpy(arguments[0..target.captures.len], target.captures);
+        @memcpy(arguments[target.captures.len..], supplied);
+        try self.enterOwned(target.function, arguments, parent, evidence, region);
+    }
+
+    fn callee(self: *Machine, value: g.Value) Error!struct {
+        function: p.Id,
+        captures: []const g.Value,
+    } {
         const closure = (try self.store.get(valueRef(value))).computation;
         const constructor = self.program.constructors[@intCast(closure.constructor)];
         const environment = (try self.store.get(closure.environment)).environment;
-        const arguments = try self.allocator.alloc(g.Value, environment.values.len + supplied.len);
-        errdefer self.allocator.free(arguments);
-        @memcpy(arguments[0..environment.values.len], environment.values);
-        @memcpy(arguments[environment.values.len..], supplied);
-        try self.enterOwned(constructor.function, arguments, parent, evidence, region);
+        return .{ .function = constructor.function, .captures = environment.values };
     }
 
     fn installHandler(self: *Machine, installation: anytype, slots: []const g.Value, control: g.Control) Error!void {
         const definition = self.program.handlers[@intCast(installation.handler)];
-        const state = try self.allocator.alloc(g.Value, installation.state.len);
-        defer self.allocator.free(state);
-        for (state, installation.state) |*value, slot| value.* = slots[@intCast(slot)];
-        const activation = try self.store.add(.{ .handler = .{ .definition = installation.handler, .state = state, .evidence = control.evidence, .region = control.region } });
+        const activation = try self.captureHandler(installation.handler, slots, installation.state, control);
         const after = try self.continuation(control.block, slots, control);
         const attachment = try self.store.add(.{ .attachment = .{ .handler = activation, .outer = control.evidence, .return_to = after, .region = control.region } });
         const body = slots[@intCast(installation.body)];
         const parameters = self.program.schemas[@intCast(body.schema)].internal.computation.parameters;
-        const arguments = try self.allocator.alloc(g.Value, definition.clauses.len + installation.arguments.len);
-        defer self.allocator.free(arguments);
+        const target = try self.callee(body);
+        const values = try self.allocator.alloc(g.Value, target.captures.len + definition.clauses.len + installation.arguments.len);
+        errdefer self.allocator.free(values);
+        @memcpy(values[0..target.captures.len], target.captures);
+        const arguments = values[target.captures.len..];
         for (definition.clauses, 0..) |_, index| arguments[index] = .{ .schema = parameters[index], .body = .{ .reference = attachment } };
         for (installation.arguments, 0..) |slot, index| arguments[definition.clauses.len + index] = slots[@intCast(slot)];
-        try self.applyComputation(body, arguments, attachment, attachment, control.region);
+        try self.enterOwned(target.function, values, attachment, attachment, control.region);
+    }
+
+    fn captureHandler(
+        self: *Machine,
+        definition: p.Id,
+        slots: []const g.Value,
+        operands: []const p.Id,
+        control: g.Control,
+    ) Error!g.NodeRef {
+        const state = try self.allocator.alloc(g.Value, operands.len);
+        errdefer self.allocator.free(state);
+        for (state, operands) |*value, slot| value.* = slots[@intCast(slot)];
+        return self.store.addOwned(.{ .handler = .{
+            .definition = definition,
+            .state = state,
+            .evidence = control.evidence,
+            .region = control.region,
+        } });
+    }
+
+    fn captureToken(
+        self: *Machine,
+        capture: g.Capture,
+        multi: bool,
+        slots: []const g.Value,
+        operands: []const p.Id,
+    ) Error!g.NodeRef {
+        const use_site = try self.allocator.alloc(g.Value, operands.len);
+        errdefer self.allocator.free(use_site);
+        for (use_site, operands) |*value, slot| value.* = slots[@intCast(slot)];
+        var owned = capture;
+        owned.use_site_capabilities = use_site;
+        return self.store.addOwned(if (multi)
+            .{ .multi_template = owned }
+        else
+            .{ .one_shot = owned });
     }
 
     pub fn returnTo(self: *Machine, parent: ?g.NodeRef, value: g.Value) Error!?Outcome {
@@ -460,17 +505,13 @@ pub const Machine = struct {
         }
         const signature = self.program.schemas[@intCast(clause.resumption)].internal.resumption;
         const captured = try self.continuation(control.block, slots, control);
-        const use_site = try self.allocator.alloc(g.Value, operation.use_site_capabilities.len);
-        defer self.allocator.free(use_site);
-        for (use_site, operation.use_site_capabilities) |*value, slot| value.* = slots[@intCast(slot)];
         const capture: g.Capture = .{
             .schema = clause.resumption,
             .capture = captured,
             .delimiter = selected,
             .evidence = control.evidence,
-            .use_site_capabilities = use_site,
         };
-        const token = try self.store.add(if (signature.use == .multi) .{ .multi_template = capture } else .{ .one_shot = capture });
+        const token = try self.captureToken(capture, signature.use == .multi, slots, operation.use_site_capabilities);
         if (self.statistics) |statistics| {
             if (signature.use == .multi) statistics.multi_templates +|= 1 else statistics.one_shot_captures +|= 1;
         }

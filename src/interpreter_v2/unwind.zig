@@ -11,10 +11,38 @@ const Outcome = process.Outcome;
 const Reason = @FieldType(g.Exit, "reason");
 
 fn position(machine: *Machine, cursor: ?g.NodeRef, values: []const g.Value) Error!void {
-    machine.roots.current = try machine.store.add(.{ .unwind = .{ .cursor = cursor, .values = values } });
+    setPosition(machine, try machine.store.add(.{ .unwind = .{ .cursor = cursor, .values = values } }));
+}
+
+fn positionOwned(machine: *Machine, cursor: ?g.NodeRef, values: []g.Value) Error!void {
+    setPosition(machine, try machine.store.addOwned(.{ .unwind = .{ .cursor = cursor, .values = values } }));
+}
+
+fn setPosition(machine: *Machine, current: g.NodeRef) void {
+    machine.roots.current = current;
     machine.roots.pending = null;
     machine.roots.evidence = null;
     machine.status = .unwinding;
+}
+
+fn ownedArgument(argument: anytype) ?g.Value {
+    const value = if (@TypeOf(argument) == g.Value) argument else argument orelse return null;
+    return if (value.body == .owned) value else null;
+}
+
+fn positionDiscards(machine: *Machine, cursor: ?g.NodeRef, arguments: anytype) Error!void {
+    var count: usize = 0;
+    for (arguments) |argument| if (ownedArgument(argument) != null) {
+        count += 1;
+    };
+    const values = try machine.allocator.alloc(g.Value, count);
+    errdefer machine.allocator.free(values);
+    var index: usize = 0;
+    for (arguments) |argument| if (ownedArgument(argument)) |value| {
+        values[index] = value;
+        index += 1;
+    };
+    try positionOwned(machine, cursor, values);
 }
 
 pub fn begin(machine: *Machine, reason: Reason, cursor: ?g.NodeRef, stop: ?g.NodeRef, values: []const g.Value) Error!void {
@@ -32,18 +60,21 @@ fn rememberFailure(machine: *Machine, value: g.Value) Error!void {
     const ref = try outermost(machine);
     var exit = (try machine.store.get(ref)).exit;
     const failures = try machine.allocator.alloc(g.Value, exit.cleanup_failures.len + 1);
-    defer machine.allocator.free(failures);
+    errdefer machine.allocator.free(failures);
     @memcpy(failures[0..exit.cleanup_failures.len], exit.cleanup_failures);
     failures[failures.len - 1] = value;
     exit.cleanup_failures = failures;
     const discarded = try discardedNormal(machine, exit);
-    defer machine.allocator.free(discarded);
+    errdefer machine.allocator.free(discarded);
+    exit.discarded = discarded;
+    const storage = @import("store.zig");
+    exit.cancellation = try storage.duplicate(@TypeOf(exit.cancellation), machine.allocator, exit.cancellation);
+    errdefer storage.release(@TypeOf(exit.cancellation), machine.allocator, exit.cancellation);
     if (exit.reason == .normal or exit.reason == .abandoned) {
         exit.reason = .{ .failure = value };
         exit.stop = null;
-        exit.discarded = discarded;
     }
-    try machine.store.replace(ref, .{ .exit = exit });
+    try machine.store.replaceOwned(ref, .{ .exit = exit });
 }
 
 fn discardedNormal(machine: *Machine, exit: g.Exit) Error![]g.Value {
@@ -224,12 +255,13 @@ pub fn step(machine: *Machine) Error!?Outcome {
     const root_ref = try outermost(machine);
     var root_exit = (try machine.store.get(root_ref)).exit;
     if (root_exit.discarded.len != 0) {
-        const values = try temporary.alloc(g.Value, root_exit.discarded.len + current.values.len);
+        const values = try machine.allocator.alloc(g.Value, root_exit.discarded.len + current.values.len);
+        errdefer machine.allocator.free(values);
         @memcpy(values[0..root_exit.discarded.len], root_exit.discarded);
         @memcpy(values[root_exit.discarded.len..], current.values);
         root_exit.discarded = &.{};
         try machine.store.replace(root_ref, .{ .exit = root_exit });
-        try position(machine, current.cursor, values);
+        try positionOwned(machine, current.cursor, values);
         return null;
     }
     if (current.values.len != 0) {
@@ -245,10 +277,19 @@ pub fn step(machine: *Machine) Error!?Outcome {
             },
             .aggregate, .computation, .package => {
                 const fields = if (record == .aggregate) record.aggregate.fields else if (record == .package) (&record.package.continuation)[0..1] else (try machine.store.get(record.computation.environment)).environment.values;
-                var values: std.ArrayList(g.Value) = .empty;
-                for (fields) |field| if (field.body == .owned) try values.append(temporary, field);
-                try values.appendSlice(temporary, rest);
-                try position(machine, current.cursor, values.items);
+                var count = rest.len;
+                for (fields) |field| if (field.body == .owned) {
+                    count = std.math.add(usize, count, 1) catch return error.InvalidLength;
+                };
+                const values = try machine.allocator.alloc(g.Value, count);
+                errdefer machine.allocator.free(values);
+                var index: usize = 0;
+                for (fields) |field| if (field.body == .owned) {
+                    values[index] = field;
+                    index += 1;
+                };
+                @memcpy(values[index..], rest);
+                try positionOwned(machine, current.cursor, values);
             },
             .resource => try position(machine, current.cursor, rest), // No implicit effectful finalizer.
             else => return error.UnsupportedTransition,
@@ -264,18 +305,8 @@ pub fn step(machine: *Machine) Error!?Outcome {
     }
     const cursor = current.cursor orelse return try terminal(machine, root_exit);
     switch (try machine.store.get(cursor)) {
-        .control => |control| {
-            var values: std.ArrayList(g.Value) = .empty;
-            for (control.arguments) |value| if (value.body == .owned) try values.append(temporary, value);
-            try position(machine, control.parent, values.items);
-        },
-        .continuation => |saved| {
-            var values: std.ArrayList(g.Value) = .empty;
-            for (saved.arguments) |argument| if (argument) |value| {
-                if (value.body == .owned) try values.append(temporary, value);
-            };
-            try position(machine, saved.parent, values.items);
-        },
+        .control => |control| try positionDiscards(machine, control.parent, control.arguments),
+        .continuation => |saved| try positionDiscards(machine, saved.parent, saved.arguments),
         .attachment => |attachment| try position(machine, attachment.return_to, &.{}),
         .region_scope => |scope| try position(machine, scope.return_to, &.{}),
         .injection => |injected| try position(machine, injected.continuation, &.{}),

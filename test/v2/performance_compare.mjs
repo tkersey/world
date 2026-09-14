@@ -44,7 +44,7 @@ for (const { name, input } of cases) {
   const expected = await hosts[0].run(input);
   assert.notEqual(expected.kind, "NeedsCapacity");
   assert.deepEqual((await hosts[1].run(input)).bytes, expected.bytes, name);
-  const repetitions = 20;
+  const repetitions = 200;
   for (let i = 0; i < 5 * repetitions; i++) for (const host of hosts) await host.run(input);
   const times = [[], []];
   for (let sample = 0; sample < 21; sample++) {
@@ -65,7 +65,8 @@ for (const { name, input } of cases) {
   console.log(JSON.stringify({ name, mediansMs, ratio: row.ratio }));
 }
 await writeFile(output, JSON.stringify({
-  method: "five warmup batches, 21 paired AB/BA samples, 20 calls per batch; full loaded-host run; fresh WASM instance every call",
+  method: "five warmup batches, 21 paired AB/BA samples, 200 calls per batch; full loaded-host run; fresh WASM instance every call",
+  harnessSha256: digest(await readFile(import.meta.filename)),
   environment: { date: new Date().toISOString(), node: process.version,
     platform: os.platform(), release: os.release(), cpu: os.cpus()[0].model },
   kernels: kernels.map((bytes, i) => ({ sha256: digest(bytes), bytes: bytes.length, setupMs: setup[i] })),

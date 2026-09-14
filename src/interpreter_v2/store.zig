@@ -80,6 +80,14 @@ pub const Store = struct {
         release(g.Node, self.allocator, previous);
     }
 
+    /// Takes independently allocated record slices on success. No incoming
+    /// slice may overlap storage owned by the node being replaced.
+    pub fn replaceOwned(self: *Store, reference: g.NodeRef, value: g.Node) Error!void {
+        const previous = try self.get(reference);
+        self.nodes.items[@intCast(reference.id)] = value;
+        release(g.Node, self.allocator, previous);
+    }
+
     pub fn literal(self: *Store, program: data.program.Program, value: data.program.Literal) Error!g.Value {
         if (data.scalar.width(program.schemas[@intCast(value.schema)])) |width| {
             var scalar = [_]u8{0} ** 8;

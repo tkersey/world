@@ -139,3 +139,29 @@ fn ownedInsertionCase(a: std.mem.Allocator) !void {
 test "owned insertion transfers buffers once and borrowed replacement tolerates aliases" {
     try std.testing.checkAllAllocationFailures(allocator, ownedInsertionCase, .{});
 }
+
+fn ownedExitReplacementCase(a: std.mem.Allocator) !void {
+    const storage = @import("store.zig");
+    var store: Store = .{ .allocator = a };
+    defer store.deinit();
+    const scalar: g.Value = .{ .schema = 0, .body = .{ .scalar = @splat(1) } };
+    const ref = try store.add(.{ .exit = .{
+        .reason = .{ .failure = scalar },
+        .cancellation = .{ .text = "first cancellation" },
+        .cleanup_failures = &.{scalar},
+        .discarded = &.{scalar},
+    } });
+    {
+        const replacement = try storage.duplicate(g.Node, a, try store.get(ref));
+        errdefer storage.release(g.Node, a, replacement);
+        try store.replaceOwned(ref, replacement);
+    }
+    const result = (try store.get(ref)).exit;
+    try std.testing.expectEqualStrings("first cancellation", result.cancellation.?.text);
+    try std.testing.expectEqualSlices(g.Value, &.{scalar}, result.cleanup_failures);
+    try std.testing.expectEqualSlices(g.Value, &.{scalar}, result.discarded);
+}
+
+test "owned exit replacement retains nested cancellation bytes and both field buffers" {
+    try std.testing.checkAllAllocationFailures(allocator, ownedExitReplacementCase, .{});
+}
