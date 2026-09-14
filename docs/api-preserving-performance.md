@@ -77,10 +77,29 @@ records are retained. [Large-fixture conformance](performance/large-conformance.
 also checks the independently calculated sum and constant bytes against W0
 native, candidate JavaScript and Wasmtime execution.
 
-The Review Fold historical corpus currently has an invalid store binding in
-both checkouts. No historical first-occurrence, recurrence or complete-corpus
-claim is made. Current tests and provider evidence remain available; native
-review convergence is a separate delivery requirement.
+The initially unbound Review Fold corpora were validated and bound without
+rewriting their event bytes. Current review witnesses were captured through the
+owner definition. Historical absence is not used to claim first occurrence or
+complete coverage; native review convergence is a separate delivery requirement.
+
+## Conformance dependency repairs
+
+The first review wave identified that the companion-only kernel freeze and four
+new cleanup files could not be reproduced from World's unchanged Boundary pin.
+World now owns the four immutable supplemental vectors and their independent
+source expectations. The supplied oracle still runs, with the pinned oracle's
+two known defects checked explicitly; kernel expectations always retain the
+correct failure and finalizer semantics. Existing compiler-supplied cases remain
+unchanged.
+
+The post-freeze checker admits the two explicitly frozen supported kernels:
+`0da1f478fa1de495c2354724a8b90d7279fd7219c4dcde7f9f79dff85c1e06b6`
+from the declared Boundary pin, and the companion-derived `9545076f...` kernel.
+A new byte-length/yield consumer was authored after both freezes. All three
+consumers passed 833 exact records with each kernel; an unlisted kernel still
+rejects. The pinned 37-fixture bundle plus the four owned regression vectors
+passed native/JavaScript/Wasmtime source-transfer checks. No dependency pin or
+runtime source changed in these repairs.
 
 This implements the September 14, 2026 Boundary 2 / World 5 API-preserving
 performance specification. Review closure is recorded separately on the PRs. There is no

@@ -11,9 +11,12 @@ const [boundaryArg, kernelArg, nativeArg, outputArg, runtimeArg] = process.argv.
 assert.ok(outputArg && [6, 7].includes(process.argv.length), 'expected Boundary source, frozen kernel, native embedding (or -), output and optional verified runtime');
 const boundary = resolve(boundaryArg), kernelPath = resolve(kernelArg), native = nativeArg === '-' ? null : resolve(nativeArg), output = resolve(outputArg), world = resolve(import.meta.dirname, '../..');
 const { admitProcessKernel, encodeInput, decodeOutcome } = await import(pathToFileURL(resolve(runtimeArg ?? world, 'src/process_v2/index.mjs')));
-const freeze = JSON.parse(await readFile(join(world, 'test/v2/external/freeze.json')));
 const kernel = await readFile(kernelPath);
-assert.equal(sha256(kernel), freeze.kernelSha256, 'kernel changed: author another unrelated consumer after a new freeze');
+const freezes = await Promise.all(['freeze.json', 'freeze-pinned.json'].map(async name =>
+  JSON.parse(await readFile(join(world, 'test/v2/external', name)))));
+assert.equal(new Set(freezes.map(freeze => freeze.kernelSha256)).size, freezes.length);
+const freeze = freezes.find(freeze => freeze.kernelSha256 === sha256(kernel));
+assert.ok(freeze, 'kernel changed: author another unrelated consumer after a new freeze');
 assert.equal(kernel.length, freeze.kernelBytes);
 await mkdir(output, { recursive: true });
 const scratch = await mkdtemp(join(output, 'consumer-'));
@@ -21,8 +24,8 @@ await cp(join(world, 'test/v2/external/consent_scan'), join(scratch, 'consent_sc
   recursive: true,
 });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
-function compile(source, squares = false) {
-  const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, `-Dsquares=${squares}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
+function compile(source, squares = false, bytes = false) {
+  const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, `-Dsquares=${squares}`, `-Dbytes=${bytes}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
     { cwd: join(scratch, 'consent_scan'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
@@ -30,6 +33,8 @@ function compile(source, squares = false) {
 const image = compile(false), sourceBytes = compile(true), source = JSON.parse(sourceBytes);
 const squaresImage = compile(false, true), squaresSourceBytes = compile(true, true);
 const squaresSource = JSON.parse(squaresSourceBytes);
+const byteImage = compile(false, false, true), byteSourceBytes = compile(true, false, true);
+const byteSource = JSON.parse(byteSourceBytes);
 const { execute } = await import(pathToFileURL(join(boundary, 'test/v2/source_oracle.mjs')));
 const host = await admitProcessKernel(kernel, { expectedSha256: freeze.kernelSha256 });
 const peer = await wasmtimePeer(join(world, 'test/v2/wasmtime'), kernelPath, freeze.kernelSha256);
@@ -112,6 +117,35 @@ try {
       if (result.kind === 'Yielded') input = { image: squaresImage, state: result.state };
     }
   }
+  for (const length of [0, 1, 127, 128, 65536]) {
+    const prefix = [];
+    let remaining = length;
+    do { const byte = remaining & 127; remaining >>>= 7; prefix.push(byte | (remaining ? 128 : 0)); } while (remaining);
+    const initialArgs = Buffer.concat([Buffer.from(prefix), Buffer.alloc(length, 0x61)]);
+    const expected = Buffer.alloc(8); expected.writeBigUInt64LE(BigInt(length));
+    const oracle = execute(byteSource, [...initialArgs]);
+    assert.equal(oracle.kind, 'Completed');
+    assert.deepEqual(oracle.value, [...expected]);
+    assert.deepEqual(oracle.trace, [{ kind: 'Yielded' }]);
+    const boundaries = [];
+    let input = { image: byteImage, initialArgs }, terminal;
+    for (let steps = 0; steps < 100; steps++) {
+      const result = await compare(input, 'advance');
+      if (result.kind !== 'Progressed') boundaries.push(result);
+      if (result.kind === 'Completed') { terminal = result; break; }
+      assert.ok(['Progressed', 'Yielded'].includes(result.kind));
+      input = { image: byteImage, state: result.state };
+    }
+    assert.ok(terminal, 'finite byte-length witness exceeded its test horizon');
+    assert.deepEqual(terminal.value, new Uint8Array(expected));
+    assert.deepEqual(boundaries.map(result => result.kind), ['Yielded', 'Completed']);
+    input = { image: byteImage, initialArgs };
+    for (const expected of boundaries) {
+      const result = await compare(input, 'run');
+      assert.deepEqual(result.bytes, expected.bytes);
+      if (result.kind === 'Yielded') input = { image: byteImage, state: result.state };
+    }
+  }
 } finally { await peer.close(); }
 const finalKernel = await readFile(kernelPath);
 assert.equal(sha256(finalKernel), freeze.kernelSha256);
@@ -120,10 +154,13 @@ await writeFile(join(output, 'consent-scan.bpi2'), image);
 await writeFile(join(output, 'consent-scan-source.json'), sourceBytes);
 await writeFile(join(output, 'sum-squares.bpi2'), squaresImage);
 await writeFile(join(output, 'sum-squares-source.json'), squaresSourceBytes);
+await writeFile(join(output, 'byte-length.bpi2'), byteImage);
+await writeFile(join(output, 'byte-length-source.json'), byteSourceBytes);
 await writeFile(join(output, 'external.json'), json({
   format: 'world-v2-external-consumer/v1', freeze, checkedAt: new Date().toISOString(),
   consumer: 'consent-scan',
   additionalConsumer: { name: 'sum-squares', sourceSha256: sha256(squaresSourceBytes), imageSha256: sha256(squaresImage), imageBytes: squaresImage.length },
+  pinnedFreezeConsumer: { name: 'byte-length-after-yield', sourceSha256: sha256(byteSourceBytes), imageSha256: sha256(byteImage), imageBytes: byteImage.length },
   consumerSourceSha256: sha256(await readFile(join(scratch, 'consent_scan/main.zig'))),
   imageSha256: sha256(image), imageBytes: image.length, sourceSha256: sha256(sourceBytes),
   kernelSha256: freeze.kernelSha256, nativeSha256: native ? sha256(await readFile(native)) : null,

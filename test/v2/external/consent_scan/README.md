@@ -17,3 +17,9 @@ the closed-form sum, plus authored arithmetic overflow at 2^32, and crosses
 every finite advance state among native, JavaScript and Wasmtime. The original
 consent source and its complete checks remain in place. The September 9 freeze
 is retained separately as historical evidence.
+
+After freezing the kernel built from the unchanged Boundary pin, a third
+consumer, `byte_length.zig`, was authored. It carries a byte string across a
+yield and returns its length. Empty, single-byte, 127/128-byte and 64 KiB values
+cross native, JavaScript and Wasmtime states. Both explicitly frozen supported
+kernels run all three consumers; an unlisted digest still rejects.

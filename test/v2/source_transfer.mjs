@@ -39,10 +39,25 @@ async function compare(mode, input) {
   return producers[observations++ % producers.length];
 }
 try {
-  for (const name of ["cleanup-disposal", "cleanup-disposal-running", "cleanup-disposal-failure", "cleanup-disposal-owned"]) {
-    const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi2`)));
-    const expected = execute(source, []);
+  // These regression vectors postdate the pinned compiler's fixture bundle.
+  // World carries their source-derived expectations rather than requiring an
+  // unpinned compiler checkout (whose predecessor oracle had a known defect).
+  const cleanupRoot = join(import.meta.dirname, "cleanup-fixtures");
+  const cleanup = JSON.parse(await readFile(join(cleanupRoot, "expectations.json"), "utf8"));
+  const oracleSha256 = createHash("sha256").update(await readFile(oraclePath)).digest("hex");
+  assert.deepEqual(cleanup.entries.map(entry => entry.name), [
+    "cleanup-disposal", "cleanup-disposal-running", "cleanup-disposal-failure", "cleanup-disposal-owned",
+  ]);
+  for (const { name, sourceSha256, imageSha256, expected, legacyExpected } of cleanup.entries) {
+    const source = await readFile(join(cleanupRoot, `source-${name}.json`));
+    const image = new Uint8Array(await readFile(join(cleanupRoot, `source-${name}.bpi2`)));
+    assert.equal(createHash("sha256").update(source).digest("hex"), sourceSha256);
+    assert.equal(createHash("sha256").update(image).digest("hex"), imageSha256);
+    // Preserve execution of the supplied oracle, including its exact known
+    // predecessor result. Kernel expectations always use the corrected source
+    // semantics; recognizing the old oracle never blesses its missing finalizer.
+    assert.deepEqual(execute(JSON.parse(source), []),
+      oracleSha256 === cleanup.provenance.legacyOracleSha256 ? legacyExpected : expected);
     const checkTerminal = (result) => {
       assert.equal(result.kind, expected.kind, name);
       assert.deepEqual(Array.from(result.value), expected.value, name);
