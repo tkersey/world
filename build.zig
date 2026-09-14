@@ -120,6 +120,14 @@ pub fn build(b: *std.Build) void {
         .imports = &.{ .{ .name = "boundary_data_v2", .module = data }, .{ .name = "world", .module = world } },
     }) });
     b.step("build-v2-economy-probe", "Build the native allocation-demand observer").dependOn(&b.addInstallArtifact(probe, .{}).step);
+    const decoder_probe = b.addExecutable(.{ .name = "v2-decode-probe", .root_module = b.createModule(.{
+        .root_source_file = b.path("test/v2/decode_probe.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+        .imports = &.{ .{ .name = "boundary_data_v2", .module = data }, .{ .name = "world", .module = world } },
+    }) });
+    b.step("build-v2-decode-probe", "Measure decoder time and bounded allocator demand")
+        .dependOn(&b.addInstallArtifact(decoder_probe, .{}).step);
     const phases = b.addExecutable(.{ .name = "v2-economy-phases", .root_module = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/economy_phases.zig"),
         .target = target,

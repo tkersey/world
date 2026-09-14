@@ -27,14 +27,16 @@ async function compare(mode, input) {
     throw error;
   }
   assert.equal(native.status, 0, native.stderr?.toString());
-  assert.deepEqual(result.bytes, new Uint8Array(native.stdout));
+  const nativeBytes = new Uint8Array(native.stdout);
+  assert.deepEqual(result.bytes, nativeBytes);
+  const producers = [result, { ...decodeOutcome(nativeBytes), bytes: nativeBytes }];
   if (peer) {
     const independent = await peer.invoke(encoded);
     assert.deepEqual(independent, result.bytes);
-    // Alternate the actual producer of the next detached State bytes.
-    if (observations++ % 2 === 0) return { ...decodeOutcome(independent), bytes: independent };
+    producers.push({ ...decodeOutcome(independent), bytes: independent });
   }
-  return result;
+  // Cross the actual native/JS/Wasmtime producers, including cross-version runs.
+  return producers[observations++ % producers.length];
 }
 try {
   for (const name of ["cleanup-disposal", "cleanup-disposal-running", "cleanup-disposal-failure", "cleanup-disposal-owned"]) {

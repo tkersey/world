@@ -1,8 +1,8 @@
 {
   "format": "world-v2-external-consumer-freeze/v1",
-  "frozenAt": "2026-09-14T18:11:32.068Z",
-  "kernelSha256": "9545076f16482ccb346ab7792ae87f4d9a262c3fe08b4086b3c376ed2b218c06",
-  "kernelBytes": 393588,
+  "frozenAt": "2026-09-09T03:18:19.869Z",
+  "kernelSha256": "c372950bfc184f04e54f0e9ce8339c931634c616a69c4e07e82803980745b17d",
+  "kernelBytes": 393407,
   "abi": 2,
   "profile": 1,
   "memory": {
@@ -14,19 +14,19 @@
   "sourceInputs": {
     "boundary": {
       "git": {
-        "head": "c914de195a6003076629e650ba0b6496d5fcdb75",
-        "tree": "82a1b8cca3f10929f15de940708d5cb212654739",
-        "dirty": true
+        "head": "0363bed06489acacdea25d0c4e1fe8d29400fd2f",
+        "tree": "7f1e10d1a5d486e3946ec87e576c2bc8faba7b7e",
+        "dirty": false
       },
-      "fileScope": "data/runtime and build inputs",
+      "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
       "files": [
         {
           "name": "build.zig",
-          "sha256": "544b11276fdcce50dd7fb66c4fc64644451375ed6a6c252123e6d29badfae39a"
+          "sha256": "e6d6ce531e273a3e5e9e214c336baf446a937ad8c521cfcbeb9825d17f0700c5"
         },
         {
           "name": "build.zig.zon",
-          "sha256": "c00c76bd70bd2ce1758ea8ad3b5fd151ed930edc936fdd9709d7c14bcb356a4d"
+          "sha256": "1ef4d5daad3ef2d7cd512d17744bfa15fe5bb6ff29ef212d80606f0c2d2058a3"
         },
         {
           "name": "src/v2/data/admission.zig",
@@ -50,7 +50,7 @@
         },
         {
           "name": "src/v2/data/canonical.zig",
-          "sha256": "feb4c9b84d87bbc126d9624bb82c2c5f60fcf1188b4d5222113ec27d948262ca"
+          "sha256": "f653d5addd61136ea4b8f07b89e25f8dbe8bd935ea56a38e9ffd0327b966f5d7"
         },
         {
           "name": "src/v2/data/cleanup_contract.zig",
@@ -78,7 +78,7 @@
         },
         {
           "name": "src/v2/data/image.zig",
-          "sha256": "084c3bf6696cece23bc2ea7bffbc1a720de22a9535e7aa58e39b2efe00b27a83"
+          "sha256": "6bd2f7cde76a97acba032530e6969ecbd30dc7e24354bceb1e7ae4b5e2891241"
         },
         {
           "name": "src/v2/data/program.zig",
@@ -114,7 +114,7 @@
         },
         {
           "name": "src/v2/data/snapshot.zig",
-          "sha256": "08b00f7a186d8d7d66d5f2027c3b09841782321bcbdd3a3a964167115bbc6c9e"
+          "sha256": "205c36e0e2d3b5217545a358f21769e45d4750b09714de745536c64681b63cfc"
         },
         {
           "name": "src/v2/data/state_admission.zig",
@@ -130,7 +130,7 @@
         },
         {
           "name": "src/v2/data/tests.zig",
-          "sha256": "bdc2d23e841d45201d99f0d8ac6b806aec70f0b46885de0b6a09a968e85e07d0"
+          "sha256": "b6d936256d3157583a3a89339c34d2fc17d1112eafff426a4724127e2b3e70f1"
         },
         {
           "name": "src/v2/data/traits.zig",
@@ -145,23 +145,23 @@
           "sha256": "2cad2f4762b4aaaa472db9fda6e8f038b5cc01c969a5ee32a9efa1067ebe8a28"
         }
       ],
-      "filesSha256": "17481bc866acc0aec9039766644674c248d6fd0d51d4451ebac8f4a458cc2850"
+      "filesSha256": "0b3de4b28f8982e460a80db0ca963944a7f03687e822eb92c6187286e1ca2299"
     },
     "world": {
       "git": {
-        "head": "2a1599afb4166f59bbc067c4e4d6129d5c844868",
-        "tree": "b77d2f730c1f3a5fdf690ad9848bab6291f3c986",
+        "head": "c6c7e9e10aa4d8f0e21c22875c4044648476049c",
+        "tree": "0e191e3d412440dc37611171cd6679d5f1b1c440",
         "dirty": true
       },
-      "fileScope": "data/runtime and build inputs",
+      "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
       "files": [
         {
           "name": "build.zig",
-          "sha256": "d9d9bd5a45e02c3078e3ff85468a591a3efdcc2d7190987366d38cb09f267b5e"
+          "sha256": "2609882ddf690c5b3dfd223d318e9996d2609d4fdca3b981e8fb73e99cc3dc5d"
         },
         {
           "name": "build.zig.zon",
-          "sha256": "57fd42fc3fbeb443d175fdd1e60fe4179eb1d98d194deb8bf89cd265960817f8"
+          "sha256": "1d4b65f6810e9b153f12c0fb615f3131919c06c8685292994d27e944f92741ac"
         },
         {
           "name": "src/interpreter_v2/abandon_tests.zig",
@@ -193,7 +193,7 @@
         },
         {
           "name": "src/interpreter_v2/cleanup_tests.zig",
-          "sha256": "c6dbff1adef72f478a3fce5fea083c62382208ccd2da82ea1947cb865cc22363"
+          "sha256": "24be4779da38c875e570777417dd21891f33665f3033c65bf0c10c7b14547541"
         },
         {
           "name": "src/interpreter_v2/clone.zig",
@@ -213,7 +213,7 @@
         },
         {
           "name": "src/interpreter_v2/economy_tests.zig",
-          "sha256": "d43d2e9ae38e81afba3e02421898a80ece58f52f881d701d87a5f569c6edcac1"
+          "sha256": "5bdf3cc1003b8465ade46d2370563f87266b0a81829cc50c368cbdcb51b11b85"
         },
         {
           "name": "src/interpreter_v2/emit_rejections.zig",
@@ -225,11 +225,11 @@
         },
         {
           "name": "src/interpreter_v2/machine.zig",
-          "sha256": "f4b57d5196c83b20128727b7e0ca072672b730ad463d60e50be1ff11462797dc"
+          "sha256": "3cda5f47754af7a818e943a90b53baad9dfa48e606563d48f1dce8a4ebeb7a38"
         },
         {
           "name": "src/interpreter_v2/process.zig",
-          "sha256": "35ca2ee3642b01ebc03485324da6e6b92cf3d608fcaa318b72037c177a3fbea5"
+          "sha256": "b2dc53e9c6ff02956f10be802814ea2456503f73fccee2b2cdb8fc0c5ba5f945"
         },
         {
           "name": "src/interpreter_v2/reentrant_tests.zig",
@@ -249,15 +249,15 @@
         },
         {
           "name": "src/interpreter_v2/store.zig",
-          "sha256": "da34d4773295aa5d51726fa701fd2d16f6a9d5c7732f95f018b75d64da2dda18"
+          "sha256": "cdbec6b6965b2b7b61cd7cbd509639ad504cb74f12d1463f04ddd2290b87e11f"
         },
         {
           "name": "src/interpreter_v2/tests.zig",
-          "sha256": "4e66134123af4917d178d1da9bc4f580eed1541b82daf19b61e499f50f7bd6c9"
+          "sha256": "93f6421b05c3a7d81cefbb7801f6f4a7e8e2452602d576e85afd805e6b19a48e"
         },
         {
           "name": "src/interpreter_v2/unwind.zig",
-          "sha256": "002eb0108e240c315d333d0c657fdcbd0bce69fee1cfb80664e59a1ce6dbb6fc"
+          "sha256": "d7773ab1086773a7edb17bac01732bcabb66f296b6c5683f7a28ec240d5e3d8f"
         },
         {
           "name": "src/interpreter_v2/values.zig",
@@ -268,41 +268,11 @@
           "sha256": "d456a19eada2a0494f03a3afb08716ca72cda13cb71eed1fc8d30b0163aecdc9"
         },
         {
-          "name": "src/process_v2/cli.mjs",
-          "sha256": "0a201f6cdc3c029cd059056f1e4ff2b23bacf25edd39ac01488025f9063bce02"
-        },
-        {
-          "name": "src/process_v2/codec.mjs",
-          "sha256": "40bb5a52fb9672682419cbb1cb9d64c52fadcfc2460b5ee95e29cb7627b860bb"
-        },
-        {
-          "name": "src/process_v2/errors.mjs",
-          "sha256": "d2d3ef1e5613f448cb68f0e4fb9e0832e91dbd64a58299cfcb66105189391179"
-        },
-        {
-          "name": "src/process_v2/file_input.mjs",
-          "sha256": "3f79adfe6d870a7ac27b7eb5993e759f9badf573eedd399159a63d2a6aaf587a"
-        },
-        {
-          "name": "src/process_v2/index.mjs",
-          "sha256": "ecafb288ddabb11ad76ed26853d80f626d0f42d9322274f5f33f9fc53cd4305d"
-        },
-        {
-          "name": "src/process_v2/kernel_file.mjs",
-          "sha256": "a2443cd29499c343793f50ae65260c81c515875221a679f6f9b1f36098ded64d"
-        },
-        {
-          "name": "src/process_v2/wasm.mjs",
-          "sha256": "9b7ca995fbe22cab5b14230f6ecadef511e32d74f0f1d0453c7f3800ad6e8227"
-        },
-        {
           "name": "src/root.zig",
-          "sha256": "a53cd893897ac2680faf63d0f0f0d1a4e8c21b2be580cef3093ad2e4eb4b2d8e"
+          "sha256": "0ea81f7c02bfe17874a730c42ab42afcfdaea1e9832371a9f80dc004bec4d07e"
         }
       ],
-      "filesSha256": "9a6cc3dcfb22f565dadc4f37441ced1bcc722688caec668e2bef9ca3d5ae8e8c"
+      "filesSha256": "32bfc8018eadbfc789c84a9a6c05993a72e0d14da7ba7e4d659f2b96c99d58b6"
     }
-  },
-  "previousFreeze": "freeze-2026-09-09.json",
-  "newConsumer": "sum-squares"
+  }
 }

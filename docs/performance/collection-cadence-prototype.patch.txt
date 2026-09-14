@@ -1,0 +1,159 @@
+diff --git a/src/interpreter_v2/economy_tests.zig b/src/interpreter_v2/economy_tests.zig
+index 16cc374..1af5dce 100644
+--- a/src/interpreter_v2/economy_tests.zig
++++ b/src/interpreter_v2/economy_tests.zig
+@@ -165,3 +165,25 @@ fn ownedExitReplacementCase(a: std.mem.Allocator) !void {
+ test "owned exit replacement retains nested cancellation bytes and both field buffers" {
+     try std.testing.checkAllAllocationFailures(allocator, ownedExitReplacementCase, .{});
+ }
++
++test "allocation-pressure collection keeps history-free control bounded" {
++    const program = @import("tests.zig").loop;
++    var statistics: @import("store.zig").Statistics = .{};
++    var machine: @import("machine.zig").Machine = .{
++        .allocator = allocator,
++        .program = program,
++        .identity = try data.image.identity(program),
++        .store = .{ .allocator = allocator, .statistics = &statistics },
++    };
++    defer machine.store.deinit();
++    var input: [8]u8 = undefined;
++    std.mem.writeInt(u64, &input, 10000, .little);
++    try machine.initialize(&input);
++    for (0..10000) |_| {
++        try std.testing.expect(try machine.step() == null);
++        try machine.store.collectDue(machine.roots, false);
++        try std.testing.expect(machine.store.nodes.items.len <= 3);
++    }
++    try std.testing.expect(statistics.traced_nodes < 10000);
++    try machine.store.collectDue(machine.roots, true);
++}
+diff --git a/src/interpreter_v2/process.zig b/src/interpreter_v2/process.zig
+index 057e6ec..ffaa030 100644
+--- a/src/interpreter_v2/process.zig
++++ b/src/interpreter_v2/process.zig
+@@ -119,7 +119,7 @@ fn execute(allocator: std.mem.Allocator, invocation: Invocation, mode: data.prot
+     }
+     while (true) {
+         if (try machine.step()) |terminal| return terminal;
+-        try machine.store.collect(machine.roots);
++        try machine.store.collectDue(machine.roots, mode == .advance or (machine.status != .active and machine.status != .unwinding));
+         if ((machine.status != .active and machine.status != .unwinding) or mode == .advance) return machine.finish();
+     }
+ }
+diff --git a/src/interpreter_v2/store.zig b/src/interpreter_v2/store.zig
+index a7cbc19..bad601f 100644
+--- a/src/interpreter_v2/store.zig
++++ b/src/interpreter_v2/store.zig
+@@ -27,6 +27,8 @@ pub const Store = struct {
+     marks: std.ArrayList(bool) = .empty,
+     blob_marks: std.ArrayList(bool) = .empty,
+     pending: std.ArrayList(data.snapshot.Reference) = .empty,
++    allocation_pressure: usize = 0,
++    collection_budget: usize = 0,
+ 
+     pub fn deinit(self: *Store) void {
+         for (self.nodes.items, self.alive.items) |item, live| if (live) release(g.Node, self.allocator, item);
+@@ -53,10 +55,12 @@ pub const Store = struct {
+     /// Takes all record-slice allocations on success only. They must be distinct
+     /// allocations from this allocator; graph references retain logical aliases.
+     pub fn addOwned(self: *Store, copied: g.Node) Error!g.NodeRef {
++        const pressure = @sizeOf(g.Node) +| allocationBytes(g.Node, copied);
+         if (self.free_nodes.pop()) |id| {
+             self.nodes.items[id] = copied;
+             self.alive.items[id] = true;
+             if (self.statistics) |s| s.added_nodes +|= 1;
++            self.allocation_pressure +|= pressure;
+             return .{ .id = id };
+         }
+         try self.nodes.ensureUnusedCapacity(self.allocator, 1);
+@@ -65,6 +69,7 @@ pub const Store = struct {
+         self.nodes.appendAssumeCapacity(copied);
+         self.alive.appendAssumeCapacity(true);
+         if (self.statistics) |s| s.added_nodes +|= 1;
++        self.allocation_pressure +|= pressure;
+         return .{ .id = id };
+     }
+ 
+@@ -78,6 +83,7 @@ pub const Store = struct {
+         const replacement = try duplicate(g.Node, self.allocator, value);
+         self.nodes.items[@intCast(reference.id)] = replacement;
+         release(g.Node, self.allocator, previous);
++        self.allocation_pressure +|= allocationBytes(g.Node, replacement);
+     }
+ 
+     /// Takes independently allocated record slices on success. No incoming
+@@ -86,6 +92,7 @@ pub const Store = struct {
+         const previous = try self.get(reference);
+         self.nodes.items[@intCast(reference.id)] = value;
+         release(g.Node, self.allocator, previous);
++        self.allocation_pressure +|= allocationBytes(g.Node, value);
+     }
+ 
+     pub fn literal(self: *Store, program: data.program.Program, value: data.program.Literal) Error!g.Value {
+@@ -113,6 +120,7 @@ pub const Store = struct {
+         };
+         self.interned.putAssumeCapacity(copied, id);
+         if (self.statistics) |s| s.copied_blob_bytes +|= copied.bytes.len;
++        self.allocation_pressure +|= copied.bytes.len;
+         return .{ .schema = value.schema, .body = .{ .blob = .{ .id = id } } };
+     }
+ 
+@@ -137,6 +145,10 @@ pub const Store = struct {
+     }
+ 
+     /// Traces strong reachability, including cycles. Reclamation performs no effects.
++    pub fn collectDue(self: *Store, roots: g.Roots, force: bool) Error!void {
++        if (force or self.allocation_pressure >= self.collection_budget) try self.collect(roots);
++    }
++
+     pub fn collect(self: *Store, roots: g.Roots) Error!void {
+         try self.marks.ensureTotalCapacityPrecise(self.allocator, self.nodes.items.len);
+         try self.blob_marks.ensureTotalCapacityPrecise(self.allocator, self.blobs.items.len);
+@@ -183,9 +195,46 @@ pub const Store = struct {
+             self.blob_alive.items[id] = false;
+             self.free_blobs.appendAssumeCapacity(id);
+         };
++        var live_bytes: usize = 0;
++        var live_nodes: usize = 0;
++        for (self.nodes.items, self.alive.items) |node, live| if (live) {
++            live_nodes += 1;
++            live_bytes +|= @sizeOf(g.Node) +| allocationBytes(g.Node, node);
++        };
++        for (self.blobs.items, self.blob_alive.items) |blob, live| if (live) {
++            live_bytes +|= @sizeOf(g.Blob) +| blob.bytes.len;
++        };
++        const spare = (self.nodes.capacity - live_nodes) *| @sizeOf(g.Node);
++        const scratch = self.marks.capacity +| self.blob_marks.capacity +|
++            (self.pending.capacity *| @sizeOf(data.snapshot.Reference));
++        // Spare capacity must not feed an ever-growing collection interval.
++        self.collection_budget = @max(2 * @sizeOf(g.Node), (live_bytes / 2) -| spare -| scratch);
++        self.allocation_pressure = 0;
+     }
+ };
+ 
++fn allocationBytes(comptime T: type, value: T) usize {
++    var size: usize = 0;
++    switch (@typeInfo(T)) {
++        .pointer => |info| {
++            size = value.len *| @sizeOf(info.child);
++            for (value) |item| size +|= allocationBytes(info.child, item);
++        },
++        .optional => |info| if (value) |item| {
++            size = allocationBytes(info.child, item);
++        },
++        .@"struct" => |info| inline for (info.fields) |field| {
++            size +|= allocationBytes(field.type, @field(value, field.name));
++        },
++        .@"union" => |info| inline for (info.fields) |field| {
++            if (std.mem.eql(u8, @tagName(value), field.name))
++                return allocationBytes(field.type, @field(value, field.name));
++        },
++        else => {},
++    }
++    return size;
++}
++
+ const BlobContext = struct {
+     pub fn hash(_: BlobContext, value: g.Blob) u64 {
+         return std.hash.Wyhash.hash(value.schema, value.bytes);

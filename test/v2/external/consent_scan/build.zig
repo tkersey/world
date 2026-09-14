@@ -5,8 +5,9 @@ pub fn build(b: *std.Build) void {
     const dependency = b.dependency("boundary", .{ .target = target, .optimize = .ReleaseSafe });
     const options = b.addOptions();
     options.addOption(bool, "source", b.option(bool, "source", "Emit source terms") orelse false);
+    const squares = b.option(bool, "squares", "Compile the post-freeze recursive sum-of-squares consumer") orelse false;
     const root = b.createModule(.{
-        .root_source_file = b.path("main.zig"),
+        .root_source_file = b.path(if (squares) "sum_squares.zig" else "main.zig"),
         .target = target,
         .optimize = .ReleaseSafe,
         .imports = &.{.{ .name = "boundary", .module = dependency.module("boundary") }},

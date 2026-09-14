@@ -21,13 +21,15 @@ await cp(join(world, 'test/v2/external/consent_scan'), join(scratch, 'consent_sc
   recursive: true,
 });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
-function compile(source) {
-  const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
+function compile(source, squares = false) {
+  const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, `-Dsquares=${squares}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
     { cwd: join(scratch, 'consent_scan'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
 }
 const image = compile(false), sourceBytes = compile(true), source = JSON.parse(sourceBytes);
+const squaresImage = compile(false, true), squaresSourceBytes = compile(true, true);
+const squaresSource = JSON.parse(squaresSourceBytes);
 const { execute } = await import(pathToFileURL(join(boundary, 'test/v2/source_oracle.mjs')));
 const host = await admitProcessKernel(kernel, { expectedSha256: freeze.kernelSha256 });
 const peer = await wasmtimePeer(join(world, 'test/v2/wasmtime'), kernelPath, freeze.kernelSha256);
@@ -81,15 +83,47 @@ try {
       if (result.kind === 'Yielded') input = { image, state: result.state };
     }
   }
+  // Authored after the performance kernel freeze: arithmetic recursion rather
+  // than prefix-consent handlers. Every finite checkpoint crosses embeddings.
+  for (const n of [...Array(17).keys()].map(BigInt).concat(1n << 32n)) {
+    const initialArgs = Buffer.alloc(8);
+    initialArgs.writeBigUInt64LE(n);
+    const oracle = execute(squaresSource, [...initialArgs]);
+    const wanted = n === 1n << 32n ? Buffer.alloc(0) : Buffer.alloc(8);
+    if (wanted.length) wanted.writeBigUInt64LE(n * (n + 1n) * (2n * n + 1n) / 6n);
+    assert.equal(oracle.kind, wanted.length ? 'Completed' : 'Failed');
+    assert.deepEqual(oracle.value, [...wanted]);
+    const boundaries = [];
+    let input = { image: squaresImage, initialArgs }, terminal;
+    for (let steps = 0; steps < 1000; steps++) {
+      const result = await compare(input, 'advance');
+      if (result.kind !== 'Progressed') boundaries.push(result);
+      if (['Completed', 'Failed'].includes(result.kind)) { terminal = result; break; }
+      assert.ok(['Progressed', 'Yielded'].includes(result.kind));
+      input = { image: squaresImage, state: result.state };
+    }
+    assert.ok(terminal, 'finite sum-of-squares witness exceeded its test horizon');
+    assert.deepEqual(boundaries.map(result => result.kind), ['Yielded', oracle.kind]);
+    assert.deepEqual(terminal.value, new Uint8Array(wanted));
+    input = { image: squaresImage, initialArgs };
+    for (const expected of boundaries) {
+      const result = await compare(input, 'run');
+      assert.deepEqual(result.bytes, expected.bytes);
+      if (result.kind === 'Yielded') input = { image: squaresImage, state: result.state };
+    }
+  }
 } finally { await peer.close(); }
 const finalKernel = await readFile(kernelPath);
 assert.equal(sha256(finalKernel), freeze.kernelSha256);
 assert.equal(finalKernel.length, freeze.kernelBytes);
 await writeFile(join(output, 'consent-scan.bpi2'), image);
 await writeFile(join(output, 'consent-scan-source.json'), sourceBytes);
+await writeFile(join(output, 'sum-squares.bpi2'), squaresImage);
+await writeFile(join(output, 'sum-squares-source.json'), squaresSourceBytes);
 await writeFile(join(output, 'external.json'), json({
   format: 'world-v2-external-consumer/v1', freeze, checkedAt: new Date().toISOString(),
   consumer: 'consent-scan',
+  additionalConsumer: { name: 'sum-squares', sourceSha256: sha256(squaresSourceBytes), imageSha256: sha256(squaresImage), imageBytes: squaresImage.length },
   consumerSourceSha256: sha256(await readFile(join(scratch, 'consent_scan/main.zig'))),
   imageSha256: sha256(image), imageBytes: image.length, sourceSha256: sha256(sourceBytes),
   kernelSha256: freeze.kernelSha256, nativeSha256: native ? sha256(await readFile(native)) : null,
@@ -101,6 +135,7 @@ await writeFile(join(output, 'external.json'), json({
     'run matched advance records; explicit handler state survived yield and transfer',
     'all 16 four-Boolean inputs preserved prefix consent and outer-handler answer reversal/negation',
     'runtime boundary kinds matched the independently expected single yield and completion',
+    'post-freeze sum-of-squares recursion matched the closed-form result for 0 through 16 and authored overflow at 2^32, across all advance states and run',
   ], records,
 }));
 console.log(`post-freeze consent-scan consumer: ${records.length} exact records under ` +
