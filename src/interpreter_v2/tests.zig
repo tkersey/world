@@ -73,6 +73,57 @@ test "allocation failure cannot mutate input or publish an incomplete result" {
     try std.testing.checkAllAllocationFailures(allocator, allocationCase, .{});
 }
 
+test "equal-looking parked requests reject stale results and retain retry input" {
+    var repeated = suspended;
+    repeated.blocks = &.{
+        suspended.blocks[0],
+        .{ .function = 0, .parameters = &.{0}, .instructions = &.{.{ .opcode = .constant, .result_type = 0 }}, .terminator = .{ .perform = .{ .effect = 0, .payload = 1, .next = .{ .block = 2, .arguments = &.{.returned} } } } },
+        suspended.blocks[2],
+    };
+    var first = try process.run(allocator, .{
+        .program = .{ .records = repeated },
+        .instance = .{ .initial_args = &.{} },
+    });
+    defer first.deinit();
+    const request = try data.protocol.decode(data.protocol.Request, allocator, first.record.requested.request);
+    var buffer: [256]u8 = undefined;
+    const old_result = try data.protocol.encode(data.protocol.Result, allocator, .{
+        .request_identity = request.request_identity,
+        .resume_schema_digest = data.wire.digest(request.resume_schema),
+        .value = &.{ 7, 0, 0, 0, 0, 0, 0, 0 },
+    }, &buffer);
+    const invocation: process.Invocation = .{ .program = .{ .records = repeated }, .instance = .{ .snapshot = first.record.requested.state }, .control = .{ .continue_value = old_result } };
+    var second = try process.run(allocator, invocation);
+    defer second.deinit();
+    var saved = try data.snapshot.decodeGraph(allocator, first.record.requested.state);
+    defer saved.deinit();
+    var from_records = try process.run(allocator, .{
+        .program = invocation.program,
+        .instance = .{ .records = saved.state },
+        .control = invocation.control,
+    });
+    defer from_records.deinit();
+    try std.testing.expectEqualSlices(u8, second.record.requested.request, from_records.record.requested.request);
+    const next = try data.protocol.decode(data.protocol.Request, allocator, second.record.requested.request);
+    try std.testing.expectEqualSlices(u8, request.payload, next.payload);
+    try std.testing.expect(!std.mem.eql(u8, &request.request_identity, &next.request_identity));
+    try std.testing.expectError(error.InvalidResult, process.run(allocator, .{
+        .program = invocation.program,
+        .instance = .{ .snapshot = second.record.requested.state },
+        .control = invocation.control,
+    }));
+    const Attempt = struct {
+        fn run(a: std.mem.Allocator, input: process.Invocation, expected: []const u8) !void {
+            const before = data.wire.digest(input.instance.snapshot);
+            defer std.debug.assert(std.mem.eql(u8, &before, &data.wire.digest(input.instance.snapshot)));
+            var result = try process.run(a, input);
+            defer result.deinit();
+            try std.testing.expectEqualSlices(u8, expected, result.record.requested.request);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(allocator, Attempt.run, .{ invocation, second.record.requested.request });
+}
+
 fn allocationCase(failing: std.mem.Allocator) !void {
     var outcome = try process.run(failing, .{ .program = .{ .records = suspended }, .instance = .{ .initial_args = &.{} } });
     defer outcome.deinit();

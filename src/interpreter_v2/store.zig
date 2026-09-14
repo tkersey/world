@@ -24,6 +24,9 @@ pub const Store = struct {
     blob_alive: std.ArrayList(bool) = .empty,
     free_blobs: std.ArrayList(usize) = .empty,
     interned: std.HashMapUnmanaged(g.Blob, usize, BlobContext, 80) = .empty,
+    marks: std.ArrayList(bool) = .empty,
+    blob_marks: std.ArrayList(bool) = .empty,
+    pending: std.ArrayList(data.snapshot.Reference) = .empty,
 
     pub fn deinit(self: *Store) void {
         for (self.nodes.items, self.alive.items) |item, live| if (live) release(g.Node, self.allocator, item);
@@ -35,12 +38,21 @@ pub const Store = struct {
         self.blob_alive.deinit(self.allocator);
         self.free_blobs.deinit(self.allocator);
         self.interned.deinit(self.allocator);
+        self.marks.deinit(self.allocator);
+        self.blob_marks.deinit(self.allocator);
+        self.pending.deinit(self.allocator);
         self.* = undefined;
     }
 
     pub fn add(self: *Store, value: g.Node) Error!g.NodeRef {
         const copied = try duplicate(g.Node, self.allocator, value);
         errdefer release(g.Node, self.allocator, copied);
+        return self.addOwned(copied);
+    }
+
+    /// Takes all record-slice allocations on success only. They must be distinct
+    /// allocations from this allocator; graph references retain logical aliases.
+    pub fn addOwned(self: *Store, copied: g.Node) Error!g.NodeRef {
         if (self.free_nodes.pop()) |id| {
             self.nodes.items[id] = copied;
             self.alive.items[id] = true;
@@ -118,15 +130,17 @@ pub const Store = struct {
 
     /// Traces strong reachability, including cycles. Reclamation performs no effects.
     pub fn collect(self: *Store, roots: g.Roots) Error!void {
-        const marks = try self.allocator.alloc(bool, self.nodes.items.len);
-        defer self.allocator.free(marks);
-        const blob_marks = try self.allocator.alloc(bool, self.blobs.items.len);
-        defer self.allocator.free(blob_marks);
+        try self.marks.ensureTotalCapacityPrecise(self.allocator, self.nodes.items.len);
+        try self.blob_marks.ensureTotalCapacityPrecise(self.allocator, self.blobs.items.len);
+        self.marks.items.len = self.nodes.items.len;
+        self.blob_marks.items.len = self.blobs.items.len;
+        const marks = self.marks.items;
+        const blob_marks = self.blob_marks.items;
         @memset(marks, false);
         @memset(blob_marks, false);
-        var pending: std.ArrayList(data.snapshot.Reference) = .empty;
-        defer pending.deinit(self.allocator);
-        try data.snapshot.references(g.Roots, roots, &pending, self.allocator);
+        const pending = &self.pending;
+        pending.clearRetainingCapacity();
+        try data.snapshot.references(g.Roots, roots, pending, self.allocator);
         if (self.statistics) |s| s.traced_edges +|= pending.items.len;
         while (pending.pop()) |reference| switch (reference) {
             .node => |id| {
@@ -134,7 +148,7 @@ pub const Store = struct {
                 if (marks[@intCast(id)]) continue;
                 marks[@intCast(id)] = true;
                 const before = pending.items.len;
-                try data.snapshot.references(g.Node, self.nodes.items[@intCast(id)], &pending, self.allocator);
+                try data.snapshot.references(g.Node, self.nodes.items[@intCast(id)], pending, self.allocator);
                 if (self.statistics) |s| {
                     s.traced_nodes +|= 1;
                     s.traced_edges +|= pending.items.len - before;
