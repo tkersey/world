@@ -68,7 +68,10 @@ fn execute(allocator: std.mem.Allocator, invocation: Invocation, mode: data.prot
             break :blk normalized.?.program;
         },
         .image => |bytes| blk: {
-            decoded = try data.image.decode(allocator, bytes);
+            decoded = if (data.compact_image.isCompact(bytes))
+                try data.compact_image.decode(allocator, bytes)
+            else
+                try data.image.decode(allocator, bytes);
             break :blk decoded.?.program;
         },
     };

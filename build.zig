@@ -175,6 +175,8 @@ pub fn build(b: *std.Build) void {
     wasmtime_step.dependOn(&wasmtime_test.step);
     const source_wasm = b.step("check-v2-source-wasm", "Compare separately emitted source fixtures with native and WASM execution");
     const capacity_step = b.step("check-v2-capacity", "Check every guest arena and sufficient unchanged-input retries");
+    const compact_source_step = b.step("check-v2-compact-source", "Compare BPI2/BPC1 through native, JS and Wasmtime");
+    const compact_capacity_step = b.step("check-v2-compact-capacity", "Check compact-image exhaustion and unchanged retries");
     if (b.option([]const u8, "boundary-v2-fixtures", "Exact directory of separately emitted Boundary source fixtures")) |fixtures| {
         if (!std.Io.Dir.path.isAbsolute(fixtures)) std.process.fatal("Boundary fixtures path must be absolute", .{});
         const capacity = b.addSystemCommand(&.{"node"});
@@ -203,6 +205,39 @@ pub fn build(b: *std.Build) void {
         compare_source.addArg(b.pathJoin(&.{ source, "test/v2/source_oracle.mjs" }));
         compare_source.has_side_effects = true;
         source_wasm.dependOn(&compare_source.step);
+        const compact_converter = b.addExecutable(.{
+            .name = "compact-test-converter",
+            .root_module = b.createModule(.{
+                .root_source_file = .{
+                    .cwd_relative = b.pathJoin(&.{ source, "tools/v2/compact_image.zig" }),
+                },
+                .target = b.graph.host,
+                .optimize = .ReleaseSafe,
+                .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
+            }),
+        });
+        const compact_source = b.addSystemCommand(&.{"node"});
+        const compact_capacity = b.addSystemCommand(&.{"node"});
+        compact_capacity.addFileArg(b.path("test/v2/capacity.mjs"));
+        compact_capacity.addArg(source);
+        compact_capacity.addArg(fixtures);
+        compact_capacity.addFileArg(kernel.getEmittedBin());
+        compact_capacity.addArg(b.pathFromRoot(".cache/v2/compact-capacity"));
+        compact_capacity.addFileArg(compact_converter.getEmittedBin());
+        compact_capacity.has_side_effects = true;
+        compact_capacity_step.dependOn(&compact_capacity.step);
+        compact_source.addFileArg(b.path("test/v2/source_transfer.mjs"));
+        compact_source.addFileArg(kernel.getEmittedBin());
+        compact_source.addFileArg(native_records.getEmittedBin());
+        compact_source.addArg(fixtures);
+        compact_source.addArg(b.pathJoin(&.{ source, "test/v2/source_oracle.mjs" }));
+        compact_source.addArg(b.pathFromRoot("test/v2/wasmtime"));
+        compact_source.addArg("--compact-converter");
+        compact_source.addFileArg(compact_converter.getEmittedBin());
+        compact_source.setEnvironmentVariable("UV_CACHE_DIR", b.pathFromRoot(".cache/v2/uv"));
+        compact_source.setEnvironmentVariable("UV_PROJECT_ENVIRONMENT", b.pathFromRoot(".cache/v2/wasmtime-environment"));
+        compact_source.has_side_effects = true;
+        compact_source_step.dependOn(&compact_source.step);
         const independent_source = b.addSystemCommand(&.{"node"});
         independent_source.addFileArg(b.path("test/v2/source_transfer.mjs"));
         independent_source.addFileArg(kernel.getEmittedBin());
@@ -220,6 +255,8 @@ pub fn build(b: *std.Build) void {
         wasmtime_step.dependOn(&missing.step);
         economy.dependOn(&missing.step);
         capacity_step.dependOn(&missing.step);
+        compact_source_step.dependOn(&missing.step);
+        compact_capacity_step.dependOn(&missing.step);
     }
     const portability = b.step("check-v2-portability", "Check exact native, JavaScript and Wasmtime records and fresh transfers");
     portability.dependOn(wasmtime_step);
@@ -231,6 +268,8 @@ pub fn build(b: *std.Build) void {
     aggregate.dependOn(lifting);
     aggregate.dependOn(economy);
     aggregate.dependOn(capacity_step);
+    aggregate.dependOn(compact_source_step);
+    aggregate.dependOn(compact_capacity_step);
     const ownership = b.addSystemCommand(&.{"node"});
     ownership.addFileArg(b.path("test/v2/ownership.mjs"));
     ownership.addArg(source);

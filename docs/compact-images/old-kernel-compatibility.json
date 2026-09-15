@@ -1,0 +1,9 @@
+{
+  "referenceKernel": "9545076f16482ccb346ab7792ae87f4d9a262c3fe08b4086b3c376ed2b218c06",
+  "candidateKernel": "d046dbe1e92e61bb3d8aeb52cac898ae90916fb388c289d87c0b304ff23e7380",
+  "legacyImage": "b30dfa7ec3091ff54b9b9480bdb9ae9b4e813c77fa1d8fcab37ca901819e5c12",
+  "compactImage": "843907ef7ab19762b53394be385d00ee54a6e94ed57756e1ffd68a75bbc296b4",
+  "outcome": "690bd37ca81b1f51cff3fee4bb3a2d0b8ddab7f918b33a1281ff75a5a04bba34",
+  "oldKernelCompactRejection": "InvalidFamily",
+  "oldNativeCompactRejection": "InvalidFamily"
+}
