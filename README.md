@@ -5,7 +5,7 @@ compiled natively and to an import-free WASM kernel. Computations, handlers,
 search and scheduling policies are program data. Environmental effects are
 returned as typed requests for the caller to resolve.
 
-World `5.0.0` uses Zig `0.16.0` and pins the released Boundary `2.0.0` source.
+World `5.0.1` uses Zig `0.16.0` and pins the released Boundary `2.0.0` source.
 
 ## Run a program
 

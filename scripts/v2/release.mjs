@@ -12,7 +12,7 @@ if(process.argv.length!==9)throw new Error('expected kernel, native embedding, m
 const root=resolve(import.meta.dirname,'../..'),kernelPath=resolve(kernelArg),nativePath=resolve(nativeArg),rejectionsPath=resolve(rejectionsArg),boundary=resolve(boundaryArg),boundaryAssets=resolve(boundaryAssetsArg),project=resolve(projectArg),output=resolve(outputArg);
 const source=await sourceIdentity(root),sourceFiles=new Map((await readSource(root,source)).map(entry=>[entry.name,entry]));
 const packageBytes=sourceFiles.get('package.json').bytes,pkg=JSON.parse(packageBytes),version=pkg.version;
-if(!/^5\.0\.0(?:-dev\.0)?$/.test(version??''))throw new Error('unexpected World release version');
+if(!/^5\.0\.1(?:-dev\.0)?$/.test(version??''))throw new Error('unexpected World release version');
 const boundaryOuter=await verifyAssets(boundaryAssets,['boundary-v2-semantic-fixtures.json','boundary-v2-semantic-fixtures.bin','boundary-v2-examples.tar.gz','boundary-v2-release-receipt.json']);
 const boundaryReceipt=JSON.parse(boundaryOuter.get('boundary-v2-release-receipt.json'));
 assert.equal(boundaryReceipt.format,'boundary-v2-release-receipt/v1');
@@ -45,13 +45,13 @@ entries.set('SHA256SUMS',{name:'SHA256SUMS',bytes:Buffer.from(innerSums)});
 const archive=tarGzip([...entries.values()]);
 assert.equal(readTarGzip(archive).length,entries.size);
 const assets=[{name:'world-process-kernel-v2.wasm',bytes:kernel},
-  {name:'world-v5.0.0-process-runtime.tar.gz',bytes:archive},
+  {name:'world-v5.0.1-process-runtime.tar.gz',bytes:archive},
   {name:'world-v2-conformance.json',bytes:conformanceBytes},{name:'world-v2-conformance.bin',bytes:binary}];
 const receipt={format:'world-v2-release-receipt/v1',version,profile:1,source,
   boundary:{version:boundaryReceipt.version,source:boundarySource,receiptSha256:sha256(boundaryOuter.get('boundary-v2-release-receipt.json'))},
   protected:boundaryReceipt.protected,
   toolchain:{zig:execFileSync('zig',['version'],{encoding:'utf8'}).trim(),node:process.version,wasmtime:conformance.embeddings.wasmtime,python:conformance.embeddings.python},
   kernel:identity.kernel,assets:assets.map(({name,bytes})=>({name,length:bytes.length,sha256:sha256(bytes)}))};
-assets.push({name:'world-v5.0.0-release-receipt.json',bytes:json(receipt)});
+assets.push({name:'world-v5.0.1-release-receipt.json',bytes:json(receipt)});
 await writeAssets(output,assets);
 console.log(`emitted World ${version}; ${kernel.length} kernel bytes, ${conformance.checks.length} exact record checks`);
