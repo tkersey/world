@@ -6,12 +6,12 @@ errors, capacity behavior, protocols and fresh-instance lifecycle. Combined
 Boundary/World measurements show improvements in installation and saved-response
 workloads. No uniform speedup or universal non-regression claim is made.
 
-[Boundary's report](https://github.com/tkersey/boundary/blob/perf/api-preserving-data-path/docs/api-preserving-performance.md)
+[Boundary's report](https://github.com/tkersey/boundary/blob/main/docs/api-preserving-performance.md)
 owns the shared baseline selection, Boundary mechanisms, binary-size conclusion,
 cold-build reproduction and compiler experiments. The shared
-[validation summary](https://github.com/tkersey/boundary/blob/perf/api-preserving-data-path/docs/performance/validation.md)
+[validation summary](https://github.com/tkersey/boundary/blob/main/docs/performance/validation.md)
 provides exact checked inputs, commands, outcomes and accessible logs for both
-repositories. Delivery remains draft [World #52](https://github.com/tkersey/world/pull/52)
+repositories. Delivery: [World #52](https://github.com/tkersey/world/pull/52)
 and [Boundary #150](https://github.com/tkersey/boundary/pull/150).
 
 ## Retained production mechanisms
