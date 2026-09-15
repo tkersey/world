@@ -11,7 +11,8 @@ pub fn main(init: std.process.Init) !void {
     const storage = try init.gpa.alloc(u8, 16 << 20);
     defer init.gpa.free(storage);
     var arena = world.Workspace.init(storage);
-    const allocator = arena.allocator();
+    var tracked = std.testing.FailingAllocator.init(arena.allocator(), .{});
+    const allocator = tracked.allocator();
     const decoded = try data.protocol.decode(data.protocol.Input, allocator, bytes);
     var statistics: world.Statistics = .{};
     const invocation: world.Invocation = .{ .program = .{ .image = decoded.image }, .instance = switch (decoded.instance) {
@@ -32,6 +33,8 @@ pub fn main(init: std.process.Init) !void {
         .platform = @tagName(@import("builtin").cpu.arch),
         .pointer_bytes = @sizeOf(usize),
         .peak_working_payload_bytes = arena.peak_payload,
+        .allocation_calls = tracked.allocations,
+        .allocated_bytes = tracked.allocated_bytes,
         .working_demand_lower_bound = arena.required,
         .working_reservation_bytes = storage.len,
         .outcome = @tagName(outcome.record),

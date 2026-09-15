@@ -8,14 +8,22 @@ import { spawnSync } from "node:child_process";
 import { admitProcessKernel, encodeInput, decodeRequest, encodeResult, decodeOutcome } from "../../src/process_v2/index.mjs";
 import { wasmtimePeer } from "./wasmtime_peer.mjs";
 
-if (process.argv.length !== 6 && process.argv.length !== 7) throw new Error("expected kernel, native embedding, fixtures, oracle, and optional Wasmtime project paths");
-const [kernelPath, nativePath, fixtures, oraclePath, project] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const compactAt = args.indexOf("--compact-converter");
+let compactConverter = null;
+if (compactAt >= 0) {
+  assert.equal(compactAt, args.length - 2, "--compact-converter requires one final path");
+  compactConverter = args[compactAt + 1];
+  args.splice(compactAt, 2);
+}
+if (args.length !== 4 && args.length !== 5) throw new Error("expected kernel, native embedding, fixtures, oracle, and optional Wasmtime project paths");
+const [kernelPath, nativePath, fixtures, oraclePath, project] = args;
 const { execute } = await import(pathToFileURL(oraclePath).href);
 const kernel = new Uint8Array(await readFile(kernelPath));
 const host = await admitProcessKernel(kernel, { expectedSha256: createHash("sha256").update(kernel).digest("hex") });
 const peer = project ? await wasmtimePeer(project, kernelPath, host.sha256) : null;
 let observations = 0;
-async function compare(mode, input) {
+async function observe(mode, input) {
   const encoded = encodeInput({ ...input, mode });
   const native = spawnSync(nativePath, [], { input: encoded, maxBuffer: 64 << 20 });
   let result;
@@ -36,6 +44,31 @@ async function compare(mode, input) {
     producers.push({ ...decodeOutcome(independent), bytes: independent });
   }
   // Cross the actual native/JS/Wasmtime producers, including cross-version runs.
+  return producers;
+}
+const packedImages = new Map();
+function packed(image) {
+  const key = createHash("sha256").update(image).digest("hex");
+  if (!packedImages.has(key)) {
+    const converted = spawnSync(compactConverter, [], { input: image, maxBuffer: 64 << 20 });
+    assert.equal(converted.status, 0, converted.stderr?.toString());
+    packedImages.set(key, new Uint8Array(converted.stdout));
+  }
+  return packedImages.get(key);
+}
+async function compare(mode, input) {
+  const compactInput = compactConverter ? { ...input, image: packed(input.image) } : null;
+  let producers;
+  try { producers = await observe(mode, input); }
+  catch (error) {
+    if (compactInput) await assert.rejects(observe(mode, compactInput), other => other.message === error.message);
+    throw error;
+  }
+  if (compactInput) {
+    const others = await observe(mode, compactInput);
+    for (const other of others) assert.deepEqual(other.bytes, producers[0].bytes);
+    producers.push(...others);
+  }
   return producers[observations++ % producers.length];
 }
 try {
@@ -326,5 +359,6 @@ try {
     }
   }
   console.log("source oracle/native/WASM agreement and fresh transfers passed for forty-one compiled source examples and cancellation scenarios");
+  if (compactConverter) console.log(`BPI2/BPC1 exact outcomes and alternating fresh transfers matched ${observations} calls over ${packedImages.size} images`);
   if (peer) console.log(`Wasmtime ${peer.identity.wasmtime} matched all source checkpoints; kernel ${peer.identity.kernel_sha256}`);
 } finally { if (peer) await peer.close(); }

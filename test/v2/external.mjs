@@ -10,9 +10,9 @@ import { sha256, json } from '../../scripts/v2/assets.mjs';
 const [boundaryArg, kernelArg, nativeArg, outputArg, runtimeArg] = process.argv.slice(2);
 assert.ok(outputArg && [6, 7].includes(process.argv.length), 'expected Boundary source, frozen kernel, native embedding (or -), output and optional verified runtime');
 const boundary = resolve(boundaryArg), kernelPath = resolve(kernelArg), native = nativeArg === '-' ? null : resolve(nativeArg), output = resolve(outputArg), world = resolve(import.meta.dirname, '../..');
-const { admitProcessKernel, encodeInput, decodeOutcome } = await import(pathToFileURL(resolve(runtimeArg ?? world, 'src/process_v2/index.mjs')));
+const { admitProcessKernel, encodeInput, decodeOutcome, encodeResult } = await import(pathToFileURL(resolve(runtimeArg ?? world, 'src/process_v2/index.mjs')));
 const kernel = await readFile(kernelPath);
-const freezes = await Promise.all(['freeze.json', 'freeze-pinned.json'].map(async name =>
+const freezes = await Promise.all(['freeze.json', 'freeze-pinned.json', 'freeze-compact.json', 'freeze-compact-reader.json'].map(async name =>
   JSON.parse(await readFile(join(world, 'test/v2/external', name)))));
 assert.equal(new Set(freezes.map(freeze => freeze.kernelSha256)).size, freezes.length);
 const freeze = freezes.find(freeze => freeze.kernelSha256 === sha256(kernel));
@@ -24,8 +24,8 @@ await cp(join(world, 'test/v2/external/consent_scan'), join(scratch, 'consent_sc
   recursive: true,
 });
 await symlink(boundary, join(scratch, 'boundary'), 'dir');
-function compile(source, squares = false, bytes = false) {
-  const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, `-Dsquares=${squares}`, `-Dbytes=${bytes}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
+function compile(source, squares = false, bytes = false, packedProbe = false, compact = false, orderedPair = false) {
+  const result = spawnSync('zig', ['build', 'emit', `-Dsource=${source}`, `-Dsquares=${squares}`, `-Dbytes=${bytes}`, `-Dpacked-probe=${packedProbe}`, `-Dcompact=${compact}`, `-Dordered-pair=${orderedPair}`, '--cache-dir', join(scratch, 'local'), '--global-cache-dir', join(scratch, 'global')],
     { cwd: join(scratch, 'consent_scan'), timeout: 180000, maxBuffer: 16 << 20 });
   assert.equal(result.status, 0, result.stderr.toString());
   return result.stdout;
@@ -145,6 +145,51 @@ try {
       assert.deepEqual(result.bytes, expected.bytes);
       if (result.kind === 'Yielded') input = { image: byteImage, state: result.state };
     }
+  }
+  if (['request-xor','ordered-pair'].includes(freeze.newConsumer)) {
+    const original = compile(false, false, false, true, false);
+    const packed = compile(false, false, false, true, true);
+    const terms = JSON.parse(compile(true, false, false, true));
+    assert.equal(packed.subarray(0, 8).toString(), 'ABL_BPC1');
+    for (const length of [0, 1, 7, 31]) for (const salt of [0n, 19n, (1n << 64n) - 1n]) {
+      const initialArgs = Uint8Array.from([length, ...new Array(length).fill(42)]);
+      const answer = Buffer.alloc(8); answer.writeBigUInt64LE(BigInt(length) ^ salt);
+      const value = Buffer.alloc(8); value.writeBigUInt64LE(salt);
+      const oracle = execute(terms, [...initialArgs], [[...value]]);
+      assert.equal(oracle.kind, 'Completed'); assert.deepEqual(oracle.value, [...answer]);
+      let step = await compare({image: original, initialArgs}, 'run');
+      assert.equal(step.kind, 'Yielded');
+      step = await compare({image: packed, state: step.state}, 'run');
+      assert.equal(step.kind, 'Requested');
+      const input = {state: step.state, result: encodeResult(step.request, value)};
+      const legacy = await compare({...input, image: original}, 'run');
+      const compact = await compare({...input, image: packed}, 'run');
+      assert.equal(compact.kind, 'Completed'); assert.deepEqual(compact.value, new Uint8Array(answer));
+      assert.deepEqual(compact.bytes, legacy.bytes);
+    }
+    await writeFile(join(output, 'request-xor.bpc1'), packed);
+    await writeFile(join(output, 'request-xor.bpi2'), original);
+  }
+  if (freeze.newConsumer === 'ordered-pair') {
+    const original = compile(false, false, false, false, false, true);
+    const packed = compile(false, false, false, false, true, true);
+    const terms = JSON.parse(compile(true, false, false, false, false, true));
+    assert.equal(packed.subarray(0, 8).toString(), 'ABL_BPC1');
+    for (const left of [0n, 1n, 128n, (1n << 64n) - 1n]) {
+      for (const right of [0n, 127n, (1n << 64n) - 1n]) {
+        const initialArgs = Buffer.alloc(16), wanted = Buffer.alloc(16);
+        initialArgs.writeBigUInt64LE(left); initialArgs.writeBigUInt64LE(right, 8);
+        wanted.writeBigUInt64LE(left < right ? left : right);
+        wanted.writeBigUInt64LE(left < right ? right : left, 8);
+        const oracle = execute(terms, [...initialArgs]);
+        assert.equal(oracle.kind, 'Completed'); assert.deepEqual(oracle.value, [...wanted]);
+        let step = await compare({image: packed, initialArgs}, 'run');
+        assert.equal(step.kind, 'Yielded');
+        step = await compare({image: original, state: step.state}, 'run');
+        assert.equal(step.kind, 'Completed'); assert.deepEqual(step.value, new Uint8Array(wanted));
+      }
+    }
+    await writeFile(join(output, 'ordered-pair.bpc1'), packed);
   }
 } finally { await peer.close(); }
 const finalKernel = await readFile(kernelPath);

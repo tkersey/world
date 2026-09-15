@@ -5,6 +5,10 @@ const data = @import("boundary_data_v2");
 const world = @import("world").process_v2;
 const borrow_returns = @import("borrow_return_fixtures");
 
+test {
+    _ = @import("compact_agreement.zig");
+}
+
 test "borrowed operand evaluation preserves failure custody across native snapshots" {
     var b = boundary.source.Builder.init(std.testing.allocator);
     defer b.deinit();

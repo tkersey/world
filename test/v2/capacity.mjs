@@ -5,15 +5,22 @@ import { spawnSync } from 'node:child_process';
 import { admitProcessKernel,encodeInput,decodeOutcome,encodeResult } from '../../src/process_v2/index.mjs';
 import { inspectProcessKernelWasm,wasmRange } from '../../src/process_v2/wasm.mjs';
 import { sha256,json } from '../../scripts/v2/assets.mjs';
-const [boundaryArg,fixturesArg,normalKernelArg,outputArg]=process.argv.slice(2);
-if(process.argv.length!==6)throw new Error('expected Boundary source, fixtures, normal kernel and output directory');
+const [boundaryArg,fixturesArg,normalKernelArg,outputArg,compactConverter]=process.argv.slice(2);
+if(process.argv.length!==6 && process.argv.length!==7)throw new Error('expected Boundary source, fixtures, normal kernel, output directory and optional compact converter');
 const root=resolve(import.meta.dirname,'../..'),boundary=resolve(boundaryArg),fixtures=resolve(fixturesArg),output=resolve(outputArg);
 await mkdir(output,{recursive:true});
-const image=await readFile(join(fixtures,'capacity.bpi2'));
+const legacyImage=await readFile(join(fixtures,'capacity.bpi2'));
+let image=legacyImage;
+if(compactConverter){
+  const converted=spawnSync(compactConverter,[],{input:legacyImage,maxBuffer:64<<20});
+  assert.equal(converted.status,0,converted.stderr.toString());
+  image=converted.stdout;
+}
 const initialArgs=new Uint8Array(65539).fill(0x5a);initialArgs.set([0x80,0x80,0x04]);
 const input={image,initialArgs},encoded=encodeInput({...input,mode:'run'}),inputHash=sha256(encoded);
 const normalBytes=await readFile(normalKernelArg),normal=await admitProcessKernel(normalBytes,{expectedSha256:sha256(normalBytes)});
 const expected=await normal.run(input);assert.equal(expected.kind,'Requested');assert.ok(expected.bytes.length>65536);
+if(compactConverter)assert.deepEqual(expected.bytes,(await normal.run({image:legacyImage,initialArgs})).bytes);
 const completed=await normal.run({image,state:expected.state,result:encodeResult(expected.request,new Uint8Array())});
 assert.equal(completed.kind,'Completed');assert.deepEqual(completed.value,initialArgs);
 const rows=[];
