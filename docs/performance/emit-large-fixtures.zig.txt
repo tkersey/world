@@ -1,0 +1,34 @@
+const std = @import("std");
+const boundary = @import("boundary");
+const options = @import("options");
+
+fn constant(b: *boundary.source.Builder) !boundary.source.Module {
+    const bytes_type = try b.schema(.bytes);
+    const unit = try b.scalar(void);
+    const pair = try b.schema(.{ .product = &.{ bytes_type, bytes_type } });
+    const bytes = try b.allocator().alloc(u8, 65539);
+    @memset(bytes, 0x5a);
+    var writer: boundary.data_v2.wire.Writer = .{ .output = bytes };
+    try writer.natural(65536);
+    const first = try b.literal(.{ .schema = bytes_type, .bytes = bytes });
+    const second = try b.literal(.{ .schema = bytes_type, .bytes = bytes });
+    const entry = try b.declare(&.{}, pair, &.{}, &.{});
+    try b.define(entry, try b.pure(try b.primitive(pair, .product, &.{ first, second }, 0)));
+    return b.module(entry, unit);
+}
+
+pub fn main(init: std.process.Init) !void {
+    var b = boundary.source.Builder.init(init.gpa);
+    defer b.deinit();
+    const module = if (options.count == 0) try constant(&b) else try boundary.source.examples.installations(&b, options.count);
+    var compiled = try boundary.program.compile(init.gpa, module);
+    defer compiled.deinit();
+    if (options.count == 0 and compiled.program.constants.len != 1) return error.DuplicatedConstant;
+    const bytes = try init.gpa.alloc(u8, try boundary.image_v2.encodedLength(compiled.program));
+    defer init.gpa.free(bytes);
+    _ = try compiled.encode(init.gpa, bytes);
+    var buffer: [4096]u8 = undefined;
+    var output = std.Io.File.stdout().writer(init.io, &buffer);
+    try output.interface.writeAll(bytes);
+    try output.interface.flush();
+}

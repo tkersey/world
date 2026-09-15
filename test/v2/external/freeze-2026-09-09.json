@@ -1,0 +1,278 @@
+{
+  "format": "world-v2-external-consumer-freeze/v1",
+  "frozenAt": "2026-09-09T03:18:19.869Z",
+  "kernelSha256": "c372950bfc184f04e54f0e9ce8339c931634c616a69c4e07e82803980745b17d",
+  "kernelBytes": 393407,
+  "abi": 2,
+  "profile": 1,
+  "memory": {
+    "initialPages": 20,
+    "maximumPages": 4096,
+    "shared": false,
+    "memory64": false
+  },
+  "sourceInputs": {
+    "boundary": {
+      "git": {
+        "head": "0363bed06489acacdea25d0c4e1fe8d29400fd2f",
+        "tree": "7f1e10d1a5d486e3946ec87e576c2bc8faba7b7e",
+        "dirty": false
+      },
+      "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
+      "files": [
+        {
+          "name": "build.zig",
+          "sha256": "e6d6ce531e273a3e5e9e214c336baf446a937ad8c521cfcbeb9825d17f0700c5"
+        },
+        {
+          "name": "build.zig.zon",
+          "sha256": "1ef4d5daad3ef2d7cd512d17744bfa15fe5bb6ff29ef212d80606f0c2d2058a3"
+        },
+        {
+          "name": "src/v2/data/admission.zig",
+          "sha256": "110751647d045c7cd9a69f7ac245572c72b7b2f444ec101f962b7898c507fba1"
+        },
+        {
+          "name": "src/v2/data/adversarial_tests.zig",
+          "sha256": "0a9329e2af0e3871d858c976c033727453e6c51484cb6a8e32526f9e96887a4b"
+        },
+        {
+          "name": "src/v2/data/aggregate_admission.zig",
+          "sha256": "09e748b517690e7071d800e097dbe55e3833c3c6f71e3b001542e4c319832cba"
+        },
+        {
+          "name": "src/v2/data/blob_admission.zig",
+          "sha256": "0e3ecaae6ebd3802fbce440dbf845eedc98e87b8dcdd376f292b0fa096e3c010"
+        },
+        {
+          "name": "src/v2/data/borrow_flow.zig",
+          "sha256": "1bdfd9968116e498a7040a617e65062b7c488e792bf3c6f1f2d047d6e322681e"
+        },
+        {
+          "name": "src/v2/data/canonical.zig",
+          "sha256": "f653d5addd61136ea4b8f07b89e25f8dbe8bd935ea56a38e9ffd0327b966f5d7"
+        },
+        {
+          "name": "src/v2/data/cleanup_contract.zig",
+          "sha256": "3973e6527ba2274bf34aca4e55aba9440468289d7b730aab830b0780a18b1b11"
+        },
+        {
+          "name": "src/v2/data/contracts.zig",
+          "sha256": "583ad030b0d573e4e87dce46bdf4b89746607937c863a32d08abfa103f87b407"
+        },
+        {
+          "name": "src/v2/data/diagnostic.zig",
+          "sha256": "b964f67460eaeea1d70ff21f02514c7725187a7102d8e2b0cfa6ee825714ea38"
+        },
+        {
+          "name": "src/v2/data/direct_clause.zig",
+          "sha256": "156f0bb99ae827b4524abb9c766c4fc67173b62c29da38475c52c7836fa7363f"
+        },
+        {
+          "name": "src/v2/data/effect_scope.zig",
+          "sha256": "ade4ada42795430684a8868c190b0d834e8d05b77cbf1405665e658fadc79903"
+        },
+        {
+          "name": "src/v2/data/graph.zig",
+          "sha256": "78dfec72d8930a6d894a99c6102971c260b47e1e58967afa1bf4714a488805c4"
+        },
+        {
+          "name": "src/v2/data/image.zig",
+          "sha256": "6bd2f7cde76a97acba032530e6969ecbd30dc7e24354bceb1e7ae4b5e2891241"
+        },
+        {
+          "name": "src/v2/data/program.zig",
+          "sha256": "bf9119f556b19301e7a5ccf9abec34ca6ee455cb1805e1a69a2d0c8f12f1a33a"
+        },
+        {
+          "name": "src/v2/data/protocol.zig",
+          "sha256": "abe338be726b0c460f807f5d3878b3d732add1167c61a669dc8bf55861b054b1"
+        },
+        {
+          "name": "src/v2/data/record.zig",
+          "sha256": "1273e4e0738a8bb8b1d5bc4affa7f9e7e0abe6bfea87af1f761efbd9ab24b802"
+        },
+        {
+          "name": "src/v2/data/region_admission.zig",
+          "sha256": "49cfa3a709d4c0a70e07efb1edef698c58dbd8378d85af62135f0333504d41b9"
+        },
+        {
+          "name": "src/v2/data/resource_admission.zig",
+          "sha256": "ea87c4d04e63c22eedef3d77d2fec1ee1b27df7bce858e52424bf30f13c20d39"
+        },
+        {
+          "name": "src/v2/data/root.zig",
+          "sha256": "08e8d39d586c90e696d85ecbe52d3da0447fbd23b8d351f5e490b0399d4febd4"
+        },
+        {
+          "name": "src/v2/data/scalar.zig",
+          "sha256": "06f8b94247e6561cbb67fd27b56dea27354580f3288e9ca04252d32fdcf7d4ce"
+        },
+        {
+          "name": "src/v2/data/schema.zig",
+          "sha256": "028c5a41be893d052a504aeab7bddbb7ffaaef603ab316d15328d25d34b142a1"
+        },
+        {
+          "name": "src/v2/data/snapshot.zig",
+          "sha256": "205c36e0e2d3b5217545a358f21769e45d4750b09714de745536c64681b63cfc"
+        },
+        {
+          "name": "src/v2/data/state_admission.zig",
+          "sha256": "fad2f2b8bd1a5571f99722fe4211c5d8c20efe5f4ba7d4622e5f80e95e2bcca2"
+        },
+        {
+          "name": "src/v2/data/state_effects.zig",
+          "sha256": "96f00d8bce4cb647af3cfed4c76dc3032de4b4e4242bc1a21ce05b46514f94e6"
+        },
+        {
+          "name": "src/v2/data/test_root.zig",
+          "sha256": "66f3fe5237b65f658e110d1d38bf6575d0128915ca85ebf8418bfa898de72c93"
+        },
+        {
+          "name": "src/v2/data/tests.zig",
+          "sha256": "b6d936256d3157583a3a89339c34d2fc17d1112eafff426a4724127e2b3e70f1"
+        },
+        {
+          "name": "src/v2/data/traits.zig",
+          "sha256": "adde7c6e5a0d2de865ece3c1cd82d3809ab7afc77e57021a7916c826b31b511a"
+        },
+        {
+          "name": "src/v2/data/use_admission.zig",
+          "sha256": "518dbd772de921febcc2373660e452fe9314542c008900ac070c17eb9b814dba"
+        },
+        {
+          "name": "src/v2/data/wire.zig",
+          "sha256": "2cad2f4762b4aaaa472db9fda6e8f038b5cc01c969a5ee32a9efa1067ebe8a28"
+        }
+      ],
+      "filesSha256": "0b3de4b28f8982e460a80db0ca963944a7f03687e822eb92c6187286e1ca2299"
+    },
+    "world": {
+      "git": {
+        "head": "c6c7e9e10aa4d8f0e21c22875c4044648476049c",
+        "tree": "0e191e3d412440dc37611171cd6679d5f1b1c440",
+        "dirty": true
+      },
+      "fileScope": "pure data admission and runtime kernel sources with their build descriptions",
+      "files": [
+        {
+          "name": "build.zig",
+          "sha256": "2609882ddf690c5b3dfd223d318e9996d2609d4fdca3b981e8fb73e99cc3dc5d"
+        },
+        {
+          "name": "build.zig.zon",
+          "sha256": "1d4b65f6810e9b153f12c0fb615f3131919c06c8685292994d27e944f92741ac"
+        },
+        {
+          "name": "src/interpreter_v2/abandon_tests.zig",
+          "sha256": "edd8bed5655f7b999a22c720da2eb2c1dc2e169d55ab1933646ba3f1c2a34f7d"
+        },
+        {
+          "name": "src/interpreter_v2/admission_tests.zig",
+          "sha256": "74c75733cf33b338d9c5669748cc737b70d4b399df47f2c07a0ff201471452e0"
+        },
+        {
+          "name": "src/interpreter_v2/arena.zig",
+          "sha256": "c0eed5f5a1427fe2bcc8ac817f863dd8fdb21ca518433921c2f404e8de410008"
+        },
+        {
+          "name": "src/interpreter_v2/blobs.zig",
+          "sha256": "7b1059cbfe6a81c75544966de3ab7852f52a2d870652acefd0b9379cc8383546"
+        },
+        {
+          "name": "src/interpreter_v2/bounded_tests.zig",
+          "sha256": "83d04ed7ff06f4e811981b905b79b68bcc6ec701d1f120f0018700d78f154bde"
+        },
+        {
+          "name": "src/interpreter_v2/capture_state_tests.zig",
+          "sha256": "b99b8581889942fd1569e2f23ac53b094cae5b80038acb7aa5825e16cc7394b9"
+        },
+        {
+          "name": "src/interpreter_v2/choice_tests.zig",
+          "sha256": "231ecdcf4e4c00e659b1f5b59f03952a8af59c8bb6136b7b5f16905ed549b342"
+        },
+        {
+          "name": "src/interpreter_v2/cleanup_tests.zig",
+          "sha256": "24be4779da38c875e570777417dd21891f33665f3033c65bf0c10c7b14547541"
+        },
+        {
+          "name": "src/interpreter_v2/clone.zig",
+          "sha256": "56dcec26d21f134741d998aa4448a6f01b39a5a905d5f576fecda200168169a6"
+        },
+        {
+          "name": "src/interpreter_v2/compact_collection_tests.zig",
+          "sha256": "51b42c8deb0a5c6426b737ed326658b8c0da6d14c1a86754707d4f6c0ad30b1f"
+        },
+        {
+          "name": "src/interpreter_v2/compact_length_tests.zig",
+          "sha256": "c69b5af7c1875119b1e48cba50bf0a1a1f7c2168a5caff488c97da4dc050e118"
+        },
+        {
+          "name": "src/interpreter_v2/economy_phases.zig",
+          "sha256": "ab9d8fa20320476037c9d604a95febe5fd58bfdd7ae3c5dd34d107eaebc0cdb1"
+        },
+        {
+          "name": "src/interpreter_v2/economy_tests.zig",
+          "sha256": "5bdf3cc1003b8465ade46d2370563f87266b0a81829cc50c368cbdcb51b11b85"
+        },
+        {
+          "name": "src/interpreter_v2/emit_rejections.zig",
+          "sha256": "ac85890ef0afd2a869bc75d2fc73218e9cd2eadb0007f45f350cb2f67f4a8d8e"
+        },
+        {
+          "name": "src/interpreter_v2/handler_tests.zig",
+          "sha256": "2e2843f02dd0e72667ee9c817cf0483234bb758c3872ce039aa29aa576df256b"
+        },
+        {
+          "name": "src/interpreter_v2/machine.zig",
+          "sha256": "3cda5f47754af7a818e943a90b53baad9dfa48e606563d48f1dce8a4ebeb7a38"
+        },
+        {
+          "name": "src/interpreter_v2/process.zig",
+          "sha256": "b2dc53e9c6ff02956f10be802814ea2456503f73fccee2b2cdb8fc0c5ba5f945"
+        },
+        {
+          "name": "src/interpreter_v2/reentrant_tests.zig",
+          "sha256": "3b5fc9d0d022e1be5524807b9a346158fc5f47173447815bdc95da1c533e19f5"
+        },
+        {
+          "name": "src/interpreter_v2/region_tests.zig",
+          "sha256": "569d9908ea003fd6cc18887f51120ab28b285082c58131bfa90023e15f7e15c9"
+        },
+        {
+          "name": "src/interpreter_v2/return_path_tests.zig",
+          "sha256": "1f8f511852f41a616fc22f7a52dcc56248cefa3dbc43924dec64731b7ca6721d"
+        },
+        {
+          "name": "src/interpreter_v2/shallow_tests.zig",
+          "sha256": "9541f481784f0826c02fde85b9c38f888a69efd990b8da184d02f525b46236af"
+        },
+        {
+          "name": "src/interpreter_v2/store.zig",
+          "sha256": "cdbec6b6965b2b7b61cd7cbd509639ad504cb74f12d1463f04ddd2290b87e11f"
+        },
+        {
+          "name": "src/interpreter_v2/tests.zig",
+          "sha256": "93f6421b05c3a7d81cefbb7801f6f4a7e8e2452602d576e85afd805e6b19a48e"
+        },
+        {
+          "name": "src/interpreter_v2/unwind.zig",
+          "sha256": "d7773ab1086773a7edb17bac01732bcabb66f296b6c5683f7a28ec240d5e3d8f"
+        },
+        {
+          "name": "src/interpreter_v2/values.zig",
+          "sha256": "edf1f5bc23d7988a19dc4d62a46b895122800e968ea78289ee33c4447edbea8b"
+        },
+        {
+          "name": "src/kernel_v2/main.zig",
+          "sha256": "d456a19eada2a0494f03a3afb08716ca72cda13cb71eed1fc8d30b0163aecdc9"
+        },
+        {
+          "name": "src/root.zig",
+          "sha256": "0ea81f7c02bfe17874a730c42ab42afcfdaea1e9832371a9f80dc004bec4d07e"
+        }
+      ],
+      "filesSha256": "32bfc8018eadbfc789c84a9a6c05993a72e0d14da7ba7e4d659f2b96c99d58b6"
+    }
+  }
+}

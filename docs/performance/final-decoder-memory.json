@@ -1,0 +1,1506 @@
+{
+  "boundaryHeads": [
+    "55e8feedcae0b9ee1492da11f9fbd4a1ac7ff328",
+    "b599e664c57ca455395038bd28b703837f870030"
+  ],
+  "method": "unchanged public decode through 1 MiB Workspace; five warmups and 21 samples; exact re-encoding and zero live bytes after owner deinit; capacity errors retained; times are diagnostic, not paired latency claims",
+  "cases": [
+    {
+      "name": "economy-1",
+      "reference": {
+        "image_bytes": 271,
+        "image_sha256": "f340e9b6ff985dc371771e467e084ff968aaeac0e7b3baaaf013632b1e5c010c",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 4084,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4042,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 3916,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4083,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4125,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 3958,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 3959,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 3875,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 4041,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 3917,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          },
+          {
+            "decode_ns": 3917,
+            "retained": 16856,
+            "peak": 16856,
+            "demand": 17048
+          }
+        ]
+      },
+      "candidate": {
+        "image_bytes": 271,
+        "image_sha256": "f340e9b6ff985dc371771e467e084ff968aaeac0e7b3baaaf013632b1e5c010c",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 4042,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 3959,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 3959,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 3917,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4042,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4041,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4083,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 3916,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4125,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 3916,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4083,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 3958,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 3958,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 3958,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4000,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 4084,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          },
+          {
+            "decode_ns": 3875,
+            "retained": 6178,
+            "peak": 9042,
+            "demand": 9378
+          }
+        ]
+      }
+    },
+    {
+      "name": "economy-8",
+      "reference": {
+        "image_bytes": 652,
+        "image_sha256": "1b4503a5e75c71cdf8102bd48a39ce9a8b260acb06a753bdd80d0ea4472d6a15",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 7917,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7958,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7791,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7833,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7833,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 18334,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7958,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7750,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7791,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7750,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7750,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7750,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7708,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7875,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7792,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7916,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7792,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7709,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7833,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 7875,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          },
+          {
+            "decode_ns": 8750,
+            "retained": 24692,
+            "peak": 24692,
+            "demand": 24884
+          }
+        ]
+      },
+      "candidate": {
+        "image_bytes": 652,
+        "image_sha256": "1b4503a5e75c71cdf8102bd48a39ce9a8b260acb06a753bdd80d0ea4472d6a15",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 7833,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7875,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7792,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7875,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7834,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7834,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7833,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7917,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7792,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7833,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7750,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7792,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7791,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7875,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 8000,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7917,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7875,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7708,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7791,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7708,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          },
+          {
+            "decode_ns": 7708,
+            "retained": 10322,
+            "peak": 16590,
+            "demand": 16974
+          }
+        ]
+      }
+    },
+    {
+      "name": "economy-64",
+      "reference": {
+        "image_bytes": 8971,
+        "image_sha256": "b30dfa7ec3091ff54b9b9480bdb9ae9b4e813c77fa1d8fcab37ca901819e5c12",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 68833,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 68167,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 68083,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67583,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67417,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67709,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67459,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67500,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67792,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67833,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67792,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67708,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67458,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67375,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67709,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67250,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 71208,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67500,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67334,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67708,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          },
+          {
+            "decode_ns": 67292,
+            "retained": 210002,
+            "peak": 210002,
+            "demand": 210194
+          }
+        ]
+      },
+      "candidate": {
+        "image_bytes": 8971,
+        "image_sha256": "b30dfa7ec3091ff54b9b9480bdb9ae9b4e813c77fa1d8fcab37ca901819e5c12",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 68333,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 68333,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67959,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67875,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67708,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67583,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67375,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67458,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67208,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67417,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67458,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67334,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67250,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67417,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67125,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67791,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67542,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67417,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67375,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67500,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          },
+          {
+            "decode_ns": 67375,
+            "retained": 101024,
+            "peak": 140036,
+            "demand": 140612
+          }
+        ]
+      }
+    },
+    {
+      "name": "source-state-local",
+      "reference": {
+        "image_bytes": 761,
+        "image_sha256": "7fefd347007d87ec39077c2bee9a36045a2e5a8cf95002e1287725c7d8dd2219",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 14708,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 14792,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 14875,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 18833,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 18542,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 19083,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 15417,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 15292,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 15416,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 15333,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 15459,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 15375,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 17000,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 19584,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 19084,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 15042,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 14667,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 14750,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 14709,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 14750,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          },
+          {
+            "decode_ns": 14875,
+            "retained": 48998,
+            "peak": 48998,
+            "demand": 49190
+          }
+        ]
+      },
+      "candidate": {
+        "image_bytes": 761,
+        "image_sha256": "7fefd347007d87ec39077c2bee9a36045a2e5a8cf95002e1287725c7d8dd2219",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 15125,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 15125,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 15000,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 15084,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 15000,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14958,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 15000,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 15042,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14792,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14834,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14792,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14625,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14541,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14625,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14583,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14583,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14625,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14584,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14625,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14584,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          },
+          {
+            "decode_ns": 14625,
+            "retained": 17738,
+            "peak": 25906,
+            "demand": 26290
+          }
+        ]
+      }
+    },
+    {
+      "name": "economy-128",
+      "reference": {
+        "exitCode": 1,
+        "error": "error: OutOfMemory",
+        "workspace_bytes": 1048576
+      },
+      "candidate": {
+        "image_bytes": 30141,
+        "image_sha256": "77aca7b6b90cdb7719b1fc1743d6158623679c356e2d45e5ca01b7741ce2e77a",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 195167,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 195042,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194750,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194167,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194875,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194791,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194459,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194583,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194792,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194458,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194708,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194750,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194167,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194042,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194500,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 195916,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194584,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194500,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194333,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194500,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          },
+          {
+            "decode_ns": 194292,
+            "retained": 511086,
+            "peak": 660850,
+            "demand": 661618
+          }
+        ]
+      }
+    },
+    {
+      "name": "large-constant",
+      "reference": {
+        "image_bytes": 65652,
+        "image_sha256": "48fc05cf1faab064465d691ca50737e9bdc78052e3651042b521a3424ae5f96e",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 5291,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5375,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5333,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5375,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5541,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5250,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5292,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5250,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5291,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5208,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5292,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5209,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5500,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5208,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5417,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5209,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5417,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5167,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5375,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5250,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          },
+          {
+            "decode_ns": 5375,
+            "retained": 98540,
+            "peak": 98540,
+            "demand": 98588
+          }
+        ]
+      },
+      "candidate": {
+        "image_bytes": 65652,
+        "image_sha256": "48fc05cf1faab064465d691ca50737e9bdc78052e3651042b521a3424ae5f96e",
+        "workspace_bytes": 1048576,
+        "warmups": 5,
+        "rows": [
+          {
+            "decode_ns": 5209,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5333,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5500,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5209,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5334,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5333,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5375,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5375,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5500,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5250,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5333,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5208,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5375,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5250,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5417,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5333,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5208,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5166,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5375,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5334,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          },
+          {
+            "decode_ns": 5250,
+            "retained": 98540,
+            "peak": 99924,
+            "demand": 100116
+          }
+        ]
+      }
+    }
+  ]
+}

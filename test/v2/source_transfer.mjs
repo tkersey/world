@@ -27,16 +27,75 @@ async function compare(mode, input) {
     throw error;
   }
   assert.equal(native.status, 0, native.stderr?.toString());
-  assert.deepEqual(result.bytes, new Uint8Array(native.stdout));
+  const nativeBytes = new Uint8Array(native.stdout);
+  assert.deepEqual(result.bytes, nativeBytes);
+  const producers = [result, { ...decodeOutcome(nativeBytes), bytes: nativeBytes }];
   if (peer) {
     const independent = await peer.invoke(encoded);
     assert.deepEqual(independent, result.bytes);
-    // Alternate the actual producer of the next detached State bytes.
-    if (observations++ % 2 === 0) return { ...decodeOutcome(independent), bytes: independent };
+    producers.push({ ...decodeOutcome(independent), bytes: independent });
   }
-  return result;
+  // Cross the actual native/JS/Wasmtime producers, including cross-version runs.
+  return producers[observations++ % producers.length];
 }
 try {
+  // These regression vectors postdate the pinned compiler's fixture bundle.
+  // World carries their source-derived expectations rather than requiring an
+  // unpinned compiler checkout (whose predecessor oracle had a known defect).
+  const cleanupRoot = join(import.meta.dirname, "cleanup-fixtures");
+  const cleanup = JSON.parse(await readFile(join(cleanupRoot, "expectations.json"), "utf8"));
+  const oracleSha256 = createHash("sha256").update(await readFile(oraclePath)).digest("hex");
+  assert.deepEqual(cleanup.entries.map(entry => entry.name), [
+    "cleanup-disposal", "cleanup-disposal-running", "cleanup-disposal-failure", "cleanup-disposal-owned",
+  ]);
+  for (const { name, sourceSha256, imageSha256, expected, legacyExpected } of cleanup.entries) {
+    const source = await readFile(join(cleanupRoot, `source-${name}.json`));
+    const image = new Uint8Array(await readFile(join(cleanupRoot, `source-${name}.bpi2`)));
+    assert.equal(createHash("sha256").update(source).digest("hex"), sourceSha256);
+    assert.equal(createHash("sha256").update(image).digest("hex"), imageSha256);
+    // Preserve execution of the supplied oracle, including its exact known
+    // predecessor result. Kernel expectations always use the corrected source
+    // semantics; recognizing the old oracle never blesses its missing finalizer.
+    assert.deepEqual(execute(JSON.parse(source), []),
+      oracleSha256 === cleanup.provenance.legacyOracleSha256 ? legacyExpected : expected);
+    const checkTerminal = (result) => {
+      assert.equal(result.kind, expected.kind, name);
+      assert.deepEqual(Array.from(result.value), expected.value, name);
+      if (result.kind === "Failed") assert.deepEqual(result.cleanupFailures, [], name);
+    };
+    const states = [];
+    for (const mode of ["run", "advance"]) {
+      let result = await compare(mode, { image, initialArgs: new Uint8Array() });
+      let yielded = 0, count = 0;
+      while (result.kind === "Progressed" || result.kind === "Yielded") {
+        assert.ok(count++ < 1000, `${name}: inconclusive test transition limit`);
+        if (mode === "advance") states.push(result.state);
+        if (result.kind === "Yielded") {
+          yielded++;
+          assert.equal(name, "cleanup-disposal-failure");
+          let cancelled = await compare("advance", { image, state: result.state, cancel: "stop" });
+          if (cancelled.kind === "Progressed" || cancelled.kind === "Yielded")
+            cancelled = await compare("run", { image, state: cancelled.state, cancel: "later" });
+          assert.equal(cancelled.kind, "Failed");
+          assert.deepEqual(Array.from(cancelled.value), []);
+          assert.deepEqual(cancelled.cleanupFailures, []);
+          assert.equal(cancelled.cancellation, "stop");
+        }
+        result = await compare(mode, { image, state: result.state });
+      }
+      assert.equal(yielded, name === "cleanup-disposal-failure" ? 1 : 0);
+      checkTerminal(result);
+    }
+    if (name === "cleanup-disposal" || name === "cleanup-disposal-owned") {
+      assert.ok(states.length > 20, "disposal cancellation frontiers missing");
+      for (const state of states) {
+        const cancelled = await compare("run", { image, state, cancel: "stop" });
+        assert.equal(cancelled.kind, "Cancelled");
+        assert.equal(cancelled.reason, "stop");
+        assert.deepEqual(cancelled.cleanupFailures, []);
+      }
+    }
+  }
   {
     const source = JSON.parse(await readFile(join(fixtures, "source-borrow-operands.json"), "utf8"));
     const image = new Uint8Array(await readFile(join(fixtures, "source-borrow-operands.bpi2")));
@@ -266,6 +325,6 @@ try {
       assert.deepEqual(trace, oracle.trace);
     }
   }
-  console.log("source oracle/native/WASM agreement and fresh transfers passed for thirty-seven compiled source examples and cancellation scenarios");
+  console.log("source oracle/native/WASM agreement and fresh transfers passed for forty-one compiled source examples and cancellation scenarios");
   if (peer) console.log(`Wasmtime ${peer.identity.wasmtime} matched all source checkpoints; kernel ${peer.identity.kernel_sha256}`);
 } finally { if (peer) await peer.close(); }

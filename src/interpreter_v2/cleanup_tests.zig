@@ -129,6 +129,20 @@ test "body failure wins over later cancellation and both failing finalizers run"
     defer cleanup.deinit();
     var cancelled = try process.run(allocator, .{ .program = .{ .records = program() }, .instance = .{ .snapshot = cleanup.record.requested.state }, .control = .{ .cancel = .{ .text = "stop" } } });
     defer cancelled.deinit();
+    const Attempt = struct {
+        fn run(a: std.mem.Allocator, parked: process.Outcome) !void {
+            const before = data.wire.digest(parked.record.requested.state);
+            defer std.debug.assert(std.mem.eql(u8, &before, &data.wire.digest(parked.record.requested.state)));
+            var next = try continueWith(a, parked, 1);
+            defer next.deinit();
+            var done = try continueWith(a, next, 1);
+            defer done.deinit();
+            try std.testing.expectEqualSlices(u8, &.{9}, done.record.failed.value);
+            try std.testing.expectEqualSlices(u8, &.{ 2, 1, 11, 1, 22 }, done.record.failed.cleanup_failures);
+            try std.testing.expectEqualStrings("stop", done.record.failed.cancellation.?.text);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(allocator, Attempt.run, .{cancelled});
     var outer = try continueWith(allocator, cancelled, 1);
     defer outer.deinit();
     const info = try payload(outer);

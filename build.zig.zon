@@ -1,6 +1,6 @@
 .{
     .name = .world,
-    .version = "5.0.0",
+    .version = "5.0.1",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x3a771143074dc2bd,
     .dependencies = .{

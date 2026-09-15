@@ -4,5 +4,5 @@
     .version = "0.0.0",
     .minimum_zig_version = "0.16.0",
     .dependencies = .{ .boundary = .{ .path = "../boundary" } },
-    .paths = .{ "build.zig", "build.zig.zon", "main.zig", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig", "sum_squares.zig", "byte_length.zig", "README.md" },
 }

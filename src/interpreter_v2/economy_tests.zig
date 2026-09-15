@@ -98,3 +98,70 @@ test "collection and canonicalization traverse each reachable node and edge once
     try std.testing.expectEqual(statistics.traced_edges, measured.edges);
     try std.testing.expectEqual(@as(u64, 2), measured.remapped_nodes);
 }
+
+test "collection reuses scratch and clears marks when cyclic roots disappear" {
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var store: Store = .{ .allocator = failing.allocator() };
+    defer store.deinit();
+    const root = try store.add(.{ .environment = .{ .values = &.{}, .tail = null } });
+    try store.replace(root, .{ .environment = .{ .values = &.{value(root)}, .tail = root } });
+    try store.collect(.{ .current = root });
+    failing.fail_index = failing.alloc_index;
+    try store.collect(.{ .current = root });
+    try store.collect(.{});
+    try std.testing.expect(!failing.has_induced_failure);
+    try std.testing.expectError(error.InvalidReference, store.get(root));
+    const reused = try store.add(.{ .environment = .{ .values = &.{}, .tail = null } });
+    try std.testing.expectEqual(root.id, reused.id);
+    try store.collect(.{ .current = reused });
+    _ = try store.get(reused);
+}
+
+fn ownedInsertionCase(a: std.mem.Allocator) !void {
+    var store: Store = .{ .allocator = a };
+    defer store.deinit();
+    const ref = blk: {
+        const values = try a.alloc(g.Value, 2);
+        errdefer a.free(values);
+        @memset(values, .{ .schema = 0, .body = .{ .scalar = @splat(7) } });
+        const ref = try store.addOwned(.{ .control = .{ .block = 0, .arguments = values } });
+        try std.testing.expectEqual(values.ptr, (try store.get(ref)).control.arguments.ptr);
+        break :blk ref;
+    };
+    // Borrowed replacement remains safe even when it aliases the previous node.
+    const previous = (try store.get(ref)).control;
+    try store.replace(ref, .{ .control = .{ .block = 0, .arguments = previous.arguments[1..] } });
+    try std.testing.expectEqual(@as(usize, 1), (try store.get(ref)).control.arguments.len);
+    try store.collect(.{ .current = ref });
+    try store.collect(.{});
+}
+
+test "owned insertion transfers buffers once and borrowed replacement tolerates aliases" {
+    try std.testing.checkAllAllocationFailures(allocator, ownedInsertionCase, .{});
+}
+
+fn ownedExitReplacementCase(a: std.mem.Allocator) !void {
+    const storage = @import("store.zig");
+    var store: Store = .{ .allocator = a };
+    defer store.deinit();
+    const scalar: g.Value = .{ .schema = 0, .body = .{ .scalar = @splat(1) } };
+    const ref = try store.add(.{ .exit = .{
+        .reason = .{ .failure = scalar },
+        .cancellation = .{ .text = "first cancellation" },
+        .cleanup_failures = &.{scalar},
+        .discarded = &.{scalar},
+    } });
+    {
+        const replacement = try storage.duplicate(g.Node, a, try store.get(ref));
+        errdefer storage.release(g.Node, a, replacement);
+        try store.replaceOwned(ref, replacement);
+    }
+    const result = (try store.get(ref)).exit;
+    try std.testing.expectEqualStrings("first cancellation", result.cancellation.?.text);
+    try std.testing.expectEqualSlices(g.Value, &.{scalar}, result.cleanup_failures);
+    try std.testing.expectEqualSlices(g.Value, &.{scalar}, result.discarded);
+}
+
+test "owned exit replacement retains nested cancellation bytes and both field buffers" {
+    try std.testing.checkAllAllocationFailures(allocator, ownedExitReplacementCase, .{});
+}

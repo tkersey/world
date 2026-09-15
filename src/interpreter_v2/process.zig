@@ -103,16 +103,11 @@ fn execute(allocator: std.mem.Allocator, invocation: Invocation, mode: data.prot
                 if (machine.status == .parked) return machine.finish();
             } else if (state.status == .parked) {
                 if (invocation.control.continue_value) |bytes| {
-                    var parked = try machine.finish();
-                    defer parked.deinit();
-                    const request = try data.protocol.decode(data.protocol.Request, allocator, parked.record.requested.request);
-                    const result = try data.protocol.decode(data.protocol.Result, allocator, bytes);
-                    try data.protocol.validateResult(allocator, request, result);
-                    const pending = (try machine.store.get(machine.roots.pending.?)).pending;
-                    const resumed = try machine.store.literal(program, .{ .schema = program.effects[@intCast(pending.effect)].result, .bytes = result.value });
-                    machine.roots.pending = null;
-                    machine.status = .active;
-                    try machine.resumeContinuation(pending.continuation, resumed);
+                    const snapshot = switch (invocation.instance) {
+                        .snapshot => |input| input,
+                        else => null,
+                    };
+                    try resumePending(&machine, state, snapshot, bytes);
                 } else return machine.finish();
             } else {
                 if (invocation.control.continue_value != null) return error.InvalidControl;
@@ -127,6 +122,34 @@ fn execute(allocator: std.mem.Allocator, invocation: Invocation, mode: data.prot
         try machine.store.collect(machine.roots);
         if ((machine.status != .active and machine.status != .unwinding) or mode == .advance) return machine.finish();
     }
+}
+
+// `state` is the invocation-local canonical State already admitted above.
+// For snapshot input, decodeGraph compared its complete canonical encoding to
+// the input bytes. Store.import has not changed the logical state or authority.
+fn resumePending(machine: *Machine, state: g.State, snapshot: ?[]const u8, bytes: []const u8) Error!void {
+    const allocator = machine.allocator;
+    var temporary = std.heap.ArenaAllocator.init(allocator);
+    defer temporary.deinit();
+    const scratch = temporary.allocator();
+    var emission: ?data.snapshot.Emission = null;
+    defer if (emission) |*owned| owned.normalized.deinit();
+    const canonical_bytes = snapshot orelse blk: {
+        const measurement = if (machine.statistics) |s| &s.snapshot else null;
+        emission = try data.snapshot.emit(allocator, state, scratch, measurement);
+        break :blk emission.?.bytes;
+    };
+    const request = try machine.pendingRequest(scratch, state, canonical_bytes);
+    const result = try data.protocol.decode(data.protocol.Result, scratch, bytes);
+    try data.protocol.validateResult(allocator, request, result);
+    const pending = (try machine.store.get(machine.roots.pending.?)).pending;
+    const resumed = try machine.store.literal(machine.program, .{
+        .schema = machine.program.effects[@intCast(pending.effect)].result,
+        .bytes = result.value,
+    });
+    machine.roots.pending = null;
+    machine.status = .active;
+    try machine.resumeContinuation(pending.continuation, resumed);
 }
 
 test {

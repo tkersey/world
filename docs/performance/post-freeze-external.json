@@ -1,0 +1,342 @@
+{
+  "format": "world-v2-external-consumer/v1",
+  "freeze": {
+    "format": "world-v2-external-consumer-freeze/v1",
+    "frozenAt": "2026-09-14T18:11:32.068Z",
+    "kernelSha256": "9545076f16482ccb346ab7792ae87f4d9a262c3fe08b4086b3c376ed2b218c06",
+    "kernelBytes": 393588,
+    "abi": 2,
+    "profile": 1,
+    "memory": {
+      "initialPages": 20,
+      "maximumPages": 4096,
+      "shared": false,
+      "memory64": false
+    },
+    "sourceInputs": {
+      "boundary": {
+        "git": {
+          "head": "c914de195a6003076629e650ba0b6496d5fcdb75",
+          "tree": "82a1b8cca3f10929f15de940708d5cb212654739",
+          "dirty": true
+        },
+        "fileScope": "data/runtime and build inputs",
+        "files": [
+          {
+            "name": "build.zig",
+            "sha256": "544b11276fdcce50dd7fb66c4fc64644451375ed6a6c252123e6d29badfae39a"
+          },
+          {
+            "name": "build.zig.zon",
+            "sha256": "c00c76bd70bd2ce1758ea8ad3b5fd151ed930edc936fdd9709d7c14bcb356a4d"
+          },
+          {
+            "name": "src/v2/data/admission.zig",
+            "sha256": "110751647d045c7cd9a69f7ac245572c72b7b2f444ec101f962b7898c507fba1"
+          },
+          {
+            "name": "src/v2/data/adversarial_tests.zig",
+            "sha256": "0a9329e2af0e3871d858c976c033727453e6c51484cb6a8e32526f9e96887a4b"
+          },
+          {
+            "name": "src/v2/data/aggregate_admission.zig",
+            "sha256": "09e748b517690e7071d800e097dbe55e3833c3c6f71e3b001542e4c319832cba"
+          },
+          {
+            "name": "src/v2/data/blob_admission.zig",
+            "sha256": "0e3ecaae6ebd3802fbce440dbf845eedc98e87b8dcdd376f292b0fa096e3c010"
+          },
+          {
+            "name": "src/v2/data/borrow_flow.zig",
+            "sha256": "1bdfd9968116e498a7040a617e65062b7c488e792bf3c6f1f2d047d6e322681e"
+          },
+          {
+            "name": "src/v2/data/canonical.zig",
+            "sha256": "feb4c9b84d87bbc126d9624bb82c2c5f60fcf1188b4d5222113ec27d948262ca"
+          },
+          {
+            "name": "src/v2/data/cleanup_contract.zig",
+            "sha256": "3973e6527ba2274bf34aca4e55aba9440468289d7b730aab830b0780a18b1b11"
+          },
+          {
+            "name": "src/v2/data/contracts.zig",
+            "sha256": "583ad030b0d573e4e87dce46bdf4b89746607937c863a32d08abfa103f87b407"
+          },
+          {
+            "name": "src/v2/data/diagnostic.zig",
+            "sha256": "b964f67460eaeea1d70ff21f02514c7725187a7102d8e2b0cfa6ee825714ea38"
+          },
+          {
+            "name": "src/v2/data/direct_clause.zig",
+            "sha256": "156f0bb99ae827b4524abb9c766c4fc67173b62c29da38475c52c7836fa7363f"
+          },
+          {
+            "name": "src/v2/data/effect_scope.zig",
+            "sha256": "ade4ada42795430684a8868c190b0d834e8d05b77cbf1405665e658fadc79903"
+          },
+          {
+            "name": "src/v2/data/graph.zig",
+            "sha256": "78dfec72d8930a6d894a99c6102971c260b47e1e58967afa1bf4714a488805c4"
+          },
+          {
+            "name": "src/v2/data/image.zig",
+            "sha256": "084c3bf6696cece23bc2ea7bffbc1a720de22a9535e7aa58e39b2efe00b27a83"
+          },
+          {
+            "name": "src/v2/data/program.zig",
+            "sha256": "bf9119f556b19301e7a5ccf9abec34ca6ee455cb1805e1a69a2d0c8f12f1a33a"
+          },
+          {
+            "name": "src/v2/data/protocol.zig",
+            "sha256": "abe338be726b0c460f807f5d3878b3d732add1167c61a669dc8bf55861b054b1"
+          },
+          {
+            "name": "src/v2/data/record.zig",
+            "sha256": "1273e4e0738a8bb8b1d5bc4affa7f9e7e0abe6bfea87af1f761efbd9ab24b802"
+          },
+          {
+            "name": "src/v2/data/region_admission.zig",
+            "sha256": "49cfa3a709d4c0a70e07efb1edef698c58dbd8378d85af62135f0333504d41b9"
+          },
+          {
+            "name": "src/v2/data/resource_admission.zig",
+            "sha256": "ea87c4d04e63c22eedef3d77d2fec1ee1b27df7bce858e52424bf30f13c20d39"
+          },
+          {
+            "name": "src/v2/data/root.zig",
+            "sha256": "08e8d39d586c90e696d85ecbe52d3da0447fbd23b8d351f5e490b0399d4febd4"
+          },
+          {
+            "name": "src/v2/data/scalar.zig",
+            "sha256": "06f8b94247e6561cbb67fd27b56dea27354580f3288e9ca04252d32fdcf7d4ce"
+          },
+          {
+            "name": "src/v2/data/schema.zig",
+            "sha256": "028c5a41be893d052a504aeab7bddbb7ffaaef603ab316d15328d25d34b142a1"
+          },
+          {
+            "name": "src/v2/data/snapshot.zig",
+            "sha256": "08b00f7a186d8d7d66d5f2027c3b09841782321bcbdd3a3a964167115bbc6c9e"
+          },
+          {
+            "name": "src/v2/data/state_admission.zig",
+            "sha256": "fad2f2b8bd1a5571f99722fe4211c5d8c20efe5f4ba7d4622e5f80e95e2bcca2"
+          },
+          {
+            "name": "src/v2/data/state_effects.zig",
+            "sha256": "96f00d8bce4cb647af3cfed4c76dc3032de4b4e4242bc1a21ce05b46514f94e6"
+          },
+          {
+            "name": "src/v2/data/test_root.zig",
+            "sha256": "66f3fe5237b65f658e110d1d38bf6575d0128915ca85ebf8418bfa898de72c93"
+          },
+          {
+            "name": "src/v2/data/tests.zig",
+            "sha256": "bdc2d23e841d45201d99f0d8ac6b806aec70f0b46885de0b6a09a968e85e07d0"
+          },
+          {
+            "name": "src/v2/data/traits.zig",
+            "sha256": "adde7c6e5a0d2de865ece3c1cd82d3809ab7afc77e57021a7916c826b31b511a"
+          },
+          {
+            "name": "src/v2/data/use_admission.zig",
+            "sha256": "518dbd772de921febcc2373660e452fe9314542c008900ac070c17eb9b814dba"
+          },
+          {
+            "name": "src/v2/data/wire.zig",
+            "sha256": "2cad2f4762b4aaaa472db9fda6e8f038b5cc01c969a5ee32a9efa1067ebe8a28"
+          }
+        ],
+        "filesSha256": "17481bc866acc0aec9039766644674c248d6fd0d51d4451ebac8f4a458cc2850"
+      },
+      "world": {
+        "git": {
+          "head": "2a1599afb4166f59bbc067c4e4d6129d5c844868",
+          "tree": "b77d2f730c1f3a5fdf690ad9848bab6291f3c986",
+          "dirty": true
+        },
+        "fileScope": "data/runtime and build inputs",
+        "files": [
+          {
+            "name": "build.zig",
+            "sha256": "d9d9bd5a45e02c3078e3ff85468a591a3efdcc2d7190987366d38cb09f267b5e"
+          },
+          {
+            "name": "build.zig.zon",
+            "sha256": "57fd42fc3fbeb443d175fdd1e60fe4179eb1d98d194deb8bf89cd265960817f8"
+          },
+          {
+            "name": "src/interpreter_v2/abandon_tests.zig",
+            "sha256": "edd8bed5655f7b999a22c720da2eb2c1dc2e169d55ab1933646ba3f1c2a34f7d"
+          },
+          {
+            "name": "src/interpreter_v2/admission_tests.zig",
+            "sha256": "74c75733cf33b338d9c5669748cc737b70d4b399df47f2c07a0ff201471452e0"
+          },
+          {
+            "name": "src/interpreter_v2/arena.zig",
+            "sha256": "c0eed5f5a1427fe2bcc8ac817f863dd8fdb21ca518433921c2f404e8de410008"
+          },
+          {
+            "name": "src/interpreter_v2/blobs.zig",
+            "sha256": "7b1059cbfe6a81c75544966de3ab7852f52a2d870652acefd0b9379cc8383546"
+          },
+          {
+            "name": "src/interpreter_v2/bounded_tests.zig",
+            "sha256": "83d04ed7ff06f4e811981b905b79b68bcc6ec701d1f120f0018700d78f154bde"
+          },
+          {
+            "name": "src/interpreter_v2/capture_state_tests.zig",
+            "sha256": "b99b8581889942fd1569e2f23ac53b094cae5b80038acb7aa5825e16cc7394b9"
+          },
+          {
+            "name": "src/interpreter_v2/choice_tests.zig",
+            "sha256": "231ecdcf4e4c00e659b1f5b59f03952a8af59c8bb6136b7b5f16905ed549b342"
+          },
+          {
+            "name": "src/interpreter_v2/cleanup_tests.zig",
+            "sha256": "c6dbff1adef72f478a3fce5fea083c62382208ccd2da82ea1947cb865cc22363"
+          },
+          {
+            "name": "src/interpreter_v2/clone.zig",
+            "sha256": "56dcec26d21f134741d998aa4448a6f01b39a5a905d5f576fecda200168169a6"
+          },
+          {
+            "name": "src/interpreter_v2/compact_collection_tests.zig",
+            "sha256": "51b42c8deb0a5c6426b737ed326658b8c0da6d14c1a86754707d4f6c0ad30b1f"
+          },
+          {
+            "name": "src/interpreter_v2/compact_length_tests.zig",
+            "sha256": "c69b5af7c1875119b1e48cba50bf0a1a1f7c2168a5caff488c97da4dc050e118"
+          },
+          {
+            "name": "src/interpreter_v2/economy_phases.zig",
+            "sha256": "ab9d8fa20320476037c9d604a95febe5fd58bfdd7ae3c5dd34d107eaebc0cdb1"
+          },
+          {
+            "name": "src/interpreter_v2/economy_tests.zig",
+            "sha256": "d43d2e9ae38e81afba3e02421898a80ece58f52f881d701d87a5f569c6edcac1"
+          },
+          {
+            "name": "src/interpreter_v2/emit_rejections.zig",
+            "sha256": "ac85890ef0afd2a869bc75d2fc73218e9cd2eadb0007f45f350cb2f67f4a8d8e"
+          },
+          {
+            "name": "src/interpreter_v2/handler_tests.zig",
+            "sha256": "2e2843f02dd0e72667ee9c817cf0483234bb758c3872ce039aa29aa576df256b"
+          },
+          {
+            "name": "src/interpreter_v2/machine.zig",
+            "sha256": "f4b57d5196c83b20128727b7e0ca072672b730ad463d60e50be1ff11462797dc"
+          },
+          {
+            "name": "src/interpreter_v2/process.zig",
+            "sha256": "35ca2ee3642b01ebc03485324da6e6b92cf3d608fcaa318b72037c177a3fbea5"
+          },
+          {
+            "name": "src/interpreter_v2/reentrant_tests.zig",
+            "sha256": "3b5fc9d0d022e1be5524807b9a346158fc5f47173447815bdc95da1c533e19f5"
+          },
+          {
+            "name": "src/interpreter_v2/region_tests.zig",
+            "sha256": "569d9908ea003fd6cc18887f51120ab28b285082c58131bfa90023e15f7e15c9"
+          },
+          {
+            "name": "src/interpreter_v2/return_path_tests.zig",
+            "sha256": "1f8f511852f41a616fc22f7a52dcc56248cefa3dbc43924dec64731b7ca6721d"
+          },
+          {
+            "name": "src/interpreter_v2/shallow_tests.zig",
+            "sha256": "9541f481784f0826c02fde85b9c38f888a69efd990b8da184d02f525b46236af"
+          },
+          {
+            "name": "src/interpreter_v2/store.zig",
+            "sha256": "da34d4773295aa5d51726fa701fd2d16f6a9d5c7732f95f018b75d64da2dda18"
+          },
+          {
+            "name": "src/interpreter_v2/tests.zig",
+            "sha256": "4e66134123af4917d178d1da9bc4f580eed1541b82daf19b61e499f50f7bd6c9"
+          },
+          {
+            "name": "src/interpreter_v2/unwind.zig",
+            "sha256": "002eb0108e240c315d333d0c657fdcbd0bce69fee1cfb80664e59a1ce6dbb6fc"
+          },
+          {
+            "name": "src/interpreter_v2/values.zig",
+            "sha256": "edf1f5bc23d7988a19dc4d62a46b895122800e968ea78289ee33c4447edbea8b"
+          },
+          {
+            "name": "src/kernel_v2/main.zig",
+            "sha256": "d456a19eada2a0494f03a3afb08716ca72cda13cb71eed1fc8d30b0163aecdc9"
+          },
+          {
+            "name": "src/process_v2/cli.mjs",
+            "sha256": "0a201f6cdc3c029cd059056f1e4ff2b23bacf25edd39ac01488025f9063bce02"
+          },
+          {
+            "name": "src/process_v2/codec.mjs",
+            "sha256": "40bb5a52fb9672682419cbb1cb9d64c52fadcfc2460b5ee95e29cb7627b860bb"
+          },
+          {
+            "name": "src/process_v2/errors.mjs",
+            "sha256": "d2d3ef1e5613f448cb68f0e4fb9e0832e91dbd64a58299cfcb66105189391179"
+          },
+          {
+            "name": "src/process_v2/file_input.mjs",
+            "sha256": "3f79adfe6d870a7ac27b7eb5993e759f9badf573eedd399159a63d2a6aaf587a"
+          },
+          {
+            "name": "src/process_v2/index.mjs",
+            "sha256": "ecafb288ddabb11ad76ed26853d80f626d0f42d9322274f5f33f9fc53cd4305d"
+          },
+          {
+            "name": "src/process_v2/kernel_file.mjs",
+            "sha256": "a2443cd29499c343793f50ae65260c81c515875221a679f6f9b1f36098ded64d"
+          },
+          {
+            "name": "src/process_v2/wasm.mjs",
+            "sha256": "9b7ca995fbe22cab5b14230f6ecadef511e32d74f0f1d0453c7f3800ad6e8227"
+          },
+          {
+            "name": "src/root.zig",
+            "sha256": "a53cd893897ac2680faf63d0f0f0d1a4e8c21b2be580cef3093ad2e4eb4b2d8e"
+          }
+        ],
+        "filesSha256": "9a6cc3dcfb22f565dadc4f37441ced1bcc722688caec668e2bef9ca3d5ae8e8c"
+      }
+    },
+    "previousFreeze": "freeze-2026-09-09.json",
+    "newConsumer": "sum-squares"
+  },
+  "checkedAt": "2026-09-14T18:18:28.028Z",
+  "consumer": "consent-scan",
+  "additionalConsumer": {
+    "name": "sum-squares",
+    "sourceSha256": "cb09890a855e85b0caf3e7c1f7cd452e58cbadbfc77647a3e5aeefddb2210be0",
+    "imageSha256": "750d6f965c02f14ab222ac6a334e07f1a501b8db64bd6f809e0d79ddee1e2fd7",
+    "imageBytes": 221
+  },
+  "consumerSourceSha256": "9c39f7813e043ac1c10cdd542956073d9f2dbb960eef1fdfdefdb61d8078bcd4",
+  "imageSha256": "ef386b8d840fb9881660910c0cfc11e782ec97a2bac612e4f0b58346a05ee0f3",
+  "imageBytes": 607,
+  "sourceSha256": "de54cbbaa27087afab4cebced3cea3a4588d5da33c4efba6ebd5e7a14405ddf4",
+  "kernelSha256": "9545076f16482ccb346ab7792ae87f4d9a262c3fe08b4086b3c376ed2b218c06",
+  "nativeSha256": "ead7c2c0c82ccf4465fdd10c3bf50f54916736a9969e5addc1f8918f32a66066",
+  "embeddings": [
+    "native",
+    "javascript",
+    "wasmtime"
+  ],
+  "observations": [
+    "new prefix-consent operation and composed shallow/deep handlers compiled using only the public Boundary module",
+    "independent source semantics and exhaustive Boolean prefix-consent expectations agreed",
+    "fresh producers alternated through every advance boundary",
+    "run matched advance records; explicit handler state survived yield and transfer",
+    "all 16 four-Boolean inputs preserved prefix consent and outer-handler answer reversal/negation",
+    "runtime boundary kinds matched the independently expected single yield and completion",
+    "post-freeze sum-of-squares recursion matched the closed-form result for 0 through 16 and authored overflow at 2^32, across all advance states and run"
+  ],
+  "recordCount": 813,
+  "recordsFile": "post-freeze-external-records.json",
+  "recordBytesSha256": "11a01b85c08ff029896140d892bfc7693c1d7f8cc1f9f0e8472dd18c829b68f5"
+}

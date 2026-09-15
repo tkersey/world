@@ -1,0 +1,103 @@
+diff --git a/src/interpreter_v2/economy_tests.zig b/src/interpreter_v2/economy_tests.zig
+index 16cc374..663a1ac 100644
+--- a/src/interpreter_v2/economy_tests.zig
++++ b/src/interpreter_v2/economy_tests.zig
+@@ -165,3 +165,38 @@ fn ownedExitReplacementCase(a: std.mem.Allocator) !void {
+ test "owned exit replacement retains nested cancellation bytes and both field buffers" {
+     try std.testing.checkAllAllocationFailures(allocator, ownedExitReplacementCase, .{});
+ }
++
++test "identity edges hand off evaluated slots without another allocation" {
++    const program: data.program.Program = .{
++        .roots = .{ .entry = 0, .result = 0, .failure = 0 },
++        .schemas = &.{.u64},
++        .constants = &.{},
++        .effects = &.{},
++        .functions = &.{.{ .entry = 0, .parameters = &.{0}, .result = 0 }},
++        .blocks = &.{
++            .{ .function = 0, .parameters = &.{0}, .instructions = &.{}, .terminator = .{ .jump = .{ .block = 1, .arguments = &.{.{ .slot = 0 }} } } },
++            .{ .function = 0, .parameters = &.{0}, .instructions = &.{}, .terminator = .{ .return_value = 0 } },
++        },
++    };
++    try data.canonical.require(allocator, program);
++    var failing = std.testing.FailingAllocator.init(allocator, .{});
++    const a = failing.allocator();
++    var machine: @import("machine.zig").Machine = .{
++        .allocator = a,
++        .program = program,
++        .identity = try data.image.identity(program),
++        .store = .{ .allocator = a },
++    };
++    defer machine.store.deinit();
++    try machine.initialize(&.{ 42, 0, 0, 0, 0, 0, 0, 0 });
++    const original = machine.roots.current.?;
++    try machine.store.nodes.ensureUnusedCapacity(a, 1);
++    try machine.store.alive.ensureUnusedCapacity(a, 1);
++    failing.fail_index = failing.alloc_index + 1;
++    try std.testing.expect(try machine.step() == null);
++    try std.testing.expect(!failing.has_induced_failure);
++    const next = (try machine.store.get(machine.roots.current.?)).control;
++    try std.testing.expectEqual(@as(u64, 1), next.block);
++    try std.testing.expectEqual(@as(u8, 42), next.arguments[0].body.scalar[0]);
++    try std.testing.expectEqual(@as(u8, 42), (try machine.store.get(original)).control.arguments[0].body.scalar[0]);
++}
+diff --git a/src/interpreter_v2/machine.zig b/src/interpreter_v2/machine.zig
+index f5846b0..2240588 100644
+--- a/src/interpreter_v2/machine.zig
++++ b/src/interpreter_v2/machine.zig
+@@ -73,10 +73,19 @@ pub const Machine = struct {
+         self.roots.evidence = saved.evidence;
+     }
+ 
+-    fn jump(self: *Machine, edge: p.Edge, slots: []const g.Value, control: g.Control) Error!void {
+-        const arguments = try self.allocator.alloc(g.Value, edge.arguments.len);
+-        errdefer self.allocator.free(arguments);
+-        for (arguments, edge.arguments) |*argument, spec| argument.* = slots[@intCast(spec.slot)];
++    fn jump(self: *Machine, edge: p.Edge, slots: []g.Value, control: g.Control) Error!bool {
++        const handoff = blk: {
++            if (edge.arguments.len != slots.len) break :blk false;
++            for (edge.arguments, 0..) |argument, index| {
++                if (argument != .slot or argument.slot != index) break :blk false;
++            }
++            break :blk true;
++        };
++        const arguments = if (handoff) slots else try self.allocator.alloc(g.Value, edge.arguments.len);
++        errdefer if (!handoff) self.allocator.free(arguments);
++        if (!handoff) for (arguments, edge.arguments) |*argument, spec| {
++            argument.* = slots[@intCast(spec.slot)];
++        };
+         self.roots.current = try self.store.addOwned(.{ .control = .{
+             .block = edge.block,
+             .arguments = arguments,
+@@ -84,6 +93,7 @@ pub const Machine = struct {
+             .evidence = control.evidence,
+             .region = control.region,
+         } });
++        return handoff;
+     }
+ 
+     fn evaluateBlock(self: *Machine, block: p.Block, arguments: []const g.Value, control: g.Control) Error!?[]g.Value {
+@@ -203,18 +213,19 @@ pub const Machine = struct {
+         const control = (try self.store.get(self.roots.current.?)).control;
+         const block = self.program.blocks[@intCast(control.block)];
+         const slots = (try self.evaluateBlock(block, control.arguments, control)) orelse return null;
+-        defer self.allocator.free(slots);
++        var handed_off = false;
++        defer if (!handed_off) self.allocator.free(slots);
+         switch (block.terminator) {
+             .return_value => |slot| {
+                 return self.returnTo(control.parent, slots[@intCast(slot)]);
+             },
+             .fail => |slot| try @import("unwind.zig").fail(self, slots[@intCast(slot)], control, slots, block.instructions),
+-            .jump => |edge| try self.jump(edge, slots, control),
++            .jump => |edge| handed_off = try self.jump(edge, slots, control),
+             .yield_value => |edge| {
+-                try self.jump(edge, slots, control);
++                handed_off = try self.jump(edge, slots, control);
+                 self.status = .yielded;
+             },
+-            .branch => |branch| try self.jump(if ((try self.bytes(&slots[@intCast(branch.condition)]))[0] == 1) branch.when_true else branch.when_false, slots, control),
++            .branch => |branch| handed_off = try self.jump(if ((try self.bytes(&slots[@intCast(branch.condition)]))[0] == 1) branch.when_true else branch.when_false, slots, control),
+             .switch_variant => |selected| {
+                 const parts = try aggregate_values.split(slots[@intCast(selected.value)]);
+                 const edge = selected.cases[@intCast(parts.tag)];

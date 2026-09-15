@@ -11,8 +11,8 @@ const [boundaryArg,worldArg,boundarySourceArg,outputArg,expectedBoundaryCommit,e
 if(![6,8].includes(process.argv.length))throw new Error('expected Boundary assets, World assets, Boundary source, scratch output, and optional exact public commits');
 const ownRoot=resolve(import.meta.dirname,'../..'),boundaryAssets=resolve(boundaryArg),worldAssets=resolve(worldArg),boundarySource=resolve(boundarySourceArg),output=resolve(outputArg);
 const b=await verifyAssets(boundaryAssets,['boundary-v2-semantic-fixtures.json','boundary-v2-semantic-fixtures.bin','boundary-v2-examples.tar.gz','boundary-v2-release-receipt.json']);
-const w=await verifyAssets(worldAssets,['world-process-kernel-v2.wasm','world-v5.0.0-process-runtime.tar.gz','world-v2-conformance.json','world-v2-conformance.bin','world-v5.0.0-release-receipt.json']);
-const br=JSON.parse(b.get('boundary-v2-release-receipt.json')),wr=JSON.parse(w.get('world-v5.0.0-release-receipt.json'));
+const w=await verifyAssets(worldAssets,['world-process-kernel-v2.wasm','world-v5.0.1-process-runtime.tar.gz','world-v2-conformance.json','world-v2-conformance.bin','world-v5.0.1-release-receipt.json']);
+const br=JSON.parse(b.get('boundary-v2-release-receipt.json')),wr=JSON.parse(w.get('world-v5.0.1-release-receipt.json'));
 assert.equal(br.format,'boundary-v2-release-receipt/v1');assert.equal(wr.format,'world-v2-release-receipt/v1');
 for(const [receipt,assets] of [[br,b],[wr,w]])for(const row of receipt.assets){assert.equal(assets.get(row.name).length,row.length);assert.equal(sha256(assets.get(row.name)),row.sha256);}
 assert.equal(wr.boundary.receiptSha256,sha256(b.get('boundary-v2-release-receipt.json')));
@@ -21,7 +21,7 @@ assert.deepEqual(wr.protected,br.protected);
 if(expectedBoundaryCommit){assert.equal(br.source.git.dirty,false);assert.equal(br.source.git.head,expectedBoundaryCommit);assert.equal(wr.source.git.dirty,false);assert.equal(wr.source.git.head,expectedWorldCommit);}
 const compilerFiles=await readSource(boundarySource,br.source,expectedBoundaryCommit);
 const worldSourceFiles=await readSource(ownRoot,wr.source,expectedWorldCommit);
-const runtimeEntries=readTarGzip(w.get('world-v5.0.0-process-runtime.tar.gz')),runtimeMap=new Map(runtimeEntries.map((entry)=>[entry.name,entry.bytes]));
+const runtimeEntries=readTarGzip(w.get('world-v5.0.1-process-runtime.tar.gz')),runtimeMap=new Map(runtimeEntries.map((entry)=>[entry.name,entry.bytes]));
 verifyRuntimeSources(runtimeEntries,worldSourceFiles);
 const identity=JSON.parse(runtimeMap.get('world-runtime-identity.json')),pkg=JSON.parse(runtimeMap.get('package.json'));
 assert.equal(identity.format,'world-runtime-identity/v2');assert.equal(identity.version,wr.version);assert.equal(pkg.version,wr.version);
