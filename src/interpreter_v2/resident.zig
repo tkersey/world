@@ -31,9 +31,12 @@ pub const Resident = struct {
         self.gate.store(false, .release);
     }
 
-    /// Commit only after detached result/checkpoint buffers exist. Optional
-    /// imported-backing compaction may retain its backing on allocation failure.
-    pub fn drive(self: *Resident, output: std.mem.Allocator, control: protocol.Control, options: Drive) Error!invocation.Outcome {
+    const Destination = union(enum) { record: std.mem.Allocator, encoded: std.mem.Allocator, buffer: []u8 };
+    const Published = union(enum) { record: invocation.Outcome, encoded: []u8, buffer: []const u8 };
+
+    /// Every publication route shares one commit fence, including allocation of
+    /// encoded output. No encoder/capacity failure may follow that fence.
+    fn publish(self: *Resident, destination: Destination, control: protocol.Control, options: Drive) Error!Published {
         const session = try self.enter();
         defer self.leave();
         var input = std.heap.ArenaAllocator.init(session.allocator);
@@ -42,29 +45,31 @@ pub const Resident = struct {
         var transaction = try session.begin();
         errdefer transaction.rollback(session);
         _ = try invocation.advance(session, owned, options.quantum);
-        const result = try invocation.finish(output, session, options.checkpoint);
+        const published: Published = switch (destination) {
+            .record => |allocator| .{ .record = try invocation.finish(allocator, session, options.checkpoint) },
+            .encoded, .buffer => blk: {
+                var result = try invocation.finish(session.allocator, session, options.checkpoint);
+                defer result.deinit();
+                break :blk switch (destination) {
+                    .encoded => |allocator| .{ .encoded = try protocol.encodeOwned(protocol.Outcome, allocator, result.record) },
+                    .buffer => |buffer| .{ .buffer = try protocol.encode(protocol.Outcome, session.allocator, result.record, buffer) },
+                    else => unreachable,
+                };
+            },
+        };
         transaction.commit(session);
         if (session.terminal == null) session.store.compactImported() catch {};
-        return result;
+        return published;
     }
 
-    /// Caller-output capacity is checked inside the same transaction as reply
-    /// consumption and execution, before publication commits the successor.
+    pub fn drive(self: *Resident, output: std.mem.Allocator, control: protocol.Control, options: Drive) Error!invocation.Outcome {
+        return (try self.publish(.{ .record = output }, control, options)).record;
+    }
+    pub fn driveEncoded(self: *Resident, output: std.mem.Allocator, control: protocol.Control, options: Drive) Error![]u8 {
+        return (try self.publish(.{ .encoded = output }, control, options)).encoded;
+    }
     pub fn driveInto(self: *Resident, control: protocol.Control, options: Drive, output: []u8) Error![]const u8 {
-        const session = try self.enter();
-        defer self.leave();
-        var input = std.heap.ArenaAllocator.init(session.allocator);
-        defer input.deinit();
-        const owned = try heap.duplicate(protocol.Control, input.allocator(), control);
-        var transaction = try session.begin();
-        errdefer transaction.rollback(session);
-        _ = try invocation.advance(session, owned, options.quantum);
-        var result = try invocation.finish(session.allocator, session, options.checkpoint);
-        defer result.deinit();
-        const bytes = try protocol.encode(protocol.Outcome, session.allocator, result.record, output);
-        transaction.commit(session);
-        if (session.terminal == null) session.store.compactImported() catch {};
-        return bytes;
+        return (try self.publish(.{ .buffer = output }, control, options)).buffer;
     }
 
     pub fn checkpoint(self: *Resident, output: std.mem.Allocator) Error![]u8 {

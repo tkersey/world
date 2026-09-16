@@ -100,6 +100,62 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
         .imports = &.{.{ .name = "boundary_data_v2", .module = wasm_data }},
     });
+    const current_runtime = b.createModule(.{
+        .root_source_file = b.path("src/interpreter_v2/stable_session.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{.{ .name = "boundary_data_v2", .module = wasm_data }},
+    });
+    const current_options = b.addOptions();
+    current_options.addOption(usize, "input_capacity", b.option(usize, "input-capacity", "Initial current input budget") orelse 65536);
+    current_options.addOption(usize, "working_capacity", b.option(usize, "working-capacity", "Initial current working budget and backing") orelse 1048576);
+    current_options.addOption(usize, "output_capacity", b.option(usize, "output-capacity", "Initial current output budget") orelse 65536);
+    const current_module = b.createModule(.{
+        .root_source_file = b.path("src/kernel/main.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{ .{ .name = "runtime", .module = current_runtime }, .{ .name = "boundary_data_v2", .module = wasm_data } },
+    });
+    current_module.addOptions("kernel_options", current_options);
+    const current_kernel = b.addExecutable(.{ .name = "world-kernel", .root_module = current_module });
+    current_kernel.entry = .disabled;
+    current_kernel.rdynamic = true;
+    current_kernel.export_memory = true;
+    current_kernel.stack_size = 65536;
+    current_kernel.max_memory = b.option(u64, "maximum-memory", "Current wasm32 memory maximum in whole pages") orelse 256 << 20;
+    b.step("build-kernel", "Build the generic ABI 3 kernel")
+        .dependOn(&b.addInstallFileWithDir(current_kernel.getEmittedBin(), .prefix, "world-kernel.wasm").step);
+    const current_fixtures = b.addSystemCommand(&.{ "zig", "build", "--build-file" });
+    current_fixtures.addFileArg(b.path("test/v2/build_source.zig"));
+    current_fixtures.addArg(b.fmt("-Dworld-source={s}", .{b.pathFromRoot(".")}));
+    current_fixtures.addArg(b.fmt("-Dboundary-v2-source={s}", .{source}));
+    current_fixtures.addArgs(&.{ "-Dcurrent-fixtures=true", "-Doptimize=ReleaseSafe", "--prefix", b.getInstallPath(.prefix, "current"), "--cache-dir", b.pathFromRoot(".cache/current-fixture-local"), "--global-cache-dir", b.pathFromRoot(".cache/activation-global") });
+    current_fixtures.has_side_effects = true;
+    const current_check = b.addSystemCommand(&.{"node"});
+    current_check.addFileArg(b.path("test/current/kernel.mjs"));
+    current_check.addFileArg(current_kernel.getEmittedBin());
+    current_check.addArg(b.getInstallPath(.prefix, "current/bin/current-fixtures"));
+    current_check.step.dependOn(&current_fixtures.step);
+    current_check.has_side_effects = true;
+    b.step("check-kernel", "Check ABI 3 and current native/Node transfer").dependOn(&current_check.step);
+    const current_transfer = b.addSystemCommand(&.{"node"});
+    current_transfer.addFileArg(b.path("test/current/transfer.mjs"));
+    current_transfer.addFileArg(current_kernel.getEmittedBin());
+    current_transfer.addArg(b.getInstallPath(.prefix, "current/bin/current-fixtures"));
+    current_transfer.step.dependOn(&current_fixtures.step);
+    current_transfer.has_side_effects = true;
+    b.step("check-transfer", "Check current Node/Wasmtime/native State transfer").dependOn(&current_transfer.step);
+    const current_browser = b.addSystemCommand(&.{"node"});
+    current_browser.addFileArg(b.path("test/current/browser.mjs"));
+    current_browser.addFileArg(current_kernel.getEmittedBin());
+    current_browser.addArg(b.getInstallPath(.prefix, "current/bin/current-fixtures"));
+    current_browser.step.dependOn(&current_fixtures.step);
+    current_browser.has_side_effects = true;
+    b.step("check-browser", "Check real browser Worker/native transfer on Chromium and Firefox").dependOn(&current_browser.step);
+    const current_codecs = b.addSystemCommand(&.{ "node", "--test" });
+    current_codecs.addFileArg(b.path("test/current/codec.test.mjs"));
+    current_codecs.has_side_effects = true;
+    b.step("check-codecs", "Check current browser-neutral byte ownership and value contracts").dependOn(&current_codecs.step);
     const activation_wasm_store = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/activation_slots.zig"),
         .target = wasm_target,

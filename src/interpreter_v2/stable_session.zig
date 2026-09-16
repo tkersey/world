@@ -14,6 +14,8 @@ const protocol = data.invocation;
 pub const invocation = @import("invocation.zig");
 pub const Prepared = @import("prepared.zig").Prepared;
 pub const Resident = @import("resident.zig").Resident;
+pub const Workspace = @import("arena.zig").Arena;
+pub const AllocationBudget = @import("allocation_budget.zig").Budget;
 pub const Error = @import("process.zig").Error || bindings.Error || data.activation_ownership.Error || data.program_image.Error || protocol.Error;
 pub const Pending = struct {
     allocator: std.mem.Allocator,
@@ -188,7 +190,7 @@ pub const Session = struct {
     /// restoreImage checks the matching Program and complete portable State.
     pub fn checkpoint(self: *Session, allocator: std.mem.Allocator) Error![]u8 {
         if (self.poisoned) return error.InvalidState;
-        var scratch = std.heap.ArenaAllocator.init(allocator);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
         const count = std.math.add(usize, self.store.nodes.items.len, @intFromBool(self.terminal != null)) catch return error.Capacity;
@@ -215,13 +217,13 @@ pub const Session = struct {
             nodes[count - 1] = .{ .record = .{ .exit = exit } };
             roots = .{ .exit = .{ .id = count - 1 } };
         }
-        return data.state_image.emit(allocator, .{
+        return data.state_image.emitWith(self.allocator, .{
             .program_identity = self.program_identity,
             .status = status,
             .roots = roots,
             .nodes = nodes,
             .blobs = self.store.blobs.items,
-        });
+        }, allocator);
     }
 
     pub fn continuation(self: *Session, block: p.Id, _: anytype, control: g.Control) Error!g.NodeRef {

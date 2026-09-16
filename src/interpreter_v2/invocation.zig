@@ -88,11 +88,15 @@ fn failures(allocator: std.mem.Allocator, session: *runtime.Session) Error![]con
 
 /// No output is returned on operational failure; the original input is reusable.
 pub fn invokeBytes(allocator: std.mem.Allocator, input: []const u8) Error![]u8 {
+    return invokeBytesWith(allocator, allocator, input);
+}
+
+pub fn invokeBytesWith(allocator: std.mem.Allocator, output: std.mem.Allocator, input: []const u8) Error![]u8 {
     var decoded = try protocol.decode(protocol.Input, allocator, input);
     defer decoded.deinit();
     var result = try execute(allocator, decoded.value);
     defer result.deinit();
-    return protocol.encodeOwned(protocol.Outcome, allocator, result.record);
+    return protocol.encodeOwned(protocol.Outcome, output, result.record);
 }
 
 /// The completed invocation is private until all output checks pass. Input and

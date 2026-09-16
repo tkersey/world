@@ -1,6 +1,7 @@
 const std = @import("std");
 test {
     _ = @import("store_transaction_tests.zig");
+    _ = @import("allocation_budget.zig");
 }
 pub const cleanup = @import("cleanup_tests.zig").program();
 const data = @import("boundary_data_v2");

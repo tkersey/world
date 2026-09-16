@@ -6,7 +6,7 @@ remains the goal. No merge, release or application data operation has occurred.
 
 World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
 `feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `8d32d8aaf4b73a1f3e0904f5138f5715fb2d76e6`, Zig 0.16.0,
+successor worktree at `5c7a38e1ad63445b633f30ba82eff60b0af0c697`, Zig 0.16.0,
 and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
 
 ## Private activation slots
@@ -187,7 +187,8 @@ suite encodes the staged construction, loads it, overwrites and frees the image,
 then drives the native session. This covers the existing generalized-control,
 resource, cleanup, cancellation and reentrant witnesses through the image path.
 The source tests include the 19 scalar/collection scenarios with the predecessor
-suite's unchanged independent expectations. ABI 3 and cross-host execution remain open.
+suite's unchanged independent expectations. Core ABI 3 and cross-host checks are
+described in [the current kernel contract](kernel-abi.md).
 
 `Prepared.init` now owns an opaque admitted image, immutable analysis and cached
 external schema descriptors. `Session.start` and `Session.restore` retain strong
@@ -255,6 +256,13 @@ drive whose journal is bounded by entry state rather than transition history.
 These are correctness and storage-mechanism results; full transaction latency and
 peak-memory acceptance measurements remain required.
 
-Complete host integration. ABI 3, browser/server transfer, Agent
-migration, component linking, performance acceptance, legacy retirement and linked
-draft PRs remain open. Native source agreement does not prove portable execution.
+The generic ABI 3 kernel and browser-neutral byte embedding now run the same
+evaluator through fresh and resident operations. Node/native/Wasmtime checks agree
+on exact checkpoints/outcomes; Chromium and Firefox Workers transfer a real
+resource suspension through native execution and finish cleanup in a new Worker.
+Input, working and final-output budgets are independent; output allocation remains
+inside resident commit. See the kernel contract for signatures, limits and commands.
+
+Agent migration and its actual compiled-tool/file transfer, component linking,
+selective execution, value/performance acceptance, normal package cutover, legacy
+retirement and linked draft-PR/serial-review delivery remain mandatory.

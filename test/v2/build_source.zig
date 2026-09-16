@@ -37,6 +37,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
     });
+    if (b.option(bool, "current-fixtures", "Build the current compiler-dependent fixture tool") orelse false) {
+        const fixture = b.addExecutable(.{ .name = "current-fixtures", .root_module = b.createModule(.{
+            .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, "test/current/fixtures.zig" }) },
+            .target = b.graph.host,
+            .optimize = optimize,
+            .imports = &.{ .{ .name = "stable_runtime", .module = stable_runtime }, .{ .name = "boundary", .module = boundary } },
+        }) });
+        b.installArtifact(fixture);
+        return;
+    }
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, if (stable) "test/v2/stable_source.zig" else "test/v2/source_agreement.zig" }) },
         .target = b.graph.host,
