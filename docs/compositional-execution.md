@@ -6,7 +6,7 @@ remains the goal. No merge, release or application data operation has occurred.
 
 World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
 `feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `3718a8b5521ea0bdba17932807b3a985ee9d7c67`, Zig 0.16.0,
+successor worktree at `33c5661fa6db452acc433715e7eec0967d3f3191`, Zig 0.16.0,
 and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
 
 ## Private activation slots
@@ -161,24 +161,38 @@ The stable controller now exports PST3 graph records
 without advancing or collecting. Slot values and lexical owner order are attached
 to their owning control node; private page handles and stale store entries do not
 become checkpoint identities. Terminal exports retain the full result/exit.
-The 27 stable-source tests verify repeated export and graph re-encoding at drive
+The 31 stable-source tests verify repeated export and graph re-encoding at drive
 boundaries, including one-instruction quanta and cleanup. Reentrant-cycle tests
 replace every private view handle and collect garbage without changing a byte of
 the checkpoint. An export allocation-
-failure sweep verifies unchanged resident bytes. This does not yet authorize
-restore: Program-relative State admission is the next required seam.
+failure sweep verifies unchanged resident bytes. `Session.restoreImage` now admits
+the matching Program and complete State before adopting executable storage.
+Each source drive also restores a separate native session, destroys the supplied
+image/checkpoint bytes, and compares exact successor checkpoints after the same
+quantum. Negative cases reject forged positions, missing slots, identity mismatch,
+invalid cleanup status and aliased unique packages; restore allocation failures
+release every partial owner.
+
+The Store adopts the decoder's immutable owner and allocates replacement records
+on mutation. Collection evacuates small surviving borrowed records when their
+estimated bytes are at most one quarter of the imported arena backing, then frees
+that backing. A fixed 128 KiB plus 5-byte payload witness compares the old physical
+import's 131,077 copied payload bytes against zero on adoption, then 5 bytes to
+evacuate the survivor. These counters exclude the decoder's initial owned-input
+copy. End-to-end time/peak memory and the compaction threshold remain unmeasured;
+this is a demonstrated copy/retention mechanism, not final performance acceptance.
 
 `Session.initImage` now accepts Boundary's BPI3 bytes. The complete stable source
 suite encodes the staged construction, loads it, overwrites and frees the image,
 then drives the native session. This covers the existing generalized-control,
 resource, cleanup, cancellation and reentrant witnesses through the image path.
-All 26 stable-source tests pass, including the 19 scalar/collection scenarios
+The source tests include the 19 scalar/collection scenarios
 with the predecessor suite's unchanged independent expectations. The loader
 currently decodes, admits and copies into the existing session owner; a
 prepared immutable Program owner that avoids repeated admission remains required.
 This is codec integration, not PST3 transfer or ABI 3 completion.
 
-Complete portable Program/State integration and State provenance admission.
+Complete portable envelope and host integration.
 Prepared lifetime, whole-Session
 transactions, PST3/current protocols, ABI 3, browser/server transfer, Agent
 migration, component linking, performance acceptance, legacy retirement and linked

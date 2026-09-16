@@ -46,6 +46,15 @@ pub const Frames = struct {
         errdefer allocator.free(owners);
         return .{ .position = frame.position, .scope = frame.custody.scope, .bindings = try bindings.toOwnedSlice(allocator), .owners = owners };
     }
+    /// The caller admits the complete portable State before materializing views.
+    pub fn restore(self: *Frames, id: data.program.Id, function: data.program.Id, activation: data.process_state.Activation) Error!void {
+        var frame = try self.create(function);
+        errdefer self.releaseFrame(frame);
+        for (activation.bindings) |binding| try self.rewriteValue(&frame, binding.slot, binding.value);
+        try self.custody.restore(&frame.custody, self.program.functions[@intCast(function)].custody, @intCast(activation.scope), activation.owners);
+        frame.position = @intCast(activation.position);
+        try self.put(id, frame);
+    }
     pub fn put(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         if (self.entries.contains(id)) return error.InvalidState;
         try self.entries.put(self.allocator, id, frame);

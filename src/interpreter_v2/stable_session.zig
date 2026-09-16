@@ -1,6 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Successor native control slice. Not yet the portable/resident public API:
-//! portable/resident admission and whole-Session rollback remain open.
+//! prepared lifetimes, protocol binding and whole-Session rollback remain open.
 const std = @import("std");
 const data = @import("boundary_data_v2");
 const p = data.program;
@@ -47,6 +47,13 @@ pub const Session = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator, input: ir.Program, arguments: []const u8) Error!Session {
+        var result = try empty(allocator, input);
+        errdefer result.deinit();
+        try result.initialize(arguments);
+        return result;
+    }
+
+    fn empty(allocator: std.mem.Allocator, input: ir.Program) Error!Session {
         const program = try heap.duplicate(ir.Program, allocator, input);
         errdefer heap.release(ir.Program, allocator, program);
         var flow = try data.activation_ownership.analyze(allocator, program);
@@ -56,7 +63,7 @@ pub const Session = struct {
         const value_facts = try data.admission.schemas(flow.arena.allocator(), program.schemas);
         const identity = try data.program_image.identity(allocator, program);
         const frames = try bindings.Frames.init(allocator, flow.pool, program);
-        var result: Session = .{
+        return .{
             .allocator = allocator,
             .program = program,
             .program_identity = identity,
@@ -66,9 +73,41 @@ pub const Session = struct {
             .frames = frames,
             .store = .{ .allocator = allocator },
         };
-        errdefer result.store.deinit();
-        errdefer result.frames.deinit();
-        try result.initialize(arguments);
+    }
+
+    pub fn restoreImage(allocator: std.mem.Allocator, image: []const u8, checkpoint_bytes: []const u8) Error!Session {
+        var decoded = try data.program_image.decode(allocator, image);
+        defer decoded.deinit();
+        var result = try empty(allocator, decoded.program);
+        errdefer result.deinit();
+        var incoming = try data.state_image.decodeGraph(allocator, checkpoint_bytes);
+        var transferred = false;
+        defer if (!transferred) incoming.deinit();
+        const state = incoming.state;
+        try data.state_admission.validateStable(allocator, result.program, state);
+        try result.store.importOwned(&incoming);
+        transferred = true;
+        for (state.nodes, 0..) |node, id| if (node.activation) |activation| {
+            const block = switch (node.record) {
+                .control => |control| control.block,
+                .continuation => |saved| saved.source_block,
+                else => unreachable, // Admitted shape.
+            };
+            try result.frames.restore(id, result.program.blocks[@intCast(block)].function, activation);
+        };
+        result.roots = state.roots;
+        if (@intFromEnum(state.status) < 4) {
+            result.status = @enumFromInt(@intFromEnum(state.status));
+        } else {
+            const exit = state.nodes[@intCast(state.roots.exit.?.id)].record.exit;
+            result.exit = exit;
+            result.terminal = switch (state.status) {
+                .completed => .{ .completed = exit.reason.normal },
+                .failed => .{ .failed = exit.reason.failure },
+                .cancelled => .{ .cancelled = exit.cancellation.? },
+                else => unreachable,
+            };
+        }
         return result;
     }
 
@@ -81,7 +120,7 @@ pub const Session = struct {
     }
 
     /// Export without advancing, collecting or changing resident custody.
-    /// Import requires the successor Program-relative State admission seam.
+    /// restoreImage checks the matching Program and complete portable State.
     pub fn checkpoint(self: *Session, allocator: std.mem.Allocator) Error![]u8 {
         if (self.poisoned) return error.InvalidState;
         var scratch = std.heap.ArenaAllocator.init(allocator);

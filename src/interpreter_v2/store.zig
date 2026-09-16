@@ -27,10 +27,27 @@ pub const Store = struct {
     marks: std.ArrayList(bool) = .empty,
     blob_marks: std.ArrayList(bool) = .empty,
     pending: std.ArrayList(data.snapshot.Reference) = .empty,
+    imported: ?data.state_image.Owned = null,
+    borrowed_nodes: []bool = &.{},
+    borrowed_blobs: []bool = &.{},
+
+    fn releaseNode(self: *Store, id: usize, value: g.Node) void {
+        if (id < self.borrowed_nodes.len and self.borrowed_nodes[id]) {
+            self.borrowed_nodes[id] = false;
+        } else release(g.Node, self.allocator, value);
+    }
+    fn releaseBlob(self: *Store, id: usize, value: g.Blob) void {
+        if (id < self.borrowed_blobs.len and self.borrowed_blobs[id]) {
+            self.borrowed_blobs[id] = false;
+        } else self.allocator.free(value.bytes);
+    }
 
     pub fn deinit(self: *Store) void {
-        for (self.nodes.items, self.alive.items) |item, live| if (live) release(g.Node, self.allocator, item);
-        for (self.blobs.items, self.blob_alive.items) |blob, live| if (live) self.allocator.free(blob.bytes);
+        for (self.nodes.items, self.alive.items, 0..) |item, live, id| if (live) self.releaseNode(id, item);
+        for (self.blobs.items, self.blob_alive.items, 0..) |blob, live, id| if (live) self.releaseBlob(id, blob);
+        if (self.imported) |*base| base.deinit();
+        self.allocator.free(self.borrowed_nodes);
+        self.allocator.free(self.borrowed_blobs);
         self.nodes.deinit(self.allocator);
         self.alive.deinit(self.allocator);
         self.free_nodes.deinit(self.allocator);
@@ -77,7 +94,7 @@ pub const Store = struct {
         const previous = try self.get(reference);
         const replacement = try duplicate(g.Node, self.allocator, value);
         self.nodes.items[@intCast(reference.id)] = replacement;
-        release(g.Node, self.allocator, previous);
+        self.releaseNode(@intCast(reference.id), previous);
     }
 
     /// Takes independently allocated record slices on success. No incoming
@@ -85,7 +102,7 @@ pub const Store = struct {
     pub fn replaceOwned(self: *Store, reference: g.NodeRef, value: g.Node) Error!void {
         const previous = try self.get(reference);
         self.nodes.items[@intCast(reference.id)] = value;
-        release(g.Node, self.allocator, previous);
+        self.releaseNode(@intCast(reference.id), previous);
     }
 
     pub fn literal(self: *Store, schemas: []const data.program.Schema, value: data.program.Literal) Error!g.Value {
@@ -130,6 +147,71 @@ pub const Store = struct {
             self.blob_alive.appendAssumeCapacity(true);
             if (self.statistics) |s| s.copied_blob_bytes +|= bytes.len;
         }
+    }
+
+    /// Adopt immutable decoded storage; transfer only on complete success.
+    /// Semantic admission belongs to the caller before this physical operation.
+    pub fn importOwned(self: *Store, incoming: *data.state_image.Owned) Error!void {
+        if (self.nodes.items.len != 0 or self.blobs.items.len != 0 or self.imported != null) return error.InvalidState;
+        const state_ = incoming.state;
+        const node_flags = try self.allocator.alloc(bool, state_.nodes.len);
+        errdefer self.allocator.free(node_flags);
+        const blob_flags = try self.allocator.alloc(bool, state_.blobs.len);
+        errdefer self.allocator.free(blob_flags);
+        try self.nodes.ensureTotalCapacityPrecise(self.allocator, state_.nodes.len);
+        try self.alive.ensureTotalCapacityPrecise(self.allocator, state_.nodes.len);
+        try self.blobs.ensureTotalCapacityPrecise(self.allocator, state_.blobs.len);
+        try self.blob_alive.ensureTotalCapacityPrecise(self.allocator, state_.blobs.len);
+        try self.interned.ensureUnusedCapacity(self.allocator, @intCast(state_.blobs.len));
+        for (state_.nodes) |record| {
+            self.nodes.appendAssumeCapacity(record.record);
+            self.alive.appendAssumeCapacity(true);
+        }
+        for (state_.blobs, 0..) |blob, id| {
+            self.blobs.appendAssumeCapacity(blob);
+            self.blob_alive.appendAssumeCapacity(true);
+            self.interned.putAssumeCapacity(blob, id);
+        }
+        @memset(node_flags, true);
+        @memset(blob_flags, true);
+        self.borrowed_nodes = node_flags;
+        self.borrowed_blobs = blob_flags;
+        self.imported = incoming.*;
+        incoming.* = undefined;
+    }
+
+    /// Release a large imported backing once only small records survive. Copies
+    /// are prepared individually before publication; failure preserves graph values.
+    pub fn compactImported(self: *Store) Error!void {
+        const base = self.imported orelse return;
+        var retained: usize = 0;
+        for (self.borrowed_nodes, 0..) |borrowed, id| if (borrowed) {
+            retained +|= @sizeOf(g.Node) +| ownedBytes(g.Node, self.nodes.items[id]);
+        };
+        for (self.borrowed_blobs, 0..) |borrowed, id| if (borrowed) {
+            retained +|= @sizeOf(g.Blob) +| self.blobs.items[id].bytes.len;
+        };
+        if (retained > base.arena.queryCapacity() / 4) return;
+        for (self.borrowed_nodes, 0..) |borrowed, id| if (borrowed) {
+            const copy = try duplicate(g.Node, self.allocator, self.nodes.items[id]);
+            self.nodes.items[id] = copy;
+            self.borrowed_nodes[id] = false;
+        };
+        for (self.borrowed_blobs, 0..) |borrowed, id| if (borrowed) {
+            const previous = self.blobs.items[id];
+            const copy: g.Blob = .{ .schema = previous.schema, .bytes = try self.allocator.dupe(u8, previous.bytes) };
+            _ = self.interned.remove(previous);
+            self.interned.putAssumeCapacity(copy, id);
+            self.blobs.items[id] = copy;
+            self.borrowed_blobs[id] = false;
+            if (self.statistics) |statistics| statistics.copied_blob_bytes +|= copy.bytes.len;
+        };
+        self.imported.?.deinit();
+        self.imported = null;
+        self.allocator.free(self.borrowed_nodes);
+        self.allocator.free(self.borrowed_blobs);
+        self.borrowed_nodes = &.{};
+        self.borrowed_blobs = &.{};
     }
 
     pub fn state(self: Store, identity: [32]u8, status: g.Status, roots: g.Roots) g.State {
@@ -177,18 +259,19 @@ pub const Store = struct {
         if (self.statistics) |s| s.swept_slots +|= marks.len + blob_marks.len;
         for (marks, 0..) |marked, id| if (!marked and self.alive.items[id]) {
             frames.remove(id);
-            release(g.Node, self.allocator, self.nodes.items[id]);
+            self.releaseNode(id, self.nodes.items[id]);
             self.nodes.items[id] = empty;
             self.alive.items[id] = false;
             self.free_nodes.appendAssumeCapacity(id);
         };
         for (blob_marks, 0..) |marked, id| if (!marked and self.blob_alive.items[id]) {
             _ = self.interned.remove(self.blobs.items[id]);
-            self.allocator.free(self.blobs.items[id].bytes);
+            self.releaseBlob(id, self.blobs.items[id]);
             self.blobs.items[id] = .{ .schema = 0, .bytes = &.{} };
             self.blob_alive.items[id] = false;
             self.free_blobs.appendAssumeCapacity(id);
         };
+        try self.compactImported();
     }
 };
 
@@ -202,6 +285,28 @@ const BlobContext = struct {
 };
 
 /// Allocation ownership follows the closed native record shape, never graph edges.
+fn ownedBytes(comptime T: type, value: T) usize {
+    return switch (@typeInfo(T)) {
+        .pointer => |info| blk: {
+            var size = @sizeOf(info.child) *| value.len;
+            if (info.child != u8) for (value) |item| {
+                size +|= ownedBytes(info.child, item);
+            };
+            break :blk size;
+        },
+        .optional => |info| if (value) |present| ownedBytes(info.child, present) else 0,
+        .@"struct" => |info| blk: {
+            var size: usize = 0;
+            inline for (info.fields) |field| size +|= ownedBytes(field.type, @field(value, field.name));
+            break :blk size;
+        },
+        .@"union" => switch (value) {
+            inline else => |payload| ownedBytes(@TypeOf(payload), payload),
+        },
+        else => 0,
+    };
+}
+
 pub fn duplicate(comptime T: type, allocator: std.mem.Allocator, value: T) std.mem.Allocator.Error!T {
     return switch (@typeInfo(T)) {
         .pointer => |info| blk: {

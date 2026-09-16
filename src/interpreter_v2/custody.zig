@@ -208,4 +208,23 @@ pub const Custody = struct {
         }
         return result.toOwnedSlice(allocator);
     }
+
+    pub fn restore(self: *Custody, state: *State, scopes: []const data.activation.CustodyScope, target: usize, owners: []const data.process_state.Owner) Error!void {
+        var path: std.ArrayList(usize) = .empty;
+        defer path.deinit(self.allocator);
+        var cursor: ?usize = target;
+        while (cursor) |scope| {
+            try path.append(self.allocator, scope);
+            cursor = if (scopes[scope].parent) |parent| @intCast(parent) else null;
+        }
+        var end = owners.len;
+        while (path.pop()) |scope| {
+            try self.moveTo(state, scopes, scope);
+            var start = end;
+            while (start != 0 and owners[start - 1].scope == scope) start -= 1;
+            for (owners[start..end]) |owner| try self.establish(state, scopes, @intCast(owner.slot));
+            end = start;
+        }
+        if (end != 0) return error.InvalidState;
+    }
 };

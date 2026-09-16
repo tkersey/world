@@ -9,6 +9,7 @@ fn checkedCheckpoint(subject: *Session) !void {
     defer testing.allocator.free(bytes);
     var decoded = try boundary.data_v2.state_image.decodeGraph(testing.allocator, bytes);
     defer decoded.deinit();
+    try boundary.data_v2.state_admission.validateStable(testing.allocator, subject.program, decoded.state);
     const reencoded = try boundary.data_v2.state_image.emit(testing.allocator, decoded.state);
     defer testing.allocator.free(reencoded);
     try testing.expectEqualSlices(u8, bytes, reencoded);
@@ -19,7 +20,23 @@ fn checkedCheckpoint(subject: *Session) !void {
 }
 
 fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observation {
+    const before = try subject.checkpoint(testing.allocator);
+    defer testing.allocator.free(before);
+    const codec = boundary.data_v2.program_image;
+    const image = try testing.allocator.alloc(u8, try codec.encodedLength(subject.program));
+    defer testing.allocator.free(image);
+    _ = try codec.encode(testing.allocator, subject.program, image);
+    var restored = try Session.restoreImage(testing.allocator, image, before);
+    defer restored.deinit();
+    @memset(image, 0xff);
+    @memset(before, 0xff);
     const result = try subject.run(quantum);
+    _ = try restored.run(quantum);
+    const expected = try subject.checkpoint(testing.allocator);
+    defer testing.allocator.free(expected);
+    const actual = try restored.checkpoint(testing.allocator);
+    defer testing.allocator.free(actual);
+    try testing.expectEqualSlices(u8, expected, actual);
     try checkedCheckpoint(subject);
     return result;
 }
@@ -59,6 +76,195 @@ fn initFromImage(allocator: std.mem.Allocator, program: boundary.data_v2.activat
     const result = try Session.initImage(allocator, image, arguments);
     @memset(image, 0xff);
     return result;
+}
+
+fn programBytes(program: boundary.data_v2.activation.Program) ![]u8 {
+    const codec = boundary.data_v2.program_image;
+    const bytes = try testing.allocator.alloc(u8, try codec.encodedLength(program));
+    errdefer testing.allocator.free(bytes);
+    _ = try codec.encode(testing.allocator, program, bytes);
+    return bytes;
+}
+
+fn restoreFailure(allocator: std.mem.Allocator, image: []const u8, checkpoint: []const u8) !void {
+    var session = try Session.restoreImage(allocator, image, checkpoint);
+    defer session.deinit();
+    const bytes = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, checkpoint, bytes);
+}
+
+test "PST3 restore releases every partial owner on allocation failure" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.installations(&builder, 1));
+    defer compiled.deinit();
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
+    defer session.deinit();
+    _ = try session.run(1);
+    const checkpoint = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(checkpoint);
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    try testing.checkAllAllocationFailures(testing.allocator, restoreFailure, .{ image, checkpoint });
+}
+
+fn rejectCheckpoint(image: []const u8, state: boundary.data_v2.process_state.State) !void {
+    const bytes = try boundary.data_v2.state_image.emit(testing.allocator, state);
+    defer testing.allocator.free(bytes);
+    if (Session.restoreImage(testing.allocator, image, bytes)) |value| {
+        var accepted = value;
+        accepted.deinit();
+        return error.AcceptedCorruptCheckpoint;
+    } else |err| try testing.expect(err != error.OutOfMemory);
+}
+
+test "PST3 restore rejects wrong identity, code position, slots, and cleanup status" {
+    const data = boundary.data_v2;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.resourceScalar(&builder));
+    defer compiled.deinit();
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
+    defer session.deinit();
+    try testing.expect(try session.run(null) == .requested);
+    try session.answer(&.{ 41, 0, 0, 0, 0, 0, 0, 0 });
+    try testing.expect(try session.run(null) == .requested);
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    const checkpoint = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(checkpoint);
+    var decoded = try data.state_image.decodeGraph(testing.allocator, checkpoint);
+    defer decoded.deinit();
+    try data.state_admission.validateStable(testing.allocator, compiled.program, decoded.state);
+    var forged = decoded.state;
+    forged.program_identity[0] ^= 1;
+    try rejectCheckpoint(image, forged);
+    forged = decoded.state;
+    const nodes = try testing.allocator.dupe(data.process_state.Node, forged.nodes);
+    defer testing.allocator.free(nodes);
+    forged.nodes = nodes;
+    var checked_frame = false;
+    var checked_binding = false;
+    var checked_cleanup = false;
+    for (nodes) |*node| {
+        const original = node.*;
+        if (node.activation) |*activation| {
+            if (!checked_frame) {
+                activation.position = std.math.maxInt(u64);
+                try rejectCheckpoint(image, forged);
+                node.* = original;
+                checked_frame = true;
+            }
+            if (!checked_binding and original.activation.?.bindings.len != 0) {
+                const bindings = try testing.allocator.dupe(data.process_state.Binding, original.activation.?.bindings);
+                defer testing.allocator.free(bindings);
+                node.activation.?.bindings = bindings;
+                bindings[0].slot = std.math.maxInt(u64);
+                // A single-row view avoids failing only the sorted-slot shape rule.
+                node.activation.?.bindings = bindings[0..1];
+                node.activation.?.owners = &.{};
+                if (bindings[0].value.body == .owned) node.activation.?.owners = &.{.{ .scope = node.activation.?.scope, .slot = std.math.maxInt(u64) }};
+                try rejectCheckpoint(image, forged);
+                node.* = original;
+                node.activation.?.bindings = &.{};
+                node.activation.?.owners = &.{};
+                try rejectCheckpoint(image, forged);
+                node.* = original;
+                checked_binding = true;
+            }
+        }
+        if (node.record == .obligation and !checked_cleanup) {
+            node.record.obligation.status = .completed;
+            try rejectCheckpoint(image, forged);
+            node.* = original;
+            checked_cleanup = true;
+        }
+    }
+    try testing.expect(checked_frame and checked_binding and checked_cleanup);
+}
+
+test "PST3 restore rejects aliased unique packages after graph renumbering" {
+    const data = boundary.data_v2;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.custodyOrder(&builder, 0));
+    defer compiled.deinit();
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
+    defer session.deinit();
+    try testing.expect(try session.run(null) == .yielded);
+    const checkpoint = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(checkpoint);
+    var decoded = try data.state_image.decodeGraph(testing.allocator, checkpoint);
+    defer decoded.deinit();
+    const nodes = try testing.allocator.dupe(data.process_state.Node, decoded.state.nodes);
+    defer testing.allocator.free(nodes);
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    try data.state_admission.validateStable(testing.allocator, compiled.program, decoded.state);
+    var first: ?data.graph.Value = null;
+    for (nodes) |*node| if (node.record == .package) {
+        if (first) |token| {
+            try testing.expectEqual(token.schema, node.record.package.continuation.schema);
+            node.record.package.continuation = token;
+            var forged = decoded.state;
+            forged.nodes = nodes;
+            try rejectCheckpoint(image, forged);
+            return;
+        } else first = node.record.package.continuation;
+    };
+    return error.MissingIndependentPackages;
+}
+
+test "imported storage avoids payload copies and releases a large dead backing" {
+    const data = boundary.data_v2;
+    const Store = @FieldType(Session, "store");
+    const big = try testing.allocator.alloc(u8, 128 * 1024);
+    defer testing.allocator.free(big);
+    @memset(big, 0x5a);
+    const small: data.graph.Value = .{ .schema = 0, .body = .{ .blob = .{ .id = 1 } } };
+    // This is a physical Store test: no executable Program or control transition.
+    const state: data.process_state.State = .{
+        .program_identity = .{0} ** 32,
+        .status = .active,
+        .roots = .{ .current = .{ .id = 0 } },
+        .nodes = &.{.{ .record = .{ .environment = .{ .values = &.{
+            .{ .schema = 0, .body = .{ .blob = .{ .id = 0 } } }, small,
+        }, .tail = null } } }},
+        .blobs = &.{ .{ .schema = 0, .bytes = big }, .{ .schema = 0, .bytes = "small" } },
+    };
+    const bytes = try data.state_image.emit(testing.allocator, state);
+    defer testing.allocator.free(bytes);
+    var decoded = try data.state_image.decodeGraph(testing.allocator, bytes);
+    var moved = false;
+    defer if (!moved) decoded.deinit();
+    var store: Store = .{ .allocator = testing.allocator };
+    defer store.deinit();
+    var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+    store.statistics = &statistics.storage;
+    var baseline: Store = .{ .allocator = testing.allocator };
+    defer baseline.deinit();
+    var baseline_statistics: @TypeOf(statistics) = .{};
+    baseline.statistics = &baseline_statistics.storage;
+    try baseline.import(.{
+        .program_identity = state.program_identity,
+        .status = .active,
+        .roots = state.roots,
+        .nodes = &.{state.nodes[0].record},
+        .blobs = state.blobs,
+    });
+    try testing.expectEqual(big.len + 5, baseline_statistics.storage.copied_blob_bytes);
+    try store.importOwned(&decoded);
+    moved = true;
+    try testing.expectEqual(0, statistics.storage.copied_blob_bytes);
+    try testing.expect(store.imported.?.arena.queryCapacity() >= big.len);
+    try store.replace(.{ .id = 0 }, .{ .environment = .{ .values = &.{small}, .tail = null } });
+    try store.collect(state.roots);
+    try testing.expect(store.imported == null);
+    try testing.expectEqual(5, statistics.storage.copied_blob_bytes);
+    try testing.expectEqualStrings("small", store.blobs.items[1].bytes);
+    const interned = try store.literal(&.{.bytes}, .{ .schema = 0, .bytes = "small" });
+    try testing.expectEqual(1, interned.body.blob.id);
 }
 
 test "BPI3 scalar and collection faults preserve the existing independent expectations" {
