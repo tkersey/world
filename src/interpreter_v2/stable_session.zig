@@ -38,6 +38,13 @@ pub const Session = struct {
     transitions: usize = 0,
     statistics: ?*@import("process.zig").Statistics = null,
 
+    /// Own all executable records before returning; the image may be released.
+    pub fn initImage(allocator: std.mem.Allocator, image: []const u8, arguments: []const u8) (Error || data.program_image.Error)!Session {
+        var decoded = try data.program_image.decode(allocator, image);
+        defer decoded.deinit();
+        return init(allocator, decoded.program, arguments);
+    }
+
     pub fn init(allocator: std.mem.Allocator, input: ir.Program, arguments: []const u8) Error!Session {
         const program = try heap.duplicate(ir.Program, allocator, input);
         errdefer heap.release(ir.Program, allocator, program);

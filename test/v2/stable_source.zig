@@ -4,6 +4,37 @@ const source = boundary.source;
 const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 
+fn initFromImage(allocator: std.mem.Allocator, program: boundary.data_v2.activation.Program, arguments: []const u8) !Session {
+    const codec = boundary.data_v2.program_image;
+    const image = try allocator.alloc(u8, try codec.encodedLength(program));
+    defer allocator.free(image);
+    _ = try codec.encode(allocator, program, image);
+    const result = try Session.initImage(allocator, image, arguments);
+    @memset(image, 0xff);
+    return result;
+}
+
+test "BPI3 scalar and collection faults preserve the existing independent expectations" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.scalarContracts(&builder));
+    defer compiled.deinit();
+    const expected = [_]?u64{ 3, null, null, null, null, null, null, null, null, null, null, 8, 2, 0, 4, 20, 240, 9, null };
+    const faults = [_]u8{ 0, 3, 2, 3, 2, 2, 4, 5, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5 };
+    for (expected, faults, 0..) |value, fault, index| {
+        var session = try initFromImage(testing.allocator, compiled.program, &.{@intCast(index)});
+        defer session.deinit();
+        const outcome = try session.run(null);
+        if (value) |n| {
+            try testing.expect(outcome == .completed);
+            try testing.expectEqual(n, std.mem.readInt(u64, (try session.bytes(&outcome.completed))[0..8], .little));
+        } else {
+            try testing.expect(outcome == .failed);
+            try testing.expectEqualSlices(u8, &.{fault}, try session.bytes(&outcome.failed));
+        }
+    }
+}
+
 test "stable borrow admission distinguishes older from fresh references through return clauses" {
     const fixture = @import("borrow_return_fixtures");
     for (std.enums.values(fixture.ResultFrom)) |from| {
@@ -18,7 +49,7 @@ test "stable borrow admission distinguishes older from fresh references through 
                     } else {
                         var compiled = try source.construct(testing.allocator, module);
                         defer compiled.deinit();
-                        var session = try Session.init(testing.allocator, compiled.program, &.{});
+                        var session = try initFromImage(testing.allocator, compiled.program, &.{});
                         defer session.deinit();
                         try testing.expect(try session.run(null) == .yielded);
                         try session.resumeYield();
@@ -38,7 +69,7 @@ test "stable resource implementations preserve private authority and loans acros
         defer builder.deinit();
         var compiled = try source.construct(testing.allocator, try example(&builder));
         defer compiled.deinit();
-        var session = try Session.init(testing.allocator, compiled.program, &.{});
+        var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
         var borrowed = false;
         for ([_][]const u8{ "example/resource-acquire", "example/resource-use", "example/resource-release" }, 0..) |name, index| {
@@ -63,7 +94,7 @@ test "stable cancellation releases the resource while its protected borrow is su
     defer builder.deinit();
     var compiled = try source.construct(testing.allocator, try source.examples.resourceScalar(&builder));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     try testing.expect(try session.run(null) == .requested);
     try session.answer(&.{ 41, 0, 0, 0, 0, 0, 0, 0 });
@@ -118,7 +149,7 @@ test "stable source installs real handlers and keeps the final checked sum after
         defer builder.deinit();
         var compiled = try source.construct(testing.allocator, try source.examples.installations(&builder, count));
         defer compiled.deinit();
-        var session = try Session.init(testing.allocator, compiled.program, &.{});
+        var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
         const result = try session.run(null);
         try testing.expect(result == .completed);
@@ -138,7 +169,7 @@ test "stable source preserves non-tail resumption and handler answer transformat
     defer builder.deinit();
     var compiled = try source.construct(testing.allocator, try source.examples.deep(&builder));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     const result = try session.run(null);
     try testing.expect(result == .completed);
@@ -150,7 +181,7 @@ test "stable source keeps two one-shot owners across an explicit yield" {
     defer builder.deinit();
     var compiled = try source.construct(testing.allocator, try source.examples.ownership(&builder));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     try testing.expect(try session.run(null) == .yielded);
     try session.resumeYield();
@@ -180,7 +211,7 @@ test "stable source retains an external request and joins into the same activati
     try builder.define(main, try builder.bind(value, request, branch));
     var compiled = try source.construct(testing.allocator, builder.module(main, unit));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{1});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{1});
     defer session.deinit();
     try testing.expect(try session.run(0) == .progressed);
     const pending = try session.run(null);
@@ -197,7 +228,7 @@ test "stable source retains an external request and joins into the same activati
 test "stable source owns its input and keeps tail-recursive control bounded" {
     var builder = source.Builder.init(testing.allocator);
     var compiled = try source.construct(testing.allocator, try source.examples.recursive(&builder));
-    var session = Session.init(testing.allocator, compiled.program, &.{ 16, 39, 0, 0, 0, 0, 0, 0 }) catch |err| {
+    var session = initFromImage(testing.allocator, compiled.program, &.{ 16, 39, 0, 0, 0, 0, 0, 0 }) catch |err| {
         compiled.deinit();
         builder.deinit();
         return err;
@@ -280,7 +311,7 @@ test "stable source resumes an owned package after its handler clause has return
     } })));
     var compiled = try source.construct(testing.allocator, b.module(main, unit));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     const observed = try session.run(null);
     try testing.expect(observed == .completed);
@@ -288,7 +319,7 @@ test "stable source resumes an owned package after its handler clause has return
 }
 
 fn failingSession(allocator: std.mem.Allocator, program: boundary.data_v2.activation.Program) !void {
-    var session = try Session.init(allocator, program, &.{});
+    var session = try initFromImage(allocator, program, &.{});
     defer session.deinit();
     const result = try session.run(null);
     try testing.expect(result == .completed);
@@ -314,7 +345,7 @@ test "stable source preserves multi-shot choice and branch-local versus outer sh
         defer builder.deinit();
         var compiled = try source.construct(testing.allocator, try example(&builder));
         defer compiled.deinit();
-        var session = try Session.init(testing.allocator, compiled.program, &.{});
+        var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
         const result = try session.run(null);
         try testing.expect(result == .completed);
@@ -328,7 +359,7 @@ test "stable source reenters a live template-cell cycle without sharing branch c
         defer builder.deinit();
         var compiled = try source.construct(testing.allocator, try example(&builder));
         defer compiled.deinit();
-        var session = try Session.init(testing.allocator, compiled.program, &.{});
+        var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
         var result = try session.run(1);
         var yielded = false;
@@ -357,7 +388,7 @@ test "stable source does not read a reclaimed copyable result only assigned to a
     try builder.define(main, try builder.bind(unused, try builder.pure(try builder.constant(u64, 7)), try builder.pure(try builder.constant(u64, 42))));
     var compiled = try source.construct(testing.allocator, builder.module(main, unit));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     const result = try session.run(null);
     try testing.expect(result == .completed);
@@ -422,7 +453,7 @@ test "stable retained template preserves an older activation across loop-slot re
         .scopes = .{ .captures = &.{.{ .fields = &.{}, .use = .reusable }} },
         .constructors = &.{.{ .function = 1, .capture = 0, .schema = 5 }},
     };
-    var session = try Session.init(testing.allocator, program, &.{});
+    var session = try initFromImage(testing.allocator, program, &.{});
     defer session.deinit();
     const result = try session.run(null);
     try testing.expect(result == .completed);
@@ -436,7 +467,7 @@ test "stable shallow value and computation resumptions omit the original return 
     defer builder.deinit();
     var compiled = try source.construct(testing.allocator, try source.examples.shallowResumptions(&builder));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     var result = try session.run(1);
     while (result == .progressed) {
@@ -459,7 +490,7 @@ test "stable injection selects definition-site versus use-site capabilities" {
         var compiled = try source.construct(testing.allocator, try example(&builder));
         defer compiled.deinit();
         for ([_]u8{ 0, 1 }) |injecting| {
-            var session = try Session.init(testing.allocator, compiled.program, &.{injecting});
+            var session = try initFromImage(testing.allocator, compiled.program, &.{injecting});
             defer session.deinit();
             var result = try session.run(1);
             var saw_injection = false;
@@ -484,7 +515,7 @@ test "stable successor handling preserves the shallow protocol" {
     var compiled = try source.construct(testing.allocator, try source.examples.shallow(&builder));
     defer compiled.deinit();
     for ([_]u8{ 0, 1 }) |invalid| {
-        var session = try Session.init(testing.allocator, compiled.program, &.{invalid});
+        var session = try initFromImage(testing.allocator, compiled.program, &.{invalid});
         defer session.deinit();
         const result = try session.run(null);
         if (invalid == 0) {
@@ -503,7 +534,7 @@ test "stable cleanup preserves primary failure and resumes external cleanup" {
     var compiled = try source.construct(testing.allocator, try source.examples.unwind(&builder));
     defer compiled.deinit();
     for ([_]u8{ 0, 1 }) |primary| {
-        var session = try Session.init(testing.allocator, compiled.program, &.{primary});
+        var session = try initFromImage(testing.allocator, compiled.program, &.{primary});
         defer session.deinit();
         for ([_][]const u8{ "example/middle-cleanup", "example/outer-cleanup" }) |name| {
             const pending = try session.run(null);
@@ -527,7 +558,7 @@ test "stable cancellation during yielded cleanup preserves the first reason" {
     var compiled = try source.construct(testing.allocator, try source.examples.yieldingCleanup(&builder));
     defer compiled.deinit();
     for ([_]u8{ 0, 1 }) |primary| {
-        var session = try Session.init(testing.allocator, compiled.program, &.{primary});
+        var session = try initFromImage(testing.allocator, compiled.program, &.{primary});
         defer session.deinit();
         for (0..2) |round| {
             try testing.expect(try session.run(null) == .yielded);
@@ -550,7 +581,7 @@ test "stable unwind preserves lexical and temporary-owner cleanup order" {
         defer builder.deinit();
         var compiled = try source.construct(testing.allocator, try source.examples.custodyOrder(&builder, @intCast(mode)));
         defer compiled.deinit();
-        var session = try Session.init(testing.allocator, compiled.program, &.{});
+        var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
         var requests: usize = 0;
         var yields: usize = 0;
@@ -610,7 +641,7 @@ test "stable cancellation preserves cleanup at entry yield request and answered 
     var compiled = try source.construct(testing.allocator, b.module(main, integer));
     defer compiled.deinit();
     for (0..4) |phase| {
-        var session = try Session.init(testing.allocator, compiled.program, &.{});
+        var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
         try testing.expectError(error.InvalidUtf8, session.cancel(.{ .text = &.{0xff} }));
         if (phase >= 1) try testing.expect(try session.run(null) == .yielded);
@@ -638,7 +669,7 @@ test "stable clause failure abandons a captured cleanup without losing its prima
     defer builder.deinit();
     var compiled = try source.construct(testing.allocator, try source.examples.clauseAbort(&builder));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     const pending = try session.run(null);
     try testing.expect(pending == .requested);
@@ -656,7 +687,7 @@ test "stable generator resumes private state and closes its retained cleanup" {
     defer builder.deinit();
     var compiled = try source.construct(testing.allocator, try source.examples.generator(&builder));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     var yields: usize = 0;
     var releases: usize = 0;
@@ -689,7 +720,7 @@ test "stable successor return clauses retain older capability and cell reference
     defer builder.deinit();
     var compiled = try source.construct(testing.allocator, try source.examples.successorState(&builder));
     defer compiled.deinit();
-    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     try testing.expect(try session.run(null) == .yielded);
     try session.store.collectWith(session.roots, &session.frames);

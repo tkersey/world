@@ -6,7 +6,7 @@ remains the goal. No merge, release or application data operation has occurred.
 
 World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
 `feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `02e9900de60ba2ee761c3504f41cb91610510853`, Zig 0.16.0,
+successor worktree at `241f7bc5bee637177998969e91e69b960402a9c5`, Zig 0.16.0,
 and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
 
 ## Private activation slots
@@ -157,8 +157,18 @@ working-memory comparison and predecessor-gain acceptance remain unproved.
 
 ## Next required work
 
+`Session.initImage` now accepts Boundary's BPI3 bytes. The complete stable source
+suite encodes the staged construction, loads it, overwrites and frees the image,
+then drives the native session. This covers the existing generalized-control,
+resource, cleanup, cancellation and reentrant witnesses through the image path.
+All 26 stable-source tests pass, including the 19 scalar/collection scenarios
+with the predecessor suite's unchanged independent expectations. The loader
+currently decodes, admits and copies into the existing session owner; a
+prepared immutable Program owner that avoids repeated admission remains required.
+This is codec integration, not PST3 transfer or ABI 3 completion.
+
 Complete portable Program/State integration and State provenance admission.
 Prepared lifetime, whole-Session
-transactions, BPI3/PST3/current protocols, ABI 3, browser/server transfer, Agent
+transactions, PST3/current protocols, ABI 3, browser/server transfer, Agent
 migration, component linking, performance acceptance, legacy retirement and linked
 draft PRs remain open. Native source agreement does not prove portable execution.
