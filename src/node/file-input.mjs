@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { worldError } from "./errors.mjs";
+import { worldError } from "../embedding/errors.mjs";
 
 /** Read one opened regular-file extent and reject changes during the read. */
 export async function readRegularFile(path, validateLength) {

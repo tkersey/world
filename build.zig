@@ -125,12 +125,28 @@ pub fn build(b: *std.Build) void {
     current_kernel.max_memory = b.option(u64, "maximum-memory", "Current wasm32 memory maximum in whole pages") orelse 256 << 20;
     b.step("build-kernel", "Build the generic ABI 3 kernel")
         .dependOn(&b.addInstallFileWithDir(current_kernel.getEmittedBin(), .prefix, "world-kernel.wasm").step);
+    const runtime_package = b.step("build-runtime", "Build the standalone current JavaScript/kernel package");
+    runtime_package.dependOn(&b.addInstallFileWithDir(current_kernel.getEmittedBin(), .prefix, "runtime/world-kernel.wasm").step);
+    for ([_][]const u8{
+        "LICENSE",                 "README.md",                "package.json",            "bin/world.mjs",            "docs/kernel-abi.md",
+        "src/embedding/index.mjs", "src/embedding/kernel.mjs", "src/embedding/codec.mjs", "src/embedding/values.mjs", "src/embedding/wasm.mjs",
+        "src/embedding/wire.mjs",  "src/embedding/errors.mjs", "src/node/file-input.mjs",
+    }) |path| runtime_package.dependOn(&b.addInstallFileWithDir(b.path(path), .prefix, b.fmt("runtime/{s}", .{path})).step);
     const current_fixtures = b.addSystemCommand(&.{ "zig", "build", "--build-file" });
     current_fixtures.addFileArg(b.path("test/v2/build_source.zig"));
     current_fixtures.addArg(b.fmt("-Dworld-source={s}", .{b.pathFromRoot(".")}));
     current_fixtures.addArg(b.fmt("-Dboundary-v2-source={s}", .{source}));
     current_fixtures.addArgs(&.{ "-Dcurrent-fixtures=true", "-Doptimize=ReleaseSafe", "--prefix", b.getInstallPath(.prefix, "current"), "--cache-dir", b.pathFromRoot(".cache/current-fixture-local"), "--global-cache-dir", b.pathFromRoot(".cache/activation-global") });
     current_fixtures.has_side_effects = true;
+    const current_package_check = b.addSystemCommand(&.{"node"});
+    current_package_check.addFileArg(b.path("test/current/package.mjs"));
+    current_package_check.addArg(b.getInstallPath(.prefix, "runtime"));
+    current_package_check.addArg(b.getInstallPath(.prefix, "current/bin/current-fixtures"));
+    current_package_check.step.dependOn(runtime_package);
+    current_package_check.step.dependOn(&current_fixtures.step);
+    current_package_check.has_side_effects = true;
+    b.step("check-package", "Run the current API and CLI from an extracted package")
+        .dependOn(&current_package_check.step);
     const current_check = b.addSystemCommand(&.{"node"});
     current_check.addFileArg(b.path("test/current/kernel.mjs"));
     current_check.addFileArg(current_kernel.getEmittedBin());

@@ -1,4 +1,4 @@
-import { Kernel } from "/src/embedding/kernel.mjs";
+import { Kernel } from "/src/embedding/index.mjs";
 let kernel, session;
 self.onmessage = async ({ data }) => {
   try {

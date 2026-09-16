@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { Kernel } from "../../src/embedding/kernel.mjs";
+import { Kernel } from "../../src/embedding/index.mjs";
 import { inspectKernelWasm, KERNEL_EXPORT_NAMES } from "../../src/embedding/wasm.mjs";
-import { encodeInput, decodeOutcome, decodeRequest, encodeResult } from "../../src/embedding/codec.mjs";
+import { encodeInput, decodeOutcome, decodeRequest, encodeResult } from "../../src/embedding/index.mjs";
 
 const [kernelPath, fixtureTool] = process.argv.slice(2);
 const bytes = new Uint8Array(await readFile(kernelPath));

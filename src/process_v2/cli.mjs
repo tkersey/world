@@ -4,7 +4,7 @@ import { resolve, dirname, basename, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { admitProcessKernel, encodeInput, packageVersion } from "./index.mjs";
 import { readProcessKernelFile } from "./kernel_file.mjs";
-import { readRegularFile } from "./file_input.mjs";
+import { readRegularFile } from "../node/file-input.mjs";
 
 export const help = `Usage: world process <step|run> --image FILE (--initial FILE | --state FILE) --output FILE
   --kernel FILE --kernel-sha256 HEX  Use an explicitly digest-bound kernel

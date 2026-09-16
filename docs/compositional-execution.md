@@ -271,6 +271,11 @@ boundaries, and the Wasmtime transfer lane passes 29 including linked components
 The source-independent linker remains owned by Boundary; no compiler or linker
 enters the production World kernel.
 
+World is now version `6.0.0-dev.0` and normally pins Boundary `3.0.0-dev.0`.
+Its root JavaScript export and standalone runtime package use ABI 3; Node file
+loading remains separate from browser-neutral byte execution. Extracted-package
+API/CLI checks pass, including capacity/retry and input/identity rejection.
+
 Agent migration and its actual compiled-tool/file transfer, component contract completion,
-selective execution, value/performance acceptance, normal package cutover, legacy
+selective execution, value/performance acceptance, complete consumer package cutover, legacy
 retirement and linked draft-PR/serial-review delivery remain mandatory.

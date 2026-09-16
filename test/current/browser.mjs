@@ -5,7 +5,7 @@ import { resolve, extname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chromium, firefox } from "./browser-tools/node_modules/playwright-core/index.mjs";
-import { encodeInput, decodeOutcome, decodeRequest, encodeResult } from "../../src/embedding/codec.mjs";
+import { encodeInput, decodeOutcome, decodeRequest, encodeResult } from "../../src/embedding/index.mjs";
 const [kernelPath, fixtureTool] = process.argv.slice(2);
 const kernel = await readFile(kernelPath);
 const sha256 = createHash("sha256").update(kernel).digest("hex");

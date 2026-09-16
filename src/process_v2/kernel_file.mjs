@@ -1,6 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
 import { assertProcessKernelByteLength } from "./wasm.mjs";
-import { readRegularFile } from "./file_input.mjs";
+import { readRegularFile } from "../node/file-input.mjs";
 
 /** Retain every selected file alongside the bytes and their digest authority. */
 export async function readProcessKernelFile({ kernelPath, expectedSha256 } = {}, packageVersion) {

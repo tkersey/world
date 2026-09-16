@@ -121,8 +121,9 @@ zig build build-kernel check-kernel check-transfer check-browser check-codecs \
   --global-cache-dir .zig-global-cache --summary all
 ```
 
-The development source override is explicit. Final normal dependency pins and
-package exports still require the coordinated successor cutover. `build-kernel`
+The development source override is explicit. The normal dependency now selects
+Boundary 3 development source, and the package root exports the current byte API.
+Final namespace retirement and coordinated Agent cutover remain open. `build-kernel`
 alone never constructs the source compiler. Qualification commands print the exact
 kernel digest and engine versions; local emitted fixture/tool files are not releases.
 
@@ -142,3 +143,10 @@ and old-family rejection have negative checks.
 This qualifies the core runtime/embedding paths. It is not the required Agent
 compiled-tool/file witness, extracted-package
 qualification, or final performance acceptance. Those remain part of the full goal.
+
+`zig build build-runtime check-package` builds a standalone current package and
+checks its API and CLI after npm packing and extraction. The 64-installation
+fixture demonstrates working-capacity rejection at the initial 1 MiB budget and
+successful unchanged-input retry with an explicit 8 MiB budget. It does not claim
+that all applications fit the initial budget. The CLI writes PKO3 to stdout and
+keeps filesystem loading in the Node-only shell.
