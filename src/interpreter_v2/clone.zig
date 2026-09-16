@@ -9,10 +9,15 @@ const Error = @import("process.zig").Error;
 const Map = std.AutoHashMap(p.Id, g.NodeRef);
 
 pub fn instantiate(allocator: std.mem.Allocator, store: *Store, template: g.Capture) Error!g.Capture {
+    return instantiateFrames(allocator, store, template, NoFrames{});
+}
+
+pub fn instantiateFrames(allocator: std.mem.Allocator, store: *Store, template: g.Capture, frames: anytype) Error!g.Capture {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var copy: Cloner = .{
+    var copy: Cloner(@TypeOf(frames)) = .{
+        .frames = frames,
         .allocator = scratch,
         .store = store,
         .map = Map.init(scratch),
@@ -44,6 +49,7 @@ pub fn instantiate(allocator: std.mem.Allocator, store: *Store, template: g.Capt
         };
         refs.clearRetainingCapacity();
         try data.snapshot.references(g.Node, node, &refs, scratch);
+        try copy.frames.references(original.id, &refs, scratch);
         index += 1;
         for (refs.items) |reference| if (reference == .node) {
             const ref: g.NodeRef = .{ .id = reference.node };
@@ -61,94 +67,106 @@ pub fn instantiate(allocator: std.mem.Allocator, store: *Store, template: g.Capt
     for (copy.originals.items) |ref| {
         const changed = try rebase(g.Node, scratch, try store.get(ref), copy.map);
         try store.replace(copy.map.get(ref.id).?, changed);
+        try copy.frames.rebaseFrame(copy.map.get(ref.id).?.id, copy.map);
     }
     var result = try rebase(g.Capture, scratch, template, copy.map);
     result.use_site_capabilities = try allocator.dupe(g.Value, result.use_site_capabilities);
     return result;
 }
 
-const Cloner = struct {
-    allocator: std.mem.Allocator,
-    store: *Store,
-    map: Map,
-    originals: std.ArrayList(g.NodeRef) = .empty,
-    templates: std.ArrayList(g.NodeRef) = .empty,
-    waiting: std.AutoHashMap(p.Id, std.ArrayList(g.NodeRef)),
-    considered: std.AutoHashMap(p.Id, void),
-    discovered: std.AutoHashMap(p.Id, void),
-    pending: std.ArrayList(g.NodeRef) = .empty,
-    dependents: std.AutoHashMap(p.Id, std.ArrayList(g.NodeRef)),
+fn Cloner(comptime FrameOwner: type) type {
+    return struct {
+        const Self = @This();
+        frames: FrameOwner,
+        allocator: std.mem.Allocator,
+        store: *Store,
+        map: Map,
+        originals: std.ArrayList(g.NodeRef) = .empty,
+        templates: std.ArrayList(g.NodeRef) = .empty,
+        waiting: std.AutoHashMap(p.Id, std.ArrayList(g.NodeRef)),
+        considered: std.AutoHashMap(p.Id, void),
+        discovered: std.AutoHashMap(p.Id, void),
+        pending: std.ArrayList(g.NodeRef) = .empty,
+        dependents: std.AutoHashMap(p.Id, std.ArrayList(g.NodeRef)),
 
-    fn discover(self: *Cloner, ref: g.NodeRef) Error!void {
-        const entry = try self.discovered.getOrPut(ref.id);
-        if (!entry.found_existing) try self.pending.append(self.allocator, ref);
-    }
+        fn discover(self: *Self, ref: g.NodeRef) Error!void {
+            const entry = try self.discovered.getOrPut(ref.id);
+            if (!entry.found_existing) try self.pending.append(self.allocator, ref);
+        }
 
-    fn addDependency(self: *Cloner, child: g.NodeRef, parent: g.NodeRef) Error!void {
-        const entry = try self.dependents.getOrPut(child.id);
-        if (!entry.found_existing) entry.value_ptr.* = .empty;
-        try entry.value_ptr.append(self.allocator, parent);
-        if (self.map.contains(child.id)) try self.include(parent);
-    }
+        fn addDependency(self: *Self, child: g.NodeRef, parent: g.NodeRef) Error!void {
+            const entry = try self.dependents.getOrPut(child.id);
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            try entry.value_ptr.append(self.allocator, parent);
+            if (self.map.contains(child.id)) try self.include(parent);
+        }
 
-    fn include(self: *Cloner, ref: g.NodeRef) Error!void {
-        if (self.map.contains(ref.id)) return;
-        const copied = try self.store.add(try self.store.get(ref));
-        try self.map.put(ref.id, copied);
-        try self.originals.append(self.allocator, ref);
-        try self.discover(ref);
-        if (self.waiting.fetchRemove(ref.id)) |waiting| try self.templates.appendSlice(self.allocator, waiting.value.items);
-    }
+        fn include(self: *Self, ref: g.NodeRef) Error!void {
+            if (self.map.contains(ref.id)) return;
+            const copied = try self.store.add(try self.store.get(ref));
+            try self.frames.copyFrame(ref.id, copied.id);
+            try self.map.put(ref.id, copied);
+            try self.originals.append(self.allocator, ref);
+            try self.discover(ref);
+            if (self.waiting.fetchRemove(ref.id)) |waiting| try self.templates.appendSlice(self.allocator, waiting.value.items);
+        }
 
-    fn capture(self: *Cloner, saved: g.Capture, include_handler: bool) Error!void {
-        var cursor = saved.capture;
-        while (cursor) |ref| {
-            const record = try self.store.get(ref);
-            try self.include(ref);
-            if (ref.id == saved.delimiter.id) {
-                if (include_handler) try self.include(record.attachment.handler);
-                return;
+        fn capture(self: *Self, saved: g.Capture, include_handler: bool) Error!void {
+            var cursor = saved.capture;
+            while (cursor) |ref| {
+                const record = try self.store.get(ref);
+                try self.include(ref);
+                if (ref.id == saved.delimiter.id) {
+                    if (include_handler) try self.include(record.attachment.handler);
+                    return;
+                }
+                cursor = switch (record) {
+                    .continuation => |continuation| continuation.parent,
+                    .attachment => |attachment| blk: {
+                        try self.include(attachment.handler);
+                        break :blk attachment.return_to;
+                    },
+                    .region_scope => |scope| blk: {
+                        try self.include(scope.region);
+                        break :blk scope.return_to;
+                    },
+                    .injection => |injected| injected.continuation,
+                    else => return error.InvalidState,
+                };
             }
-            cursor = switch (record) {
-                .continuation => |continuation| continuation.parent,
-                .attachment => |attachment| blk: {
-                    try self.include(attachment.handler);
-                    break :blk attachment.return_to;
-                },
-                .region_scope => |scope| blk: {
-                    try self.include(scope.region);
-                    break :blk scope.return_to;
-                },
-                .injection => |injected| injected.continuation,
-                else => return error.InvalidState,
+            return error.InvalidScope;
+        }
+
+        fn template(self: *Self, ref: g.NodeRef) Error!void {
+            if (self.map.contains(ref.id)) return;
+            const saved = (try self.store.get(ref)).multi_template;
+            const delimiter = (try self.store.get(saved.delimiter)).attachment;
+            const activation = (try self.store.get(delimiter.handler)).handler;
+            const dependencies = [_]?g.NodeRef{ delimiter.outer, activation.region };
+            for (dependencies) |dependency| if (dependency) |owner| {
+                if (self.map.contains(owner.id)) {
+                    // A nested template borrows from this capture. Rebase its frozen
+                    // graph too; templates whose owners are outside retain identity.
+                    try self.include(ref);
+                    try self.capture(saved, true);
+                    return;
+                }
+            };
+            const seen = try self.considered.getOrPut(ref.id);
+            if (seen.found_existing) return;
+            for (dependencies) |dependency| if (dependency) |owner| {
+                const waiting = try self.waiting.getOrPut(owner.id);
+                if (!waiting.found_existing) waiting.value_ptr.* = .empty;
+                try waiting.value_ptr.append(self.allocator, ref);
             };
         }
-        return error.InvalidScope;
-    }
+    };
+}
 
-    fn template(self: *Cloner, ref: g.NodeRef) Error!void {
-        if (self.map.contains(ref.id)) return;
-        const saved = (try self.store.get(ref)).multi_template;
-        const delimiter = (try self.store.get(saved.delimiter)).attachment;
-        const activation = (try self.store.get(delimiter.handler)).handler;
-        const dependencies = [_]?g.NodeRef{ delimiter.outer, activation.region };
-        for (dependencies) |dependency| if (dependency) |owner| {
-            if (self.map.contains(owner.id)) {
-                // A nested template borrows from this capture. Rebase its frozen
-                // graph too; templates whose owners are outside retain identity.
-                try self.include(ref);
-                try self.capture(saved, true);
-                return;
-            }
-        };
-        const seen = try self.considered.getOrPut(ref.id);
-        if (seen.found_existing) return;
-        for (dependencies) |dependency| if (dependency) |owner| {
-            const waiting = try self.waiting.getOrPut(owner.id);
-            if (!waiting.found_existing) waiting.value_ptr.* = .empty;
-            try waiting.value_ptr.append(self.allocator, ref);
-        };
-    }
+const NoFrames = struct {
+    fn references(_: NoFrames, _: p.Id, _: *std.ArrayList(data.snapshot.Reference), _: std.mem.Allocator) Error!void {}
+    fn copyFrame(_: NoFrames, _: p.Id, _: p.Id) Error!void {}
+    fn rebaseFrame(_: NoFrames, _: p.Id, _: Map) Error!void {}
 };
 
 fn rebase(comptime T: type, allocator: std.mem.Allocator, value: T, map: Map) Error!T {

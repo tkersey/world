@@ -59,6 +59,14 @@ pub fn build(b: *std.Build) void {
     source_tests.has_side_effects = true;
     const source_step = b.step("check-v2-source", "Check source agreement in a separate compiler-dependent test build");
     source_step.dependOn(&source_tests.step);
+    const stable_source = b.addSystemCommand(&.{ "zig", "build", "--build-file" });
+    stable_source.addFileArg(b.path("test/v2/build_source.zig"));
+    stable_source.addArg(b.fmt("-Dworld-source={s}", .{b.pathFromRoot(".")}));
+    stable_source.addArg(b.fmt("-Dboundary-v2-source={s}", .{source}));
+    stable_source.addArgs(&.{ "-Dstable=true", "-Doptimize=ReleaseSafe", "--cache-dir", b.pathFromRoot(".cache/stable-source-local"), "--global-cache-dir", b.pathFromRoot(".cache/activation-global") });
+    stable_source.has_side_effects = true;
+    b.step("check-stable-source", "Check staged source on stable native control")
+        .dependOn(&stable_source.step);
     const fixture_module = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/tests.zig"),
         .target = target,

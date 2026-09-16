@@ -8,6 +8,7 @@ const Error = process.Error;
 const Outcome = process.Outcome;
 
 pub const Machine = struct {
+    pub const ExecutionError = process.Error;
     allocator: std.mem.Allocator,
     program: p.Program,
     identity: [32]u8,
@@ -33,7 +34,7 @@ pub const Machine = struct {
         self.roots.current = try self.store.addOwned(.{ .control = .{ .block = entry.entry, .arguments = values } });
     }
 
-    fn instructionFailure(self: *Machine, instruction: p.Instruction, fault: p.Fault) Error!g.Value {
+    pub fn instructionFailure(self: *Machine, instruction: p.Instruction, fault: p.Fault) Error!g.Value {
         for (instruction.failures) |failure| if (failure.kind == fault) return self.store.literal(self.program.schemas, self.program.constants[@intCast(failure.value)]);
         return error.InvalidProgram;
     }
@@ -89,7 +90,11 @@ pub const Machine = struct {
     fn evaluateBlock(self: *Machine, block: p.Block, arguments: []const g.Value, control: g.Control) Error!?[]g.Value {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        var aggregate_values: @import("values.zig").Values = .{ .allocator = scratch.allocator(), .schemas = self.program.schemas, .store = &self.store };
+        var values: @import("values.zig").Values = .{
+            .allocator = scratch.allocator(),
+            .schemas = self.program.schemas,
+            .store = &self.store,
+        };
         const count = std.math.add(usize, arguments.len, block.instructions.len) catch return error.InvalidLength;
         const slots = try self.allocator.alloc(g.Value, count);
         var returned_slots = false;
@@ -97,98 +102,13 @@ pub const Machine = struct {
         @memcpy(slots[0..arguments.len], arguments);
         for (block.instructions, 0..) |instruction, index| {
             const target = arguments.len + index;
-            slots[target] = switch (instruction.opcode) {
-                .constant => try self.store.literal(self.program.schemas, self.program.constants[@intCast(instruction.immediate)]),
-                .move => slots[@intCast(instruction.operands[0])],
-                .integer_add, .integer_sub, .integer_mul, .integer_div, .integer_rem, .integer_bit_and, .integer_bit_or, .integer_bit_xor, .equal, .less => blk: {
-                    const left = &slots[@intCast(instruction.operands[0])];
-                    const right = &slots[@intCast(instruction.operands[1])];
-                    const shape = self.program.schemas[@intCast(left.schema)];
-                    const a = try data.scalar.fromBytes(shape, try self.bytes(left));
-                    const b = try data.scalar.fromBytes(shape, try self.bytes(right));
-                    switch (try data.scalar.binary(instruction.opcode, shape, a, b)) {
-                        .fault => |fault| {
-                            const failure = try self.instructionFailure(instruction, fault);
-                            try @import("unwind.zig").fail(self, failure, control, slots[0..target], block.instructions[0..index]);
-                            return null;
-                        },
-                        .value => |value| break :blk .{ .schema = instruction.result_type, .body = .{ .scalar = value } },
-                    }
-                },
-                .integer_bit_not, .integer_convert, .enum_tag => blk: {
-                    const source = slots[@intCast(instruction.operands[0])];
-                    switch (try data.scalar.unary(instruction.opcode, self.program.schemas[@intCast(source.schema)], self.program.schemas[@intCast(instruction.result_type)], source.body.scalar)) {
-                        .value => |value| break :blk .{ .schema = instruction.result_type, .body = .{ .scalar = value } },
-                        .fault => |fault| {
-                            try @import("unwind.zig").fail(self, try self.instructionFailure(instruction, fault), control, slots[0..target], block.instructions[0..index]);
-                            return null;
-                        },
-                    }
-                },
-                .boolean_not => blk: {
-                    var value = [_]u8{0} ** 8;
-                    value[0] = 1 - (try self.bytes(&slots[@intCast(instruction.operands[0])]))[0];
-                    break :blk .{ .schema = instruction.result_type, .body = .{ .scalar = value } };
-                },
-                .computation => blk: {
-                    const environment = try self.captureEnvironment(slots, instruction.operands);
-                    const closure = try self.store.add(.{ .computation = .{ .constructor = instruction.immediate, .environment = environment } });
-                    const use = self.program.schemas[@intCast(instruction.result_type)].internal.computation.use;
-                    break :blk .{ .schema = instruction.result_type, .body = if (use == .reusable or use == .multi) .{ .reference = closure } else .{ .owned = .{ .node = closure } } };
-                },
-                .product, .field, .variant, .variant_tag, .variant_payload, .select, .sequence, .sequence_length, .sequence_get, .sequence_append, .sequence_concat, .sequence_pop, .sequence_set, .sequence_take, .sequence_pop_last => aggregate_values.evaluate(instruction, slots) catch |err| {
-                    const fault: p.Fault = switch (err) {
-                        error.CollectionCapacity => .capacity_exceeded,
-                        error.ElementIndex => .invalid_index,
-                        error.WrongVariant => .invalid_variant,
-                        else => |other| return other,
-                    };
-                    try @import("unwind.zig").fail(self, try self.instructionFailure(instruction, fault), control, slots[0..target], block.instructions[0..index]);
+            switch (try @import("instruction.zig").execute(self, instruction, slots, &values)) {
+                .value => |value| slots[target] = value,
+                .failed => |failure| {
+                    try @import("unwind.zig").fail(self, failure, control, slots[0..target], block.instructions[0..index]);
                     return null;
                 },
-                .blob_length, .blob_concat, .blob_slice, .blob_compare, .blob_byte, .text_scalar, .text_integer, .blob_from_byte => blk: {
-                    switch (try @import("blobs.zig").evaluate(&aggregate_values, instruction, slots)) {
-                        .value => |value| break :blk value,
-                        .fault => |fault| {
-                            try @import("unwind.zig").fail(self, try self.instructionFailure(instruction, fault), control, slots[0..target], block.instructions[0..index]);
-                            return null;
-                        },
-                    }
-                },
-                .cell_new => blk: {
-                    const region = valueRef(slots[@intCast(instruction.operands[0])]);
-                    const cell = try self.store.add(.{ .cell = .{ .schema = instruction.result_type, .region = region, .value = slots[@intCast(instruction.operands[1])] } });
-                    break :blk .{ .schema = instruction.result_type, .body = .{ .reference = cell } };
-                },
-                .cell_get => (try self.store.get(valueRef(slots[@intCast(instruction.operands[0])]))).cell.value orelse return error.InvalidState,
-                .cell_set => blk: {
-                    const reference = valueRef(slots[@intCast(instruction.operands[0])]);
-                    var cell = (try self.store.get(reference)).cell;
-                    cell.value = slots[@intCast(instruction.operands[1])];
-                    try self.store.replace(reference, .{ .cell = cell });
-                    break :blk .{ .schema = instruction.result_type, .body = .{ .scalar = [_]u8{0} ** 8 } };
-                },
-                .package => blk: {
-                    const package = try self.store.add(.{ .package = .{ .schema = instruction.result_type, .continuation = slots[@intCast(instruction.operands[0])] } });
-                    break :blk .{ .schema = instruction.result_type, .body = .{ .owned = .{ .node = package } } };
-                },
-                .unpack => (try self.store.get(valueRef(slots[@intCast(instruction.operands[0])]))).package.continuation,
-                .clone_resumption => blk: {
-                    var captured = try self.takeCapture(slots[@intCast(instruction.operands[0])]);
-                    captured.schema = instruction.result_type;
-                    const template = try self.store.add(.{ .multi_template = captured });
-                    if (self.statistics) |statistics| statistics.multi_templates +|= 1;
-                    break :blk .{ .schema = instruction.result_type, .body = .{ .reference = template } };
-                },
-                .resource_pack => blk: {
-                    const resource = try self.store.add(.{ .resource = .{ .schema = instruction.result_type, .value = slots[@intCast(instruction.operands[0])] } });
-                    break :blk .{ .schema = instruction.result_type, .body = .{ .owned = .{ .node = resource } } };
-                },
-                .resource_unpack => blk: {
-                    const record = try self.store.get(valueRef(slots[@intCast(instruction.operands[0])]));
-                    break :blk (if (record == .borrow) (try self.store.get(record.borrow.resource)).resource else record.resource).value;
-                },
-            };
+            }
         }
         returned_slots = true;
         return slots;
@@ -327,13 +247,6 @@ pub const Machine = struct {
             .owned => |owned| owned.node,
             else => unreachable,
         };
-    }
-
-    fn captureEnvironment(self: *Machine, slots: []const g.Value, operands: []const p.Id) Error!g.NodeRef {
-        const values = try self.allocator.alloc(g.Value, operands.len);
-        errdefer self.allocator.free(values);
-        for (values, operands) |*value, operand| value.* = slots[@intCast(operand)];
-        return self.store.addOwned(.{ .environment = .{ .values = values, .tail = null } });
     }
 
     fn enterOwned(self: *Machine, function: p.Id, arguments: []g.Value, parent: ?g.NodeRef, evidence: ?g.NodeRef, region: ?g.NodeRef) Error!void {

@@ -86,10 +86,55 @@ The definition-bound route check found no applicable exclusion for stable-slot
 storage; no negative-evidence record was changed. The new mechanism still owes
 the specification's measured complete-path comparison.
 
+## Native stable-control slice
+
+`stable_session.zig` now executes the direct Boundary `source.construct` records.
+Function inputs populate stable slots; continuation nodes own private frame views
+rather than predecessor argument vectors. Changed-only edge assignments use
+simultaneous sources and omit dead copyable destinations. Reclamation uses set
+differences, and the graph collector traces bindings in live control frames.
+The same instruction implementation serves both layouts during migration.
+The predecessor controller remains until the successor contract is complete;
+unsupported successor features never dispatch to it.
+
+The existing graph cloner now includes stable frames. Captured branch-local cells
+are relocated, genuinely outer cells remain shared, and only changed references
+cause slot-page copies. Native source checks pass for 1/8/64/128/256 real handler
+installations with the final checked sum preserved, non-tail answer transformation,
+typed external suspension and joins, two simultaneous one-shot owners, an escaping
+owned suspension package, multi-shot choice, local/shared cells, cyclic reentry,
+and 10,000 tail calls. A handwritten admitted loop additionally proves that
+rebinding slots in one resumed branch does not change an older retained template.
+These preserve independent existing expected values; no candidate-generated oracle
+replaces those expectations.
+
+The native driver owns its Program and analysis after authoring storage is released.
+Optional instruction/control quanta yield progress. Allocation-failure sweeps cover
+partial-owner cleanup. Full resident rollback is NOT implemented: an operational
+failure after mutation poisons this internal driver, while malformed typed replies
+reject before mutation. No portable checkpoint or old-format fallback is exposed.
+Cleanup/protection, shallow handling, injected resumption and borrowed/resource
+execution reject before starting. These are incomplete requirements, not supported
+behavior removed from the final successor.
+
+Run the separate compiler-dependent lane with:
+
+```sh
+zig build check-stable-source \
+  -Dboundary-v2-source=/absolute/path/to/boundary-compositional-execution \
+  --global-cache-dir .cache/activation-global --summary all
+```
+
+The first implementation collects every 256 native transitions; this is a bounded
+correctness cadence, not an accepted performance conclusion. The cyclic-reentry
+witness additionally collects after every transition to challenge missing roots.
+Slot movement is bounded in the installation test, but complete-path timing,
+working-memory comparison and predecessor-gain acceptance remain unproved.
+
 ## Next required work
 
-Connect stable control and lexical custody to these slots in the production
-evaluator, complete borrowed-context admission, and run the M1 staged-source
-witnesses. Prepared lifetime, whole-Session transactions, quanta, BPI3/PST3/current
-protocols, ABI 3, browser/server transfer, Agent migration, component linking,
-performance acceptance, legacy retirement and the linked draft PRs remain open.
+Complete shallow/injected control, authored cancellation and cleanup with lexical
+custody ordering, and borrow/context admission. Prepared lifetime, whole-Session
+transactions, BPI3/PST3/current protocols, ABI 3, browser/server transfer, Agent
+migration, component linking, performance acceptance, legacy retirement and linked
+draft PRs remain open. Native source agreement does not prove portable execution.

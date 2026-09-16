@@ -138,6 +138,10 @@ pub const Store = struct {
 
     /// Traces strong reachability, including cycles. Reclamation performs no effects.
     pub fn collect(self: *Store, roots: g.Roots) Error!void {
+        return self.collectWith(roots, NoFrames{});
+    }
+
+    pub fn collectWith(self: *Store, roots: g.Roots, frames: anytype) Error!void {
         try self.marks.ensureTotalCapacityPrecise(self.allocator, self.nodes.items.len);
         try self.blob_marks.ensureTotalCapacityPrecise(self.allocator, self.blobs.items.len);
         self.marks.items.len = self.nodes.items.len;
@@ -157,6 +161,7 @@ pub const Store = struct {
                 marks[@intCast(id)] = true;
                 const before = pending.items.len;
                 try data.snapshot.references(g.Node, self.nodes.items[@intCast(id)], pending, self.allocator);
+                try frames.references(id, pending, self.allocator);
                 if (self.statistics) |s| {
                     s.traced_nodes +|= 1;
                     s.traced_edges +|= pending.items.len - before;
@@ -171,6 +176,7 @@ pub const Store = struct {
         try self.free_blobs.ensureTotalCapacity(self.allocator, blob_marks.len);
         if (self.statistics) |s| s.swept_slots +|= marks.len + blob_marks.len;
         for (marks, 0..) |marked, id| if (!marked and self.alive.items[id]) {
+            frames.remove(id);
             release(g.Node, self.allocator, self.nodes.items[id]);
             self.nodes.items[id] = empty;
             self.alive.items[id] = false;
@@ -249,3 +255,8 @@ pub fn release(comptime T: type, allocator: std.mem.Allocator, value: T) void {
         else => {},
     }
 }
+
+const NoFrames = struct {
+    fn references(_: NoFrames, _: data.program.Id, _: *std.ArrayList(data.snapshot.Reference), _: std.mem.Allocator) Error!void {}
+    fn remove(_: NoFrames, _: data.program.Id) void {}
+};
