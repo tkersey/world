@@ -272,6 +272,10 @@ The source-independent linker remains owned by Boundary; no compiler or linker
 enters the production World kernel.
 
 World is now version `6.0.0-dev.0` and normally pins Boundary `3.0.0-dev.0`.
+Stable execution now increments handler-capture and multi-shot activation
+counters at the same successful operations as the predecessor. A source witness
+checks one linear capture and a multi-shot capture resumed twice. These are work
+counters, so later rollback does not erase already performed allocation work.
 Its root JavaScript export and standalone runtime package use ABI 3; Node file
 loading remains separate from browser-neutral byte execution. Extracted-package
 API/CLI checks pass, including capacity/retry and input/identity rejection.

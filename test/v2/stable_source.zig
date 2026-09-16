@@ -5,6 +5,37 @@ const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 const Resident = @import("stable_runtime").Resident;
 
+test "stable statistics count one-shot captures and repeated multi-shot activations" {
+    for ([_]bool{ false, true }) |multi| {
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        const original = try source.examples.deep(&builder);
+        if (multi) {
+            for (builder.effects.items) |*effect| effect.control_use = .multi;
+            for (builder.schemas.items) |*schema| {
+                if (schema.* == .internal and schema.internal == .resumption) schema.internal.resumption.use = .multi;
+            }
+            const clause = builder.handlers.items[0].clauses[0].function;
+            const body = builder.functions.items[@intCast(clause)].body.?;
+            const first = builder.terms.items[@intCast(body)].bind;
+            const discarded = try builder.variable(builder.variables.items[@intCast(first.variable)]);
+            builder.functions.items[@intCast(clause)].body = try builder.bind(discarded, first.value, body);
+        }
+        var compiled = try source.construct(testing.allocator, builder.module(original.entry, original.failure));
+        defer compiled.deinit();
+        var session = try initFromImage(testing.allocator, compiled.program, &.{});
+        defer session.deinit();
+        var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+        session.statistics = &statistics;
+        const result = try session.run(null);
+        try testing.expect(result == .completed);
+        try testing.expectEqualSlices(u8, &.{ 67, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&result.completed));
+        try testing.expectEqual(@as(u64, if (multi) 1 else 0), statistics.multi_templates);
+        try testing.expectEqual(@as(u64, if (multi) 0 else 1), statistics.one_shot_captures);
+        try testing.expectEqual(@as(u64, if (multi) 2 else 0), statistics.branch_activations);
+    }
+}
+
 fn releaseResident(resident: *Resident) void {
     resident.close() catch |err| switch (err) {
         error.UnfinishedSession => {

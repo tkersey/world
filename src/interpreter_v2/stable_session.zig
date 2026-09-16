@@ -732,6 +732,9 @@ pub const Session = struct {
             .use_site_capabilities = use_site,
         };
         const token = try self.store.add(if (multi) .{ .multi_template = capture } else .{ .one_shot = capture });
+        if (self.statistics) |statistics| {
+            if (multi) statistics.multi_templates +|= 1 else statistics.one_shot_captures +|= 1;
+        }
         const args = try scratch.alloc(g.Value, handler.state.len + operation.bodies.len + 2);
         @memcpy(args[0..handler.state.len], handler.state);
         args[handler.state.len] = payload;
@@ -747,8 +750,11 @@ pub const Session = struct {
     pub fn takeCapture(self: *Session, value: g.Value) Error!g.Capture {
         const reference = valueRef(value);
         const record = try self.store.get(reference);
-        if (record == .multi_template)
-            return @import("clone.zig").instantiateFrames(self.allocator, &self.store, record.multi_template, &self.frames);
+        if (record == .multi_template) {
+            const branch = try @import("clone.zig").instantiateFrames(self.allocator, &self.store, record.multi_template, &self.frames);
+            if (self.statistics) |statistics| statistics.branch_activations +|= 1;
+            return branch;
+        }
         if (record != .one_shot or record.one_shot.capture == null) return error.InvalidOwnership;
         const captured = record.one_shot;
         var consumed = captured;
