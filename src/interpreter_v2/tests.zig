@@ -221,6 +221,7 @@ test "forged pending result type and cyclic return frames reject before evaluati
 
 test {
     _ = @import("activation_slots_tests.zig");
+    _ = @import("custody_tests.zig");
     _ = @import("compact_length_tests.zig");
     _ = @import("compact_collection_tests.zig");
     _ = @import("cleanup_tests.zig");

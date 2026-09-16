@@ -159,6 +159,10 @@ pub fn Slots(comptime Value: type) type {
             return page.values[slot & (width - 1)];
         }
 
+        pub fn lookupLimit(self: *Self, handle: Handle) error{InvalidHandle}!usize {
+            return (try self.lookupView(handle)).limit;
+        }
+
         pub const Reader = struct {
             store: *Self,
             handle: Handle,

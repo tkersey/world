@@ -1,6 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Successor native control slice. Not yet the portable/resident public API:
-//! cleanup, borrow provenance, shallow handling and checkpoint admission remain open.
+//! borrowed/resource execution and portable/resident admission remain open.
 const std = @import("std");
 const data = @import("boundary_data_v2");
 const p = data.program;
@@ -17,10 +17,12 @@ pub const Observation = union(enum) {
     requested: struct { effect: p.Id, payload: g.Value },
     completed: g.Value,
     failed: g.Value,
+    cancelled: data.protocol.Reason,
 };
 
 pub const Session = struct {
     pub const ExecutionError = Error;
+    pub const UnwindOutcome = void;
     allocator: std.mem.Allocator,
     program: ir.Program,
     flow: data.activation_flow.Facts,
@@ -31,6 +33,7 @@ pub const Session = struct {
     roots: g.Roots = .{},
     status: g.Status = .active,
     terminal: ?Observation = null,
+    exit: ?g.Exit = null,
     poisoned: bool = false,
     transitions: usize = 0,
     statistics: ?*@import("process.zig").Statistics = null,
@@ -43,7 +46,7 @@ pub const Session = struct {
         try supported(program);
         const uses = try data.traits.derive(flow.arena.allocator(), program.schemas);
         const value_facts = try data.admission.schemas(flow.arena.allocator(), program.schemas);
-        const frames = try bindings.Frames.init(allocator, flow.pool);
+        const frames = try bindings.Frames.init(allocator, flow.pool, program);
         var result: Session = .{
             .allocator = allocator,
             .program = program,
@@ -70,14 +73,45 @@ pub const Session = struct {
     fn supported(program: ir.Program) Error!void {
         for (program.schemas) |schema| if (schema == .internal) switch (schema.internal) {
             .borrowed, .abstract_resource => return error.UnsupportedTransition,
-            .resumption => |r| if (r.mode == .shallow or r.obligations)
-                return error.UnsupportedTransition,
             else => {},
         };
         for (program.blocks) |block| switch (block.terminator) {
-            .protect, .dispose, .resume_with, .resume_computation, .forward => return error.UnsupportedTransition,
+            .forward => return error.UnsupportedTransition,
             else => {},
         };
+    }
+
+    pub fn continuation(self: *Session, block: p.Id, _: anytype, control: g.Control) Error!g.NodeRef {
+        const current = self.roots.current orelse return error.InvalidState;
+        return self.captureContinuation(current, control, try self.frames.get(current.id), nextEdge(self.program.blocks[@intCast(block)].terminator).?);
+    }
+    pub fn activate(self: *Session, token: g.Capture, after: g.NodeRef) Error!void {
+        try @import("resumption.zig").activate(self, token, after);
+    }
+    pub fn unwindReturnTo(self: *Session, parent: ?g.NodeRef, value: g.Value) Error!?void {
+        try self.returnTo(parent, value);
+        return if (self.terminal != null) {} else null;
+    }
+    pub fn finishUnwind(self: *Session, reason: g.Exit) Error!void {
+        self.exit = reason;
+        self.terminal = switch (reason.reason) {
+            .failure => |value| .{ .failed = value },
+            .cancellation => .{ .cancelled = reason.cancellation orelse return error.InvalidState },
+            else => return error.InvalidState,
+        };
+        self.roots.current = null;
+    }
+    fn failCurrent(self: *Session, current: g.NodeRef, value: g.Value) Error!void {
+        const control = (try self.store.get(current)).control;
+        const values = try self.frames.discards(current.id);
+        defer self.allocator.free(values);
+        try @import("unwind.zig").failValues(self, value, control.parent, values);
+    }
+    pub fn cancel(self: *Session, reason: data.protocol.Reason) Error!void {
+        if (self.poisoned or self.terminal != null) return error.InvalidState;
+        if (reason == .text and !std.unicode.utf8ValidateSlice(reason.text)) return error.InvalidUtf8;
+        errdefer self.poisoned = true;
+        try @import("unwind.zig").cancel(self, reason);
     }
 
     fn initialize(self: *Session, input: []const u8) Error!void {
@@ -121,13 +155,13 @@ pub const Session = struct {
                 const pending = (try self.store.get(self.roots.pending.?)).pending;
                 break :blk .{ .requested = .{ .effect = pending.effect, .payload = pending.payload } };
             },
-            .unwinding => error.UnsupportedTransition,
+            .unwinding => .progressed,
         };
     }
 
     pub fn run(self: *Session, quantum: ?usize) Error!Observation {
         var steps: usize = 0;
-        while (self.terminal == null and self.status == .active and
+        while (self.terminal == null and (self.status == .active or self.status == .unwinding) and
             (quantum == null or steps < quantum.?)) : (steps += 1) try self.step();
         return self.observe();
     }
@@ -154,15 +188,19 @@ pub const Session = struct {
     }
 
     pub fn step(self: *Session) Error!void {
-        if (self.poisoned or self.terminal != null or self.status != .active) return error.InvalidState;
+        if (self.poisoned or self.terminal != null or (self.status != .active and self.status != .unwinding)) return error.InvalidState;
         errdefer self.poisoned = true;
         const current = self.roots.current orelse return error.InvalidState;
-        const control = (try self.store.get(current)).control;
-        const code = self.program.blocks[@intCast(control.block)];
-        var frame = try self.frames.get(current.id);
-        if (frame.position < code.instructions.len) {
-            try self.executeInstruction(current, code, &frame);
-        } else try self.executeControl(current, control, code, &frame);
+        if (self.status == .unwinding) {
+            _ = try @import("unwind.zig").step(self);
+        } else {
+            const control = (try self.store.get(current)).control;
+            const code = self.program.blocks[@intCast(control.block)];
+            var frame = try self.frames.get(current.id);
+            if (frame.position < code.instructions.len) {
+                try self.executeInstruction(current, code, &frame);
+            } else try self.executeControl(current, control, code, &frame);
+        }
         if (self.roots.current == null or self.roots.current.?.id != current.id)
             self.frames.remove(current.id);
         self.transitions += 1;
@@ -192,7 +230,7 @@ pub const Session = struct {
             .traits = self.uses,
         };
         switch (try @import("instruction.zig").execute(self, operation, reader, &values)) {
-            .failed => |failure| self.terminal = .{ .failed = failure },
+            .failed => |failure| try self.failCurrent(current, failure),
             .value => |value| {
                 if (!source.opcode.borrowsOperands()) for (source.operands) |slot| {
                     if (!self.uses.copy[@intCast(layout[@intCast(slot)])])
@@ -213,7 +251,7 @@ pub const Session = struct {
         const scratch = temporary.allocator();
         switch (code.terminator) {
             .return_value => |slot| try self.returnTo(saved.parent, try read(reader, slot)),
-            .fail => |slot| self.terminal = .{ .failed = try read(reader, slot) },
+            .fail => |slot| try self.failCurrent(current, try read(reader, slot)),
             .jump => |edge| try self.jump(current, saved, frame, edge, null),
             .yield_value => |edge| {
                 try self.jump(current, saved, frame, edge, null);
@@ -232,23 +270,13 @@ pub const Session = struct {
                 const computation = try read(reader, apply.computation);
                 const arguments = try self.collectArguments(scratch, reader, apply.arguments);
                 const parent = try self.captureContinuation(current, saved, frame.*, apply.next);
-                try self.callComputation(computation, arguments, parent, saved.evidence, saved.region);
+                try self.applyComputation(computation, arguments, parent, saved.evidence, saved.region);
             },
+            .protect => |protection| try @import("unwind.zig").protect(self, protection, reader, saved),
+            .dispose => |disposal| try @import("unwind.zig").dispose(self, disposal, reader, saved),
             .handle => |handle| try self.install(current, saved, frame.*, handle, reader, scratch),
             .perform => |perform| try self.performEffect(current, saved, frame.*, perform, reader, scratch),
-            .resume_value => |resume_value| {
-                const resumption = try read(reader, resume_value.resumption);
-                const value = try read(reader, resume_value.argument);
-                const token = try self.takeCapture(resumption);
-                defer if (self.program.schemas[@intCast(resumption.schema)].internal.resumption.use == .multi)
-                    self.allocator.free(token.use_site_capabilities);
-                const after = try self.captureContinuation(current, saved, frame.*, resume_value.next);
-                var attachment = (try self.store.get(token.delimiter)).attachment;
-                attachment.return_to = after;
-                attachment.phase = .active;
-                try self.store.replace(token.delimiter, .{ .attachment = attachment });
-                try self.resumeContinuation(token.capture.?, value);
-            },
+            .resume_value, .resume_with, .resume_computation => try self.resumeControl(current, saved, frame.*, code.terminator, reader, scratch),
             .switch_variant, .unpack_product => try self.aggregateControl(current, saved, frame, code.terminator, reader, scratch),
             .with_region => |region| {
                 const descriptor = try self.store.add(.{ .region = .{
@@ -267,9 +295,47 @@ pub const Session = struct {
                 const args = try scratch.alloc(g.Value, region.arguments.len + 1);
                 args[0] = .{ .schema = parameters[0], .body = .{ .reference = descriptor } };
                 for (args[1..], region.arguments) |*value, slot| value.* = try read(reader, slot);
-                try self.callComputation(body, args, wrapper, saved.evidence, descriptor);
+                try self.applyComputation(body, args, wrapper, saved.evidence, descriptor);
             },
             else => return error.UnsupportedTransition,
+        }
+    }
+
+    fn resumeControl(self: *Session, current: g.NodeRef, control: g.Control, frame: bindings.Frame, term: ir.Terminator, reader: anytype, scratch: std.mem.Allocator) Error!void {
+        switch (term) {
+            inline .resume_value, .resume_with, .resume_computation => |operation, kind| {
+                const resumption = try read(reader, operation.resumption);
+                const token = try self.takeCapture(resumption);
+                defer if (self.program.schemas[@intCast(resumption.schema)].internal.resumption.use == .multi)
+                    self.allocator.free(token.use_site_capabilities);
+                const after = try self.captureContinuation(current, control, frame, operation.next);
+                if (comptime kind == .resume_with) {
+                    const state = try self.collectArguments(scratch, reader, operation.state);
+                    const handler = try self.store.add(.{ .handler = .{
+                        .definition = operation.handler,
+                        .state = state,
+                        .evidence = control.evidence,
+                        .region = control.region,
+                    } });
+                    try self.store.replace(token.delimiter, .{ .attachment = .{
+                        .handler = handler,
+                        .outer = control.evidence,
+                        .return_to = after,
+                        .region = control.region,
+                    } });
+                    try self.resumeContinuation(token.capture.?, try read(reader, operation.argument));
+                } else {
+                    const evidence = try @import("resumption.zig").prepare(self, token, after);
+                    if (comptime kind == .resume_value) {
+                        try self.resumeContinuation(token.capture.?, try read(reader, operation.argument));
+                    } else {
+                        const saved = (try self.store.get(token.capture.?)).continuation;
+                        const injection = try self.store.add(.{ .injection = .{ .continuation = token.capture.? } });
+                        try self.applyComputation(try read(reader, operation.computation), token.use_site_capabilities, injection, evidence, saved.region);
+                    }
+                }
+            },
+            else => unreachable,
         }
     }
 
@@ -289,8 +355,8 @@ pub const Session = struct {
     fn enter(self: *Session, function: p.Id, args: []const g.Value, parent: ?g.NodeRef, evidence: ?g.NodeRef, region: ?g.NodeRef) Error!void {
         const target = self.program.functions[@intCast(function)];
         if (target.inputs.len != args.len) return error.InvalidState;
-        var frame: bindings.Frame = .{ .view = try self.frames.slots.create(target.layout.slots.len) };
-        errdefer self.frames.slots.release(frame.view) catch unreachable;
+        var frame = try self.frames.create(function);
+        errdefer self.frames.releaseFrame(frame);
         for (args, target.inputs) |value, slot| try self.frames.write(&frame, slot, value);
         try self.frames.prune(&frame, self.flow.live[@intCast(target.entry)][0]);
         const control = try self.store.add(.{ .control = .{
@@ -305,7 +371,7 @@ pub const Session = struct {
         self.roots.evidence = evidence;
     }
 
-    fn callComputation(self: *Session, value: g.Value, supplied: []const g.Value, parent: ?g.NodeRef, evidence: ?g.NodeRef, region: ?g.NodeRef) Error!void {
+    pub fn applyComputation(self: *Session, value: g.Value, supplied: []const g.Value, parent: ?g.NodeRef, evidence: ?g.NodeRef, region: ?g.NodeRef) Error!void {
         const closure = (try self.store.get(valueRef(value))).computation;
         const definition = self.program.constructors[@intCast(closure.constructor)];
         const captured = (try self.store.get(closure.environment)).environment.values;
@@ -326,9 +392,8 @@ pub const Session = struct {
     }
 
     fn captureContinuation(self: *Session, _: g.NodeRef, control: g.Control, original: bindings.Frame, edge: ir.Edge) Error!g.NodeRef {
-        var frame = original;
-        frame.view = try self.frames.slots.fork(original.view);
-        errdefer self.frames.slots.release(frame.view) catch unreachable;
+        var frame = try self.frames.forkFrame(original);
+        errdefer self.frames.releaseFrame(frame);
         try self.frames.prune(&frame, try self.retainedSlots(edge));
         const saved = try self.store.add(.{ .continuation = .{
             .source_block = control.block,
@@ -358,7 +423,7 @@ pub const Session = struct {
             const slot = assignment.source.slot;
             if (!self.uses.copy[@intCast(layout[@intCast(slot)])]) try self.frames.clear(frame, slot);
         };
-        frame.custody = block.custody;
+        try self.frames.scope(frame, block.custody);
         for (next.assignments, 0..) |assignment, index| {
             if (self.flow.pool.contains(live, assignment.destination))
                 try self.frames.write(frame, assignment.destination, values[index]);
@@ -375,7 +440,7 @@ pub const Session = struct {
         self.frames.update(current.id, frame.*);
     }
 
-    fn resumeContinuation(self: *Session, reference: g.NodeRef, value: g.Value) Error!void {
+    pub fn resumeContinuation(self: *Session, reference: g.NodeRef, value: g.Value) Error!void {
         const saved = (try self.store.get(reference)).continuation;
         const next = nextEdge(self.program.blocks[@intCast(saved.source_block)].terminator).?;
         const current = try self.store.add(.{ .control = .{
@@ -401,6 +466,10 @@ pub const Session = struct {
                     continue;
                 },
                 .continuation => try self.resumeContinuation(reference, value),
+                .injection => |injection| try self.resumeContinuation(injection.continuation, value),
+                .protection => |protection| try @import("unwind.zig").begin(self, .{ .normal = value }, reference, protection.return_to, &.{}),
+                .cleanup_return => try @import("unwind.zig").returned(self, reference),
+                .disposal_return => |disposal| try @import("unwind.zig").returnedDisposal(self, disposal, value),
                 .attachment => |attachment| {
                     if (attachment.phase != .active) return error.InvalidState;
                     const handler = (try self.store.get(attachment.handler)).handler;
@@ -439,7 +508,7 @@ pub const Session = struct {
         for (definition.clauses, 0..) |_, index|
             args[index] = .{ .schema = signature.parameters[index], .body = .{ .reference = attachment } };
         for (args[definition.clauses.len..], operation.arguments) |*value, slot| value.* = try read(reader, slot);
-        try self.callComputation(body, args, attachment, attachment, control.region);
+        try self.applyComputation(body, args, attachment, attachment, control.region);
     }
 
     fn performEffect(self: *Session, current: g.NodeRef, control: g.Control, frame: bindings.Frame, operation: ir.Perform, reader: anytype, scratch: std.mem.Allocator) Error!void {
@@ -458,7 +527,10 @@ pub const Session = struct {
         }
         const selected = valueRef(try read(reader, operation.capability.?));
         try self.inScope(control.parent, selected);
-        var attachment = (try self.store.get(selected)).attachment;
+        const selected_record = try self.store.get(selected);
+        if (selected_record != .attachment or selected_record.attachment.phase != .active)
+            return error.InvalidScope;
+        var attachment = selected_record.attachment;
         const handler = (try self.store.get(attachment.handler)).handler;
         const definition = self.program.handlers[@intCast(handler.definition)];
         var found: ?p.Clause = null;
@@ -509,9 +581,13 @@ pub const Session = struct {
         while (cursor) |reference| {
             if (reference.id == target.id) return;
             cursor = switch (try self.store.get(reference)) {
-                .continuation => |continuation| continuation.parent,
+                .continuation => |saved| saved.parent,
                 .attachment => |attachment| attachment.return_to,
                 .region_scope => |region| region.return_to,
+                .injection => |injection| injection.continuation,
+                .protection => |protection| protection.return_to,
+                .cleanup_return => |cleanup| cleanup.parent,
+                .disposal_return => |disposal| disposal.parent,
                 else => return error.InvalidScope,
             };
         }
@@ -536,7 +612,7 @@ pub const Session = struct {
                 const value = try read(reader, unpack.value);
                 const parts = try values.split(value);
                 if (!self.uses.copy[@intCast(value.schema)]) try self.frames.clear(frame, unpack.value);
-                frame.custody = self.program.blocks[@intCast(unpack.next.block)].custody;
+                try self.frames.scope(frame, self.program.blocks[@intCast(unpack.next.block)].custody);
                 for (parts.fields, unpack.destinations) |field, slot| try self.frames.write(frame, slot, field);
                 try self.jump(current, control, frame, unpack.next, null);
             },
@@ -554,7 +630,7 @@ fn valueRef(value: g.Value) g.NodeRef {
 }
 fn nextEdge(term: ir.Terminator) ?ir.Edge {
     return switch (term) {
-        inline .call, .perform, .apply, .handle, .resume_value, .with_region => |operation| operation.next,
+        inline .call, .perform, .apply, .handle, .resume_value, .resume_with, .resume_computation, .with_region, .protect, .dispose => |operation| operation.next,
         else => null,
     };
 }

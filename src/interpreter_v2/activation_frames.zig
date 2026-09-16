@@ -4,25 +4,32 @@ const std = @import("std");
 const data = @import("boundary_data_v2");
 const Slots = @import("activation_slots.zig").ActivationSlots;
 const sets = data.analysis_sets;
+const custody = @import("custody.zig");
 pub const Error = Slots.Error || data.snapshot.Error;
 pub const Frame = struct {
     view: Slots.Handle,
     present: sets.Root = sets.empty,
     position: usize = 0,
-    custody: data.program.Id = 0,
+    function: data.program.Id,
+    custody: custody.State,
 };
 pub const Frames = struct {
     allocator: std.mem.Allocator,
     slots: Slots,
     pool: *sets.Pool,
+    program: data.activation.Program,
+    custody: custody.Custody,
     entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
 
-    pub fn init(allocator: std.mem.Allocator, pool: *sets.Pool) Error!Frames {
-        return .{ .allocator = allocator, .slots = try Slots.init(allocator), .pool = pool };
+    pub fn init(allocator: std.mem.Allocator, pool: *sets.Pool, program: data.activation.Program) Error!Frames {
+        var slots = try Slots.init(allocator);
+        errdefer slots.deinit();
+        return .{ .allocator = allocator, .slots = slots, .pool = pool, .program = program, .custody = try custody.Custody.init(allocator) };
     }
     pub fn deinit(self: *Frames) void {
         self.entries.deinit(self.allocator);
         self.slots.deinit();
+        self.custody.deinit();
         self.* = undefined;
     }
     pub fn get(self: *Frames, id: data.program.Id) Error!Frame {
@@ -43,16 +50,50 @@ pub const Frames = struct {
         return frame;
     }
     pub fn remove(self: *Frames, id: data.program.Id) void {
-        if (self.entries.fetchRemove(id)) |entry|
-            self.slots.release(entry.value.view) catch unreachable;
+        if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
+    }
+    pub fn create(self: *Frames, function: data.program.Id) Error!Frame {
+        const definition = self.program.functions[@intCast(function)];
+        const view = try self.slots.create(definition.layout.slots.len);
+        errdefer self.slots.release(view) catch unreachable;
+        return .{ .view = view, .function = function, .custody = try self.custody.create(definition.layout.slots.len, definition.custody.len) };
+    }
+    pub fn releaseFrame(self: *Frames, frame: Frame) void {
+        self.slots.release(frame.view) catch unreachable;
+        self.custody.release(frame.custody);
+    }
+    pub fn forkFrame(self: *Frames, original: Frame) Error!Frame {
+        var result = original;
+        result.view = try self.slots.fork(original.view);
+        errdefer self.slots.release(result.view) catch unreachable;
+        result.custody = try self.custody.fork(original.custody);
+        return result;
+    }
+    pub fn scope(self: *Frames, frame: *Frame, target: data.program.Id) Error!void {
+        try self.custody.moveTo(&frame.custody, self.program.functions[@intCast(frame.function)].custody, @intCast(target));
     }
     pub fn write(self: *Frames, frame: *Frame, slot: data.program.Id, value: data.graph.Value) Error!void {
+        try self.custody.remove(&frame.custody, @intCast(slot));
+        if (value.body == .owned) try self.custody.establish(&frame.custody, self.program.functions[@intCast(frame.function)].custody, @intCast(slot));
+        try self.rewriteValue(frame, slot, value);
+    }
+    fn rewriteValue(self: *Frames, frame: *Frame, slot: data.program.Id, value: data.graph.Value) Error!void {
         const present = try self.pool.insert(frame.present, slot);
         try self.slots.set(frame.view, @intCast(slot), value);
         frame.present = present;
     }
+    pub fn discards(self: *Frames, id: data.program.Id) Error![]data.graph.Value {
+        const frame = try self.get(id);
+        const ordered = try self.custody.ordered(frame.custody, self.allocator);
+        defer self.allocator.free(ordered);
+        const values = try self.allocator.alloc(data.graph.Value, ordered.len);
+        errdefer self.allocator.free(values);
+        for (values, ordered) |*value, slot| value.* = try self.slots.get(frame.view, slot);
+        return values;
+    }
     pub fn clear(self: *Frames, frame: *Frame, slot: data.program.Id) Error!void {
         const present = try self.pool.remove(frame.present, slot);
+        try self.custody.remove(&frame.custody, @intCast(slot));
         try self.slots.clear(frame.view, @intCast(slot));
         frame.present = present;
     }
@@ -64,11 +105,11 @@ pub const Frames = struct {
     pub fn copyFrame(self: *Frames, from: data.program.Id, to: data.program.Id) data.snapshot.Error!void {
         var copy = self.entries.get(from) orelse return;
         if (self.entries.contains(to)) return error.InvalidState;
-        copy.view = self.slots.fork(copy.view) catch |err| return switch (err) {
+        copy = self.forkFrame(copy) catch |err| return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => error.InvalidState,
         };
-        errdefer self.slots.release(copy.view) catch unreachable;
+        errdefer self.releaseFrame(copy);
         try self.entries.put(self.allocator, to, copy);
     }
 
@@ -84,7 +125,7 @@ pub const Frames = struct {
             };
             const replacement = map.get(reference.id) orelse continue;
             reference.* = replacement;
-            self.write(&frame, slot, value) catch |err| return switch (err) {
+            self.rewriteValue(&frame, slot, value) catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 else => error.InvalidState,
             };

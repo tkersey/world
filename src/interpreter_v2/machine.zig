@@ -9,6 +9,7 @@ const Outcome = process.Outcome;
 
 pub const Machine = struct {
     pub const ExecutionError = process.Error;
+    pub const UnwindOutcome = Outcome;
     allocator: std.mem.Allocator,
     program: p.Program,
     identity: [32]u8,
@@ -332,6 +333,10 @@ pub const Machine = struct {
             .{ .one_shot = owned });
     }
 
+    pub fn unwindReturnTo(self: *Machine, parent: ?g.NodeRef, value: g.Value) Error!?Outcome {
+        return self.returnTo(parent, value);
+    }
+
     pub fn returnTo(self: *Machine, parent: ?g.NodeRef, value: g.Value) Error!?Outcome {
         var cursor = parent;
         while (cursor) |ref| {
@@ -470,43 +475,11 @@ pub const Machine = struct {
         return token;
     }
     fn prepareResumption(self: *Machine, token: g.Capture, after: g.NodeRef) Error!?g.NodeRef {
-        const signature = self.program.schemas[@intCast(token.schema)].internal.resumption;
-        if (signature.mode == .deep) {
-            try self.activate(token, after);
-            return token.evidence;
-        }
-        const outer = (try self.store.get(token.delimiter)).attachment.outer;
-        // Plug the caller into the captured hole. The old handler and its return
-        // clause are absent from plain shallow resumption.
-        try self.store.replace(token.delimiter, try self.store.get(after));
-        for (self.store.nodes.items, self.store.alive.items) |*record, live| {
-            if (!live) continue;
-            const evidence: ?*?g.NodeRef = switch (record.*) {
-                .control => |*v| &v.evidence,
-                .continuation => |*v| &v.evidence,
-                .handler => |*v| &v.evidence,
-                .attachment => |*v| &v.outer,
-                .protection => |*v| &v.evidence,
-                .one_shot, .multi_template => |*v| &v.evidence,
-                else => null,
-            };
-            // These are lexical-context links, not capability values. Explicit
-            // capabilities keep selecting their original attachment identities.
-            if (evidence) |link| if (link.*) |ref| {
-                if (ref.id == token.delimiter.id) link.* = outer;
-            };
-        }
-        return if (token.evidence != null and token.evidence.?.id == token.delimiter.id)
-            outer
-        else
-            token.evidence;
+        return @import("resumption.zig").prepare(self, token, after);
     }
 
     pub fn activate(self: *Machine, token: g.Capture, after: g.NodeRef) Error!void {
-        var attachment = (try self.store.get(token.delimiter)).attachment;
-        attachment.return_to = after;
-        attachment.phase = .active;
-        try self.store.replace(token.delimiter, .{ .attachment = attachment });
+        try @import("resumption.zig").activate(self, token, after);
     }
 
     fn terminal(self: *Machine, comptime kind: enum { completed }, value: g.Value) Error!Outcome {

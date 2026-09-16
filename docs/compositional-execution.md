@@ -6,7 +6,7 @@ remains the goal. No merge, release or application data operation has occurred.
 
 World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
 `feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `b4a1785e0276a0e074245150187085d217c0e6de`, Zig 0.16.0,
+successor worktree at `2b34302c67361ccc0cd23e2024c45d14022109e7`, Zig 0.16.0,
 and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
 
 ## Private activation slots
@@ -113,9 +113,28 @@ Optional instruction/control quanta yield progress. Allocation-failure sweeps co
 partial-owner cleanup. Full resident rollback is NOT implemented: an operational
 failure after mutation poisons this internal driver, while malformed typed replies
 reject before mutation. No portable checkpoint or old-format fallback is exposed.
-Cleanup/protection, shallow handling, injected resumption and borrowed/resource
-execution reject before starting. These are incomplete requirements, not supported
-behavior removed from the final successor.
+Borrowed/resource execution still rejects before starting until context-provenance
+admission is complete. This remains an incomplete requirement, not a removal of
+that behavior from the final successor.
+
+Shallow value/computation resumption now removes the old handler return clause;
+successor resumption installs the replacement handler with its admitted state.
+The shared resumption helper preserves explicit capability identities while
+updating lexical-context links. All eight deep/shallow, linear/multi-shot and
+value/injection combinations retain their independent expected answers.
+
+The existing unwinder now also consumes stable frames. Slot-indexed custody links
+record establishment order and lexical boundaries; normal exits splice surviving
+inner owners ahead of the parent, and failure/cancellation visit scopes inside-out.
+Retained frame versions share these links with copy-on-write isolation. Consuming
+an owner removes its node, so repeated ownership cycles leave no historical chain.
+
+Native cases cover ten existing cleanup-order scenarios, suspending and yielded
+cleanup, cancellation before work/at yield/at request/after an answer, first-reason
+retention, primary-failure precedence, accumulated cleanup failures, abandoned
+captured cleanup, and generator cleanup with a private cell. The same unwinder
+continues serving the predecessor while migration remains open. No source-visible
+cleanup runs as a side effect of physical memory reclamation.
 
 Run the separate compiler-dependent lane with:
 
@@ -133,8 +152,8 @@ working-memory comparison and predecessor-gain acceptance remain unproved.
 
 ## Next required work
 
-Complete shallow/injected control, authored cancellation and cleanup with lexical
-custody ordering, and borrow/context admission. Prepared lifetime, whole-Session
+Complete borrow/context admission and borrowed/resource execution, then portable
+Program/State integration. Prepared lifetime, whole-Session
 transactions, BPI3/PST3/current protocols, ABI 3, browser/server transfer, Agent
 migration, component linking, performance acceptance, legacy retirement and linked
 draft PRs remain open. Native source agreement does not prove portable execution.

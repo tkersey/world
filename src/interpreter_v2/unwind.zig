@@ -4,21 +4,17 @@ const std = @import("std");
 const data = @import("boundary_data_v2");
 const p = data.program;
 const g = data.graph;
-const Machine = @import("machine.zig").Machine;
-const process = @import("process.zig");
-const Error = process.Error;
-const Outcome = process.Outcome;
 const Reason = @FieldType(g.Exit, "reason");
 
-fn position(machine: *Machine, cursor: ?g.NodeRef, values: []const g.Value) Error!void {
+fn position(machine: anytype, cursor: ?g.NodeRef, values: []const g.Value) @TypeOf(machine.*).ExecutionError!void {
     setPosition(machine, try machine.store.add(.{ .unwind = .{ .cursor = cursor, .values = values } }));
 }
 
-fn positionOwned(machine: *Machine, cursor: ?g.NodeRef, values: []g.Value) Error!void {
+fn positionOwned(machine: anytype, cursor: ?g.NodeRef, values: []g.Value) @TypeOf(machine.*).ExecutionError!void {
     setPosition(machine, try machine.store.addOwned(.{ .unwind = .{ .cursor = cursor, .values = values } }));
 }
 
-fn setPosition(machine: *Machine, current: g.NodeRef) void {
+fn setPosition(machine: anytype, current: g.NodeRef) void {
     machine.roots.current = current;
     machine.roots.pending = null;
     machine.roots.evidence = null;
@@ -30,7 +26,7 @@ fn ownedArgument(argument: anytype) ?g.Value {
     return if (value.body == .owned) value else null;
 }
 
-fn positionDiscards(machine: *Machine, cursor: ?g.NodeRef, arguments: anytype) Error!void {
+fn positionDiscards(machine: anytype, cursor: ?g.NodeRef, arguments: anytype) @TypeOf(machine.*).ExecutionError!void {
     var count: usize = 0;
     for (arguments) |argument| if (ownedArgument(argument) != null) {
         count += 1;
@@ -45,18 +41,18 @@ fn positionDiscards(machine: *Machine, cursor: ?g.NodeRef, arguments: anytype) E
     try positionOwned(machine, cursor, values);
 }
 
-pub fn begin(machine: *Machine, reason: Reason, cursor: ?g.NodeRef, stop: ?g.NodeRef, values: []const g.Value) Error!void {
+pub fn begin(machine: anytype, reason: Reason, cursor: ?g.NodeRef, stop: ?g.NodeRef, values: []const g.Value) @TypeOf(machine.*).ExecutionError!void {
     machine.roots.exit = try machine.store.add(.{ .exit = .{ .reason = reason, .stop = stop, .outer = machine.roots.exit } });
     try position(machine, cursor, values);
 }
 
-fn outermost(machine: *Machine) Error!g.NodeRef {
+fn outermost(machine: anytype) @TypeOf(machine.*).ExecutionError!g.NodeRef {
     var ref = machine.roots.exit orelse return error.InvalidState;
     while ((try machine.store.get(ref)).exit.outer) |outer| ref = outer;
     return ref;
 }
 
-fn rememberFailure(machine: *Machine, value: g.Value) Error!void {
+fn rememberFailure(machine: anytype, value: g.Value) @TypeOf(machine.*).ExecutionError!void {
     const ref = try outermost(machine);
     var exit = (try machine.store.get(ref)).exit;
     const failures = try machine.allocator.alloc(g.Value, exit.cleanup_failures.len + 1);
@@ -77,7 +73,7 @@ fn rememberFailure(machine: *Machine, value: g.Value) Error!void {
     try machine.store.replaceOwned(ref, .{ .exit = exit });
 }
 
-fn discardedNormal(machine: *Machine, exit: g.Exit) Error![]g.Value {
+fn discardedNormal(machine: anytype, exit: g.Exit) @TypeOf(machine.*).ExecutionError![]g.Value {
     const extra: usize = if (exit.reason == .normal and exit.reason.normal.body == .owned) 1 else 0;
     const values = try machine.allocator.alloc(g.Value, exit.discarded.len + extra);
     @memcpy(values[0..exit.discarded.len], exit.discarded);
@@ -85,7 +81,7 @@ fn discardedNormal(machine: *Machine, exit: g.Exit) Error![]g.Value {
     return values;
 }
 
-pub fn fail(machine: *Machine, value: g.Value, control: g.Control, slots: []const g.Value, executed: []const p.Instruction) Error!void {
+pub fn fail(machine: anytype, value: g.Value, control: g.Control, slots: []const g.Value, executed: []const p.Instruction) @TypeOf(machine.*).ExecutionError!void {
     var scratch = std.heap.ArenaAllocator.init(machine.allocator);
     defer scratch.deinit();
     const used = try scratch.allocator().alloc(bool, slots.len);
@@ -97,11 +93,24 @@ pub fn fail(machine: *Machine, value: g.Value, control: g.Control, slots: []cons
     }
     var values: std.ArrayList(g.Value) = .empty;
     for (slots, used) |slot, consumed| if (!consumed and slot.body == .owned) try values.append(scratch.allocator(), slot);
-    if (machine.roots.exit != null) try rememberFailure(machine, value);
-    try begin(machine, .{ .failure = value }, control.parent, null, values.items);
+    try failValues(machine, value, control.parent, values.items);
 }
 
-pub fn cancel(machine: *Machine, reason: data.protocol.Reason) Error!void {
+pub fn failValues(machine: anytype, value: g.Value, parent: ?g.NodeRef, values: []const g.Value) @TypeOf(machine.*).ExecutionError!void {
+    if (machine.roots.exit != null) try rememberFailure(machine, value);
+    try begin(machine, .{ .failure = value }, parent, null, values);
+}
+
+fn discardFrame(machine: anytype, frame: g.NodeRef, parent: ?g.NodeRef, arguments: anytype) @TypeOf(machine.*).ExecutionError!void {
+    if (comptime @hasField(@TypeOf(machine.*), "frames")) {
+        const values = try machine.frames.discards(frame.id);
+        errdefer machine.allocator.free(values);
+        try positionOwned(machine, parent, values);
+        machine.frames.remove(frame.id);
+    } else try positionDiscards(machine, parent, arguments);
+}
+
+pub fn cancel(machine: anytype, reason: data.protocol.Reason) @TypeOf(machine.*).ExecutionError!void {
     if (reason == .text and !std.unicode.utf8ValidateSlice(reason.text)) return error.InvalidUtf8;
     if (machine.roots.exit == null) {
         const cursor = if (machine.roots.pending) |pending| (try machine.store.get(pending)).pending.continuation else machine.roots.current;
@@ -121,9 +130,9 @@ pub fn cancel(machine: *Machine, reason: data.protocol.Reason) Error!void {
     try machine.store.replace(ref, .{ .exit = exit });
 }
 
-pub fn protect(machine: *Machine, protection: anytype, slots: []const g.Value, control: g.Control) Error!void {
-    const resource: ?g.Value = if (protection.resource) |slot| slots[@intCast(slot)] else null;
-    const obligation = try machine.store.add(.{ .obligation = .{ .source_block = control.block, .cleanup = slots[@intCast(protection.cleanup)], .resource = resource, .status = .pending } });
+pub fn protect(machine: anytype, protection: anytype, slots: anytype, control: g.Control) @TypeOf(machine.*).ExecutionError!void {
+    const resource: ?g.Value = if (protection.resource) |slot| (try @import("operands.zig").read(slots, slot)) else null;
+    const obligation = try machine.store.add(.{ .obligation = .{ .source_block = control.block, .cleanup = (try @import("operands.zig").read(slots, protection.cleanup)), .resource = resource, .status = .pending } });
     const after = try machine.continuation(control.block, slots, control);
     const loan: ?g.NodeRef = if (protection.loan_region) |descriptor| try machine.store.add(.{ .region = .{ .descriptor = descriptor, .outer = control.region, .obligations = &.{} } }) else null;
     const frame = try machine.store.add(.{ .protection = .{ .source_block = control.block, .obligation = .{ .node = obligation }, .return_to = after, .evidence = control.evidence, .region = control.region, .loan = loan } });
@@ -131,22 +140,22 @@ pub fn protect(machine: *Machine, protection: anytype, slots: []const g.Value, c
     const arguments = try machine.allocator.alloc(g.Value, protection.arguments.len + extra);
     defer machine.allocator.free(arguments);
     if (resource) |owned| {
-        const schema = machine.program.schemas[@intCast(slots[@intCast(protection.body)].schema)].internal.computation.parameters[0];
+        const schema = machine.program.schemas[@intCast((try @import("operands.zig").read(slots, protection.body)).schema)].internal.computation.parameters[0];
         const borrowed = try machine.store.add(.{ .borrow = .{ .schema = schema, .resource = owned.body.owned.node, .region = loan.? } });
         arguments[0] = .{ .schema = schema, .body = .{ .reference = borrowed } };
     }
-    for (arguments[extra..], protection.arguments) |*argument, slot| argument.* = slots[@intCast(slot)];
-    try machine.applyComputation(slots[@intCast(protection.body)], arguments, frame, control.evidence, loan orelse control.region);
+    for (arguments[extra..], protection.arguments) |*argument, slot| argument.* = (try @import("operands.zig").read(slots, slot));
+    try machine.applyComputation((try @import("operands.zig").read(slots, protection.body)), arguments, frame, control.evidence, loan orelse control.region);
 }
 
-pub fn dispose(machine: *Machine, disposal: anytype, slots: []const g.Value, control: g.Control) Error!void {
-    const token = try machine.takeCapture(slots[@intCast(disposal.owned)]);
+pub fn dispose(machine: anytype, disposal: anytype, slots: anytype, control: g.Control) @TypeOf(machine.*).ExecutionError!void {
+    const token = try machine.takeCapture((try @import("operands.zig").read(slots, disposal.owned)));
     const after = try machine.continuation(control.block, slots, control);
     try machine.activate(token, after);
     try begin(machine, .abandoned, token.capture, after, &.{});
 }
 
-fn information(machine: *Machine, values: *@import("values.zig").Values, schema: p.Id, exit: g.Exit) Error!g.Value {
+fn information(machine: anytype, values: *@import("values.zig").Values, schema: p.Id, exit: g.Exit) @TypeOf(machine.*).ExecutionError!g.Value {
     const types = try data.cleanup_contract.types(machine.program, schema);
     const unit: g.Value = .{ .schema = types.unit, .body = .{ .scalar = [_]u8{0} ** 8 } };
     var reason_value = unit;
@@ -170,7 +179,7 @@ fn information(machine: *Machine, values: *@import("values.zig").Values, schema:
     return values.aggregate(schema, .{ .fields = &.{ primary, optional, failures } });
 }
 
-pub fn returned(machine: *Machine, reference: g.NodeRef) Error!void {
+pub fn returned(machine: anytype, reference: g.NodeRef) @TypeOf(machine.*).ExecutionError!void {
     const frame = (try machine.store.get(reference)).cleanup_return;
     var obligation = (try machine.store.get(frame.obligation.node)).obligation;
     obligation.status = .completed;
@@ -179,7 +188,7 @@ pub fn returned(machine: *Machine, reference: g.NodeRef) Error!void {
     try position(machine, frame.parent, &.{});
 }
 
-fn unlinkSuspendedExit(machine: *Machine, retired: g.NodeRef) Error!void {
+fn unlinkSuspendedExit(machine: anytype, retired: g.NodeRef) @TypeOf(machine.*).ExecutionError!void {
     const prior = (try machine.store.get(retired)).exit;
     var cursor = machine.roots.exit orelse return error.InvalidState;
     if (cursor.id == retired.id) return;
@@ -209,7 +218,7 @@ fn unlinkSuspendedExit(machine: *Machine, retired: g.NodeRef) Error!void {
     return error.InvalidState;
 }
 
-pub fn returnedDisposal(machine: *Machine, frame: anytype, value: g.Value) Error!void {
+pub fn returnedDisposal(machine: anytype, frame: anytype, value: g.Value) @TypeOf(machine.*).ExecutionError!void {
     var remaining: std.ArrayList(g.Value) = .empty;
     defer remaining.deinit(machine.allocator);
     if (value.body == .owned) try remaining.append(machine.allocator, value);
@@ -217,7 +226,7 @@ pub fn returnedDisposal(machine: *Machine, frame: anytype, value: g.Value) Error
     try position(machine, frame.parent, remaining.items);
 }
 
-fn crossedCleanupReturn(machine: *Machine, frame: anytype, exit: g.Exit) Error!void {
+fn crossedCleanupReturn(machine: anytype, frame: anytype, exit: g.Exit) @TypeOf(machine.*).ExecutionError!void {
     var obligation = (try machine.store.get(frame.obligation.node)).obligation;
     if (exit.reason == .abandoned) {
         const suspended = (try machine.store.get(frame.exit)).exit;
@@ -245,7 +254,7 @@ fn crossedCleanupReturn(machine: *Machine, frame: anytype, exit: g.Exit) Error!v
     try position(machine, frame.parent, &.{});
 }
 
-pub fn step(machine: *Machine) Error!?Outcome {
+pub fn step(machine: anytype) @TypeOf(machine.*).ExecutionError!?@TypeOf(machine.*).UnwindOutcome {
     var scratch = std.heap.ArenaAllocator.init(machine.allocator);
     defer scratch.deinit();
     const temporary = scratch.allocator();
@@ -299,14 +308,14 @@ pub fn step(machine: *Machine) Error!?Outcome {
     if (std.meta.eql(current.cursor, exit.stop) and (exit.reason == .normal or exit.reason == .abandoned)) {
         machine.roots.exit = exit.outer;
         machine.status = .active;
-        if (exit.reason == .normal) return machine.returnTo(current.cursor, exit.reason.normal);
+        if (exit.reason == .normal) return machine.unwindReturnTo(current.cursor, exit.reason.normal);
         try machine.resumeContinuation(current.cursor orelse return error.InvalidState, .{ .schema = 0, .body = .{ .scalar = [_]u8{0} ** 8 } });
         return null;
     }
     const cursor = current.cursor orelse return try terminal(machine, root_exit);
     switch (try machine.store.get(cursor)) {
-        .control => |control| try positionDiscards(machine, control.parent, control.arguments),
-        .continuation => |saved| try positionDiscards(machine, saved.parent, saved.arguments),
+        .control => |control| try discardFrame(machine, cursor, control.parent, control.arguments),
+        .continuation => |saved| try discardFrame(machine, cursor, saved.parent, saved.arguments),
         .attachment => |attachment| try position(machine, attachment.return_to, &.{}),
         .region_scope => |scope| try position(machine, scope.return_to, &.{}),
         .injection => |injected| try position(machine, injected.continuation, &.{}),
@@ -333,7 +342,8 @@ pub fn step(machine: *Machine) Error!?Outcome {
     return null;
 }
 
-fn terminal(machine: *Machine, exit: g.Exit) Error!Outcome {
+fn terminal(machine: anytype, exit: g.Exit) @TypeOf(machine.*).ExecutionError!@TypeOf(machine.*).UnwindOutcome {
+    if (comptime @hasField(@TypeOf(machine.*), "frames")) return machine.finishUnwind(exit);
     var arena = std.heap.ArenaAllocator.init(machine.allocator);
     errdefer arena.deinit();
     const output = arena.allocator();
