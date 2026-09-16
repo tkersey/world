@@ -30,31 +30,45 @@ fn execute(allocator: std.mem.Allocator, input: protocol.Input) Error!Outcome {
         .state => |state| try runtime.Session.restoreImage(allocator, input.image, state),
     };
     defer session.deinit();
-    switch (input.control) {
+    _ = try advance(&session, input.control, input.quantum);
+    return finish(allocator, &session, true);
+}
+
+pub fn advance(session: *runtime.Session, control: protocol.Control, quantum: ?u64) Error!runtime.Observation {
+    switch (control) {
         .none => {},
         .reply => |bytes| try session.answer(bytes),
         .resume_yield => try session.resumeYield(),
         .cancel => |reason| try session.cancel(reason),
     }
-    const observation = try session.run(input.quantum);
+    return session.run(quantum);
+}
+
+pub fn finish(allocator: std.mem.Allocator, session: *runtime.Session, checkpoint: bool) Error!Outcome {
+    const observation = try session.observe();
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
     const result: protocol.Outcome = switch (observation) {
-        .progressed => .{ .progressed = try session.checkpoint(a) },
-        .yielded => .{ .yielded = try session.checkpoint(a) },
+        .progressed => .{ .progressed = if (checkpoint) try session.checkpoint(a) else null },
+        .yielded => .{ .yielded = if (checkpoint) try session.checkpoint(a) else null },
         .requested => blk: {
-            const pending = try session.pendingRequest(a);
-            // This invocation arena owns all Pending allocations.
-            break :blk .{ .requested = .{ .state = pending.state, .request = try protocol.encodeOwned(protocol.Request, a, pending.request) } };
+            if (checkpoint) {
+                const pending = try session.pendingRequest(a);
+                // This invocation arena owns all Pending allocations.
+                break :blk .{ .requested = .{ .state = pending.state, .request = try protocol.encodeOwned(protocol.Request, a, pending.request) } };
+            }
+            var pending = try session.pendingRequest(allocator);
+            defer pending.deinit();
+            break :blk .{ .requested = .{ .state = null, .request = try protocol.encodeOwned(protocol.Request, a, pending.request) } };
         },
         .completed => |value| .{ .completed = try a.dupe(u8, try session.bytes(&value)) },
         .failed => |value| .{ .failed = .{
             .value = try a.dupe(u8, try session.bytes(&value)),
-            .cleanup_failures = try failures(a, &session),
+            .cleanup_failures = try failures(a, session),
             .cancellation = if (session.exit.?.cancellation) |reason| try heap.duplicate(protocol.Reason, a, reason) else null,
         } },
-        .cancelled => |reason| .{ .cancelled = .{ .reason = try heap.duplicate(protocol.Reason, a, reason), .cleanup_failures = try failures(a, &session) } },
+        .cancelled => |reason| .{ .cancelled = .{ .reason = try heap.duplicate(protocol.Reason, a, reason), .cleanup_failures = try failures(a, session) } },
     };
     return .{ .arena = arena, .record = result };
 }

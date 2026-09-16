@@ -12,6 +12,21 @@ pub const Statistics = struct {
     traced_nodes: u64 = 0,
     traced_edges: u64 = 0,
     swept_slots: u64 = 0,
+    journal_nodes: u64 = 0,
+    journal_blobs: u64 = 0,
+};
+
+const SavedNode = struct { value: g.Node, alive: bool, borrowed: bool };
+const SavedBlob = struct { value: g.Blob, alive: bool, borrowed: bool };
+const Journal = struct {
+    node_count: usize,
+    blob_count: usize,
+    nodes: std.AutoHashMapUnmanaged(usize, SavedNode) = .empty,
+    blobs: std.AutoHashMapUnmanaged(usize, SavedBlob) = .empty,
+    fn deinit(self: *Journal, allocator: std.mem.Allocator) void {
+        self.nodes.deinit(allocator);
+        self.blobs.deinit(allocator);
+    }
 };
 
 pub const Store = struct {
@@ -30,6 +45,94 @@ pub const Store = struct {
     imported: ?data.state_image.Owned = null,
     borrowed_nodes: []bool = &.{},
     borrowed_blobs: []bool = &.{},
+    journal: ?Journal = null,
+
+    pub fn begin(self: *Store) Error!void {
+        if (self.journal != null) return error.InvalidState;
+        // Rollback rebuilds only private indexes, and must never allocate.
+        try self.free_nodes.ensureTotalCapacity(self.allocator, self.nodes.items.len);
+        try self.free_blobs.ensureTotalCapacity(self.allocator, self.blobs.items.len);
+        try self.interned.ensureTotalCapacity(self.allocator, std.math.cast(u32, self.blobs.items.len) orelse return error.Capacity);
+        self.journal = .{ .node_count = self.nodes.items.len, .blob_count = self.blobs.items.len };
+    }
+
+    fn holdNode(self: *Store, id: usize) Error!bool {
+        const journal = if (self.journal) |*value| value else return false;
+        if (id >= journal.node_count or journal.nodes.contains(id)) return false;
+        try journal.nodes.put(self.allocator, id, .{
+            .value = self.nodes.items[id],
+            .alive = self.alive.items[id],
+            .borrowed = id < self.borrowed_nodes.len and self.borrowed_nodes[id],
+        });
+        if (self.statistics) |statistics| statistics.journal_nodes +|= 1;
+        return true;
+    }
+    fn holdBlob(self: *Store, id: usize) Error!bool {
+        const journal = if (self.journal) |*value| value else return false;
+        if (id >= journal.blob_count or journal.blobs.contains(id)) return false;
+        try journal.blobs.put(self.allocator, id, .{
+            .value = self.blobs.items[id],
+            .alive = self.blob_alive.items[id],
+            .borrowed = id < self.borrowed_blobs.len and self.borrowed_blobs[id],
+        });
+        if (self.statistics) |statistics| statistics.journal_blobs +|= 1;
+        return true;
+    }
+    fn retireNode(self: *Store, id: usize, value: g.Node, held: bool) void {
+        if (held) {
+            if (id < self.borrowed_nodes.len) self.borrowed_nodes[id] = false;
+        } else self.releaseNode(id, value);
+    }
+    fn retireBlob(self: *Store, id: usize, value: g.Blob, held: bool) void {
+        if (held) {
+            if (id < self.borrowed_blobs.len) self.borrowed_blobs[id] = false;
+        } else self.releaseBlob(id, value);
+    }
+
+    pub fn commit(self: *Store) void {
+        var journal = self.journal.?;
+        self.journal = null;
+        var nodes = journal.nodes.valueIterator();
+        while (nodes.next()) |saved| if (saved.alive and !saved.borrowed) release(g.Node, self.allocator, saved.value);
+        var blobs = journal.blobs.valueIterator();
+        while (blobs.next()) |saved| if (saved.alive and !saved.borrowed) self.allocator.free(saved.value.bytes);
+        journal.deinit(self.allocator);
+    }
+
+    pub fn rollback(self: *Store) void {
+        var journal = self.journal.?;
+        self.journal = null;
+        var nodes = journal.nodes.iterator();
+        while (nodes.next()) |entry| {
+            const id = entry.key_ptr.*;
+            if (self.alive.items[id]) self.releaseNode(id, self.nodes.items[id]);
+            self.nodes.items[id] = entry.value_ptr.value;
+            self.alive.items[id] = entry.value_ptr.alive;
+            if (id < self.borrowed_nodes.len) self.borrowed_nodes[id] = entry.value_ptr.borrowed;
+        }
+        for (journal.node_count..self.nodes.items.len) |id| if (self.alive.items[id]) self.releaseNode(id, self.nodes.items[id]);
+        self.nodes.items.len = journal.node_count;
+        self.alive.items.len = journal.node_count;
+        var blobs = journal.blobs.iterator();
+        while (blobs.next()) |entry| {
+            const id = entry.key_ptr.*;
+            if (self.blob_alive.items[id]) self.releaseBlob(id, self.blobs.items[id]);
+            self.blobs.items[id] = entry.value_ptr.value;
+            self.blob_alive.items[id] = entry.value_ptr.alive;
+            if (id < self.borrowed_blobs.len) self.borrowed_blobs[id] = entry.value_ptr.borrowed;
+        }
+        for (journal.blob_count..self.blobs.items.len) |id| if (self.blob_alive.items[id]) self.releaseBlob(id, self.blobs.items[id]);
+        self.blobs.items.len = journal.blob_count;
+        self.blob_alive.items.len = journal.blob_count;
+        self.free_nodes.clearRetainingCapacity();
+        for (self.alive.items, 0..) |alive, id| if (!alive) self.free_nodes.appendAssumeCapacity(id);
+        self.free_blobs.clearRetainingCapacity();
+        self.interned.clearRetainingCapacity();
+        for (self.blob_alive.items, 0..) |alive, id| {
+            if (alive) self.interned.putAssumeCapacity(self.blobs.items[id], id) else self.free_blobs.appendAssumeCapacity(id);
+        }
+        journal.deinit(self.allocator);
+    }
 
     fn releaseNode(self: *Store, id: usize, value: g.Node) void {
         if (id < self.borrowed_nodes.len and self.borrowed_nodes[id]) {
@@ -43,6 +146,7 @@ pub const Store = struct {
     }
 
     pub fn deinit(self: *Store) void {
+        if (self.journal != null) self.rollback();
         for (self.nodes.items, self.alive.items, 0..) |item, live, id| if (live) self.releaseNode(id, item);
         for (self.blobs.items, self.blob_alive.items, 0..) |blob, live, id| if (live) self.releaseBlob(id, blob);
         if (self.imported) |*base| base.deinit();
@@ -70,7 +174,10 @@ pub const Store = struct {
     /// Takes all record-slice allocations on success only. They must be distinct
     /// allocations from this allocator; graph references retain logical aliases.
     pub fn addOwned(self: *Store, copied: g.Node) Error!g.NodeRef {
-        if (self.free_nodes.pop()) |id| {
+        if (self.free_nodes.items.len != 0) {
+            const id = self.free_nodes.items[self.free_nodes.items.len - 1];
+            _ = try self.holdNode(id);
+            _ = self.free_nodes.pop();
             self.nodes.items[id] = copied;
             self.alive.items[id] = true;
             if (self.statistics) |s| s.added_nodes +|= 1;
@@ -93,16 +200,19 @@ pub const Store = struct {
     pub fn replace(self: *Store, reference: g.NodeRef, value: g.Node) Error!void {
         const previous = try self.get(reference);
         const replacement = try duplicate(g.Node, self.allocator, value);
+        errdefer release(g.Node, self.allocator, replacement);
+        const held = try self.holdNode(@intCast(reference.id));
         self.nodes.items[@intCast(reference.id)] = replacement;
-        self.releaseNode(@intCast(reference.id), previous);
+        self.retireNode(@intCast(reference.id), previous, held);
     }
 
     /// Takes independently allocated record slices on success. No incoming
     /// slice may overlap storage owned by the node being replaced.
     pub fn replaceOwned(self: *Store, reference: g.NodeRef, value: g.Node) Error!void {
         const previous = try self.get(reference);
+        const held = try self.holdNode(@intCast(reference.id));
         self.nodes.items[@intCast(reference.id)] = value;
-        self.releaseNode(@intCast(reference.id), previous);
+        self.retireNode(@intCast(reference.id), previous, held);
     }
 
     pub fn literal(self: *Store, schemas: []const data.program.Schema, value: data.program.Literal) Error!g.Value {
@@ -116,7 +226,10 @@ pub const Store = struct {
         const copied: g.Blob = .{ .schema = value.schema, .bytes = try self.allocator.dupe(u8, value.bytes) };
         errdefer self.allocator.free(copied.bytes);
         try self.interned.ensureUnusedCapacity(self.allocator, 1);
-        const id = if (self.free_blobs.pop()) |free| blk: {
+        const id = if (self.free_blobs.items.len != 0) blk: {
+            const free = self.free_blobs.items[self.free_blobs.items.len - 1];
+            _ = try self.holdBlob(free);
+            _ = self.free_blobs.pop();
             self.blobs.items[free] = copied;
             self.blob_alive.items[free] = true;
             break :blk free;
@@ -134,6 +247,7 @@ pub const Store = struct {
     }
 
     pub fn import(self: *Store, incoming: g.State) Error!void {
+        if (self.journal != null) return error.InvalidState;
         // Preserve incoming IDs until the next canonical emission.
         for (incoming.nodes) |record| _ = try self.add(record);
         for (incoming.blobs) |record| {
@@ -152,7 +266,7 @@ pub const Store = struct {
     /// Adopt immutable decoded storage; transfer only on complete success.
     /// Semantic admission belongs to the caller before this physical operation.
     pub fn importOwned(self: *Store, incoming: *data.state_image.Owned) Error!void {
-        if (self.nodes.items.len != 0 or self.blobs.items.len != 0 or self.imported != null) return error.InvalidState;
+        if (self.nodes.items.len != 0 or self.blobs.items.len != 0 or self.imported != null or self.journal != null) return error.InvalidState;
         const state_ = incoming.state;
         const node_flags = try self.allocator.alloc(bool, state_.nodes.len);
         errdefer self.allocator.free(node_flags);
@@ -183,6 +297,7 @@ pub const Store = struct {
     /// Release a large imported backing once only small records survive. Copies
     /// are prepared individually before publication; failure preserves graph values.
     pub fn compactImported(self: *Store) Error!void {
+        if (self.journal != null) return;
         const base = self.imported orelse return;
         var retained: usize = 0;
         for (self.borrowed_nodes, 0..) |borrowed, id| if (borrowed) {
@@ -258,15 +373,17 @@ pub const Store = struct {
         try self.free_blobs.ensureTotalCapacity(self.allocator, blob_marks.len);
         if (self.statistics) |s| s.swept_slots +|= marks.len + blob_marks.len;
         for (marks, 0..) |marked, id| if (!marked and self.alive.items[id]) {
+            const held = try self.holdNode(id);
             frames.remove(id);
-            self.releaseNode(id, self.nodes.items[id]);
+            self.retireNode(id, self.nodes.items[id], held);
             self.nodes.items[id] = empty;
             self.alive.items[id] = false;
             self.free_nodes.appendAssumeCapacity(id);
         };
         for (blob_marks, 0..) |marked, id| if (!marked and self.blob_alive.items[id]) {
+            const held = try self.holdBlob(id);
             _ = self.interned.remove(self.blobs.items[id]);
-            self.releaseBlob(id, self.blobs.items[id]);
+            self.retireBlob(id, self.blobs.items[id], held);
             self.blobs.items[id] = .{ .schema = 0, .bytes = &.{} };
             self.blob_alive.items[id] = false;
             self.free_blobs.appendAssumeCapacity(id);

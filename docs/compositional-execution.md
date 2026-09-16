@@ -6,7 +6,7 @@ remains the goal. No merge, release or application data operation has occurred.
 
 World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
 `feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `fc76920b049761463d742a75fb4221fbfab411f8`, Zig 0.16.0,
+successor worktree at `8d32d8aaf4b73a1f3e0904f5138f5715fb2d76e6`, Zig 0.16.0,
 and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
 
 ## Private activation slots
@@ -108,18 +108,18 @@ rebinding slots in one resumed branch does not change an older retained template
 These preserve independent existing expected values; no candidate-generated oracle
 replaces those expectations.
 
-The native driver owns its Program and analysis after authoring storage is released.
-Optional instruction/control quanta yield progress. Allocation-failure sweeps cover
-partial-owner cleanup. Full resident rollback is NOT implemented: an operational
-failure after mutation poisons this internal driver, while malformed typed replies
-reject before mutation. No portable checkpoint or old-format fallback is exposed.
+The native driver retains prepared Program ownership after authoring storage is
+released. Optional instruction/control quanta yield progress. Low-level errors
+poison tentative execution; fresh invocation discards it and Resident rolls back
+before returning an error. Malformed/stale replies reject against the current
+pending binding. BPI3/PST3 admission has no predecessor fallback.
 Borrowed/resource execution is now enabled through position-sensitive stable
 borrow admission. Both private resource representations acquire, lend, reread and
 release through their unchanged interfaces across external requests. Cancellation
 while a loan is suspended releases its owning resource. The 24-case return-clause
 matrix admits older references and rejects fresh ones, and an explicit same-slot
-rebind cannot hide an earlier invalid store. Portable State provenance still needs
-its own admission and corruption tests; native execution does not establish that
+rebind cannot hide an earlier invalid store. Portable State provenance has separate
+Program-relative admission and corruption tests; native execution alone does not establish that
 restoration guarantee.
 
 Shallow value/computation resumption now removes the old handler return clause;
@@ -161,7 +161,7 @@ The stable controller now exports PST3 graph records
 without advancing or collecting. Slot values and lexical owner order are attached
 to their owning control node; private page handles and stale store entries do not
 become checkpoint identities. Terminal exports retain the full result/exit.
-The 37 stable-source tests verify repeated export and graph re-encoding at drive
+The stable-source tests verify repeated export and graph re-encoding at drive
 boundaries, including one-instruction quanta and cleanup. Reentrant-cycle tests
 replace every private view handle and collect garbage without changing a byte of
 the checkpoint. An export allocation-
@@ -221,10 +221,40 @@ Dedicated cases cover equal visible requests with different retained values,
 unchanged pending/yield polls, zero-quantum control application, and cancellation
 rebinding the same pending cleanup operation. An already acquired result requires
 explicit host re-encoding against the new challenge; no external work is repeated.
-The default facade still awaits coordinated cutover, and resident operational
-failure rollback remains open.
+The default facade still awaits coordinated cutover.
 
-Complete resident transaction and host integration.
-Whole-Session transactions, ABI 3, browser/server transfer, Agent
+## Resident transactions
+
+`Resident.start`/`restore` create one owning native handle. An atomic gate rejects
+concurrent or allocator-reentrant operations. `drive` commits after detached
+outcome buffers exist; `driveInto` includes caller-buffer encoding and capacity
+checks in that same transaction. Failure restores roots, pending control, exit
+state, positions, slot values and lexical custody without allocating on rollback.
+
+The Store retains the first version of each changed entry node/blob. Later writes
+to that slot release intermediate versions; new nodes are reclaimed normally.
+Frame backup copies one descriptor per live frame and retains COW view roots,
+without copying their values. It does not clone semantic cells or serialize the
+Session. Imported backing stays alive while the journal needs it. After commit,
+optional compaction may retain that backing if its evacuation allocation fails.
+
+Resident drive omits portable checkpoints by default. Its PKO3 incomplete outcomes
+carry an absent checkpoint; `.checkpoint = true` requests the same publication
+service as fresh invocation. Bound external requests still hash canonical State,
+currently through a temporary materialization. `checkpoint` exports without
+advancing; `takeCheckpoint` releases the resident owner only after successful export.
+`close` requires terminal state. Unfinished work must finish cancellation/cleanup
+or transfer custody through a checkpoint; physical release runs no finalizers.
+
+Failure sweeps cover acquired replies, cancellation during cleanup, and reentrant
+captures, both with and without checkpoint publication. They witness failures after
+mutation, compare the exact original checkpoint, and retry the same control to the
+same outcome. Other tests cover output capacity, failed checkpoint transfer,
+released handles, reentrant callbacks, ID reuse, imported backing, and a 10,000-call
+drive whose journal is bounded by entry state rather than transition history.
+These are correctness and storage-mechanism results; full transaction latency and
+peak-memory acceptance measurements remain required.
+
+Complete host integration. ABI 3, browser/server transfer, Agent
 migration, component linking, performance acceptance, legacy retirement and linked
 draft PRs remain open. Native source agreement does not prove portable execution.

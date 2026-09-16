@@ -1,6 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
-//! Successor native control slice. Not yet the portable/resident public API:
-//! kernel handles and whole-Session rollback remain open.
+//! Low-level native evaluator. Published mutation runs in a private fresh
+//! invocation or through Resident's transaction and lifecycle boundary.
 const std = @import("std");
 const data = @import("boundary_data_v2");
 const p = data.program;
@@ -13,6 +13,7 @@ const Slots = @import("activation_slots.zig").ActivationSlots;
 const protocol = data.invocation;
 pub const invocation = @import("invocation.zig");
 pub const Prepared = @import("prepared.zig").Prepared;
+pub const Resident = @import("resident.zig").Resident;
 pub const Error = @import("process.zig").Error || bindings.Error || data.activation_ownership.Error || data.program_image.Error || protocol.Error;
 pub const Pending = struct {
     allocator: std.mem.Allocator,
@@ -55,6 +56,48 @@ pub const Session = struct {
     poisoned: bool = false,
     transitions: usize = 0,
     statistics: ?*@import("process.zig").Statistics = null,
+
+    pub const Transaction = struct {
+        frames: bindings.Frames.Backup,
+        roots: g.Roots,
+        status: g.Status,
+        terminal: ?Observation,
+        exit: ?g.Exit,
+        poisoned: bool,
+        transitions: usize,
+
+        pub fn commit(self: *Transaction, session: *Session) void {
+            session.store.commit();
+            self.frames.discard(&session.frames);
+            self.* = undefined;
+        }
+        pub fn rollback(self: *Transaction, session: *Session) void {
+            self.frames.restore(&session.frames);
+            session.store.rollback();
+            session.roots = self.roots;
+            session.status = self.status;
+            session.terminal = self.terminal;
+            session.exit = self.exit;
+            session.poisoned = self.poisoned;
+            session.transitions = self.transitions;
+            self.* = undefined;
+        }
+    };
+
+    pub fn begin(self: *Session) Error!Transaction {
+        if (self.poisoned) return error.InvalidState;
+        try self.store.begin();
+        errdefer self.store.rollback();
+        return .{
+            .frames = try self.frames.backup(),
+            .roots = self.roots,
+            .status = self.status,
+            .terminal = self.terminal,
+            .exit = self.exit,
+            .poisoned = self.poisoned,
+            .transitions = self.transitions,
+        };
+    }
 
     /// The fresh path uses the same prepared owner, releasing its outer handle
     /// once the Session has retained its lease.
@@ -318,7 +361,7 @@ pub const Session = struct {
         const facts = self.value_facts;
         const literal: p.Literal = .{ .schema = effect.result, .bytes = input };
         try data.admission.value(scratch.allocator(), self.program.schemas, facts, literal);
-        errdefer self.poisoned = true; // Full Session rollback is a later required seam.
+        errdefer self.poisoned = true; // Resident restores its retained entry on error.
         const value = try self.store.literal(self.program.schemas, literal);
         try self.resumeContinuation(pending.continuation, value);
         self.roots.pending = null;

@@ -21,6 +21,36 @@ pub const Frames = struct {
     custody: custody.Custody,
     entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
 
+    pub const Backup = struct {
+        entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
+        pub fn discard(self: *Backup, frames: *Frames) void {
+            var values = self.entries.valueIterator();
+            while (values.next()) |frame| frames.releaseFrame(frame.*);
+            self.entries.deinit(frames.allocator);
+            self.* = .{};
+        }
+        pub fn restore(self: *Backup, frames: *Frames) void {
+            var current = frames.entries.valueIterator();
+            while (current.next()) |frame| frames.releaseFrame(frame.*);
+            frames.entries.deinit(frames.allocator);
+            frames.entries = self.entries;
+            self.* = .{};
+        }
+    };
+
+    /// Fork only view roots and custody handles, never their value descriptors.
+    pub fn backup(self: *Frames) Error!Backup {
+        var saved: Backup = .{};
+        errdefer saved.discard(self);
+        try saved.entries.ensureTotalCapacity(self.allocator, self.entries.count());
+        var entries = self.entries.iterator();
+        while (entries.next()) |entry| {
+            const frame = try self.forkFrame(entry.value_ptr.*);
+            saved.entries.putAssumeCapacity(entry.key_ptr.*, frame);
+        }
+        return saved;
+    }
+
     pub fn init(allocator: std.mem.Allocator, pool: *sets.Pool, program: data.activation.Program) Error!Frames {
         var slots = try Slots.init(allocator);
         errdefer slots.deinit();

@@ -3,6 +3,241 @@ const boundary = @import("boundary");
 const source = boundary.source;
 const Session = @import("stable_runtime").Session;
 const testing = std.testing;
+const Resident = @import("stable_runtime").Resident;
+
+fn releaseResident(resident: *Resident) void {
+    resident.close() catch |err| switch (err) {
+        error.UnfinishedSession => {
+            const bytes = resident.takeCheckpoint(testing.allocator) catch unreachable;
+            testing.allocator.free(bytes); // Explicit fixture custody transfer.
+        },
+        error.InvalidState => {},
+        else => unreachable,
+    };
+}
+
+fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, checkpoint: []const u8, control: boundary.data_v2.invocation.Control, checkpoint_mode: bool) !void {
+    var reference = try Resident.restore(testing.allocator, prepared, checkpoint);
+    defer releaseResident(&reference);
+    var expected = try reference.drive(testing.allocator, control, .{ .checkpoint = checkpoint_mode });
+    defer expected.deinit();
+    var failures: usize = 0;
+    var failed_after_mutation = false;
+    while (true) : (failures += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{});
+        var resident = try Resident.restore(failing.allocator(), prepared, checkpoint);
+        defer releaseResident(&resident);
+        var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+        resident.session.?.statistics = &statistics;
+        resident.session.?.store.statistics = &statistics.storage;
+        failing.fail_index = failing.alloc_index + failures;
+        failing.resize_fail_index = failing.resize_index;
+        var output = resident.drive(failing.allocator(), control, .{ .checkpoint = checkpoint_mode }) catch |err| {
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+            try testing.expectEqual(error.OutOfMemory, err);
+            failed_after_mutation = failed_after_mutation or statistics.transitions != 0 or statistics.storage.added_nodes != 0 or statistics.storage.journal_nodes != 0;
+            const unchanged = try resident.checkpoint(testing.allocator);
+            defer testing.allocator.free(unchanged);
+            try testing.expectEqualSlices(u8, checkpoint, unchanged);
+            var retried = try resident.drive(testing.allocator, control, .{ .checkpoint = checkpoint_mode });
+            defer retried.deinit();
+            try testing.expectEqualDeep(expected.record, retried.record);
+            continue;
+        };
+        defer output.deinit();
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try testing.expectEqualDeep(expected.record, output.record);
+        try testing.expect(failures != 0 and failed_after_mutation);
+        break;
+    }
+}
+
+test "resident rollback preserves acquired replies, cleanup custody, and reentrant captures at every allocation failure" {
+    const protocol = boundary.data_v2.invocation;
+    inline for (.{ retainedInputExample, source.examples.unwind, source.examples.reentrant }, 0..) |example, index| {
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        var compiled = try source.construct(testing.allocator, try example(&builder));
+        defer compiled.deinit();
+        const image = try programBytes(compiled.program);
+        defer testing.allocator.free(image);
+        var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+        defer prepared.deinit();
+        const arguments: []const u8 = switch (index) {
+            0 => &.{ 42, 0, 0, 0, 0, 0, 0, 0 },
+            1 => &.{0},
+            else => &.{},
+        };
+        var session = try Session.start(testing.allocator, &prepared, arguments);
+        defer session.deinit();
+        const observation = try session.run(null);
+        const checkpoint = try session.checkpoint(testing.allocator);
+        defer testing.allocator.free(checkpoint);
+        if (index == 2) {
+            try testing.expect(observation == .yielded);
+            for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, checkpoint, .resume_yield, with_checkpoint);
+        } else {
+            try testing.expect(observation == .requested);
+            var pending = try session.pendingRequest(testing.allocator);
+            defer pending.deinit();
+            const reply = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = pending.request.request_identity, .value = &.{} });
+            defer testing.allocator.free(reply);
+            for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, checkpoint, .{ .reply = reply }, with_checkpoint);
+            if (index == 1) for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, checkpoint, .{ .cancel = .{ .text = "stop" } }, with_checkpoint);
+        }
+    }
+}
+
+test "resident output capacity and checkpoint transfer preserve custody on failure" {
+    const protocol = boundary.data_v2.invocation;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var resident = try Resident.start(testing.allocator, &prepared, &.{ 42, 0, 0, 0, 0, 0, 0, 0 });
+    defer releaseResident(&resident);
+    try testing.expectError(error.UnfinishedSession, resident.close());
+    var pending = try resident.drive(testing.allocator, .none, .{ .checkpoint = true });
+    defer pending.deinit();
+    const engine = &resident.session.?;
+    const copies = engine.frames.slots.statistics.value_copies;
+    const custody_copies = engine.frames.custody.nodes.statistics.value_copies;
+    {
+        var transaction = try engine.begin();
+        defer transaction.rollback(engine);
+        try testing.expectEqual(copies, engine.frames.slots.statistics.value_copies);
+        try testing.expectEqual(custody_copies, engine.frames.custody.nodes.statistics.value_copies);
+    }
+    var request = try protocol.decode(protocol.Request, testing.allocator, pending.record.requested.request);
+    defer request.deinit();
+    const reply = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = request.value.request_identity, .value = &.{} });
+    defer testing.allocator.free(reply);
+    var output = [_]u8{0xa5} ** 512;
+    try testing.expectError(error.Capacity, resident.driveInto(.{ .reply = reply }, .{ .checkpoint = true }, output[0..1]));
+    for (output) |byte| try testing.expectEqual(0xa5, byte);
+    const unchanged = try resident.checkpoint(testing.allocator);
+    defer testing.allocator.free(unchanged);
+    try testing.expectEqualSlices(u8, pending.record.requested.state.?, unchanged);
+    var empty: [0]u8 = .{};
+    var failed_output = std.heap.FixedBufferAllocator.init(&empty);
+    try testing.expectError(error.OutOfMemory, resident.takeCheckpoint(failed_output.allocator()));
+    const transferred = try resident.takeCheckpoint(testing.allocator);
+    defer testing.allocator.free(transferred);
+    try testing.expectEqualSlices(u8, unchanged, transferred);
+    try testing.expectError(error.InvalidState, resident.checkpoint(testing.allocator));
+    var restored = try Resident.restore(testing.allocator, &prepared, transferred);
+    defer releaseResident(&restored);
+    const bytes = try restored.driveInto(.{ .reply = reply }, .{ .checkpoint = true }, &output);
+    var decoded = try protocol.decode(protocol.Outcome, testing.allocator, bytes);
+    defer decoded.deinit();
+    try testing.expectEqualSlices(u8, &.{ 42, 0, 0, 0, 0, 0, 0, 0 }, decoded.value.completed);
+    try restored.close();
+    try testing.expectError(error.InvalidState, restored.close());
+    try testing.expectError(error.InvalidState, restored.drive(testing.allocator, .none, .{ .quantum = 0 }));
+}
+
+test "resident progress defers checkpoint publication until explicitly requested" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var resident = try Resident.start(testing.allocator, &prepared, &.{ 42, 0, 0, 0, 0, 0, 0, 0 });
+    defer releaseResident(&resident);
+    var empty: [0]u8 = .{};
+    var output = std.heap.FixedBufferAllocator.init(&empty);
+    var progress = try resident.drive(output.allocator(), .none, .{ .quantum = 1 });
+    defer progress.deinit();
+    try testing.expect(progress.record == .progressed and progress.record.progressed == null);
+    var pending = try resident.drive(testing.allocator, .none, .{});
+    defer pending.deinit();
+    try testing.expect(pending.record == .requested and pending.record.requested.state == null);
+    const checkpoint = try resident.checkpoint(testing.allocator);
+    defer testing.allocator.free(checkpoint);
+    var restored = try Resident.restore(testing.allocator, &prepared, checkpoint);
+    defer releaseResident(&restored);
+    var polled = try restored.drive(testing.allocator, .none, .{});
+    defer polled.deinit();
+    try testing.expectEqualDeep(pending.record, polled.record);
+}
+
+test "a long resident drive journals entry state rather than transition history" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.recursive(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var resident = try Resident.start(testing.allocator, &prepared, &.{ 16, 39, 0, 0, 0, 0, 0, 0 });
+    defer releaseResident(&resident);
+    var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+    resident.session.?.statistics = &statistics;
+    resident.session.?.store.statistics = &statistics.storage;
+    const entry_nodes = resident.session.?.store.nodes.items.len;
+    var result = try resident.drive(testing.allocator, .none, .{});
+    defer result.deinit();
+    try testing.expectEqualSlices(u8, &.{1}, result.record.completed);
+    try testing.expect(statistics.transitions >= 10_000);
+    try testing.expect(statistics.storage.journal_nodes <= entry_nodes);
+    try testing.expect(resident.session.?.store.nodes.items.len <= 512);
+}
+
+test "resident gate rejects reentrant observation during allocator callbacks" {
+    const Callback = struct {
+        child: std.mem.Allocator,
+        resident: ?*Resident = null,
+        attempted: bool = false,
+        observed: ?anyerror = null,
+        fn alloc(pointer: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+            const self: *@This() = @ptrCast(@alignCast(pointer));
+            if (self.resident != null and !self.attempted) {
+                self.attempted = true;
+                if (self.resident.?.checkpoint(self.child)) |bytes| {
+                    self.child.free(bytes);
+                    self.observed = error.AcceptedReentrancy;
+                } else |err| self.observed = err;
+            }
+            return self.child.rawAlloc(len, alignment, ra);
+        }
+        fn free(pointer: *anyopaque, bytes: []u8, alignment: std.mem.Alignment, ra: usize) void {
+            const self: *@This() = @ptrCast(@alignCast(pointer));
+            self.child.rawFree(bytes, alignment, ra);
+        }
+    };
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var callback: Callback = .{ .child = testing.allocator };
+    const allocator: std.mem.Allocator = .{ .ptr = &callback, .vtable = &.{
+        .alloc = Callback.alloc,
+        .free = Callback.free,
+        .resize = std.mem.Allocator.noResize,
+        .remap = std.mem.Allocator.noRemap,
+    } };
+    var resident = try Resident.start(allocator, &prepared, &.{ 42, 0, 0, 0, 0, 0, 0, 0 });
+    defer releaseResident(&resident);
+    callback.resident = &resident;
+    var result = try resident.drive(testing.allocator, .none, .{ .quantum = 0 });
+    defer result.deinit();
+    try testing.expect(callback.attempted);
+    try testing.expectEqual(error.Busy, callback.observed.?);
+}
 
 fn answerWithValue(subject: *Session, value: []const u8) !void {
     const protocol = boundary.data_v2.invocation;
@@ -46,6 +281,13 @@ fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observat
         .quantum = quantum,
     });
     defer fresh.deinit();
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var resident = try Resident.restore(testing.allocator, &prepared, before);
+    defer releaseResident(&resident);
+    var committed = try resident.drive(testing.allocator, .none, .{ .quantum = quantum, .checkpoint = true });
+    defer committed.deinit();
+    try testing.expectEqualDeep(fresh.record, committed.record);
     @memset(image, 0xff);
     @memset(before, 0xff);
     const result = try subject.run(quantum);
@@ -56,10 +298,10 @@ fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observat
     defer testing.allocator.free(actual);
     try testing.expectEqualSlices(u8, expected, actual);
     switch (result) {
-        .progressed => try testing.expectEqualSlices(u8, expected, fresh.record.progressed),
-        .yielded => try testing.expectEqualSlices(u8, expected, fresh.record.yielded),
+        .progressed => try testing.expectEqualSlices(u8, expected, fresh.record.progressed.?),
+        .yielded => try testing.expectEqualSlices(u8, expected, fresh.record.yielded.?),
         .requested => {
-            try testing.expectEqualSlices(u8, expected, fresh.record.requested.state);
+            try testing.expectEqualSlices(u8, expected, fresh.record.requested.state.?);
             var pending = try subject.pendingRequest(testing.allocator);
             defer pending.deinit();
             var decoded = try boundary.data_v2.invocation.decode(boundary.data_v2.invocation.Request, testing.allocator, fresh.record.requested.request);
@@ -268,27 +510,27 @@ test "current fresh invocation binds captured values and rejects stale replies w
     try testing.expectEqualDeep(first_request.value.binding.semantic_identity, second_request.value.binding.semantic_identity);
     try testing.expectEqualSlices(u8, first_request.value.binding.payload, second_request.value.binding.payload);
     try testing.expect(!std.mem.eql(u8, &first_request.value.request_identity, &second_request.value.request_identity));
-    var poll = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = first.record.requested.state } });
+    var poll = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = first.record.requested.state.? } });
     defer poll.deinit();
     try testing.expectEqualDeep(first.record, poll.record);
     const stale = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = first_request.value.request_identity, .value = &.{} });
     defer testing.allocator.free(stale);
     try testing.expectError(error.InvalidResult, fresh.invoke(testing.allocator, .{
         .image = image,
-        .instance = .{ .state = second.record.requested.state },
+        .instance = .{ .state = second.record.requested.state.? },
         .control = .{ .reply = stale },
     }));
-    var resident = try Session.restoreImage(testing.allocator, image, second.record.requested.state);
+    var resident = try Session.restoreImage(testing.allocator, image, second.record.requested.state.?);
     defer resident.deinit();
     try testing.expectError(error.InvalidResult, resident.answer(stale));
     const unchanged = try resident.checkpoint(testing.allocator);
     defer testing.allocator.free(unchanged);
-    try testing.expectEqualSlices(u8, second.record.requested.state, unchanged);
+    try testing.expectEqualSlices(u8, second.record.requested.state.?, unchanged);
     const response = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = second_request.value.request_identity, .value = &.{} });
     defer testing.allocator.free(response);
     var zero = try fresh.invoke(testing.allocator, .{
         .image = image,
-        .instance = .{ .state = second.record.requested.state },
+        .instance = .{ .state = second.record.requested.state.? },
         .control = .{ .reply = response },
         .quantum = 0,
     });
@@ -296,15 +538,15 @@ test "current fresh invocation binds captured values and rejects stale replies w
     try testing.expect(zero.record == .progressed);
     try testing.expectError(error.InvalidState, fresh.invoke(testing.allocator, .{
         .image = image,
-        .instance = .{ .state = zero.record.progressed },
+        .instance = .{ .state = zero.record.progressed.? },
         .control = .{ .reply = response },
     }));
-    var completed = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = zero.record.progressed } });
+    var completed = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = zero.record.progressed.? } });
     defer completed.deinit();
     try testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0, 0, 0, 0, 0 }, completed.record.completed);
     const command = try protocol.encodeOwned(protocol.Input, testing.allocator, .{
         .image = image,
-        .instance = .{ .state = second.record.requested.state },
+        .instance = .{ .state = second.record.requested.state.? },
         .control = .{ .reply = response },
     });
     defer testing.allocator.free(command);
@@ -331,18 +573,18 @@ test "current invocation preserves explicit yield polling and cancellation befor
     defer testing.allocator.free(image);
     var yielded = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .initial_args = &.{} } });
     defer yielded.deinit();
-    var poll = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = yielded.record.yielded } });
+    var poll = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = yielded.record.yielded.? } });
     defer poll.deinit();
     try testing.expectEqualDeep(yielded.record, poll.record);
     var resumed = try fresh.invoke(testing.allocator, .{
         .image = image,
-        .instance = .{ .state = yielded.record.yielded },
+        .instance = .{ .state = yielded.record.yielded.? },
         .control = .resume_yield,
         .quantum = 0,
     });
     defer resumed.deinit();
     try testing.expect(resumed.record == .progressed);
-    var completed = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = resumed.record.progressed } });
+    var completed = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = resumed.record.progressed.? } });
     defer completed.deinit();
     try testing.expectEqualSlices(u8, &.{ 42, 0, 0, 0, 0, 0, 0, 0 }, completed.record.completed);
     var cancelled = try fresh.invoke(testing.allocator, .{
@@ -354,7 +596,7 @@ test "current invocation preserves explicit yield polling and cancellation befor
     defer cancelled.deinit();
     // Zero work can initiate cancellation; an unwind may need further quanta.
     if (cancelled.record == .progressed) {
-        var done = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = cancelled.record.progressed } });
+        var done = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = cancelled.record.progressed.? } });
         defer done.deinit();
         try testing.expectEqualStrings("stop", done.record.cancelled.reason.text);
     } else try testing.expectEqualStrings("stop", cancelled.record.cancelled.reason.text);
