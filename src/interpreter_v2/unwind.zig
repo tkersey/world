@@ -157,7 +157,7 @@ fn information(machine: *Machine, values: *@import("values.zig").Values, schema:
         const encoded = try values.allocator.alloc(u8, measure.position);
         var writer: data.wire.Writer = .{ .output = encoded };
         try writer.bytes(bytes);
-        const payload = try machine.store.literal(machine.program, .{ .schema = if (reason == .text) types.text else types.bytes, .bytes = encoded });
+        const payload = try machine.store.literal(machine.program.schemas, .{ .schema = if (reason == .text) types.text else types.bytes, .bytes = encoded });
         reason_value = try values.aggregate(types.reason, .{ .tag = @intFromEnum(std.meta.activeTag(reason)), .fields = &.{payload} });
     }
     const primary = try values.aggregate(types.primary, .{ .tag = @intFromEnum(std.meta.activeTag(exit.reason)), .fields = &.{switch (exit.reason) {
@@ -321,7 +321,7 @@ pub fn step(machine: *Machine) Error!?Outcome {
             obligation.resource = null;
             obligation.status = .{ .running = frame };
             try machine.store.replace(protection.obligation.node, .{ .obligation = obligation });
-            var values: @import("values.zig").Values = .{ .allocator = temporary, .program = machine.program, .store = &machine.store };
+            var values: @import("values.zig").Values = .{ .allocator = temporary, .schemas = machine.program.schemas, .store = &machine.store };
             const info = try information(machine, &values, machine.program.schemas[@intCast(cleanup.schema)].internal.computation.parameters[0], root_exit);
             machine.status = .active;
             const arguments = if (resource) |owned| &[_]g.Value{ info, owned } else &[_]g.Value{info};

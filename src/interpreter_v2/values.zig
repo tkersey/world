@@ -6,6 +6,7 @@ const p = data.program;
 const g = data.graph;
 const Store = @import("store.zig").Store;
 const Error = @import("process.zig").Error;
+const read = @import("operands.zig").read;
 pub const Parts = struct { tag: p.Id = 0, fields: []const g.Value };
 pub const EvaluationError = Error || error{ CollectionCapacity, ElementIndex, WrongVariant };
 
@@ -34,7 +35,7 @@ const Collection = struct {
                 while (remaining != 0) : (remaining -= 1)
                     _ = try data.admission.readValue(
                         values.allocator,
-                        values.program.schemas,
+                        values.schemas,
                         facts,
                         self.element,
                         &reader,
@@ -44,7 +45,7 @@ const Collection = struct {
                 while (remaining != 0) : (remaining -= 1)
                     _ = try data.admission.readValue(
                         values.allocator,
-                        values.program.schemas,
+                        values.schemas,
                         facts,
                         self.element,
                         &reader,
@@ -59,7 +60,7 @@ const Collection = struct {
         const item = try self.slice(values, index, 1);
         return switch (item.storage) {
             .fields => |fields| fields[0],
-            .encoded => |encoded| values.store.literal(values.program, .{
+            .encoded => |encoded| values.store.literal(values.schemas, .{
                 .schema = self.element,
                 .bytes = encoded,
             }),
@@ -76,18 +77,18 @@ const Collection = struct {
 
 pub const Values = struct {
     allocator: std.mem.Allocator,
-    program: p.Program,
+    schemas: []const p.Schema,
     store: *Store,
     facts: ?data.admission.SchemaFacts = null,
     traits: ?data.traits.Facts = null,
 
     fn schemaFacts(self: *Values) Error!data.admission.SchemaFacts {
-        if (self.facts == null) self.facts = try data.admission.schemas(self.allocator, self.program.schemas);
+        if (self.facts == null) self.facts = try data.admission.schemas(self.allocator, self.schemas);
         return self.facts.?;
     }
     pub fn bytes(self: Values, value: *const g.Value) Error![]const u8 {
         return switch (value.body) {
-            .scalar => |*scalar| scalar[0..data.scalar.width(self.program.schemas[@intCast(value.schema)]).?],
+            .scalar => |*scalar| scalar[0..data.scalar.width(self.schemas[@intCast(value.schema)]).?],
             .blob => |ref| self.store.blobs.items[@intCast(ref.id)].bytes,
             else => error.InvalidValue,
         };
@@ -98,7 +99,7 @@ pub const Values = struct {
         return .{ .schema = schema, .body = .{ .scalar = bytes_value } };
     }
     fn write(self: Values, writer: *data.wire.Writer, schema: p.Id, parts: Parts) Error!void {
-        switch (self.program.schemas[@intCast(schema)]) {
+        switch (self.schemas[@intCast(schema)]) {
             .product, .array => {},
             .sum => try writer.natural(parts.tag),
             .seq, .vector => try writer.natural(parts.fields.len),
@@ -113,9 +114,9 @@ pub const Values = struct {
             const buffer = try self.allocator.alloc(u8, measure.position);
             var writer: data.wire.Writer = .{ .output = buffer };
             try self.write(&writer, schema, parts);
-            return self.store.literal(self.program, .{ .schema = schema, .bytes = buffer });
+            return self.store.literal(self.schemas, .{ .schema = schema, .bytes = buffer });
         }
-        if (self.traits == null) self.traits = try data.traits.derive(self.allocator, self.program.schemas);
+        if (self.traits == null) self.traits = try data.traits.derive(self.allocator, self.schemas);
         const reference = try self.store.add(.{ .aggregate = .{ .schema = schema, .tag = parts.tag, .fields = parts.fields } });
         return .{ .schema = schema, .body = if (self.traits.?.copy[@intCast(schema)]) .{ .reference = reference } else .{ .owned = .{ .node = reference } } };
     }
@@ -132,7 +133,7 @@ pub const Values = struct {
             else => {},
         }
         var reader: data.wire.Reader = .{ .input = try self.bytes(&value) };
-        const shape = self.program.schemas[@intCast(value.schema)];
+        const shape = self.schemas[@intCast(value.schema)];
         var tag: p.Id = 0;
         const count = switch (shape) {
             .product => |fields| fields.len,
@@ -152,19 +153,19 @@ pub const Values = struct {
             };
             const encoded = try data.admission.readValue(
                 self.allocator,
-                self.program.schemas,
+                self.schemas,
                 facts,
                 schema,
                 &reader,
             );
-            field.* = try self.store.literal(self.program, .{ .schema = schema, .bytes = encoded });
+            field.* = try self.store.literal(self.schemas, .{ .schema = schema, .bytes = encoded });
         }
         try reader.finish();
         return .{ .tag = tag, .fields = fields };
     }
 
     fn collection(self: *Values, value: g.Value) Error!Collection {
-        const shape = self.program.schemas[@intCast(value.schema)];
+        const shape = self.schemas[@intCast(value.schema)];
         const element = switch (shape) {
             .seq => |id| id,
             .vector => |vector| vector.element,
@@ -202,7 +203,7 @@ pub const Values = struct {
         count: u64,
         segments: []const Collection,
     ) Error!void {
-        if (self.program.schemas[@intCast(schema)] != .array) try writer.natural(count);
+        if (self.schemas[@intCast(schema)] != .array) try writer.natural(count);
         for (segments) |segment| try segment.write(self, writer);
     }
 
@@ -211,7 +212,7 @@ pub const Values = struct {
         schema: p.Id,
         segments: []const Collection,
     ) EvaluationError!g.Value {
-        const shape = self.program.schemas[@intCast(schema)];
+        const shape = self.schemas[@intCast(schema)];
         var count: u64 = 0;
         for (segments) |segment| {
             if (shape == .vector and segment.count > shape.vector.maximum - count)
@@ -224,7 +225,7 @@ pub const Values = struct {
             const buffer = try self.allocator.alloc(u8, measure.position);
             var writer: data.wire.Writer = .{ .output = buffer };
             try self.writeCollection(&writer, schema, count, segments);
-            return self.store.literal(self.program, .{ .schema = schema, .bytes = buffer });
+            return self.store.literal(self.schemas, .{ .schema = schema, .bytes = buffer });
         }
         const physical_count = std.math.cast(usize, count) orelse return error.OutOfMemory;
         const fields = try self.allocator.alloc(g.Value, physical_count);
@@ -243,22 +244,22 @@ pub const Values = struct {
     pub fn evaluate(
         self: *Values,
         instruction: p.Instruction,
-        slots: []const g.Value,
+        slots: anytype,
     ) EvaluationError!g.Value {
         const result = instruction.result_type;
         if (instruction.opcode == .select) {
-            const condition = slots[@intCast(instruction.operands[0])].body.scalar[0] == 1;
-            return slots[@intCast(instruction.operands[if (condition) @as(usize, 1) else 2])];
+            const condition = (try read(slots, instruction.operands[0])).body.scalar[0] == 1;
+            return (try read(slots, instruction.operands[if (condition) @as(usize, 1) else 2]));
         }
         switch (instruction.opcode) {
             .product, .variant, .sequence => {
                 const fields = try self.allocator.alloc(g.Value, instruction.operands.len);
-                for (fields, instruction.operands) |*field, slot| field.* = slots[@intCast(slot)];
+                for (fields, instruction.operands) |*field, slot| field.* = (try read(slots, slot));
                 return self.aggregate(result, .{ .tag = instruction.immediate, .fields = fields });
             },
             else => {},
         }
-        const source = slots[@intCast(instruction.operands[0])];
+        const source = (try read(slots, instruction.operands[0]));
         switch (instruction.opcode) {
             .field, .variant_tag, .variant_payload => {
                 const parts = try self.split(source);
@@ -276,17 +277,17 @@ pub const Values = struct {
     fn evaluateCollection(
         self: *Values,
         instruction: p.Instruction,
-        slots: []const g.Value,
+        slots: anytype,
     ) EvaluationError!g.Value {
         const result = instruction.result_type;
-        const source = slots[@intCast(instruction.operands[0])];
+        const source = (try read(slots, instruction.operands[0]));
         const items = try self.collection(source);
         switch (instruction.opcode) {
             .sequence_length => return natural(result, items.count),
             .sequence_get => {
-                const index_value = slots[@intCast(instruction.operands[1])];
+                const index_value = (try read(slots, instruction.operands[1]));
                 const index = std.mem.readInt(u64, index_value.body.scalar[0..8], .little);
-                const shape = self.program.schemas[@intCast(result)].sum;
+                const shape = self.schemas[@intCast(result)].sum;
                 const found = index < items.count;
                 const payload = if (found) try items.get(self, index) else natural(shape[0], 0);
                 return self.aggregate(result, .{
@@ -295,7 +296,7 @@ pub const Values = struct {
                 });
             },
             .sequence_append, .sequence_concat => {
-                const second = slots[@intCast(instruction.operands[1])];
+                const second = (try read(slots, instruction.operands[1]));
                 const right: Collection = if (instruction.opcode == .sequence_concat)
                     try self.collection(second)
                 else
@@ -307,7 +308,7 @@ pub const Values = struct {
                 return self.rebuildCollection(result, &.{ items, right });
             },
             .sequence_set, .sequence_take => {
-                const operand = slots[@intCast(instruction.operands[1])].body.scalar;
+                const operand = (try read(slots, instruction.operands[1])).body.scalar;
                 const index = std.mem.readInt(u64, &operand, .little);
                 if (instruction.opcode == .sequence_take) {
                     const prefix = try items.slice(self, 0, @min(index, items.count));
@@ -317,7 +318,7 @@ pub const Values = struct {
                 const replacement: Collection = .{
                     .element = items.element,
                     .count = 1,
-                    .storage = .{ .fields = &.{slots[@intCast(instruction.operands[2])]} },
+                    .storage = .{ .fields = &.{(try read(slots, instruction.operands[2]))} },
                 };
                 return self.rebuildCollection(result, &.{
                     try items.slice(self, 0, index),
@@ -342,7 +343,7 @@ pub const Values = struct {
         const present = items.count != 0;
         switch (instruction.opcode) {
             .sequence_pop => {
-                const shape = self.program.schemas[@intCast(result)].sum;
+                const shape = self.schemas[@intCast(result)].sum;
                 const payload: g.Value = if (!present) natural(shape[0], 0) else blk: {
                     const remaining = try items.slice(self, 1, items.count - 1);
                     const tail = try self.rebuildCollection(source, &.{remaining});
@@ -355,8 +356,8 @@ pub const Values = struct {
                 });
             },
             .sequence_pop_last => {
-                const shape = self.program.schemas[@intCast(result)].product;
-                const optional = self.program.schemas[@intCast(shape[1])].sum;
+                const shape = self.schemas[@intCast(result)].product;
+                const optional = self.schemas[@intCast(shape[1])].sum;
                 const count = items.count;
                 const remaining = try items.slice(self, 0, if (count == 0) 0 else count - 1);
                 const remainder = try self.rebuildCollection(source, &.{remaining});

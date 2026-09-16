@@ -88,8 +88,8 @@ pub const Store = struct {
         release(g.Node, self.allocator, previous);
     }
 
-    pub fn literal(self: *Store, program: data.program.Program, value: data.program.Literal) Error!g.Value {
-        if (data.scalar.width(program.schemas[@intCast(value.schema)])) |width| {
+    pub fn literal(self: *Store, schemas: []const data.program.Schema, value: data.program.Literal) Error!g.Value {
+        if (data.scalar.width(schemas[@intCast(value.schema)])) |width| {
             var scalar = [_]u8{0} ** 8;
             @memcpy(scalar[0..width], value.bytes);
             return .{ .schema = value.schema, .body = .{ .scalar = scalar } };

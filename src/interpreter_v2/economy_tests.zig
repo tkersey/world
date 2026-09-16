@@ -35,7 +35,7 @@ test "one eight and sixty-four branches share immutable environments and blobs" 
         // Canonical length 65536 followed by a 64 KiB pointer-free payload.
         @memcpy(bytes[0..3], &[_]u8{ 0x80, 0x80, 0x04 });
         const program: data.program.Program = .{ .roots = .{ .entry = 0, .result = 0, .failure = 0 }, .schemas = &.{.bytes}, .constants = &.{}, .effects = &.{}, .functions = &.{}, .blocks = &.{} };
-        const blob = try store.literal(program, .{ .schema = 0, .bytes = bytes });
+        const blob = try store.literal(program.schemas, .{ .schema = 0, .bytes = bytes });
         const outer = try store.add(.{ .region = .{ .descriptor = 0, .outer = null, .obligations = &.{} } });
         const shared = try store.add(.{ .cell = .{ .schema = 0, .region = outer, .value = blob } });
         const handler = try store.add(.{ .handler = .{ .definition = 0, .state = &.{value(shared)}, .evidence = null, .region = outer } });

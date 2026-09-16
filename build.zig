@@ -32,6 +32,14 @@ pub fn build(b: *std.Build) void {
     const run_native_tests = b.addRunArtifact(tests);
     b.step("check-v2-native", "Check the World-owned v2 native interpreter")
         .dependOn(&run_native_tests.step);
+    const activation_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/interpreter_v2/activation_slots_tests.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
+    }) });
+    b.step("check-activation-storage", "Check stable activation storage and failure atomicity")
+        .dependOn(&b.addRunArtifact(activation_tests).step);
     const economy = b.step("check-v2-economy", "Check sharing, captures, traversal and portable economy workloads");
     economy.dependOn(&run_native_tests.step);
     const codecs = b.addSystemCommand(&.{ "node", "--test" });
@@ -84,6 +92,28 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
         .imports = &.{.{ .name = "boundary_data_v2", .module = wasm_data }},
     });
+    const activation_wasm_store = b.createModule(.{
+        .root_source_file = b.path("src/interpreter_v2/activation_slots.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSafe,
+        .imports = &.{.{ .name = "boundary_data_v2", .module = wasm_data }},
+    });
+    const activation_wasm = b.addExecutable(.{ .name = "activation-storage-test", .root_module = b.createModule(.{
+        .root_source_file = b.path("test/v2/activation_storage_wasm.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSafe,
+        .imports = &.{.{ .name = "activation_slots", .module = activation_wasm_store }},
+    }) });
+    activation_wasm.entry = .disabled;
+    activation_wasm.rdynamic = true;
+    activation_wasm.export_memory = true;
+    activation_wasm.stack_size = 65536;
+    activation_wasm.max_memory = 4 << 20;
+    const activation_wasm_run = b.addSystemCommand(&.{"node"});
+    activation_wasm_run.addFileArg(b.path("test/v2/activation_storage_wasm.mjs"));
+    activation_wasm_run.addFileArg(activation_wasm.getEmittedBin());
+    b.step("check-activation-storage-wasm", "Check storage on import-free unshared wasm32")
+        .dependOn(&activation_wasm_run.step);
     const options = b.addOptions();
     options.addOption(usize, "input_capacity", b.option(usize, "v2-input-capacity", "Initial input reservation in bytes") orelse 65536);
     options.addOption(usize, "working_capacity", b.option(usize, "v2-working-capacity", "Initial working reservation in bytes") orelse 1048576);

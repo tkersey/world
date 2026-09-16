@@ -27,14 +27,14 @@ pub const Machine = struct {
         var reader: data.wire.Reader = .{ .input = initial };
         for (values, entry.parameters) |*value, schema| {
             const encoded = try data.admission.readValue(scratch, self.program.schemas, facts, schema, &reader);
-            value.* = try self.store.literal(self.program, .{ .schema = schema, .bytes = encoded });
+            value.* = try self.store.literal(self.program.schemas, .{ .schema = schema, .bytes = encoded });
         }
         try reader.finish();
         self.roots.current = try self.store.addOwned(.{ .control = .{ .block = entry.entry, .arguments = values } });
     }
 
     fn instructionFailure(self: *Machine, instruction: p.Instruction, fault: p.Fault) Error!g.Value {
-        for (instruction.failures) |failure| if (failure.kind == fault) return self.store.literal(self.program, self.program.constants[@intCast(failure.value)]);
+        for (instruction.failures) |failure| if (failure.kind == fault) return self.store.literal(self.program.schemas, self.program.constants[@intCast(failure.value)]);
         return error.InvalidProgram;
     }
 
@@ -89,7 +89,7 @@ pub const Machine = struct {
     fn evaluateBlock(self: *Machine, block: p.Block, arguments: []const g.Value, control: g.Control) Error!?[]g.Value {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        var aggregate_values: @import("values.zig").Values = .{ .allocator = scratch.allocator(), .program = self.program, .store = &self.store };
+        var aggregate_values: @import("values.zig").Values = .{ .allocator = scratch.allocator(), .schemas = self.program.schemas, .store = &self.store };
         const count = std.math.add(usize, arguments.len, block.instructions.len) catch return error.InvalidLength;
         const slots = try self.allocator.alloc(g.Value, count);
         var returned_slots = false;
@@ -98,7 +98,7 @@ pub const Machine = struct {
         for (block.instructions, 0..) |instruction, index| {
             const target = arguments.len + index;
             slots[target] = switch (instruction.opcode) {
-                .constant => try self.store.literal(self.program, self.program.constants[@intCast(instruction.immediate)]),
+                .constant => try self.store.literal(self.program.schemas, self.program.constants[@intCast(instruction.immediate)]),
                 .move => slots[@intCast(instruction.operands[0])],
                 .integer_add, .integer_sub, .integer_mul, .integer_div, .integer_rem, .integer_bit_and, .integer_bit_or, .integer_bit_xor, .equal, .less => blk: {
                     const left = &slots[@intCast(instruction.operands[0])];
@@ -199,7 +199,7 @@ pub const Machine = struct {
         if (self.status == .unwinding) return @import("unwind.zig").step(self);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        var aggregate_values: @import("values.zig").Values = .{ .allocator = scratch.allocator(), .program = self.program, .store = &self.store };
+        var aggregate_values: @import("values.zig").Values = .{ .allocator = scratch.allocator(), .schemas = self.program.schemas, .store = &self.store };
         const control = (try self.store.get(self.roots.current.?)).control;
         const block = self.program.blocks[@intCast(control.block)];
         const slots = (try self.evaluateBlock(block, control.arguments, control)) orelse return null;

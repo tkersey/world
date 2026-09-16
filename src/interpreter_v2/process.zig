@@ -146,7 +146,7 @@ fn resumePending(machine: *Machine, state: g.State, snapshot: ?[]const u8, bytes
     const result = try data.protocol.decode(data.protocol.Result, scratch, bytes);
     try data.protocol.validateResult(allocator, request, result);
     const pending = (try machine.store.get(machine.roots.pending.?)).pending;
-    const resumed = try machine.store.literal(machine.program, .{
+    const resumed = try machine.store.literal(machine.program.schemas, .{
         .schema = machine.program.effects[@intCast(pending.effect)].result,
         .bytes = result.value,
     });

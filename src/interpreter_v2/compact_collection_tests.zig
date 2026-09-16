@@ -14,8 +14,8 @@ fn evaluate(v: *Values, opcode: p.Opcode, result: p.Id, args: []const g.Value) !
         .result_type = result,
         .operands = operands[0..args.len],
     }, args);
-    const facts = try data.admission.schemas(v.allocator, v.program.schemas);
-    try data.admission.value(v.allocator, v.program.schemas, facts, .{
+    const facts = try data.admission.schemas(v.allocator, v.schemas);
+    try data.admission.value(v.allocator, v.schemas, facts, .{
         .schema = result,
         .bytes = try v.bytes(&value),
     });
@@ -25,20 +25,20 @@ fn evaluate(v: *Values, opcode: p.Opcode, result: p.Id, args: []const g.Value) !
 fn expectCount(v: *Values, value: g.Value, count: u64) !void {
     var expected: [10]u8 = undefined;
     var writer: data.wire.Writer = .{ .output = &expected };
-    if (v.program.schemas[@intCast(value.schema)] != .array) try writer.natural(count);
+    if (v.schemas[@intCast(value.schema)] != .array) try writer.natural(count);
     try std.testing.expectEqualSlices(u8, expected[0..writer.position], try v.bytes(&value));
 }
 
 fn checkCollection(v: *Values, count: u64) !void {
     var buffer: [10]u8 = undefined;
     var writer: data.wire.Writer = .{ .output = &buffer };
-    const array = v.program.schemas[1] == .array;
+    const array = v.schemas[1] == .array;
     if (!array) try writer.natural(count);
     const literal: p.Literal = .{ .schema = 1, .bytes = buffer[0..writer.position] };
-    const facts = try data.admission.schemas(v.allocator, v.program.schemas);
-    try data.admission.value(v.allocator, v.program.schemas, facts, literal);
-    const items = try v.store.literal(v.program, literal);
-    const unit = try v.store.literal(v.program, .{ .schema = 0, .bytes = &.{} });
+    const facts = try data.admission.schemas(v.allocator, v.schemas);
+    try data.admission.value(v.allocator, v.schemas, facts, literal);
+    const items = try v.store.literal(v.schemas, literal);
+    const unit = try v.store.literal(v.schemas, .{ .schema = 0, .bytes = &.{} });
     const length = try evaluate(v, .sequence_length, 3, &.{items});
     try std.testing.expectEqual(count, std.mem.readInt(u64, length.body.scalar[0..8], .little));
     const absent = try evaluate(v, .sequence_get, 4, &.{ items, Values.natural(3, count) });
@@ -52,10 +52,10 @@ fn checkCollection(v: *Values, count: u64) !void {
     try std.testing.expectError(error.ElementIndex, evaluate(v, .sequence_set, 1, &.{ items, Values.natural(3, count), unit }));
     if (array) return;
     try expectCount(v, try evaluate(v, .sequence_take, 1, &.{ items, Values.natural(3, 3) }), @min(count, 3));
-    const empty = try v.store.literal(v.program, .{ .schema = 1, .bytes = &.{0} });
+    const empty = try v.store.literal(v.schemas, .{ .schema = 1, .bytes = &.{0} });
     try expectCount(v, try evaluate(v, .sequence_concat, 1, &.{ items, empty }), count);
     if (count == maximum) {
-        const err = if (v.program.schemas[1] == .vector)
+        const err = if (v.schemas[1] == .vector)
             error.CollectionCapacity
         else
             error.InvalidLength;
@@ -106,7 +106,7 @@ test "zero-width collection operations preserve full cardinality in fixed storag
             };
             var store: Store = .{ .allocator = allocator };
             defer store.deinit();
-            var values: Values = .{ .allocator = allocator, .program = program, .store = &store };
+            var values: Values = .{ .allocator = allocator, .schemas = program.schemas, .store = &store };
             try checkCollection(&values, count);
         };
     }
@@ -129,13 +129,13 @@ test "encoded collection slices preserve variable-width elements and their order
     };
     var store: Store = .{ .allocator = allocator };
     defer store.deinit();
-    var v: Values = .{ .allocator = allocator, .program = program, .store = &store };
-    const items = try store.literal(program, .{
+    var v: Values = .{ .allocator = allocator, .schemas = program.schemas, .store = &store };
+    const items = try store.literal(program.schemas, .{
         .schema = 1,
         .bytes = &.{ 3, 1, 'a', 0, 2, 'b', 'c' },
     });
-    const other = try store.literal(program, .{ .schema = 1, .bytes = &.{ 1, 1, 'x' } });
-    const replacement = try store.literal(program, .{ .schema = 0, .bytes = &.{ 2, 'd', 'e' } });
+    const other = try store.literal(program.schemas, .{ .schema = 1, .bytes = &.{ 1, 1, 'x' } });
+    const replacement = try store.literal(program.schemas, .{ .schema = 0, .bytes = &.{ 2, 'd', 'e' } });
     const index = Values.natural(3, 1);
     const got = try evaluate(&v, .sequence_get, 4, &.{ items, index });
     try std.testing.expectEqualSlices(u8, &.{ 1, 0 }, try v.bytes(&got));
