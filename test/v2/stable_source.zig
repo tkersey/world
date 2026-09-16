@@ -4,6 +4,114 @@ const source = boundary.source;
 const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 
+test "stable borrow admission distinguishes older from fresh references through return clauses" {
+    const fixture = @import("borrow_return_fixtures");
+    for (std.enums.values(fixture.ResultFrom)) |from| {
+        for ([_]bool{ false, true }) |initial| {
+            for ([_]bool{ false, true }) |delegated| {
+                for ([_]bool{ false, true }) |younger| {
+                    var builder = source.Builder.init(testing.allocator);
+                    defer builder.deinit();
+                    const module = try fixture.scenario(&builder, from, initial, younger, delegated);
+                    if (younger) {
+                        try testing.expectError(error.InvalidOwnership, source.construct(testing.allocator, module));
+                    } else {
+                        var compiled = try source.construct(testing.allocator, module);
+                        defer compiled.deinit();
+                        var session = try Session.init(testing.allocator, compiled.program, &.{});
+                        defer session.deinit();
+                        try testing.expect(try session.run(null) == .yielded);
+                        try session.resumeYield();
+                        const result = try session.run(null);
+                        try testing.expect(result == .completed);
+                        try testing.expectEqual(0, (try session.bytes(&result.completed)).len);
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "stable resource implementations preserve private authority and loans across requests" {
+    inline for (.{ source.examples.resourceScalar, source.examples.resourcePair }) |example| {
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        var compiled = try source.construct(testing.allocator, try example(&builder));
+        defer compiled.deinit();
+        var session = try Session.init(testing.allocator, compiled.program, &.{});
+        defer session.deinit();
+        var borrowed = false;
+        for ([_][]const u8{ "example/resource-acquire", "example/resource-use", "example/resource-release" }, 0..) |name, index| {
+            const pending = try session.run(null);
+            try testing.expect(pending == .requested);
+            try testing.expectEqualStrings(name, session.program.effects[@intCast(pending.requested.effect)].identity);
+            if (index != 0) try testing.expectEqual(41, pending.requested.payload.body.scalar[0]);
+            for (session.store.nodes.items, session.store.alive.items) |node, alive| {
+                if (alive and node == .borrow) borrowed = true;
+            }
+            try session.store.collectWith(session.roots, &session.frames);
+            try session.answer(if (index == 0) &.{ 41, 0, 0, 0, 0, 0, 0, 0 } else &.{});
+        }
+        const result = try session.run(null);
+        try testing.expect(borrowed and result == .completed);
+        try testing.expectEqual(42, result.completed.body.scalar[0]);
+    }
+}
+
+test "stable cancellation releases the resource while its protected borrow is suspended" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.resourceScalar(&builder));
+    defer compiled.deinit();
+    var session = try Session.init(testing.allocator, compiled.program, &.{});
+    defer session.deinit();
+    try testing.expect(try session.run(null) == .requested);
+    try session.answer(&.{ 41, 0, 0, 0, 0, 0, 0, 0 });
+    const use = try session.run(null);
+    try testing.expect(use == .requested);
+    try testing.expectEqualStrings("example/resource-use", session.program.effects[@intCast(use.requested.effect)].identity);
+    try session.cancel(.{ .text = "stop" });
+    const release = try session.run(null);
+    try testing.expect(release == .requested);
+    try testing.expectEqualStrings("example/resource-release", session.program.effects[@intCast(release.requested.effect)].identity);
+    try testing.expectEqual(41, release.requested.payload.body.scalar[0]);
+    try session.answer(&.{});
+    try testing.expect(try session.run(null) == .cancelled);
+}
+
+test "stable admission rejects a fresh store hidden by a later same-slot rebind" {
+    const fixture = @import("borrow_return_fixtures");
+    const data = boundary.data_v2;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try fixture.scenario(&builder, .pair, true, false, false));
+    defer compiled.deinit();
+    var image = compiled.program;
+    const blocks = try testing.allocator.dupe(data.activation.Block, image.blocks);
+    defer testing.allocator.free(blocks);
+    image.blocks = blocks;
+    for (blocks) |*block| {
+        for (block.instructions, 0..) |write, at| {
+            if (write.opcode != .cell_set) continue;
+            for (block.instructions[0..at], 0..) |selected, position| {
+                if (selected.opcode != .field or selected.immediate != 1 or
+                    selected.destination != write.operands[1]) continue;
+                const operations = try testing.allocator.alloc(data.activation.Instruction, block.instructions.len + 1);
+                defer testing.allocator.free(operations);
+                @memcpy(operations[0..block.instructions.len], block.instructions);
+                // Store the fresh field, then overwrite the same slot with the
+                // older field. End-of-block provenance would miss the bad store.
+                operations[position].immediate = 0;
+                operations[operations.len - 1] = selected;
+                block.instructions = operations;
+                try testing.expectError(error.InvalidOwnership, data.activation_ownership.analyze(testing.allocator, image));
+                return;
+            }
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
 test "stable source installs real handlers and keeps the final checked sum after them" {
     for ([_]usize{ 1, 8, 64, 128, 256 }) |count| {
         var builder = source.Builder.init(testing.allocator);

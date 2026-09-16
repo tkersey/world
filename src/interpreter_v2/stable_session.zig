@@ -1,6 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Successor native control slice. Not yet the portable/resident public API:
-//! borrowed/resource execution and portable/resident admission remain open.
+//! portable/resident admission and whole-Session rollback remain open.
 const std = @import("std");
 const data = @import("boundary_data_v2");
 const p = data.program;
@@ -71,10 +71,6 @@ pub const Session = struct {
     }
 
     fn supported(program: ir.Program) Error!void {
-        for (program.schemas) |schema| if (schema == .internal) switch (schema.internal) {
-            .borrowed, .abstract_resource => return error.UnsupportedTransition,
-            else => {},
-        };
         for (program.blocks) |block| switch (block.terminator) {
             .forward => return error.UnsupportedTransition,
             else => {},

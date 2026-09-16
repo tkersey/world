@@ -6,7 +6,7 @@ remains the goal. No merge, release or application data operation has occurred.
 
 World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
 `feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `2b34302c67361ccc0cd23e2024c45d14022109e7`, Zig 0.16.0,
+successor worktree at `02e9900de60ba2ee761c3504f41cb91610510853`, Zig 0.16.0,
 and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
 
 ## Private activation slots
@@ -113,9 +113,14 @@ Optional instruction/control quanta yield progress. Allocation-failure sweeps co
 partial-owner cleanup. Full resident rollback is NOT implemented: an operational
 failure after mutation poisons this internal driver, while malformed typed replies
 reject before mutation. No portable checkpoint or old-format fallback is exposed.
-Borrowed/resource execution still rejects before starting until context-provenance
-admission is complete. This remains an incomplete requirement, not a removal of
-that behavior from the final successor.
+Borrowed/resource execution is now enabled through position-sensitive stable
+borrow admission. Both private resource representations acquire, lend, reread and
+release through their unchanged interfaces across external requests. Cancellation
+while a loan is suspended releases its owning resource. The 24-case return-clause
+matrix admits older references and rejects fresh ones, and an explicit same-slot
+rebind cannot hide an earlier invalid store. Portable State provenance still needs
+its own admission and corruption tests; native execution does not establish that
+restoration guarantee.
 
 Shallow value/computation resumption now removes the old handler return clause;
 successor resumption installs the replacement handler with its admitted state.
@@ -152,8 +157,8 @@ working-memory comparison and predecessor-gain acceptance remain unproved.
 
 ## Next required work
 
-Complete borrow/context admission and borrowed/resource execution, then portable
-Program/State integration. Prepared lifetime, whole-Session
+Complete portable Program/State integration and State provenance admission.
+Prepared lifetime, whole-Session
 transactions, BPI3/PST3/current protocols, ABI 3, browser/server transfer, Agent
 migration, component linking, performance acceptance, legacy retirement and linked
 draft PRs remain open. Native source agreement does not prove portable execution.
