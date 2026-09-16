@@ -6,7 +6,7 @@ remains the goal. No merge, release or application data operation has occurred.
 
 World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
 `feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `241f7bc5bee637177998969e91e69b960402a9c5`, Zig 0.16.0,
+successor worktree at `3718a8b5521ea0bdba17932807b3a985ee9d7c67`, Zig 0.16.0,
 and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
 
 ## Private activation slots
@@ -156,6 +156,17 @@ Slot movement is bounded in the installation test, but complete-path timing,
 working-memory comparison and predecessor-gain acceptance remain unproved.
 
 ## Next required work
+
+The stable controller now exports PST3 graph records
+without advancing or collecting. Slot values and lexical owner order are attached
+to their owning control node; private page handles and stale store entries do not
+become checkpoint identities. Terminal exports retain the full result/exit.
+The 27 stable-source tests verify repeated export and graph re-encoding at drive
+boundaries, including one-instruction quanta and cleanup. Reentrant-cycle tests
+replace every private view handle and collect garbage without changing a byte of
+the checkpoint. An export allocation-
+failure sweep verifies unchanged resident bytes. This does not yet authorize
+restore: Program-relative State admission is the next required seam.
 
 `Session.initImage` now accepts Boundary's BPI3 bytes. The complete stable source
 suite encodes the staged construction, loads it, overwrites and frees the image,

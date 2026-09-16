@@ -188,4 +188,24 @@ pub const Custody = struct {
         }
         return result.toOwnedSlice(allocator);
     }
+
+    /// Portable lexical order, excluding private markers, links and COW handles.
+    pub fn project(self: *Custody, state: State, allocator: std.mem.Allocator) Error![]data.process_state.Owner {
+        var result: std.ArrayList(data.process_state.Owner) = .empty;
+        errdefer result.deinit(allocator);
+        if (!state.initialized) return result.toOwnedSlice(allocator);
+        var next: ?usize = state.slots + state.scope;
+        var scope = state.scope;
+        const limit = try self.nodes.lookupLimit(state.view);
+        var count: usize = 0;
+        while (next) |index| {
+            if (count == limit) return error.InvalidState;
+            count += 1;
+            if (index < state.slots) {
+                try result.append(allocator, .{ .scope = scope, .slot = index });
+            } else scope = index - state.slots;
+            next = (try self.get(state, index)).next;
+        }
+        return result.toOwnedSlice(allocator);
+    }
 };

@@ -10,7 +10,7 @@ const heap = @import("store.zig");
 const bindings = @import("activation_frames.zig");
 const read = @import("operands.zig").read;
 const Slots = @import("activation_slots.zig").ActivationSlots;
-pub const Error = @import("process.zig").Error || bindings.Error || data.activation_ownership.Error;
+pub const Error = @import("process.zig").Error || bindings.Error || data.activation_ownership.Error || data.program_image.Error;
 pub const Observation = union(enum) {
     progressed,
     yielded,
@@ -25,6 +25,7 @@ pub const Session = struct {
     pub const UnwindOutcome = void;
     allocator: std.mem.Allocator,
     program: ir.Program,
+    program_identity: [32]u8,
     flow: data.activation_flow.Facts,
     uses: data.traits.Facts,
     value_facts: data.admission.SchemaFacts,
@@ -53,10 +54,12 @@ pub const Session = struct {
         try supported(program);
         const uses = try data.traits.derive(flow.arena.allocator(), program.schemas);
         const value_facts = try data.admission.schemas(flow.arena.allocator(), program.schemas);
+        const identity = try data.program_image.identity(allocator, program);
         const frames = try bindings.Frames.init(allocator, flow.pool, program);
         var result: Session = .{
             .allocator = allocator,
             .program = program,
+            .program_identity = identity,
             .flow = flow,
             .uses = uses,
             .value_facts = value_facts,
@@ -75,6 +78,46 @@ pub const Session = struct {
         self.flow.deinit();
         heap.release(ir.Program, self.allocator, self.program);
         self.* = undefined;
+    }
+
+    /// Export without advancing, collecting or changing resident custody.
+    /// Import requires the successor Program-relative State admission seam.
+    pub fn checkpoint(self: *Session, allocator: std.mem.Allocator) Error![]u8 {
+        if (self.poisoned) return error.InvalidState;
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const count = std.math.add(usize, self.store.nodes.items.len, @intFromBool(self.terminal != null)) catch return error.Capacity;
+        const nodes = try a.alloc(data.process_state.Node, count);
+        for (self.store.nodes.items, self.store.alive.items, 0..) |node, alive, id| {
+            // A reachable dead handle must fail graph shape checks, never become
+            // a plausible empty semantic object in a checkpoint.
+            nodes[id] = if (alive) .{ .record = node, .activation = try self.frames.project(id, a) } else .{ .record = .{ .control = .{ .block = std.math.maxInt(u64), .arguments = &.{} } } };
+        }
+        var roots = self.roots;
+        var status: data.process_state.Status = @enumFromInt(@intFromEnum(self.status));
+        if (self.terminal) |terminal| {
+            const exit: g.Exit = switch (terminal) {
+                .completed => |value| .{ .reason = .{ .normal = value } },
+                .failed, .cancelled => self.exit orelse return error.InvalidState,
+                else => return error.InvalidState,
+            };
+            status = switch (terminal) {
+                .completed => .completed,
+                .failed => .failed,
+                .cancelled => .cancelled,
+                else => unreachable,
+            };
+            nodes[count - 1] = .{ .record = .{ .exit = exit } };
+            roots = .{ .exit = .{ .id = count - 1 } };
+        }
+        return data.state_image.emit(allocator, .{
+            .program_identity = self.program_identity,
+            .status = status,
+            .roots = roots,
+            .nodes = nodes,
+            .blobs = self.store.blobs.items,
+        });
     }
 
     fn supported(program: ir.Program) Error!void {

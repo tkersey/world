@@ -4,6 +4,53 @@ const source = boundary.source;
 const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 
+fn checkedCheckpoint(subject: *Session) !void {
+    const bytes = try subject.checkpoint(testing.allocator);
+    defer testing.allocator.free(bytes);
+    var decoded = try boundary.data_v2.state_image.decodeGraph(testing.allocator, bytes);
+    defer decoded.deinit();
+    const reencoded = try boundary.data_v2.state_image.emit(testing.allocator, decoded.state);
+    defer testing.allocator.free(reencoded);
+    try testing.expectEqualSlices(u8, bytes, reencoded);
+    const repeated = try subject.checkpoint(testing.allocator);
+    defer testing.allocator.free(repeated);
+    try testing.expectEqualSlices(u8, bytes, repeated);
+    try testing.expectEqual(subject.program_identity, decoded.state.program_identity);
+}
+
+fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observation {
+    const result = try subject.run(quantum);
+    try checkedCheckpoint(subject);
+    return result;
+}
+
+fn checkpointFailure(allocator: std.mem.Allocator, subject: *Session, before: []const u8) !void {
+    const bytes = subject.checkpoint(allocator) catch |err| {
+        const after = try subject.checkpoint(testing.allocator);
+        defer testing.allocator.free(after);
+        try testing.expectEqualSlices(u8, before, after);
+        return err;
+    };
+    defer allocator.free(bytes);
+    try testing.expectEqualSlices(u8, before, bytes);
+}
+
+test "failed PST3 export retains exactly the same resident instruction boundary" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.installations(&builder, 1));
+    defer compiled.deinit();
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
+    defer session.deinit();
+    try testing.expect(try session.run(1) == .progressed);
+    const before = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(before);
+    try testing.checkAllAllocationFailures(testing.allocator, checkpointFailure, .{ &session, before });
+    const result = try drive(&session, null);
+    try testing.expect(result == .completed);
+    try testing.expectEqual(1, result.completed.body.scalar[0]);
+}
+
 fn initFromImage(allocator: std.mem.Allocator, program: boundary.data_v2.activation.Program, arguments: []const u8) !Session {
     const codec = boundary.data_v2.program_image;
     const image = try allocator.alloc(u8, try codec.encodedLength(program));
@@ -24,7 +71,7 @@ test "BPI3 scalar and collection faults preserve the existing independent expect
     for (expected, faults, 0..) |value, fault, index| {
         var session = try initFromImage(testing.allocator, compiled.program, &.{@intCast(index)});
         defer session.deinit();
-        const outcome = try session.run(null);
+        const outcome = try drive(&session, null);
         if (value) |n| {
             try testing.expect(outcome == .completed);
             try testing.expectEqual(n, std.mem.readInt(u64, (try session.bytes(&outcome.completed))[0..8], .little));
@@ -51,9 +98,9 @@ test "stable borrow admission distinguishes older from fresh references through 
                         defer compiled.deinit();
                         var session = try initFromImage(testing.allocator, compiled.program, &.{});
                         defer session.deinit();
-                        try testing.expect(try session.run(null) == .yielded);
+                        try testing.expect(try drive(&session, null) == .yielded);
                         try session.resumeYield();
-                        const result = try session.run(null);
+                        const result = try drive(&session, null);
                         try testing.expect(result == .completed);
                         try testing.expectEqual(0, (try session.bytes(&result.completed)).len);
                     }
@@ -73,7 +120,7 @@ test "stable resource implementations preserve private authority and loans acros
         defer session.deinit();
         var borrowed = false;
         for ([_][]const u8{ "example/resource-acquire", "example/resource-use", "example/resource-release" }, 0..) |name, index| {
-            const pending = try session.run(null);
+            const pending = try drive(&session, null);
             try testing.expect(pending == .requested);
             try testing.expectEqualStrings(name, session.program.effects[@intCast(pending.requested.effect)].identity);
             if (index != 0) try testing.expectEqual(41, pending.requested.payload.body.scalar[0]);
@@ -83,7 +130,7 @@ test "stable resource implementations preserve private authority and loans acros
             try session.store.collectWith(session.roots, &session.frames);
             try session.answer(if (index == 0) &.{ 41, 0, 0, 0, 0, 0, 0, 0 } else &.{});
         }
-        const result = try session.run(null);
+        const result = try drive(&session, null);
         try testing.expect(borrowed and result == .completed);
         try testing.expectEqual(42, result.completed.body.scalar[0]);
     }
@@ -96,18 +143,18 @@ test "stable cancellation releases the resource while its protected borrow is su
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
-    try testing.expect(try session.run(null) == .requested);
+    try testing.expect(try drive(&session, null) == .requested);
     try session.answer(&.{ 41, 0, 0, 0, 0, 0, 0, 0 });
-    const use = try session.run(null);
+    const use = try drive(&session, null);
     try testing.expect(use == .requested);
     try testing.expectEqualStrings("example/resource-use", session.program.effects[@intCast(use.requested.effect)].identity);
     try session.cancel(.{ .text = "stop" });
-    const release = try session.run(null);
+    const release = try drive(&session, null);
     try testing.expect(release == .requested);
     try testing.expectEqualStrings("example/resource-release", session.program.effects[@intCast(release.requested.effect)].identity);
     try testing.expectEqual(41, release.requested.payload.body.scalar[0]);
     try session.answer(&.{});
-    try testing.expect(try session.run(null) == .cancelled);
+    try testing.expect(try drive(&session, null) == .cancelled);
 }
 
 test "stable admission rejects a fresh store hidden by a later same-slot rebind" {
@@ -151,7 +198,7 @@ test "stable source installs real handlers and keeps the final checked sum after
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
-        const result = try session.run(null);
+        const result = try drive(&session, null);
         try testing.expect(result == .completed);
         try testing.expectEqual(count * (count + 1) / 2, std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
         try testing.expectEqual(0, session.frames.entries.count());
@@ -171,7 +218,7 @@ test "stable source preserves non-tail resumption and handler answer transformat
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
-    const result = try session.run(null);
+    const result = try drive(&session, null);
     try testing.expect(result == .completed);
     try testing.expectEqual(67, std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
 }
@@ -183,9 +230,9 @@ test "stable source keeps two one-shot owners across an explicit yield" {
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
-    try testing.expect(try session.run(null) == .yielded);
+    try testing.expect(try drive(&session, null) == .yielded);
     try session.resumeYield();
-    const result = try session.run(null);
+    const result = try drive(&session, null);
     try testing.expect(result == .completed);
     try testing.expectEqual(1, std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
 }
@@ -213,14 +260,14 @@ test "stable source retains an external request and joins into the same activati
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{1});
     defer session.deinit();
-    try testing.expect(try session.run(0) == .progressed);
-    const pending = try session.run(null);
+    try testing.expect(try drive(&session, 0) == .progressed);
+    const pending = try drive(&session, null);
     try testing.expect(pending == .requested);
     try testing.expectEqual(effect, pending.requested.effect);
     try testing.expectError(error.InvalidValue, session.answer(&.{2}));
     try testing.expect(try session.observe() == .requested);
     try session.answer(&.{ 42, 0, 0, 0, 0, 0, 0, 0 });
-    const result = try session.run(null);
+    const result = try drive(&session, null);
     try testing.expect(result == .completed);
     try testing.expectEqual(42, std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
 }
@@ -236,11 +283,11 @@ test "stable source owns its input and keeps tail-recursive control bounded" {
     defer session.deinit();
     compiled.deinit();
     builder.deinit();
-    var result = try session.run(31);
+    var result = try drive(&session, 31);
     while (result == .progressed) {
         try testing.expect(session.frames.entries.count() <= 2);
         try testing.expect(session.store.nodes.items.len <= 512);
-        result = try session.run(31);
+        result = try drive(&session, 31);
     }
     try testing.expect(result == .completed);
     try testing.expectEqual(1, result.completed.body.scalar[0]);
@@ -313,7 +360,7 @@ test "stable source resumes an owned package after its handler clause has return
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
-    const observed = try session.run(null);
+    const observed = try drive(&session, null);
     try testing.expect(observed == .completed);
     try testing.expectEqual(42, std.mem.readInt(u64, observed.completed.body.scalar[0..8], .little));
 }
@@ -321,7 +368,7 @@ test "stable source resumes an owned package after its handler clause has return
 fn failingSession(allocator: std.mem.Allocator, program: boundary.data_v2.activation.Program) !void {
     var session = try initFromImage(allocator, program, &.{});
     defer session.deinit();
-    const result = try session.run(null);
+    const result = try drive(&session, null);
     try testing.expect(result == .completed);
 }
 
@@ -347,7 +394,7 @@ test "stable source preserves multi-shot choice and branch-local versus outer sh
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
-        const result = try session.run(null);
+        const result = try drive(&session, null);
         try testing.expect(result == .completed);
         try testing.expectEqualSlices(u8, expected[index], try session.bytes(&result.completed));
     }
@@ -361,17 +408,29 @@ test "stable source reenters a live template-cell cycle without sharing branch c
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
-        var result = try session.run(1);
+        var result = try drive(&session, 1);
         var yielded = false;
         while (result == .progressed or result == .yielded) {
+            const before = try session.checkpoint(testing.allocator);
+            defer testing.allocator.free(before);
+            // Replace every private view handle without changing logical values.
+            var frames = session.frames.entries.valueIterator();
+            while (frames.next()) |frame| {
+                const replacement = try session.frames.forkFrame(frame.*);
+                session.frames.releaseFrame(frame.*);
+                frame.* = replacement;
+            }
             // An aggressive correctness lane: every live frame must participate
             // in graph tracing, including the cyclic retained template.
             try session.store.collectWith(session.roots, &session.frames);
+            const after = try session.checkpoint(testing.allocator);
+            defer testing.allocator.free(after);
+            try testing.expectEqualSlices(u8, before, after);
             if (result == .yielded) {
                 yielded = true;
                 try session.resumeYield();
             }
-            result = try session.run(1);
+            result = try drive(&session, 1);
         }
         try testing.expect(yielded and result == .completed);
         try testing.expectEqualSlices(u8, &.{ 113, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&result.completed));
@@ -390,7 +449,7 @@ test "stable source does not read a reclaimed copyable result only assigned to a
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
-    const result = try session.run(null);
+    const result = try drive(&session, null);
     try testing.expect(result == .completed);
     try testing.expectEqual(42, result.completed.body.scalar[0]);
 }
@@ -455,7 +514,7 @@ test "stable retained template preserves an older activation across loop-slot re
     };
     var session = try initFromImage(testing.allocator, program, &.{});
     defer session.deinit();
-    const result = try session.run(null);
+    const result = try drive(&session, null);
     try testing.expect(result == .completed);
     // Each activation starts at x=1, count=2, then returns 3. The retained
     // template must not inherit the first branch's x=3/count=0 bindings.
@@ -469,10 +528,10 @@ test "stable shallow value and computation resumptions omit the original return 
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
-    var result = try session.run(1);
+    var result = try drive(&session, 1);
     while (result == .progressed) {
         try session.store.collectWith(session.roots, &session.frames);
-        result = try session.run(1);
+        result = try drive(&session, 1);
     }
     try testing.expect(result == .completed);
     const bytes = try session.bytes(&result.completed);
@@ -492,7 +551,7 @@ test "stable injection selects definition-site versus use-site capabilities" {
         for ([_]u8{ 0, 1 }) |injecting| {
             var session = try initFromImage(testing.allocator, compiled.program, &.{injecting});
             defer session.deinit();
-            var result = try session.run(1);
+            var result = try drive(&session, 1);
             var saw_injection = false;
             while (result == .progressed) {
                 for (session.store.nodes.items, session.store.alive.items) |node, alive|
@@ -500,7 +559,7 @@ test "stable injection selects definition-site versus use-site capabilities" {
                         saw_injection = true;
                     };
                 try session.store.collectWith(session.roots, &session.frames);
-                result = try session.run(1);
+                result = try drive(&session, 1);
             }
             try testing.expect(result == .completed);
             try testing.expectEqual(@as(u64, if (injecting == 0) 109 else 209), std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
@@ -517,7 +576,7 @@ test "stable successor handling preserves the shallow protocol" {
     for ([_]u8{ 0, 1 }) |invalid| {
         var session = try initFromImage(testing.allocator, compiled.program, &.{invalid});
         defer session.deinit();
-        const result = try session.run(null);
+        const result = try drive(&session, null);
         if (invalid == 0) {
             try testing.expect(result == .completed);
             try testing.expectEqual(1, result.completed.body.scalar[0]);
@@ -537,13 +596,13 @@ test "stable cleanup preserves primary failure and resumes external cleanup" {
         var session = try initFromImage(testing.allocator, compiled.program, &.{primary});
         defer session.deinit();
         for ([_][]const u8{ "example/middle-cleanup", "example/outer-cleanup" }) |name| {
-            const pending = try session.run(null);
+            const pending = try drive(&session, null);
             try testing.expect(pending == .requested);
             try testing.expectEqualStrings(name, session.program.effects[@intCast(pending.requested.effect)].identity);
             try session.store.collectWith(session.roots, &session.frames);
             try session.answer(&.{});
         }
-        const result = try session.run(null);
+        const result = try drive(&session, null);
         try testing.expect(result == .failed);
         try testing.expectEqual(@as(u8, if (primary == 1) 9 else 7), result.failed.body.scalar[0]);
         try testing.expectEqual(2, session.exit.?.cleanup_failures.len);
@@ -561,14 +620,14 @@ test "stable cancellation during yielded cleanup preserves the first reason" {
         var session = try initFromImage(testing.allocator, compiled.program, &.{primary});
         defer session.deinit();
         for (0..2) |round| {
-            try testing.expect(try session.run(null) == .yielded);
+            try testing.expect(try drive(&session, null) == .yielded);
             try session.cancel(.{ .text = if (round == 0) "stop" else "later" });
             try session.resumeYield();
-            const pending = try session.run(null);
+            const pending = try drive(&session, null);
             try testing.expect(pending == .requested);
             try session.answer(&.{});
         }
-        const result = try session.run(null);
+        const result = try drive(&session, null);
         try testing.expect(result == .failed);
         try testing.expectEqual(@as(u8, if (primary == 1) 9 else 7), result.failed.body.scalar[0]);
         try testing.expectEqualStrings("stop", session.exit.?.cancellation.?.text);
@@ -585,7 +644,7 @@ test "stable unwind preserves lexical and temporary-owner cleanup order" {
         defer session.deinit();
         var requests: usize = 0;
         var yields: usize = 0;
-        var result = try session.run(1);
+        var result = try drive(&session, 1);
         while (result == .progressed or result == .yielded or result == .requested) {
             if (result == .yielded) {
                 yields += 1;
@@ -600,7 +659,7 @@ test "stable unwind preserves lexical and temporary-owner cleanup order" {
                 try session.answer(&.{});
             }
             try session.store.collectWith(session.roots, &session.frames);
-            result = try session.run(1);
+            result = try drive(&session, 1);
         }
         try testing.expect(result == .failed);
         try testing.expectEqual(8, result.failed.body.scalar[0]);
@@ -644,19 +703,19 @@ test "stable cancellation preserves cleanup at entry yield request and answered 
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
         try testing.expectError(error.InvalidUtf8, session.cancel(.{ .text = &.{0xff} }));
-        if (phase >= 1) try testing.expect(try session.run(null) == .yielded);
+        if (phase >= 1) try testing.expect(try drive(&session, null) == .yielded);
         if (phase >= 2) {
             try session.resumeYield();
-            const pending = try session.run(null);
+            const pending = try drive(&session, null);
             try testing.expect(pending == .requested and pending.requested.effect == read_effect);
         }
         if (phase == 3) try session.answer(&.{ 7, 0, 0, 0, 0, 0, 0, 0 });
         try session.cancel(.{ .text = "stop" });
-        var result = try session.run(null);
+        var result = try drive(&session, null);
         if (phase != 0) {
             try testing.expect(result == .requested and result.requested.effect == release);
             try session.answer(&.{});
-            result = try session.run(null);
+            result = try drive(&session, null);
         }
         try testing.expect(result == .cancelled);
         try testing.expectEqualStrings("stop", result.cancelled.text);
@@ -671,13 +730,13 @@ test "stable clause failure abandons a captured cleanup without losing its prima
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
-    const pending = try session.run(null);
+    const pending = try drive(&session, null);
     try testing.expect(pending == .requested);
     try testing.expectEqualStrings("example/abandoned-release", session.program.effects[@intCast(pending.requested.effect)].identity);
     try testing.expectEqualSlices(u8, &.{ 1, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&pending.requested.payload));
     try session.store.collectWith(session.roots, &session.frames);
     try session.answer(&.{});
-    const result = try session.run(null);
+    const result = try drive(&session, null);
     try testing.expect(result == .failed);
     try testing.expectEqual(9, result.failed.body.scalar[0]);
 }
@@ -691,7 +750,7 @@ test "stable generator resumes private state and closes its retained cleanup" {
     defer session.deinit();
     var yields: usize = 0;
     var releases: usize = 0;
-    var result = try session.run(1);
+    var result = try drive(&session, 1);
     while (result != .completed) {
         switch (result) {
             .progressed => {},
@@ -708,7 +767,7 @@ test "stable generator resumes private state and closes its retained cleanup" {
             else => return error.TestUnexpectedResult,
         }
         try session.store.collectWith(session.roots, &session.frames);
-        result = try session.run(1);
+        result = try drive(&session, 1);
     }
     try testing.expectEqual(1, yields);
     try testing.expectEqual(1, releases);
@@ -722,10 +781,10 @@ test "stable successor return clauses retain older capability and cell reference
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
-    try testing.expect(try session.run(null) == .yielded);
+    try testing.expect(try drive(&session, null) == .yielded);
     try session.store.collectWith(session.roots, &session.frames);
     try session.resumeYield();
-    const result = try session.run(null);
+    const result = try drive(&session, null);
     try testing.expect(result == .completed);
     try testing.expectEqualSlices(u8, &.{ 42, 0, 0, 0, 0, 0, 0, 0, 37, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&result.completed));
 }

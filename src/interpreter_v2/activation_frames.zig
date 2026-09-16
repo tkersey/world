@@ -35,6 +35,17 @@ pub const Frames = struct {
     pub fn get(self: *Frames, id: data.program.Id) Error!Frame {
         return self.entries.get(id) orelse error.InvalidState;
     }
+    pub fn project(self: *Frames, id: data.program.Id, allocator: std.mem.Allocator) Error!?data.process_state.Activation {
+        const frame = self.entries.get(id) orelse return null;
+        var bindings: std.ArrayList(data.process_state.Binding) = .empty;
+        errdefer bindings.deinit(allocator);
+        var iterator = try self.slots.iterator(frame.view);
+        while (try iterator.next()) |binding|
+            try bindings.append(allocator, .{ .slot = binding.slot, .value = binding.value });
+        const owners = try self.custody.project(frame.custody, allocator);
+        errdefer allocator.free(owners);
+        return .{ .position = frame.position, .scope = frame.custody.scope, .bindings = try bindings.toOwnedSlice(allocator), .owners = owners };
+    }
     pub fn put(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         if (self.entries.contains(id)) return error.InvalidState;
         try self.entries.put(self.allocator, id, frame);
