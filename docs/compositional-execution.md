@@ -6,7 +6,7 @@ remains the goal. No merge, release or application data operation has occurred.
 
 World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
 `feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `9dc1464d49491e68429148b9f86e87a17d36559a`, Zig 0.16.0,
+successor worktree at `fc76920b049761463d742a75fb4221fbfab411f8`, Zig 0.16.0,
 and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
 
 ## Private activation slots
@@ -161,7 +161,7 @@ The stable controller now exports PST3 graph records
 without advancing or collecting. Slot values and lexical owner order are attached
 to their owning control node; private page handles and stale store entries do not
 become checkpoint identities. Terminal exports retain the full result/exit.
-The 34 stable-source tests verify repeated export and graph re-encoding at drive
+The 37 stable-source tests verify repeated export and graph re-encoding at drive
 boundaries, including one-instruction quanta and cleanup. Reentrant-cycle tests
 replace every private view handle and collect garbage without changing a byte of
 the checkpoint. An export allocation-
@@ -186,11 +186,28 @@ this is a demonstrated copy/retention mechanism, not final performance acceptanc
 suite encodes the staged construction, loads it, overwrites and frees the image,
 then drives the native session. This covers the existing generalized-control,
 resource, cleanup, cancellation and reentrant witnesses through the image path.
-The source tests include the 19 scalar/collection scenarios
-with the predecessor suite's unchanged independent expectations. The loader
-currently decodes, admits and copies into the existing session owner; a
-prepared immutable Program owner that avoids repeated admission remains required.
-This is codec integration, not PST3 transfer or ABI 3 completion.
+The source tests include the 19 scalar/collection scenarios with the predecessor
+suite's unchanged independent expectations. ABI 3 and cross-host execution remain open.
+
+`Prepared.init` now owns an opaque admitted image, immutable analysis and cached
+external schema descriptors. `Session.start` and `Session.restore` retain strong
+references to it; releasing the outer Prepared handle does not invalidate active
+Sessions. Explicit clones acquire additional ownership, and operations on a
+released handle reject. Handles are native owning values with sequential access;
+kernel instance/generation validation remains a separate required interface.
+
+Code, schema facts and static liveness arrays are shared. Sessions allocate only
+their own mutable map overlay over a single immutable base, alongside execution
+storage. Restore still validates the entire incoming State but does not decode,
+re-admit or re-hash the Program. Fresh invocation uses the same preparation path
+and releases its outer handle after the Session retains it. The unused raw-record
+Session constructor has been removed.
+
+Tests cover sequential starts, prepared restore, shared code/liveness addresses,
+distinct mutable pools, unchanged base-node counts, early outer-handle release,
+and allocation failures while starting/restoring. Prepared storage accounting
+includes owned arena capacities; this is structural reuse evidence, not an elapsed
+time or end-to-end peak-memory acceptance claim.
 
 `interpreter_v2/invocation.zig` now implements PKI3/PKO3 fresh invocation through
 the same Session, with explicit reply, yield-resume and cancellation controls.
@@ -207,8 +224,7 @@ explicit host re-encoding against the new challenge; no external work is repeate
 The default facade still awaits coordinated cutover, and resident operational
 failure rollback remains open.
 
-Complete prepared/resident and host integration.
-Prepared lifetime, whole-Session
-transactions, ABI 3, browser/server transfer, Agent
+Complete resident transaction and host integration.
+Whole-Session transactions, ABI 3, browser/server transfer, Agent
 migration, component linking, performance acceptance, legacy retirement and linked
 draft PRs remain open. Native source agreement does not prove portable execution.

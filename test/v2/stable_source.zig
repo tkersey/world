@@ -134,6 +134,99 @@ fn programBytes(program: boundary.data_v2.activation.Program) ![]u8 {
     return bytes;
 }
 
+test "prepared Programs reuse immutable code and facts across sequential Sessions" {
+    const Prepared = @import("stable_runtime").Prepared;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    defer compiled.deinit();
+    const bytes = try programBytes(compiled.program);
+    defer testing.allocator.free(bytes);
+    var prepared = try Prepared.init(testing.allocator, bytes);
+    defer prepared.deinit();
+    @memset(bytes, 0xff);
+    const retained = try prepared.storageBytes();
+    var shared_code: ?[*]const boundary.data_v2.activation.Function = null;
+    for ([_]u8{ 1, 2, 3 }) |input| {
+        var session = try Session.start(testing.allocator, &prepared, &.{ input, 0, 0, 0, 0, 0, 0, 0 });
+        defer session.deinit();
+        if (shared_code) |pointer| try testing.expect(pointer == session.program.functions.ptr) else shared_code = session.program.functions.ptr;
+        const base = session.flow.facts.pool.base.?;
+        const nodes = base.nodeCount();
+        try testing.expect(try session.run(null) == .requested);
+        const checkpoint = try session.checkpoint(testing.allocator);
+        defer testing.allocator.free(checkpoint);
+        var restored = try Session.restore(testing.allocator, &prepared, checkpoint);
+        defer restored.deinit();
+        try testing.expect(session.program.functions.ptr == restored.program.functions.ptr);
+        try testing.expect(session.flow.facts.live.ptr == restored.flow.facts.live.ptr);
+        try testing.expect(session.flow.facts.pool != restored.flow.facts.pool);
+        try testing.expect(restored.flow.facts.pool.base.? == base);
+        try answerWithValue(&session, &.{});
+        try answerWithValue(&restored, &.{});
+        const result = try session.run(null);
+        const other = try restored.run(null);
+        try testing.expectEqual(input, result.completed.body.scalar[0]);
+        try testing.expectEqualDeep(result, other);
+        try testing.expectEqual(nodes, base.nodeCount());
+        try testing.expectEqual(retained, try prepared.storageBytes());
+    }
+}
+
+test "Sessions retain preparation after all external prepared handles are released" {
+    const Prepared = @import("stable_runtime").Prepared;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    defer compiled.deinit();
+    const bytes = try programBytes(compiled.program);
+    defer testing.allocator.free(bytes);
+    var prepared = try Prepared.init(testing.allocator, bytes);
+    defer prepared.deinit();
+    var clone = try prepared.clone();
+    defer clone.deinit();
+    var session = try Session.start(testing.allocator, &prepared, &.{ 42, 0, 0, 0, 0, 0, 0, 0 });
+    defer session.deinit();
+    prepared.deinit();
+    clone.deinit();
+    try testing.expectError(error.InvalidState, Session.start(testing.allocator, &prepared, &.{}));
+    try testing.expectError(error.InvalidState, Session.restore(testing.allocator, &clone, &.{}));
+    try testing.expect(try session.run(null) == .requested);
+    try answerWithValue(&session, &.{});
+    const result = try session.run(null);
+    try testing.expectEqual(42, result.completed.body.scalar[0]);
+}
+
+fn startPreparedFailure(allocator: std.mem.Allocator, prepared: *const @import("stable_runtime").Prepared) !void {
+    var session = try Session.start(allocator, prepared, &.{ 1, 0, 0, 0, 0, 0, 0, 0 });
+    defer session.deinit();
+}
+fn restorePreparedFailure(allocator: std.mem.Allocator, prepared: *const @import("stable_runtime").Prepared, checkpoint: []const u8) !void {
+    var session = try Session.restore(allocator, prepared, checkpoint);
+    defer session.deinit();
+}
+test "failed prepared starts and restores preserve the reusable owner" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    defer compiled.deinit();
+    const bytes = try programBytes(compiled.program);
+    defer testing.allocator.free(bytes);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, bytes);
+    defer prepared.deinit();
+    const retained = try prepared.storageBytes();
+    try testing.checkAllAllocationFailures(testing.allocator, startPreparedFailure, .{&prepared});
+    var session = try Session.start(testing.allocator, &prepared, &.{ 1, 0, 0, 0, 0, 0, 0, 0 });
+    defer session.deinit();
+    try testing.expect(try session.run(null) == .requested);
+    const checkpoint = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(checkpoint);
+    try testing.checkAllAllocationFailures(testing.allocator, restorePreparedFailure, .{ &prepared, checkpoint });
+    try testing.expectEqual(retained, try prepared.storageBytes());
+    try answerWithValue(&session, &.{});
+    try testing.expect(try session.run(null) == .completed);
+}
+
 fn retainedInputExample(builder: *source.Builder) !source.Module {
     const integer = try builder.scalar(u64);
     const unit = try builder.scalar(void);

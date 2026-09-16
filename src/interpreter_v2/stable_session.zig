@@ -1,6 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Successor native control slice. Not yet the portable/resident public API:
-//! prepared lifetimes and whole-Session rollback remain open.
+//! kernel handles and whole-Session rollback remain open.
 const std = @import("std");
 const data = @import("boundary_data_v2");
 const p = data.program;
@@ -12,6 +12,7 @@ const read = @import("operands.zig").read;
 const Slots = @import("activation_slots.zig").ActivationSlots;
 const protocol = data.invocation;
 pub const invocation = @import("invocation.zig");
+pub const Prepared = @import("prepared.zig").Prepared;
 pub const Error = @import("process.zig").Error || bindings.Error || data.activation_ownership.Error || data.program_image.Error || protocol.Error;
 pub const Pending = struct {
     allocator: std.mem.Allocator,
@@ -41,7 +42,8 @@ pub const Session = struct {
     allocator: std.mem.Allocator,
     program: ir.Program,
     program_identity: [32]u8,
-    flow: data.activation_flow.Facts,
+    prepared: *@import("prepared.zig").Core,
+    flow: data.program_image.Analysis,
     uses: data.traits.Facts,
     value_facts: data.admission.SchemaFacts,
     store: heap.Store,
@@ -54,52 +56,57 @@ pub const Session = struct {
     transitions: usize = 0,
     statistics: ?*@import("process.zig").Statistics = null,
 
-    /// Own all executable records before returning; the image may be released.
-    pub fn initImage(allocator: std.mem.Allocator, image: []const u8, arguments: []const u8) (Error || data.program_image.Error)!Session {
-        var decoded = try data.program_image.decode(allocator, image);
-        defer decoded.deinit();
-        return init(allocator, decoded.program, arguments);
+    /// The fresh path uses the same prepared owner, releasing its outer handle
+    /// once the Session has retained its lease.
+    pub fn initImage(allocator: std.mem.Allocator, image: []const u8, arguments: []const u8) Error!Session {
+        var prepared = try Prepared.init(allocator, image);
+        defer prepared.deinit();
+        return start(allocator, &prepared, arguments);
     }
 
-    pub fn init(allocator: std.mem.Allocator, input: ir.Program, arguments: []const u8) Error!Session {
-        var result = try empty(allocator, input);
+    pub fn start(allocator: std.mem.Allocator, prepared: *const Prepared, arguments: []const u8) Error!Session {
+        var result = try empty(allocator, prepared);
         errdefer result.deinit();
-        try result.initialize(arguments);
+        const owned = try allocator.dupe(u8, arguments);
+        defer allocator.free(owned);
+        try result.initialize(owned);
         return result;
     }
 
-    fn empty(allocator: std.mem.Allocator, input: ir.Program) Error!Session {
-        const program = try heap.duplicate(ir.Program, allocator, input);
-        errdefer heap.release(ir.Program, allocator, program);
-        var flow = try data.activation_ownership.analyze(allocator, program);
+    fn empty(allocator: std.mem.Allocator, prepared: *const Prepared) Error!Session {
+        const core = try prepared.acquire();
+        errdefer core.release();
+        var flow = try core.admitted().analysis(allocator);
         errdefer flow.deinit();
-        try supported(program);
-        const uses = try data.traits.derive(flow.arena.allocator(), program.schemas);
-        const value_facts = try data.admission.schemas(flow.arena.allocator(), program.schemas);
-        const identity = try data.program_image.identity(allocator, program);
-        const frames = try bindings.Frames.init(allocator, flow.pool, program);
+        const program = core.admitted().program();
+        const frames = try bindings.Frames.init(allocator, flow.facts.pool, program);
         return .{
             .allocator = allocator,
+            .prepared = core,
             .program = program,
-            .program_identity = identity,
+            .program_identity = core.admitted().identity(),
             .flow = flow,
-            .uses = uses,
-            .value_facts = value_facts,
+            .uses = core.admitted().traits(),
+            .value_facts = core.admitted().schemaFacts(),
             .frames = frames,
             .store = .{ .allocator = allocator },
         };
     }
 
     pub fn restoreImage(allocator: std.mem.Allocator, image: []const u8, checkpoint_bytes: []const u8) Error!Session {
-        var decoded = try data.program_image.decode(allocator, image);
-        defer decoded.deinit();
-        var result = try empty(allocator, decoded.program);
+        var prepared = try Prepared.init(allocator, image);
+        defer prepared.deinit();
+        return restore(allocator, &prepared, checkpoint_bytes);
+    }
+
+    pub fn restore(allocator: std.mem.Allocator, prepared: *const Prepared, checkpoint_bytes: []const u8) Error!Session {
+        var result = try empty(allocator, prepared);
         errdefer result.deinit();
         var incoming = try data.state_image.decodeGraph(allocator, checkpoint_bytes);
         var transferred = false;
         defer if (!transferred) incoming.deinit();
         const state = incoming.state;
-        try data.state_admission.validateStable(allocator, result.program, state);
+        try data.state_admission.validateAdmitted(allocator, result.prepared.admitted(), state);
         try result.store.importOwned(&incoming);
         transferred = true;
         for (state.nodes, 0..) |node, id| if (node.activation) |activation| {
@@ -130,7 +137,7 @@ pub const Session = struct {
         self.frames.deinit();
         self.store.deinit();
         self.flow.deinit();
-        heap.release(ir.Program, self.allocator, self.program);
+        self.prepared.release();
         self.* = undefined;
     }
 
@@ -174,13 +181,6 @@ pub const Session = struct {
         });
     }
 
-    fn supported(program: ir.Program) Error!void {
-        for (program.blocks) |block| switch (block.terminator) {
-            .forward => return error.UnsupportedTransition,
-            else => {},
-        };
-    }
-
     pub fn continuation(self: *Session, block: p.Id, _: anytype, control: g.Control) Error!g.NodeRef {
         const current = self.roots.current orelse return error.InvalidState;
         return self.captureContinuation(current, control, try self.frames.get(current.id), nextEdge(self.program.blocks[@intCast(block)].terminator).?);
@@ -218,7 +218,7 @@ pub const Session = struct {
         var temporary = std.heap.ArenaAllocator.init(self.allocator);
         defer temporary.deinit();
         const scratch = temporary.allocator();
-        const facts = try data.admission.schemas(scratch, self.program.schemas);
+        const facts = self.value_facts;
         const entry = self.program.functions[@intCast(self.program.roots.entry)];
         const values = try scratch.alloc(g.Value, entry.inputs.len);
         var reader: data.wire.Reader = .{ .input = input };
@@ -277,9 +277,10 @@ pub const Session = struct {
         const effect = self.program.effects[@intCast(operation.effect)];
         const state = try self.checkpoint(allocator);
         errdefer allocator.free(state);
-        const payload_schema = try data.schema.encodeOwned(allocator, self.program.schemas, effect.payload);
+        const contract = try self.prepared.contract(operation.effect);
+        const payload_schema = try allocator.dupe(u8, contract.payload);
         errdefer allocator.free(payload_schema);
-        const resume_schema = try data.schema.encodeOwned(allocator, self.program.schemas, effect.result);
+        const resume_schema = try allocator.dupe(u8, contract.resume_value);
         errdefer allocator.free(resume_schema);
         const name = try allocator.dupe(u8, effect.identity);
         errdefer allocator.free(name);
@@ -302,7 +303,9 @@ pub const Session = struct {
         defer expected.deinit();
         var response = try protocol.decode(protocol.Result, self.allocator, input);
         defer response.deinit();
-        try protocol.validateResult(self.allocator, expected.request, response.value);
+        if (!std.mem.eql(u8, &expected.request.request_identity, &response.value.request_identity)) return error.InvalidResult;
+        // The expected descriptors are immutable preparation data. The actual
+        // Program result schema is checked below with those same admitted facts.
         try self.answerValue(response.value.value);
     }
 
@@ -312,7 +315,7 @@ pub const Session = struct {
         const effect = self.program.effects[@intCast(pending.effect)];
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        const facts = try data.admission.schemas(scratch.allocator(), self.program.schemas);
+        const facts = self.value_facts;
         const literal: p.Literal = .{ .schema = effect.result, .bytes = input };
         try data.admission.value(scratch.allocator(), self.program.schemas, facts, literal);
         errdefer self.poisoned = true; // Full Session rollback is a later required seam.
@@ -373,7 +376,7 @@ pub const Session = struct {
                 };
                 try self.frames.write(frame, source.destination, value);
                 frame.position += 1;
-                try self.frames.prune(frame, self.flow.live[@intCast((try self.store.get(current)).control.block)][frame.position]);
+                try self.frames.prune(frame, self.flow.facts.live[@intCast((try self.store.get(current)).control.block)][frame.position]);
                 self.frames.update(current.id, frame.*);
             },
         }
@@ -493,7 +496,7 @@ pub const Session = struct {
         var frame = try self.frames.create(function);
         errdefer self.frames.releaseFrame(frame);
         for (args, target.inputs) |value, slot| try self.frames.write(&frame, slot, value);
-        try self.frames.prune(&frame, self.flow.live[@intCast(target.entry)][0]);
+        try self.frames.prune(&frame, self.flow.facts.live[@intCast(target.entry)][0]);
         const control = try self.store.add(.{ .control = .{
             .block = target.entry,
             .arguments = &.{},
@@ -516,12 +519,12 @@ pub const Session = struct {
     }
 
     fn retainedSlots(self: *Session, edge: ir.Edge) Error!data.analysis_sets.Root {
-        const after = self.flow.live[@intCast(edge.block)][0];
+        const after = self.flow.facts.live[@intCast(edge.block)][0];
         var root = after;
-        for (edge.assignments) |assignment| root = try self.flow.pool.remove(root, assignment.destination);
+        for (edge.assignments) |assignment| root = try self.flow.facts.pool.remove(root, assignment.destination);
         for (edge.assignments) |assignment| {
-            if (assignment.source == .slot and self.flow.pool.contains(after, assignment.destination))
-                root = try self.flow.pool.insert(root, assignment.source.slot);
+            if (assignment.source == .slot and self.flow.facts.pool.contains(after, assignment.destination))
+                root = try self.flow.facts.pool.insert(root, assignment.source.slot);
         }
         return root;
     }
@@ -544,9 +547,9 @@ pub const Session = struct {
     fn assignEdge(self: *Session, frame: *bindings.Frame, next: ir.Edge, returned: ?g.Value) Error!void {
         const values = try self.allocator.alloc(g.Value, next.assignments.len);
         defer self.allocator.free(values);
-        const live = self.flow.live[@intCast(next.block)][0];
+        const live = self.flow.facts.live[@intCast(next.block)][0];
         for (values, next.assignments) |*value, assignment| {
-            if (!self.flow.pool.contains(live, assignment.destination)) continue;
+            if (!self.flow.facts.pool.contains(live, assignment.destination)) continue;
             value.* = switch (assignment.source) {
                 .slot => |slot| try self.frames.slots.get(frame.view, @intCast(slot)),
                 .returned => returned orelse return error.InvalidState,
@@ -560,11 +563,11 @@ pub const Session = struct {
         };
         try self.frames.scope(frame, block.custody);
         for (next.assignments, 0..) |assignment, index| {
-            if (self.flow.pool.contains(live, assignment.destination))
+            if (self.flow.facts.pool.contains(live, assignment.destination))
                 try self.frames.write(frame, assignment.destination, values[index]);
         }
         frame.position = 0;
-        try self.frames.prune(frame, self.flow.live[@intCast(next.block)][0]);
+        try self.frames.prune(frame, self.flow.facts.live[@intCast(next.block)][0]);
     }
 
     fn jump(self: *Session, current: g.NodeRef, control: g.Control, frame: *bindings.Frame, next: ir.Edge, returned: ?g.Value) Error!void {
