@@ -263,6 +263,14 @@ resource suspension through native execution and finish cleanup in a new Worker.
 Input, working and final-output budgets are independent; output allocation remains
 inside resident commit. See the kernel contract for signatures, limits and commands.
 
-Agent migration and its actual compiled-tool/file transfer, component linking,
+The same kernel now executes Boundary-linked BMO1 components. Two complete Programs
+reuse an effectful callable, private state and owned suspended cleanup, returning
+83 and 166 with one release each. A separately compiled even/odd pair exercises
+mutually recursive imports. Native/fresh/resident checks pass 115 matching
+boundaries, and the Wasmtime transfer lane passes 29 including linked components.
+The source-independent linker remains owned by Boundary; no compiler or linker
+enters the production World kernel.
+
+Agent migration and its actual compiled-tool/file transfer, component contract completion,
 selective execution, value/performance acceptance, normal package cutover, legacy
 retirement and linked draft-PR/serial-review delivery remain mandatory.

@@ -11,7 +11,7 @@ const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
 const peer = await wasmtimePeer(kernelPath, expectedSha256);
 let boundaries = 0;
 try {
-  for (const name of ["resource", "generator", "reentrant", "custody"]) {
+  for (const name of ["resource", "generator", "reentrant", "custody", "components", "componentsDouble"]) {
     const image = new Uint8Array(execFileSync(fixtures, ["image", name]));
     const k = await Kernel.create({ bytes, expectedSha256 });
     k.setLimits({ input: 2 << 20, working: 8 << 20, output: 2 << 20 });
@@ -32,6 +32,10 @@ try {
       const outcome = decodeOutcome(actual.bytes);
       boundaries++;
       if (["completed", "failed", "cancelled"].includes(outcome.kind)) {
+        if (name === "components" || name === "componentsDouble") {
+          assert.equal(outcome.kind, "completed");
+          assert.deepEqual(outcome.value, Uint8Array.of(name === "components" ? 83 : 166, 0, 0, 0, 0, 0, 0, 0));
+        }
         const closed = await peer.call("close", { handle: started.session });
         assert.equal(closed.working_live, 0);
         break;
@@ -42,6 +46,8 @@ try {
       k.releasePrepared(restored);
       if (outcome.kind === "requested") {
         const request = await decodeRequest(outcome.request);
+        assert.ok(["example/resource-acquire", "example/resource-use", "example/resource-release", "example/generator-release", "custody/release", "component/release"].includes(request.semanticIdentity));
+        if (request.semanticIdentity === "component/release") assert.deepEqual(request.payload, Uint8Array.of(83, 0, 0, 0, 0, 0, 0, 0));
         const result = request.semanticIdentity === "example/resource-acquire" ? Uint8Array.of(41, 0, 0, 0, 0, 0, 0, 0) : new Uint8Array();
         value = await encodeResult(outcome.request, result); control = 1;
       } else { control = outcome.kind === "yielded" ? 2 : 0; value = new Uint8Array(); }

@@ -19,6 +19,13 @@ pub fn main(init: std.process.Init) !void {
         try output.interface.writeAll(result);
     } else if (std.mem.eql(u8, mode, "image")) {
         const name = arguments.next() orelse return error.MissingName;
+        if (std.mem.eql(u8, name, "components") or std.mem.eql(u8, name, "componentsDouble") or std.mem.eql(u8, name, "componentsRecursive")) {
+            const bytes = try linkedImage(init.gpa, name);
+            defer init.gpa.free(bytes);
+            try output.interface.writeAll(bytes);
+            try output.interface.flush();
+            return;
+        }
         var builder = boundary.source.Builder.init(init.gpa);
         defer builder.deinit();
         const module = blk: {
@@ -38,4 +45,30 @@ pub fn main(init: std.process.Init) !void {
         try output.interface.writeAll(bytes);
     } else return error.InvalidMode;
     try output.interface.flush();
+}
+
+fn linkedImage(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    const examples = boundary.source.component_examples;
+    const data = boundary.data_v2;
+    const doubled = std.mem.eql(u8, name, "componentsDouble");
+    const recursive = std.mem.eql(u8, name, "componentsRecursive");
+    const kinds: []const examples.Kind = if (recursive) &.{ .even, .odd } else &.{ .call, .state, .suspended, .double };
+    const keys: []const []const u8 = if (recursive) &.{ "even", "odd" } else &.{ "call", "state", "suspend", "double" };
+    var instances: [4]data.linker.Instance = undefined;
+    var initialized: usize = 0;
+    defer for (instances[0..initialized]) |instance| allocator.free(instance.object);
+    for (kinds, keys, instances[0..kinds.len]) |kind, key, *instance| {
+        instance.* = .{ .key = key, .object = try examples.emit(allocator, kind) };
+        initialized += 1;
+    }
+    // Each emitter has already destroyed its source and construction owners.
+    var linked = try data.linker.link(allocator, instances[0..@as(usize, if (recursive) 2 else if (doubled) 4 else 3)], if (recursive) &examples.recursive_bindings else if (doubled) &examples.double_bindings else &examples.bindings, .{
+        .instance = if (recursive) "even" else if (doubled) "double" else "suspend",
+        .symbol = "main",
+    });
+    defer linked.deinit();
+    const bytes = try allocator.alloc(u8, try data.program_image.encodedLength(linked.program));
+    errdefer allocator.free(bytes);
+    _ = try linked.encode(allocator, bytes);
+    return bytes;
 }

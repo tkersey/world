@@ -126,9 +126,12 @@ package exports still require the coordinated successor cutover. `build-kernel`
 alone never constructs the source compiler. Qualification commands print the exact
 kernel digest and engine versions; local emitted fixture/tool files are not releases.
 
-Current witnesses use the same kernel bytes for nine unrelated staged Programs:
-78 native/Node matched boundaries, 11 transfers between kernel instances, and
-19 independent Wasmtime boundaries. Wasmtime disables threads, memory64, GC,
+Current witnesses use the same kernel bytes for twelve staged/linked Programs:
+115 native/Node matched boundaries, 16 transfers between kernel instances, and
+29 independent Wasmtime boundaries. The linked cases include a reusable effectful
+callable, private counter interpretation, owned suspension/cleanup, a second
+wrapper, and mutually recursive components. Their independent expected results
+are 83, 166, and true for even(100). Wasmtime disables threads, memory64, GC,
 exceptions, tail calls and SIMD. Real Chromium 153.0.8010.12 and Firefox 155.0
 Workers export a resource suspension, terminate, restore its native-produced
 successor in a fresh Worker, and complete retained cleanup. Wrong kernel identity
@@ -137,5 +140,5 @@ memory after warm-up. Input/work/output capacity, stale handles, transfer failur
 and old-family rejection have negative checks.
 
 This qualifies the core runtime/embedding paths. It is not the required Agent
-compiled-tool/file witness, source-independent component linkage, extracted-package
+compiled-tool/file witness, extracted-package
 qualification, or final performance acceptance. Those remain part of the full goal.

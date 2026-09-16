@@ -29,6 +29,10 @@ async function leaf(request) {
   const decoded = await decodeRequest(request);
   const name = decoded.semanticIdentity;
   if (name === "example/resource-acquire") return encodeResult(request, integer(41));
+  if (name === "component/release") {
+    assert.deepEqual(decoded.payload, integer(83));
+    return encodeResult(request, new Uint8Array());
+  }
   if (["example/resource-use", "example/resource-release", "example/generator-release", "custody/release"].includes(name)) return encodeResult(request, new Uint8Array());
   throw new Error(`unbound fixture operation ${name}`);
 }
@@ -43,7 +47,7 @@ await assert.rejects(Kernel.create({ bytes: wrongProfile, expectedSha256: create
 
 let boundaries = 0, transfers = 0;
 const terminal = [];
-for (const [name, args] of [["install", []], ["deep", []], ["recursive", integer(100)], ["resource", []], ["custody", []], ["reentrant", []], ["generator", []], ["shallow", [0]], ["scalarContracts", [0]]]) {
+for (const [name, args] of [["install", []], ["deep", []], ["recursive", integer(100)], ["resource", []], ["custody", []], ["reentrant", []], ["generator", []], ["shallow", [0]], ["scalarContracts", [0]], ["components", []], ["componentsDouble", []], ["componentsRecursive", integer(100)]]) {
   const program = image(name);
   let k = await kernel();
   const prepared = k.prepare(program);
@@ -51,6 +55,7 @@ for (const [name, args] of [["install", []], ["deep", []], ["recursive", integer
   k.releasePrepared(prepared); // Active session retains the admitted owner.
   assert.throws(() => k.start(prepared), { code: "WORLD_HANDLE_INVALID" });
   let state = k.checkpoint(session), control = "none", value = new Uint8Array();
+  let yields = 0, releases = 0;
   for (let round = 0; ; round++) {
     assert.ok(round < 512, `${name} failed to finish`);
     const command = encodeInput({ image: program, state, control, value, quantum: 23 });
@@ -61,6 +66,10 @@ for (const [name, args] of [["install", []], ["deep", []], ["recursive", integer
     const outcome = decodeOutcome(actual);
     boundaries++;
     if (["completed", "failed", "cancelled"].includes(outcome.kind)) {
+      if (name === "components" || name === "componentsDouble") {
+        assert.equal(yields, 1);
+        assert.equal(releases, 1);
+      }
       terminal.push({ name, kind: outcome.kind, value: Buffer.from(outcome.value ?? []).toString("hex") });
       k.close(session);
       assert.equal(k.usage().workingLive, 0n);
@@ -69,8 +78,12 @@ for (const [name, args] of [["install", []], ["deep", []], ["recursive", integer
     }
     state = outcome.state;
     assert.ok(state);
-    if (outcome.kind === "requested") { control = "reply"; value = await leaf(outcome.request); }
+    if (outcome.kind === "requested") {
+      if ((await decodeRequest(outcome.request)).semanticIdentity === "component/release") releases++;
+      control = "reply"; value = await leaf(outcome.request);
+    }
     else { control = outcome.kind === "yielded" ? "resume_yield" : "none"; value = new Uint8Array(); }
+    if (outcome.kind === "yielded") yields++;
     if (round === 0 || outcome.kind === "requested") {
       const checkpoint = k.checkpoint(session, { transfer: true });
       assert.deepEqual(checkpoint, state);
@@ -90,6 +103,9 @@ assert.equal(terminal.find(x => x.name === "install").value, "2008000000000000")
 assert.equal(terminal.find(x => x.name === "resource").value, "2a00000000000000");
 assert.equal(terminal.find(x => x.name === "reentrant").value, "7100000000000000");
 assert.equal(terminal.find(x => x.name === "generator").value, "2a000000000000002b00000000000000");
+assert.equal(terminal.find(x => x.name === "components").value, "5300000000000000");
+assert.equal(terminal.find(x => x.name === "componentsDouble").value, "a600000000000000");
+assert.equal(terminal.find(x => x.name === "componentsRecursive").value, "01");
 
 // Physical failures cannot consume the parked response or transfer custody.
 const k = await kernel(), program = image("resource"), p = k.prepare(program), s = k.start(p);
