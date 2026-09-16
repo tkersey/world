@@ -6,7 +6,7 @@ remains the goal. No merge, release or application data operation has occurred.
 
 World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
 `feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `33c5661fa6db452acc433715e7eec0967d3f3191`, Zig 0.16.0,
+successor worktree at `9dc1464d49491e68429148b9f86e87a17d36559a`, Zig 0.16.0,
 and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
 
 ## Private activation slots
@@ -161,7 +161,7 @@ The stable controller now exports PST3 graph records
 without advancing or collecting. Slot values and lexical owner order are attached
 to their owning control node; private page handles and stale store entries do not
 become checkpoint identities. Terminal exports retain the full result/exit.
-The 31 stable-source tests verify repeated export and graph re-encoding at drive
+The 34 stable-source tests verify repeated export and graph re-encoding at drive
 boundaries, including one-instruction quanta and cleanup. Reentrant-cycle tests
 replace every private view handle and collect garbage without changing a byte of
 the checkpoint. An export allocation-
@@ -192,8 +192,23 @@ currently decodes, admits and copies into the existing session owner; a
 prepared immutable Program owner that avoids repeated admission remains required.
 This is codec integration, not PST3 transfer or ABI 3 completion.
 
-Complete portable envelope and host integration.
+`interpreter_v2/invocation.zig` now implements PKI3/PKO3 fresh invocation through
+the same Session, with explicit reply, yield-resume and cancellation controls.
+Session replies require ERS3 bound to the current canonical pending State;
+raw typed values are no longer a public reply entry point. All source drives also
+compare the fresh path's State/outcome to resident and restored execution at the
+same quantum. Owned result buffers survive input/session destruction. Allocation
+and output-capacity failures publish no successor and leave commands unchanged.
+
+Dedicated cases cover equal visible requests with different retained values,
+unchanged pending/yield polls, zero-quantum control application, and cancellation
+rebinding the same pending cleanup operation. An already acquired result requires
+explicit host re-encoding against the new challenge; no external work is repeated.
+The default facade still awaits coordinated cutover, and resident operational
+failure rollback remains open.
+
+Complete prepared/resident and host integration.
 Prepared lifetime, whole-Session
-transactions, PST3/current protocols, ABI 3, browser/server transfer, Agent
+transactions, ABI 3, browser/server transfer, Agent
 migration, component linking, performance acceptance, legacy retirement and linked
 draft PRs remain open. Native source agreement does not prove portable execution.

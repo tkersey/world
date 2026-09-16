@@ -4,6 +4,18 @@ const source = boundary.source;
 const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 
+fn answerWithValue(subject: *Session, value: []const u8) !void {
+    const protocol = boundary.data_v2.invocation;
+    var pending = try subject.pendingRequest(testing.allocator);
+    defer pending.deinit();
+    const response = try protocol.encodeOwned(protocol.Result, testing.allocator, .{
+        .request_identity = pending.request.request_identity,
+        .value = value,
+    });
+    defer testing.allocator.free(response);
+    try subject.answer(response);
+}
+
 fn checkedCheckpoint(subject: *Session) !void {
     const bytes = try subject.checkpoint(testing.allocator);
     defer testing.allocator.free(bytes);
@@ -28,6 +40,12 @@ fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observat
     _ = try codec.encode(testing.allocator, subject.program, image);
     var restored = try Session.restoreImage(testing.allocator, image, before);
     defer restored.deinit();
+    var fresh = try @import("stable_runtime").invocation.invoke(testing.allocator, .{
+        .image = image,
+        .instance = .{ .state = before },
+        .quantum = quantum,
+    });
+    defer fresh.deinit();
     @memset(image, 0xff);
     @memset(before, 0xff);
     const result = try subject.run(quantum);
@@ -37,8 +55,38 @@ fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observat
     const actual = try restored.checkpoint(testing.allocator);
     defer testing.allocator.free(actual);
     try testing.expectEqualSlices(u8, expected, actual);
+    switch (result) {
+        .progressed => try testing.expectEqualSlices(u8, expected, fresh.record.progressed),
+        .yielded => try testing.expectEqualSlices(u8, expected, fresh.record.yielded),
+        .requested => {
+            try testing.expectEqualSlices(u8, expected, fresh.record.requested.state);
+            var pending = try subject.pendingRequest(testing.allocator);
+            defer pending.deinit();
+            var decoded = try boundary.data_v2.invocation.decode(boundary.data_v2.invocation.Request, testing.allocator, fresh.record.requested.request);
+            defer decoded.deinit();
+            try testing.expectEqualDeep(pending.request, decoded.value);
+        },
+        .completed => |value| try testing.expectEqualSlices(u8, try subject.bytes(&value), fresh.record.completed),
+        .failed => |value| {
+            try testing.expectEqualSlices(u8, try subject.bytes(&value), fresh.record.failed.value);
+            try testing.expectEqualDeep(subject.exit.?.cancellation, fresh.record.failed.cancellation);
+            try expectCleanupFailures(subject, fresh.record.failed.cleanup_failures);
+        },
+        .cancelled => |reason| {
+            try testing.expectEqualDeep(reason, fresh.record.cancelled.reason);
+            try expectCleanupFailures(subject, fresh.record.cancelled.cleanup_failures);
+        },
+    }
     try checkedCheckpoint(subject);
     return result;
+}
+
+fn expectCleanupFailures(subject: *Session, bytes: []const u8) !void {
+    var reader: boundary.data_v2.wire.Reader = .{ .input = bytes };
+    const failures = subject.exit.?.cleanup_failures;
+    try testing.expectEqual(failures.len, try reader.count());
+    for (failures) |value| try testing.expectEqualSlices(u8, try subject.bytes(&value), try reader.bytes());
+    try reader.finish();
 }
 
 fn checkpointFailure(allocator: std.mem.Allocator, subject: *Session, before: []const u8) !void {
@@ -86,6 +134,169 @@ fn programBytes(program: boundary.data_v2.activation.Program) ![]u8 {
     return bytes;
 }
 
+fn retainedInputExample(builder: *source.Builder) !source.Module {
+    const integer = try builder.scalar(u64);
+    const unit = try builder.scalar(void);
+    const effect = try builder.effect(.{ .identity = "binding/read", .payload = unit, .result = unit });
+    const main = try builder.declare(&.{integer}, integer, &.{effect}, &.{});
+    const operation = try builder.term(.{ .perform = .{ .effect = effect, .payload = try builder.constant(void, {}) } });
+    try builder.define(main, try builder.bind(try builder.variable(unit), operation, try builder.pure(try builder.reference(builder.parameter(main, 0)))));
+    return builder.module(main, unit);
+}
+
+fn invocationFailure(allocator: std.mem.Allocator, command: []const u8) !void {
+    var output = [_]u8{0xa5} ** 1024;
+    const bytes = @import("stable_runtime").invocation.invokeInto(allocator, command, &output) catch |err| {
+        for (output) |byte| try testing.expectEqual(0xa5, byte);
+        return err;
+    };
+    var decoded = try boundary.data_v2.invocation.decode(boundary.data_v2.invocation.Outcome, testing.allocator, bytes);
+    defer decoded.deinit();
+    try testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0, 0, 0, 0, 0 }, decoded.value.completed);
+}
+
+test "current fresh invocation binds captured values and rejects stale replies without mutation" {
+    const protocol = boundary.data_v2.invocation;
+    const fresh = @import("stable_runtime").invocation;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var first = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .initial_args = &.{ 1, 0, 0, 0, 0, 0, 0, 0 } } });
+    defer first.deinit();
+    var second = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .initial_args = &.{ 2, 0, 0, 0, 0, 0, 0, 0 } } });
+    defer second.deinit();
+    var first_request = try protocol.decode(protocol.Request, testing.allocator, first.record.requested.request);
+    defer first_request.deinit();
+    var second_request = try protocol.decode(protocol.Request, testing.allocator, second.record.requested.request);
+    defer second_request.deinit();
+    try testing.expectEqualDeep(first_request.value.binding.semantic_identity, second_request.value.binding.semantic_identity);
+    try testing.expectEqualSlices(u8, first_request.value.binding.payload, second_request.value.binding.payload);
+    try testing.expect(!std.mem.eql(u8, &first_request.value.request_identity, &second_request.value.request_identity));
+    var poll = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = first.record.requested.state } });
+    defer poll.deinit();
+    try testing.expectEqualDeep(first.record, poll.record);
+    const stale = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = first_request.value.request_identity, .value = &.{} });
+    defer testing.allocator.free(stale);
+    try testing.expectError(error.InvalidResult, fresh.invoke(testing.allocator, .{
+        .image = image,
+        .instance = .{ .state = second.record.requested.state },
+        .control = .{ .reply = stale },
+    }));
+    var resident = try Session.restoreImage(testing.allocator, image, second.record.requested.state);
+    defer resident.deinit();
+    try testing.expectError(error.InvalidResult, resident.answer(stale));
+    const unchanged = try resident.checkpoint(testing.allocator);
+    defer testing.allocator.free(unchanged);
+    try testing.expectEqualSlices(u8, second.record.requested.state, unchanged);
+    const response = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = second_request.value.request_identity, .value = &.{} });
+    defer testing.allocator.free(response);
+    var zero = try fresh.invoke(testing.allocator, .{
+        .image = image,
+        .instance = .{ .state = second.record.requested.state },
+        .control = .{ .reply = response },
+        .quantum = 0,
+    });
+    defer zero.deinit();
+    try testing.expect(zero.record == .progressed);
+    try testing.expectError(error.InvalidState, fresh.invoke(testing.allocator, .{
+        .image = image,
+        .instance = .{ .state = zero.record.progressed },
+        .control = .{ .reply = response },
+    }));
+    var completed = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = zero.record.progressed } });
+    defer completed.deinit();
+    try testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0, 0, 0, 0, 0 }, completed.record.completed);
+    const command = try protocol.encodeOwned(protocol.Input, testing.allocator, .{
+        .image = image,
+        .instance = .{ .state = second.record.requested.state },
+        .control = .{ .reply = response },
+    });
+    defer testing.allocator.free(command);
+    const original = try testing.allocator.dupe(u8, command);
+    defer testing.allocator.free(original);
+    try testing.checkAllAllocationFailures(testing.allocator, invocationFailure, .{command});
+    try testing.expectEqualSlices(u8, original, command);
+    var output = [_]u8{0xa5} ** 32;
+    try testing.expectError(error.Capacity, fresh.invokeInto(testing.allocator, command, output[0..1]));
+    for (output) |byte| try testing.expectEqual(0xa5, byte);
+    try testing.expectEqualSlices(u8, original, command);
+}
+
+test "current invocation preserves explicit yield polling and cancellation before work" {
+    const fresh = @import("stable_runtime").invocation;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    const integer = try builder.scalar(u64);
+    const main = try builder.declare(&.{}, integer, &.{}, &.{});
+    try builder.define(main, try builder.term(.{ .yield_then = try builder.pure(try builder.constant(u64, 42)) }));
+    var compiled = try source.construct(testing.allocator, builder.module(main, try builder.scalar(void)));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var yielded = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .initial_args = &.{} } });
+    defer yielded.deinit();
+    var poll = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = yielded.record.yielded } });
+    defer poll.deinit();
+    try testing.expectEqualDeep(yielded.record, poll.record);
+    var resumed = try fresh.invoke(testing.allocator, .{
+        .image = image,
+        .instance = .{ .state = yielded.record.yielded },
+        .control = .resume_yield,
+        .quantum = 0,
+    });
+    defer resumed.deinit();
+    try testing.expect(resumed.record == .progressed);
+    var completed = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = resumed.record.progressed } });
+    defer completed.deinit();
+    try testing.expectEqualSlices(u8, &.{ 42, 0, 0, 0, 0, 0, 0, 0 }, completed.record.completed);
+    var cancelled = try fresh.invoke(testing.allocator, .{
+        .image = image,
+        .instance = .{ .initial_args = &.{} },
+        .control = .{ .cancel = .{ .text = "stop" } },
+        .quantum = 0,
+    });
+    defer cancelled.deinit();
+    // Zero work can initiate cancellation; an unwind may need further quanta.
+    if (cancelled.record == .progressed) {
+        var done = try fresh.invoke(testing.allocator, .{ .image = image, .instance = .{ .state = cancelled.record.progressed } });
+        defer done.deinit();
+        try testing.expectEqualStrings("stop", done.record.cancelled.reason.text);
+    } else try testing.expectEqualStrings("stop", cancelled.record.cancelled.reason.text);
+}
+
+test "cancellation rebinds a pending cleanup without repeating its semantic operation" {
+    const protocol = boundary.data_v2.invocation;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.unwind(&builder));
+    defer compiled.deinit();
+    var session = try initFromImage(testing.allocator, compiled.program, &.{0});
+    defer session.deinit();
+    try testing.expect(try session.run(null) == .requested);
+    var before = try session.pendingRequest(testing.allocator);
+    defer before.deinit();
+    const acquired_result = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = before.request.request_identity, .value = &.{} });
+    defer testing.allocator.free(acquired_result);
+    try session.cancel(.{ .text = "stop" });
+    var after = try session.pendingRequest(testing.allocator);
+    defer after.deinit();
+    try testing.expectEqualStrings(before.request.binding.semantic_identity, after.request.binding.semantic_identity);
+    try testing.expectEqualSlices(u8, before.request.binding.payload, after.request.binding.payload);
+    try testing.expect(!std.mem.eql(u8, &before.request.request_identity, &after.request.request_identity));
+    try testing.expectError(error.InvalidResult, session.answer(acquired_result));
+    // The host explicitly re-encodes the already obtained typed result against
+    // the successor challenge; no external operation runs inside this helper.
+    try answerWithValue(&session, &.{});
+    try testing.expect(try session.run(null) == .requested);
+    try answerWithValue(&session, &.{});
+    const result = try session.run(null);
+    try testing.expect(result == .failed);
+    try testing.expectEqualStrings("stop", session.exit.?.cancellation.?.text);
+}
+
 fn restoreFailure(allocator: std.mem.Allocator, image: []const u8, checkpoint: []const u8) !void {
     var session = try Session.restoreImage(allocator, image, checkpoint);
     defer session.deinit();
@@ -128,7 +339,7 @@ test "PST3 restore rejects wrong identity, code position, slots, and cleanup sta
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     try testing.expect(try session.run(null) == .requested);
-    try session.answer(&.{ 41, 0, 0, 0, 0, 0, 0, 0 });
+    try answerWithValue(&session, &.{ 41, 0, 0, 0, 0, 0, 0, 0 });
     try testing.expect(try session.run(null) == .requested);
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
@@ -334,7 +545,7 @@ test "stable resource implementations preserve private authority and loans acros
                 if (alive and node == .borrow) borrowed = true;
             }
             try session.store.collectWith(session.roots, &session.frames);
-            try session.answer(if (index == 0) &.{ 41, 0, 0, 0, 0, 0, 0, 0 } else &.{});
+            try answerWithValue(&session, if (index == 0) &.{ 41, 0, 0, 0, 0, 0, 0, 0 } else &.{});
         }
         const result = try drive(&session, null);
         try testing.expect(borrowed and result == .completed);
@@ -350,7 +561,7 @@ test "stable cancellation releases the resource while its protected borrow is su
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     try testing.expect(try drive(&session, null) == .requested);
-    try session.answer(&.{ 41, 0, 0, 0, 0, 0, 0, 0 });
+    try answerWithValue(&session, &.{ 41, 0, 0, 0, 0, 0, 0, 0 });
     const use = try drive(&session, null);
     try testing.expect(use == .requested);
     try testing.expectEqualStrings("example/resource-use", session.program.effects[@intCast(use.requested.effect)].identity);
@@ -359,7 +570,7 @@ test "stable cancellation releases the resource while its protected borrow is su
     try testing.expect(release == .requested);
     try testing.expectEqualStrings("example/resource-release", session.program.effects[@intCast(release.requested.effect)].identity);
     try testing.expectEqual(41, release.requested.payload.body.scalar[0]);
-    try session.answer(&.{});
+    try answerWithValue(&session, &.{});
     try testing.expect(try drive(&session, null) == .cancelled);
 }
 
@@ -470,9 +681,9 @@ test "stable source retains an external request and joins into the same activati
     const pending = try drive(&session, null);
     try testing.expect(pending == .requested);
     try testing.expectEqual(effect, pending.requested.effect);
-    try testing.expectError(error.InvalidValue, session.answer(&.{2}));
+    try testing.expectError(error.InvalidValue, answerWithValue(&session, &.{2}));
     try testing.expect(try session.observe() == .requested);
-    try session.answer(&.{ 42, 0, 0, 0, 0, 0, 0, 0 });
+    try answerWithValue(&session, &.{ 42, 0, 0, 0, 0, 0, 0, 0 });
     const result = try drive(&session, null);
     try testing.expect(result == .completed);
     try testing.expectEqual(42, std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
@@ -806,7 +1017,7 @@ test "stable cleanup preserves primary failure and resumes external cleanup" {
             try testing.expect(pending == .requested);
             try testing.expectEqualStrings(name, session.program.effects[@intCast(pending.requested.effect)].identity);
             try session.store.collectWith(session.roots, &session.frames);
-            try session.answer(&.{});
+            try answerWithValue(&session, &.{});
         }
         const result = try drive(&session, null);
         try testing.expect(result == .failed);
@@ -831,7 +1042,7 @@ test "stable cancellation during yielded cleanup preserves the first reason" {
             try session.resumeYield();
             const pending = try drive(&session, null);
             try testing.expect(pending == .requested);
-            try session.answer(&.{});
+            try answerWithValue(&session, &.{});
         }
         const result = try drive(&session, null);
         try testing.expect(result == .failed);
@@ -862,7 +1073,7 @@ test "stable unwind preserves lexical and temporary-owner cleanup order" {
                 const label: u64 = if (reversed) 2 - requests else requests + 1;
                 try testing.expectEqual(label, std.mem.readInt(u64, result.requested.payload.body.scalar[0..8], .little));
                 requests += 1;
-                try session.answer(&.{});
+                try answerWithValue(&session, &.{});
             }
             try session.store.collectWith(session.roots, &session.frames);
             result = try drive(&session, 1);
@@ -915,12 +1126,12 @@ test "stable cancellation preserves cleanup at entry yield request and answered 
             const pending = try drive(&session, null);
             try testing.expect(pending == .requested and pending.requested.effect == read_effect);
         }
-        if (phase == 3) try session.answer(&.{ 7, 0, 0, 0, 0, 0, 0, 0 });
+        if (phase == 3) try answerWithValue(&session, &.{ 7, 0, 0, 0, 0, 0, 0, 0 });
         try session.cancel(.{ .text = "stop" });
         var result = try drive(&session, null);
         if (phase != 0) {
             try testing.expect(result == .requested and result.requested.effect == release);
-            try session.answer(&.{});
+            try answerWithValue(&session, &.{});
             result = try drive(&session, null);
         }
         try testing.expect(result == .cancelled);
@@ -941,7 +1152,7 @@ test "stable clause failure abandons a captured cleanup without losing its prima
     try testing.expectEqualStrings("example/abandoned-release", session.program.effects[@intCast(pending.requested.effect)].identity);
     try testing.expectEqualSlices(u8, &.{ 1, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&pending.requested.payload));
     try session.store.collectWith(session.roots, &session.frames);
-    try session.answer(&.{});
+    try answerWithValue(&session, &.{});
     const result = try drive(&session, null);
     try testing.expect(result == .failed);
     try testing.expectEqual(9, result.failed.body.scalar[0]);
@@ -968,7 +1179,7 @@ test "stable generator resumes private state and closes its retained cleanup" {
                 releases += 1;
                 try testing.expectEqualStrings("example/generator-release", session.program.effects[@intCast(pending.effect)].identity);
                 try testing.expectEqual(43, pending.payload.body.scalar[0]);
-                try session.answer(&.{});
+                try answerWithValue(&session, &.{});
             },
             else => return error.TestUnexpectedResult,
         }

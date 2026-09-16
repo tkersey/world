@@ -1,6 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Successor native control slice. Not yet the portable/resident public API:
-//! prepared lifetimes, protocol binding and whole-Session rollback remain open.
+//! prepared lifetimes and whole-Session rollback remain open.
 const std = @import("std");
 const data = @import("boundary_data_v2");
 const p = data.program;
@@ -10,7 +10,22 @@ const heap = @import("store.zig");
 const bindings = @import("activation_frames.zig");
 const read = @import("operands.zig").read;
 const Slots = @import("activation_slots.zig").ActivationSlots;
-pub const Error = @import("process.zig").Error || bindings.Error || data.activation_ownership.Error || data.program_image.Error;
+const protocol = data.invocation;
+pub const invocation = @import("invocation.zig");
+pub const Error = @import("process.zig").Error || bindings.Error || data.activation_ownership.Error || data.program_image.Error || protocol.Error;
+pub const Pending = struct {
+    allocator: std.mem.Allocator,
+    state: []u8,
+    request: protocol.Request,
+    pub fn deinit(self: *Pending) void {
+        self.allocator.free(self.state);
+        self.allocator.free(self.request.binding.semantic_identity);
+        self.allocator.free(self.request.binding.payload_schema);
+        self.allocator.free(self.request.binding.resume_schema);
+        self.allocator.free(self.request.binding.payload);
+        self.* = undefined;
+    }
+};
 pub const Observation = union(enum) {
     progressed,
     yielded,
@@ -244,10 +259,10 @@ pub const Session = struct {
         };
     }
 
-    pub fn run(self: *Session, quantum: ?usize) Error!Observation {
-        var steps: usize = 0;
+    pub fn run(self: *Session, quantum: ?u64) Error!Observation {
+        var steps: u64 = 0;
         while (self.terminal == null and (self.status == .active or self.status == .unwinding) and
-            (quantum == null or steps < quantum.?)) : (steps += 1) try self.step();
+            (quantum == null or steps < quantum.?)) : (steps +|= 1) try self.step();
         return self.observe();
     }
 
@@ -256,7 +271,42 @@ pub const Session = struct {
         self.status = .active;
     }
 
+    pub fn pendingRequest(self: *Session, allocator: std.mem.Allocator) Error!Pending {
+        if (self.poisoned or self.terminal != null or self.status != .parked) return error.InvalidState;
+        const operation = (try self.store.get(self.roots.pending.?)).pending;
+        const effect = self.program.effects[@intCast(operation.effect)];
+        const state = try self.checkpoint(allocator);
+        errdefer allocator.free(state);
+        const payload_schema = try data.schema.encodeOwned(allocator, self.program.schemas, effect.payload);
+        errdefer allocator.free(payload_schema);
+        const resume_schema = try data.schema.encodeOwned(allocator, self.program.schemas, effect.result);
+        errdefer allocator.free(resume_schema);
+        const name = try allocator.dupe(u8, effect.identity);
+        errdefer allocator.free(name);
+        const payload = try allocator.dupe(u8, try self.bytes(&operation.payload));
+        errdefer allocator.free(payload);
+        return .{ .allocator = allocator, .state = state, .request = try protocol.request(.{
+            .program_identity = self.program_identity,
+            .pending_state_digest = protocol.stateDigest(state),
+            .effect = operation.effect,
+            .semantic_identity = name,
+            .payload_schema = payload_schema,
+            .resume_schema = resume_schema,
+            .payload = payload,
+        }) };
+    }
+
+    /// Recompute the pending binding before accepting an ERS3 response.
     pub fn answer(self: *Session, input: []const u8) Error!void {
+        var expected = try self.pendingRequest(self.allocator);
+        defer expected.deinit();
+        var response = try protocol.decode(protocol.Result, self.allocator, input);
+        defer response.deinit();
+        try protocol.validateResult(self.allocator, expected.request, response.value);
+        try self.answerValue(response.value.value);
+    }
+
+    fn answerValue(self: *Session, input: []const u8) Error!void {
         if (self.poisoned or self.status != .parked) return error.InvalidState;
         const pending = (try self.store.get(self.roots.pending.?)).pending;
         const effect = self.program.effects[@intCast(pending.effect)];
@@ -288,7 +338,7 @@ pub const Session = struct {
         }
         if (self.roots.current == null or self.roots.current.?.id != current.id)
             self.frames.remove(current.id);
-        self.transitions += 1;
+        self.transitions +%= 1;
         if (self.statistics) |statistics| statistics.transitions +|= 1;
         if (self.terminal == null and self.transitions % 256 == 0)
             try self.store.collectWith(self.roots, &self.frames);
