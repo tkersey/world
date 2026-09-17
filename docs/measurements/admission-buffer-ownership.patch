@@ -1,0 +1,169 @@
+diff --git a/src/v2/data/activation_flow.zig b/src/v2/data/activation_flow.zig
+index 64540e0..0925def 100644
+--- a/src/v2/data/activation_flow.zig
++++ b/src/v2/data/activation_flow.zig
+@@ -38,6 +38,7 @@ pub const Facts = struct {
+     }
+ 
+     pub fn deinit(self: *Facts) void {
++        self.pool.deinit();
+         self.arena.deinit();
+         self.parent_allocator.destroy(self.arena);
+         self.* = undefined;
+@@ -66,7 +67,8 @@ pub fn analyzeComponent(allocator: std.mem.Allocator, image: ir.Program, imports
+     const pool = try a.create(sets.Pool);
+     var limit: usize = 0;
+     for (image.functions) |function| limit = @max(limit, function.layout.slots.len);
+-    pool.* = .{ .allocator = a, .limit = limit };
++    pool.* = .{ .allocator = allocator, .limit = limit };
++    errdefer pool.deinit();
+     var analysis: Analysis = .{
+         .allocator = a,
+         .image = image,
+@@ -185,10 +187,14 @@ const Flow = struct {
+     fn read(self: *Flow, slot: p.Id, consuming: bool) Error!void {
+         const pool = self.analysis.pool;
+         if (self.checking and (!pool.contains(self.state.initialized, slot) or
+-            !pool.contains(self.state.available, slot))) return error.UnavailableSlot;
++            (self.state.available != self.state.initialized and !pool.contains(self.state.available, slot)))) return error.UnavailableSlot;
+         if (consuming and !self.analysis.uses.copy[@intCast(self.layout[@intCast(slot)])]) {
+-            self.state.available = try pool.remove(self.state.available, slot);
+-            self.state.obligations = try pool.remove(self.state.obligations, slot);
++            const available = self.state.available;
++            self.state.available = try pool.remove(available, slot);
++            self.state.obligations = if (self.state.obligations == available)
++                self.state.available
++            else
++                try pool.remove(self.state.obligations, slot);
+         }
+     }
+ 
+@@ -200,10 +206,19 @@ const Flow = struct {
+         const pool = self.analysis.pool;
+         if (self.checking and pool.contains(self.state.obligations, slot))
+             return error.OverwrittenOwner;
+-        self.state.initialized = try pool.insert(self.state.initialized, slot);
+-        self.state.available = try pool.insert(self.state.available, slot);
++        const before = self.state;
++        self.state.initialized = try pool.insert(before.initialized, slot);
++        self.state.available = if (before.available == before.initialized)
++            self.state.initialized
++        else
++            try pool.insert(before.available, slot);
+         if (!self.analysis.uses.drop[@intCast(self.layout[@intCast(slot)])])
+-            self.state.obligations = try pool.insert(self.state.obligations, slot);
++            self.state.obligations = if (before.obligations == before.initialized)
++                self.state.initialized
++            else if (before.obligations == before.available)
++                self.state.available
++            else
++                try pool.insert(before.obligations, slot);
+     }
+ 
+     fn edge(self: *Flow, next: ir.Edge, returned: ?p.Id) Error!void {
+diff --git a/src/v2/data/analysis_sets.zig b/src/v2/data/analysis_sets.zig
+index ade2c53..7b3dc4a 100644
+--- a/src/v2/data/analysis_sets.zig
++++ b/src/v2/data/analysis_sets.zig
+@@ -73,6 +73,7 @@ pub const Pool = struct {
+     nodes: std.ArrayList(Node) = .empty,
+     interned: std.HashMapUnmanaged(Root, void, RootContext, 80) = .empty,
+     visits: usize = 0,
++    retained_bytes: usize = 0,
+     base: ?*const ReadOnly = null,
+ 
+     /// The owner must keep this root pool immutable and alive while borrowed.
+@@ -89,11 +90,47 @@ pub const Pool = struct {
+     }
+ 
+     pub fn deinit(self: *Pool) void {
+-        self.nodes.deinit(self.allocator);
+-        self.interned.deinit(self.allocator);
++        self.nodes.deinit(self.bufferAllocator());
++        self.interned.deinit(self.bufferAllocator());
++        std.debug.assert(self.retained_bytes == 0);
+         self.* = undefined;
+     }
+ 
++    /// Owned backing capacity for the node array and interning table. Allocator
++    /// overhead is excluded, consistently with ArenaAllocator.queryCapacity.
++    pub fn storageBytes(self: *const Pool) usize {
++        return self.retained_bytes;
++    }
++
++    // Unmanaged containers retain no allocator/context pointer. Each operation
++    // borrows this Pool only until its allocation or deallocation returns.
++    fn bufferAllocator(self: *Pool) std.mem.Allocator {
++        return .{ .ptr = self, .vtable = &.{ .alloc = allocateBuffer, .resize = resizeBuffer, .remap = remapBuffer, .free = freeBuffer } };
++    }
++    fn allocateBuffer(context: *anyopaque, length: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
++        const self: *Pool = @ptrCast(@alignCast(context));
++        const bytes = self.allocator.rawAlloc(length, alignment, ra) orelse return null;
++        self.retained_bytes += length;
++        return bytes;
++    }
++    fn resizeBuffer(context: *anyopaque, bytes: []u8, alignment: std.mem.Alignment, length: usize, ra: usize) bool {
++        const self: *Pool = @ptrCast(@alignCast(context));
++        if (!self.allocator.rawResize(bytes, alignment, length, ra)) return false;
++        self.retained_bytes = self.retained_bytes - bytes.len + length;
++        return true;
++    }
++    fn remapBuffer(context: *anyopaque, bytes: []u8, alignment: std.mem.Alignment, length: usize, ra: usize) ?[*]u8 {
++        const self: *Pool = @ptrCast(@alignCast(context));
++        const result = self.allocator.rawRemap(bytes, alignment, length, ra) orelse return null;
++        self.retained_bytes = self.retained_bytes - bytes.len + length;
++        return result;
++    }
++    fn freeBuffer(context: *anyopaque, bytes: []u8, alignment: std.mem.Alignment, ra: usize) void {
++        const self: *Pool = @ptrCast(@alignCast(context));
++        self.allocator.rawFree(bytes, alignment, ra);
++        self.retained_bytes -= bytes.len;
++    }
++
+     fn node(self: *const Pool, root: Root) Node {
+         const count_ = self.baseCount();
+         std.debug.assert(root != empty and root <= count_ + self.nodes.items.len);
+@@ -122,8 +159,8 @@ pub const Pool = struct {
+         const local = std.math.add(usize, self.nodes.items.len, 1) catch return error.OutOfMemory;
+         const root = std.math.add(usize, self.baseCount(), local) catch
+             return error.OutOfMemory;
+-        try self.nodes.ensureUnusedCapacity(self.allocator, 1);
+-        try self.interned.ensureUnusedCapacityContext(self.allocator, 1, .{ .pool = self });
++        try self.nodes.ensureUnusedCapacity(self.bufferAllocator(), 1);
++        try self.interned.ensureUnusedCapacityContext(self.bufferAllocator(), 1, .{ .pool = self });
+         self.nodes.appendAssumeCapacity(value);
+         self.interned.putAssumeCapacityNoClobberContext(root, {}, .{ .pool = self });
+         return root;
+diff --git a/src/v2/data/analysis_sets_tests.zig b/src/v2/data/analysis_sets_tests.zig
+index 5958631..7d6a288 100644
+--- a/src/v2/data/analysis_sets_tests.zig
++++ b/src/v2/data/analysis_sets_tests.zig
+@@ -216,3 +216,15 @@ test "canonical set node does not grow for word leaves" {
+     const Node = @typeInfo(@TypeOf(pool.nodes.items)).pointer.child;
+     try testing.expectEqual(3 * @sizeOf(u64) + 2 * @sizeOf(usize), @sizeOf(Node));
+ }
++
++test "set backing accounting follows live buffers through growth and release" {
++    var tracked = testing.FailingAllocator.init(testing.allocator, .{});
++    var pool: sets.Pool = .{ .allocator = tracked.allocator(), .limit = 4096 };
++    for (0..4096) |i| {
++        _ = try pool.run(i, i + 1);
++        try testing.expectEqual(tracked.allocated_bytes - tracked.freed_bytes, pool.storageBytes());
++    }
++    try testing.expect(tracked.freed_bytes > 0);
++    pool.deinit();
++    try testing.expectEqual(tracked.allocated_bytes, tracked.freed_bytes);
++}
+diff --git a/src/v2/data/program_image.zig b/src/v2/data/program_image.zig
+index 3a846b8..77206de 100644
+--- a/src/v2/data/program_image.zig
++++ b/src/v2/data/program_image.zig
+@@ -170,7 +170,7 @@ pub const Admitted = opaque {
+     }
+     pub fn storageBytes(self: *const Admitted) usize {
+         const owner = self.storage();
+-        return @sizeOf(AdmittedStorage) + owner.decoded.arena.queryCapacity() + owner.analysis.arena.queryCapacity();
++        return @sizeOf(AdmittedStorage) + owner.decoded.arena.queryCapacity() + owner.analysis.arena.queryCapacity() + owner.analysis.pool.storageBytes();
+     }
+     /// Per-consumer mutable set nodes; all original maps remain shared read-only.
+     /// This analysis borrows the admitted owner for its entire lifetime.

@@ -803,3 +803,36 @@ integration results do not validate this checkpoint. Repinning and full triad
 qualification, remaining retirement, performance acceptance and serial reviews
 remain required. Linked drafts stay incomplete, with eventual landing order
 Boundary, World, Agent only after complete acceptance and separate authorization.
+
+## Admission-buffer ownership
+
+Initialization, availability, obligations and liveness remain separate facts.
+When input roots coincide, the analyzer reuses the same pure set-operation
+result. This preserves every fact while avoiding duplicate work, improving
+control64 by 5–8% in the two measured windows without changing allocations.
+
+Set node/index buffers now belong directly to their Pool through the parent
+allocator, so growth releases replaced buffers instead of retaining them in
+the analysis arena. Facts still owns both the arena and the Pool and releases
+both through one deinit/error-cleanup path. Held-buffer accounting includes
+resize, remap and free; prepared-storage reporting includes these buffers.
+No set or Program identity changes.
+
+Control64 peak tracked allocation falls from 530,351 to 291,133 bytes; control256
+falls from 2,268,977 to 1,126,229 bytes. Latency remains around 0.60 ms and 3.0 ms,
+respectively, so the BPC1 latency gap is unresolved. The value probe's tiny peak
+falls to 23,402 bytes and its 1 MiB peak to 2,120,562 bytes. Captured Agent
+clarify-first start/terminal peaks fall from 1,500,229/1,721,174 to
+940,863/1,161,816 bytes. These are native diagnostics, not an updated Agent
+public-host performance result.
+
+Boundary passes 216 steps / 213 tests and World passes its full current
+32-step aggregate with this local source, including 73 source tests, 35 storage
+tests, 24 host tests and all portable/package lanes.
+[Raw comparisons and source patch](measurements/admission-buffer-ownership.json)
+retain both the small fact-reuse lever and the buffer-ownership change. The normal dependency now selects Boundary
+`d8edcf14d23fcd3664d8a868595150518cd40e51`; the normal-pin aggregate passes.
+Agent requalification and the remaining performance/review requirements follow.
+
+The buffer-ownership kernel is 459,817 bytes, SHA-256
+`d76bfe2c7949903f53e3d5b2b6b6d229887422483d383524d655f087b8609931`.
