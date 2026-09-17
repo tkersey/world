@@ -857,3 +857,32 @@ first-call observations remain around 20 ms and do not establish a cold-start
 speedup. [All stages and paired samples](measurements/kernel-admission.json)
 retain the no-effect compile/instantiate split experiment and the resource/
 identity preservation conditions. Full consumer remeasurement remains required.
+
+## Solver-position and interner update
+
+The analyzer records positions during its existing fixed-point worklist.
+Final read/overwrite and successor checks remain in their original order.
+Liveness refreshes internal positions on every visit, even when a successor
+change leaves the entry root unchanged. All facts remain analysis-owned and
+come from the same immutable Program; no supplied summary becomes authority.
+
+The interner uses one computed hash and, when capacity permits, one lookup/
+insertion probe. Every fallible reservation precedes publication. Hash keys
+omit redundant derived metadata but equality still checks complete nodes.
+The accessor is inlined, and direct insertion preserves the same canonical
+run/word/tree structure without creating unnecessary singleton nodes.
+
+The final paired control64 medians are 447/444 microseconds versus the preceding
+implementation's 619/622 microseconds. Control256 takes 2.146/2.148 ms versus
+BPC1's 2.295/2.272 ms. Control64 still trails BPC1's 239/237 microseconds.
+The value guard shows no repeatable slowdown and no increase in allocations.
+The kernel grows from 459,817 to 463,084 bytes; this size tradeoff is separate
+from invocation time and working allocation.
+
+Boundary passes 216 steps / 217 tests. World passes its full 32-step aggregate
+with normal Boundary pin `50df22c1ef83c2d84550e19ccabf807dfe2dedf5`: 73 source tests, 35 storage tests, 30 host tests,
+6,755 source-oracle observations and all portable/package lanes. A 1024-case
+CFG differential comparison preserves every observed error and fact set.
+[All candidates, targets and paired windows](measurements/solver-facts.json)
+include the under-target attempts rather than discarding them. The normal dependency pin now selects the published Boundary source. Agent
+qualification follows this World source; the full goal is incomplete.
