@@ -5,6 +5,166 @@ const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 const Resident = @import("stable_runtime").Resident;
 
+test "branching tail handlers create no resumption and survive every instruction checkpoint" {
+    var nodes: [2]u64 = undefined;
+    for ([_]bool{ false, true }, 0..) |selected, variant| {
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        var compiled = try source.construct(testing.allocator, try source.examples.branchingTail(&builder));
+        defer compiled.deinit();
+        const clause = compiled.program.handlers[0].clauses[0];
+        const clauses = try testing.allocator.dupe(boundary.data_v2.activation.Clause, compiled.program.handlers[0].clauses);
+        defer testing.allocator.free(clauses);
+        var handlers = [_]boundary.data_v2.activation.Handler{compiled.program.handlers[0]};
+        handlers[0].clauses = clauses;
+        var program = compiled.program;
+        program.handlers = &handlers;
+        if (!selected) {
+            clauses[0].strategy = .general;
+            clauses[0].function = builder.handlers.items[0].clauses[0].function;
+        }
+        const image = try programBytes(program);
+        defer testing.allocator.free(image);
+        for ([_]u8{ 0, 1 }) |input| {
+            var session = try Session.initImage(testing.allocator, image, &.{input});
+            defer session.deinit();
+            var stats: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+            session.statistics = &stats;
+            session.store.statistics = &stats.storage;
+            const result = try session.run(null);
+            try testing.expect(result == .completed);
+            try testing.expectEqual(@as(u64, if (input == 1) 60 else 100), std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
+            try testing.expectEqual(@as(u64, if (selected) 0 else 1), stats.one_shot_captures);
+            try testing.expectEqual(@as(u64, if (selected) 1 else 0), stats.direct_clauses);
+            nodes[variant] = stats.storage.added_nodes;
+            try checkpointTail(image, input, clause.function, selected);
+        }
+    }
+    std.debug.print("branching-tail store nodes: general={d} tail={d}\n", .{ nodes[0], nodes[1] });
+    try testing.expect(nodes[1] < nodes[0]);
+}
+
+fn checkpointTail(image: []const u8, input: u8, function: u64, selected: bool) !void {
+    var session = try Session.initImage(testing.allocator, image, &.{input});
+    defer session.deinit();
+    var saw_tail = false;
+    var steps: usize = 0;
+    var outcome = try session.run(1);
+    while (outcome == .progressed) {
+        steps += 1;
+        try testing.expect(steps < 128);
+        if (session.roots.current) |current| {
+            const control = (try session.store.get(current)).control;
+            if (session.program.blocks[@intCast(control.block)].function == function) saw_tail = true;
+        }
+        const checkpoint = try session.checkpoint(testing.allocator);
+        defer testing.allocator.free(checkpoint);
+        const restored = try Session.restoreImage(testing.allocator, image, checkpoint);
+        session.deinit();
+        session = restored;
+        outcome = try session.run(1);
+    }
+    try testing.expectEqual(selected, saw_tail);
+    try testing.expect(outcome == .completed);
+    try testing.expectEqual(@as(u64, if (input == 1) 60 else 100), std.mem.readInt(u64, outcome.completed.body.scalar[0..8], .little));
+}
+
+test "tail clause checkpoints retain body cleanup on cancellation" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.branchingTailProtected(&builder));
+    defer compiled.deinit();
+    const selected = compiled.program.handlers[0].clauses[0];
+    try testing.expect(selected.strategy == .tail);
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var session = try Session.initImage(testing.allocator, image, &.{1});
+    defer session.deinit();
+    var cancellation_points: usize = 0;
+    for (0..128) |_| {
+        const outcome = try session.run(1);
+        if (outcome == .requested) {
+            try testing.expectEqualStrings("example/tail-cleanup", session.program.effects[@intCast(outcome.requested.effect)].identity);
+            try answerWithValue(&session, &.{});
+            const completed = try session.run(null);
+            try testing.expect(completed == .completed);
+            try testing.expectEqual(60, completed.completed.body.scalar[0]);
+            break;
+        }
+        try testing.expect(outcome == .progressed);
+        const current = session.roots.current.?;
+        const record = try session.store.get(current);
+        if (record != .control) continue;
+        const control = record.control;
+        if (session.program.blocks[@intCast(control.block)].function != selected.function) continue;
+        const checkpoint = try session.checkpoint(testing.allocator);
+        defer testing.allocator.free(checkpoint);
+        var cancelled = try Session.restoreImage(testing.allocator, image, checkpoint);
+        defer cancelled.deinit();
+        try cancelled.cancel(.{ .text = "stop" });
+        const cleanup = try cancelled.run(null);
+        try testing.expect(cleanup == .requested);
+        try testing.expectEqualStrings("example/tail-cleanup", cancelled.program.effects[@intCast(cleanup.requested.effect)].identity);
+        try answerWithValue(&cancelled, &.{});
+        try testing.expect(try cancelled.run(null) == .cancelled);
+        cancellation_points += 1;
+    }
+    try testing.expect(cancellation_points >= 3);
+    try testing.expect(session.terminal != null);
+}
+
+test "immediate lexical calls avoid closure storage and preserve checked results" {
+    var nodes: [2]u64 = undefined;
+    for ([_]bool{ false, true }, 0..) |immediate, index| {
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        const original = try source.examples.lexical(&builder);
+        if (immediate) {
+            const main = &builder.functions.items[@intCast(original.entry)];
+            const binding = builder.terms.items[@intCast(main.body.?)].bind;
+            var application = builder.terms.items[@intCast(binding.next)].apply;
+            application.computation = builder.terms.items[@intCast(binding.value)].value;
+            main.body = try builder.term(.{ .apply = application });
+        }
+        var compiled = try source.construct(testing.allocator, builder.module(original.entry, original.failure));
+        defer compiled.deinit();
+        var session = try initFromImage(testing.allocator, compiled.program, &.{ 40, 0, 0, 0, 0, 0, 0, 0 });
+        defer session.deinit();
+        var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+        session.store.statistics = &statistics.storage;
+        const result = try session.run(null);
+        try testing.expect(result == .completed);
+        try testing.expectEqualSlices(u8, &.{ 42, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&result.completed));
+        nodes[index] = statistics.storage.added_nodes;
+        var overflow = try initFromImage(testing.allocator, compiled.program, &(@as([8]u8, @splat(0xff))));
+        defer overflow.deinit();
+        const failed = try overflow.run(null);
+        try testing.expect(failed == .failed);
+        try testing.expectEqual(0, (try overflow.bytes(&failed.failed)).len);
+
+        // An unfinished direct call keeps its capture through portable State.
+        const inner = &builder.functions.items[1];
+        inner.body = try builder.term(.{ .yield_then = inner.body.? });
+        var yielding = try source.construct(testing.allocator, builder.module(original.entry, original.failure));
+        defer yielding.deinit();
+        var paused = try initFromImage(testing.allocator, yielding.program, &.{ 40, 0, 0, 0, 0, 0, 0, 0 });
+        defer paused.deinit();
+        try testing.expect(try paused.run(null) == .yielded);
+        const checkpoint = try paused.checkpoint(testing.allocator);
+        defer testing.allocator.free(checkpoint);
+        const image = try programBytes(yielding.program);
+        defer testing.allocator.free(image);
+        var restored = try Session.restoreImage(testing.allocator, image, checkpoint);
+        defer restored.deinit();
+        try restored.resumeYield();
+        const completed = try restored.run(null);
+        try testing.expect(completed == .completed);
+        try testing.expectEqualSlices(u8, &.{ 42, 0, 0, 0, 0, 0, 0, 0 }, try restored.bytes(&completed.completed));
+    }
+    std.debug.print("immediate-call store nodes: retained={d} immediate={d}\n", .{ nodes[0], nodes[1] });
+    try testing.expect(nodes[1] < nodes[0]);
+}
+
 test "stable statistics count one-shot captures and repeated multi-shot activations" {
     for ([_]bool{ false, true }) |multi| {
         var builder = source.Builder.init(testing.allocator);

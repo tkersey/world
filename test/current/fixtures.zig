@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
             if (std.mem.eql(u8, name, "install")) break :blk try boundary.source.examples.installations(&builder, 64);
             if (std.mem.eql(u8, name, "resource")) break :blk try boundary.source.examples.resourceScalar(&builder);
             if (std.mem.eql(u8, name, "custody")) break :blk try boundary.source.examples.custodyOrder(&builder, 0);
-            inline for (.{ "deep", "recursive", "reentrant", "generator", "shallow", "scalarContracts" }) |candidate| {
+            inline for (.{ "branchingTail", "branchingTailProtected", "deep", "recursive", "reentrant", "generator", "shallow", "scalarContracts" }) |candidate| {
                 if (std.mem.eql(u8, name, candidate)) break :blk try @field(boundary.source.examples, candidate)(&builder);
             }
             return error.InvalidName;

@@ -33,7 +33,7 @@ async function leaf(request) {
     assert.deepEqual(decoded.payload, integer(83));
     return encodeResult(request, new Uint8Array());
   }
-  if (["example/resource-use", "example/resource-release", "example/generator-release", "custody/release"].includes(name)) return encodeResult(request, new Uint8Array());
+  if (["example/tail-cleanup", "example/resource-use", "example/resource-release", "example/generator-release", "custody/release"].includes(name)) return encodeResult(request, new Uint8Array());
   throw new Error(`unbound fixture operation ${name}`);
 }
 
@@ -47,8 +47,9 @@ await assert.rejects(Kernel.create({ bytes: wrongProfile, expectedSha256: create
 
 let boundaries = 0, transfers = 0;
 const terminal = [];
-for (const [name, args] of [["install", []], ["deep", []], ["recursive", integer(100)], ["resource", []], ["custody", []], ["reentrant", []], ["generator", []], ["shallow", [0]], ["scalarContracts", [0]], ["components", []], ["componentsDouble", []], ["componentsRecursive", integer(100)]]) {
+for (const [name, args] of [["branchingTailProtected", [1]], ["branchingTail", [1]], ["install", []], ["deep", []], ["recursive", integer(100)], ["resource", []], ["custody", []], ["reentrant", []], ["generator", []], ["shallow", [0]], ["scalarContracts", [0]], ["components", []], ["componentsDouble", []], ["componentsRecursive", integer(100)]]) {
   const program = image(name);
+  const quantum = name.startsWith("branchingTail") ? 1 : 23;
   let k = await kernel();
   const prepared = k.prepare(program);
   let session = k.start(prepared, new Uint8Array(args));
@@ -58,10 +59,10 @@ for (const [name, args] of [["install", []], ["deep", []], ["recursive", integer
   let yields = 0, releases = 0;
   for (let round = 0; ; round++) {
     assert.ok(round < 512, `${name} failed to finish`);
-    const command = encodeInput({ image: program, state, control, value, quantum: 23 });
+    const command = encodeInput({ image: program, state, control, value, quantum });
     const expected = native(command);
     assert.deepEqual(k.invoke(command), expected, `${name} fresh guest boundary ${round}`);
-    const actual = k.drive(session, { control, value, quantum: 23, checkpoint: true });
+    const actual = k.drive(session, { control, value, quantum, checkpoint: true });
     assert.deepEqual(actual, expected, `${name} boundary ${round}`);
     const outcome = decodeOutcome(actual);
     boundaries++;
@@ -99,6 +100,8 @@ for (const [name, args] of [["install", []], ["deep", []], ["recursive", integer
     }
   }
 }
+assert.equal(terminal.find(x => x.name === "branchingTail").value, "3c00000000000000");
+assert.equal(terminal.find(x => x.name === "branchingTailProtected").value, "3c00000000000000");
 assert.equal(terminal.find(x => x.name === "install").value, "2008000000000000");
 assert.equal(terminal.find(x => x.name === "resource").value, "2a00000000000000");
 assert.equal(terminal.find(x => x.name === "reentrant").value, "7100000000000000");

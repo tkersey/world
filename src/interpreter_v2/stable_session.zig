@@ -716,12 +716,14 @@ pub const Session = struct {
         var attachment = selected_record.attachment;
         const handler = (try self.store.get(attachment.handler)).handler;
         const definition = self.program.handlers[@intCast(handler.definition)];
-        var found: ?p.Clause = null;
+        var found: ?ir.Clause = null;
         for (definition.clauses) |clause| if (clause.effect == operation.effect) {
             found = clause;
             break;
         };
         const clause = found orelse return error.InvalidEffect;
+        if (clause.strategy == .tail)
+            return self.enterTailClause(scratch, handler, clause.function, payload, captured);
         const use_site = try self.collectArguments(scratch, reader, operation.use_site_capabilities);
         const multi = self.program.schemas[@intCast(clause.resumption)].internal.resumption.use == .multi;
         const capture: g.Capture = .{
@@ -745,6 +747,23 @@ pub const Session = struct {
         attachment.phase = .suspended;
         try self.store.replace(selected, .{ .attachment = attachment });
         try self.enter(clause.function, args, parent, handler.evidence, handler.region);
+    }
+
+    fn enterTailClause(
+        self: *Session,
+        scratch: std.mem.Allocator,
+        handler: @FieldType(g.Node, "handler"),
+        function: p.Id,
+        payload: g.Value,
+        captured: g.NodeRef,
+    ) Error!void {
+        const args = try scratch.alloc(g.Value, handler.state.len + 1);
+        @memcpy(args[0..handler.state.len], handler.state);
+        args[handler.state.len] = payload;
+        // Total copyable code needs no resumption object. The ordinary parent
+        // retains the active delimiter, including cancellation/cleanup custody.
+        try self.enter(function, args, captured, handler.evidence, handler.region);
+        if (self.statistics) |statistics| statistics.direct_clauses +|= 1;
     }
 
     pub fn takeCapture(self: *Session, value: g.Value) Error!g.Capture {

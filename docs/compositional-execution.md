@@ -280,6 +280,32 @@ Its root JavaScript export and standalone runtime package use ABI 3; Node file
 loading remains separate from browser-neutral byte execution. Extracted-package
 API/CLI checks pass, including capacity/retry and input/identity rejection.
 
+The source-agreement suite additionally compares an immediately applied lexical
+call with a retained callable. Boundary emits a direct call for copyable captures;
+World uses its existing call path. Both return 42, preserve arithmetic overflow,
+and resume a captured value through yield/PST3 restoration. Store additions during
+the non-yielding execution fall from five to one for the immediate form; the
+retained form stays at five. The baseline is Boundary `adf3c7e` and World
+`321199b`, using native ReleaseSafe and Zig 0.16.0. These counts exclude Session
+initialization and are neither heap allocation counts nor elapsed-time claims.
+Run `check-stable-source` with the normal dependency pin, which now selects
+Boundary `c00b2a70180e8488627359724d7c50ba3d6a8670`.
+
+Total branching handler clauses now use Boundary's independently admitted
+`tail` strategy. World enters the selected function with state/payload and an
+ordinary continuation; it creates no resumption token and uses no separate
+instruction evaluator. The selected delimiter stays active. Both branches,
+body/return arithmetic, and every instruction checkpoint agree with the general
+form. Cancellation from several positions inside a protected clause restores and
+runs its external cleanup exactly once. Non-tail, shallow, escaping and reentrant
+examples continue through their general paths.
+
+The native ReleaseSafe branching witness allocates 14 Store nodes in the general
+form and 11 in the tail form, with one versus zero one-shot captures. Node/native
+and Wasmtime include the plain and protected branching fixtures; the existing
+Chromium/Firefox Worker transfer remains enabled. These are bounded semantic and
+work-count results, not the full performance acceptance matrix.
+
 Agent migration and its actual compiled-tool/file transfer, component contract completion,
 selective execution, value/performance acceptance, complete consumer package cutover, legacy
 retirement and linked draft-PR/serial-review delivery remain mandatory.
