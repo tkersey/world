@@ -5,6 +5,11 @@ const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 const Resident = @import("stable_runtime").Resident;
 
+test {
+    // Dependency-module tests are not collected by this root test artifact.
+    _ = @import("source_regressions.zig");
+}
+
 test "encoded cursors export canonical immutable checkpoints and restore as ordinary values" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();

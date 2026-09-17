@@ -61,7 +61,7 @@ zig build check
 During coordinated development, `-Dboundary-source=/absolute/boundary-source`
 selects the matching source explicitly. `check-native` runs current source and
 Session regressions in a separate compiler-dependent build. `check-storage`
-also retains native regressions still being migrated from the old evaluator.
+checks shared private storage, allocation, cloning and collection independently.
 `check-source` compares all 41 emitted BPI3 examples with the independent source
 oracle and fresh native/WASM execution. `check-capacity` checks arena exhaustion,
 fixed physical memory, and unchanged retries. Both are included in `check`.

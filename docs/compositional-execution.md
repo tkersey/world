@@ -509,8 +509,8 @@ steps and 94 native/storage tests. The kernel is 459,884 bytes, SHA-256
 The default build graph now exposes current native, storage, kernel, codec,
 transfer, browser and package checks. The old ABI 2 build/release graph and public
 `process_v2` export are removed. Shared runtime errors and statistics no longer
-import the old evaluator. Its private implementation remains pending the rest of
-the migration. Capture and return-path regressions now use current source/PST3.
+import the old evaluator. Its private implementation has now been removed after
+migrating the remaining source, capture, return-path and admission regressions.
 The old ABI 2 JavaScript API and guest, v1 replay runtime, release/acquisition
 drivers and frozen cleanup images are now physically removed. Current fixtures
 come from Boundary's ordinary BPI3 emitter without historical pin exceptions.
@@ -526,6 +526,41 @@ tests and 24 JavaScript tests; formatting and diff checks pass.
 --summary all` also passes all 20 steps, including execution from the extracted
 package and its CLI. This checkpoint's rebuilt kernel SHA-256 is
 `19d8fda6a667e1e2a278713f683e20eedb476c24e03ee589faf3cfa830953daf`.
+
+The subsequent native retirement removes `process.zig`, `machine.zig`, their
+old record fixtures and execution wrappers, and the block-argument/PKO2 fallbacks
+in cleanup and shallow reattachment. One current evaluator remains. Fifteen
+current regression groups preserve the additional lexical-shadowing combinations,
+full-width zero-size cardinalities, same-family capability substitutions,
+successor return borrowing, region/token effect substitutions, duplicate custody,
+malformed pending/blob records, capture aliases, cleanup obligations, and binary
+as well as text cancellation. Each rejection has an admissible counterpart;
+canonical malformed bytes reach public restore unless structural encoding itself
+rejects a dangling reference. Finite source cases retain independent results.
+
+The source-oracle suite covers the replaced ordinary handler, resource, search,
+scheduler and cleanup executions. Boundary's active stable admission tests retain
+linear-use/ordinary-discard rejection; current World tests additionally reject
+forged empty obligation bounds. Private storage, clone and collection tests remain.
+The old snapshot-counter wrapper is removed with its evaluator; the graph
+collection/canonicalization visit assertions and Boundary's PST3 cycle/renumbering
+tests remain. Historical measurement files are unchanged. Legacy data definitions
+and codecs still require retirement in Boundary and remaining shared data helpers.
+
+The migrated tests share the root test module: a dependency-module import does
+not collect their test declarations. The final native selection explicitly
+reports 69/69 passing tests, including all 15 migrated groups. The independent
+storage selection now contains 35 tests; the ordinary execution and admission
+obligations moved to the current source/PST3 suite rather than disappearing with
+the old record-based interpreter.
+
+The final expanded `check` run passes all 32 steps on this native retirement:
+69 current source tests, 35 private-storage tests, 24 host tests, 6,755 independent
+source-oracle/native/WASM observations, arena and physical-memory failures,
+native/Node/Wasmtime transfer, both browser families and the extracted package.
+The generic kernel is 459,863 bytes with SHA-256
+`a824bc4404a6dfd9e579a96bd88f72694483c85bd557ec322ba7f69070606104`.
+The exact Boundary source input remains `ff8a1b277392984681e9710224313adbbb396f4c`.
 The earlier complete portable-host results above belong to `f36994b`; they were
 not repeated for this checkpoint.
 

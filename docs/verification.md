@@ -21,8 +21,12 @@ count current instructions, not predecessor block transitions.
 allocation failure, rollback and PST3 admission. Capture bounds have valid and
 invalid one-shot/multi-shot counterparts. Six return-path mutations reject
 disposal markers; valid execution restores at every boundary, including captured
-cleanup. `check-storage` retains lower-level storage and native regressions whose
-remaining migration still blocks complete old-evaluator retirement.
+cleanup. `check-storage` retains lower-level storage, allocation, cloning and
+collection regressions. The old native evaluator and its record-based execution
+tests are removed after migration to current source and PST3. Current source
+regressions also cover lexical shadowing, full-width zero-size collections,
+same-family capability substitutions, forged region/token effects, duplicate
+obligations and one-shot custody, and text and binary cancellation reasons.
 
 `check-kernel` checks current native/fresh/resident agreement and handle custody.
 `check-transfer` checks an independent Wasmtime embedding. `check-browser` moves

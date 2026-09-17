@@ -23,8 +23,7 @@ pub fn prepare(machine: anytype, token: g.Capture, after: g.NodeRef) @TypeOf(mac
     const outer = original.attachment.outer;
     // The replacement continuation also owns a stable activation view in the
     // successor. Copy that view before publishing the replacement node.
-    if (comptime @hasField(@TypeOf(machine.*), "frames"))
-        try machine.frames.copyFrame(after.id, token.delimiter.id);
+    try machine.frames.copyFrame(after.id, token.delimiter.id);
     try machine.store.replace(token.delimiter, try machine.store.get(after));
     for (machine.store.nodes.items, machine.store.alive.items) |*record, alive| {
         if (!alive) continue;

@@ -2,22 +2,7 @@ const std = @import("std");
 const data = @import("boundary_data");
 const g = data.graph;
 const Store = @import("store.zig").Store;
-const process = @import("process.zig");
 const allocator = std.testing.allocator;
-
-test "snapshot output discovers the reachable graph once" {
-    var statistics: process.Statistics = .{};
-    var result = try process.run(allocator, .{ .program = .{ .records = @import("tests.zig").suspended }, .instance = .{ .initial_args = &.{} }, .statistics = &statistics });
-    defer result.deinit();
-    var saved = try data.snapshot.decodeGraph(allocator, result.record.requested.state);
-    defer saved.deinit();
-    var measured: data.snapshot.Statistics = .{};
-    var normalized = try data.snapshot.canonicalizeMeasured(allocator, saved.state, &measured);
-    defer normalized.deinit();
-    std.debug.print("snapshot reachable={d} visits={d} edges={d} expected_edges={d}\n", .{ saved.state.nodes.len, statistics.snapshot.nodes, statistics.snapshot.edges, measured.edges });
-    try std.testing.expectEqual(saved.state.nodes.len, statistics.snapshot.nodes);
-    try std.testing.expectEqual(measured.edges, statistics.snapshot.edges);
-}
 
 fn value(ref: g.NodeRef) g.Value {
     return .{ .schema = 0, .body = .{ .reference = ref } };
@@ -34,8 +19,8 @@ test "one eight and sixty-four branches share immutable environments and blobs" 
         @memset(bytes, 0x5a);
         // Canonical length 65536 followed by a 64 KiB pointer-free payload.
         @memcpy(bytes[0..3], &[_]u8{ 0x80, 0x80, 0x04 });
-        const program: data.program.Program = .{ .roots = .{ .entry = 0, .result = 0, .failure = 0 }, .schemas = &.{.bytes}, .constants = &.{}, .effects = &.{}, .functions = &.{}, .blocks = &.{} };
-        const blob = try store.literal(program.schemas, .{ .schema = 0, .bytes = bytes });
+        const schemas: []const data.program.Schema = &.{.bytes};
+        const blob = try store.literal(schemas, .{ .schema = 0, .bytes = bytes });
         const outer = try store.add(.{ .region = .{ .descriptor = 0, .outer = null, .obligations = &.{} } });
         const shared = try store.add(.{ .cell = .{ .schema = 0, .region = outer, .value = blob } });
         const handler = try store.add(.{ .handler = .{ .definition = 0, .state = &.{value(shared)}, .evidence = null, .region = outer } });

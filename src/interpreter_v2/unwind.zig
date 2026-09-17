@@ -21,26 +21,6 @@ fn setPosition(machine: anytype, current: g.NodeRef) void {
     machine.status = .unwinding;
 }
 
-fn ownedArgument(argument: anytype) ?g.Value {
-    const value = if (@TypeOf(argument) == g.Value) argument else argument orelse return null;
-    return if (value.body == .owned) value else null;
-}
-
-fn positionDiscards(machine: anytype, cursor: ?g.NodeRef, arguments: anytype) @TypeOf(machine.*).ExecutionError!void {
-    var count: usize = 0;
-    for (arguments) |argument| if (ownedArgument(argument) != null) {
-        count += 1;
-    };
-    const values = try machine.allocator.alloc(g.Value, count);
-    errdefer machine.allocator.free(values);
-    var index: usize = 0;
-    for (arguments) |argument| if (ownedArgument(argument)) |value| {
-        values[index] = value;
-        index += 1;
-    };
-    try positionOwned(machine, cursor, values);
-}
-
 pub fn begin(machine: anytype, reason: Reason, cursor: ?g.NodeRef, stop: ?g.NodeRef, values: []const g.Value) @TypeOf(machine.*).ExecutionError!void {
     machine.roots.exit = try machine.store.add(.{ .exit = .{ .reason = reason, .stop = stop, .outer = machine.roots.exit } });
     try position(machine, cursor, values);
@@ -81,33 +61,16 @@ fn discardedNormal(machine: anytype, exit: g.Exit) @TypeOf(machine.*).ExecutionE
     return values;
 }
 
-pub fn fail(machine: anytype, value: g.Value, control: g.Control, slots: []const g.Value, executed: []const p.Instruction) @TypeOf(machine.*).ExecutionError!void {
-    var scratch = std.heap.ArenaAllocator.init(machine.allocator);
-    defer scratch.deinit();
-    const used = try scratch.allocator().alloc(bool, slots.len);
-    @memset(used, false);
-    for (executed) |instruction| {
-        if (!instruction.opcode.borrowsOperands()) for (instruction.operands) |operand| {
-            used[@intCast(operand)] = true;
-        };
-    }
-    var values: std.ArrayList(g.Value) = .empty;
-    for (slots, used) |slot, consumed| if (!consumed and slot.body == .owned) try values.append(scratch.allocator(), slot);
-    try failValues(machine, value, control.parent, values.items);
-}
-
 pub fn failValues(machine: anytype, value: g.Value, parent: ?g.NodeRef, values: []const g.Value) @TypeOf(machine.*).ExecutionError!void {
     if (machine.roots.exit != null) try rememberFailure(machine, value);
     try begin(machine, .{ .failure = value }, parent, null, values);
 }
 
-fn discardFrame(machine: anytype, frame: g.NodeRef, parent: ?g.NodeRef, arguments: anytype) @TypeOf(machine.*).ExecutionError!void {
-    if (comptime @hasField(@TypeOf(machine.*), "frames")) {
-        const values = try machine.frames.discards(frame.id);
-        errdefer machine.allocator.free(values);
-        try positionOwned(machine, parent, values);
-        machine.frames.remove(frame.id);
-    } else try positionDiscards(machine, parent, arguments);
+fn discardFrame(machine: anytype, frame: g.NodeRef, parent: ?g.NodeRef) @TypeOf(machine.*).ExecutionError!void {
+    const values = try machine.frames.discards(frame.id);
+    errdefer machine.allocator.free(values);
+    try positionOwned(machine, parent, values);
+    machine.frames.remove(frame.id);
 }
 
 pub fn cancel(machine: anytype, reason: data.protocol.Reason) @TypeOf(machine.*).ExecutionError!void {
@@ -312,10 +275,10 @@ pub fn step(machine: anytype) @TypeOf(machine.*).ExecutionError!?@TypeOf(machine
         try machine.resumeContinuation(current.cursor orelse return error.InvalidState, .{ .schema = 0, .body = .{ .scalar = [_]u8{0} ** 8 } });
         return null;
     }
-    const cursor = current.cursor orelse return try terminal(machine, root_exit);
+    const cursor = current.cursor orelse return try machine.finishUnwind(root_exit);
     switch (try machine.store.get(cursor)) {
-        .control => |control| try discardFrame(machine, cursor, control.parent, control.arguments),
-        .continuation => |saved| try discardFrame(machine, cursor, saved.parent, saved.arguments),
+        .control => |control| try discardFrame(machine, cursor, control.parent),
+        .continuation => |saved| try discardFrame(machine, cursor, saved.parent),
         .attachment => |attachment| try position(machine, attachment.return_to, &.{}),
         .region_scope => |scope| try position(machine, scope.return_to, &.{}),
         .injection => |injected| try position(machine, injected.continuation, &.{}),
@@ -340,28 +303,4 @@ pub fn step(machine: anytype) @TypeOf(machine.*).ExecutionError!?@TypeOf(machine
         else => return error.InvalidState,
     }
     return null;
-}
-
-fn terminal(machine: anytype, exit: g.Exit) @TypeOf(machine.*).ExecutionError!@TypeOf(machine.*).UnwindOutcome {
-    if (comptime @hasField(@TypeOf(machine.*), "frames")) return machine.finishUnwind(exit);
-    var arena = std.heap.ArenaAllocator.init(machine.allocator);
-    errdefer arena.deinit();
-    const output = arena.allocator();
-    var measure: data.wire.Writer = .{};
-    try measure.natural(exit.cleanup_failures.len);
-    for (exit.cleanup_failures) |*value| try measure.bytes(try machine.bytes(value));
-    const failures = try output.alloc(u8, measure.position);
-    var writer: data.wire.Writer = .{ .output = failures };
-    try writer.natural(exit.cleanup_failures.len);
-    for (exit.cleanup_failures) |*value| try writer.bytes(try machine.bytes(value));
-    const cancellation: ?data.protocol.Reason = if (exit.cancellation) |reason| switch (reason) {
-        .text => |bytes| .{ .text = try output.dupe(u8, bytes) },
-        .bytes => |bytes| .{ .bytes = try output.dupe(u8, bytes) },
-    } else null;
-    const record: data.protocol.Outcome = switch (exit.reason) {
-        .failure => |value| .{ .failed = .{ .value = try output.dupe(u8, try machine.bytes(&value)), .cleanup_failures = failures, .cancellation = cancellation } },
-        .cancellation => .{ .cancelled = .{ .reason = cancellation orelse return error.InvalidState, .cleanup_failures = failures } },
-        else => return error.InvalidState,
-    };
-    return .{ .arena = arena, .record = record };
 }

@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "boundary_data", .module = data }},
     }) });
     const run_native_tests = b.addRunArtifact(tests);
-    b.step("check-storage", "Check storage and retained native migration regressions")
+    b.step("check-storage", "Check current private storage and allocation contracts")
         .dependOn(&run_native_tests.step);
     const activation_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/activation_slots_tests.zig"),
@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
     stable_source.addFileArg(b.path("test/v2/build_source.zig"));
     stable_source.addArg(b.fmt("-Dworld-source={s}", .{b.pathFromRoot(".")}));
     stable_source.addArg(b.fmt("-Dboundary-source={s}", .{source}));
-    stable_source.addArgs(&.{ "-Doptimize=ReleaseSafe", "--cache-dir", b.pathFromRoot(".cache/stable-source-local"), "--global-cache-dir", b.pathFromRoot(".cache/activation-global") });
+    stable_source.addArgs(&.{ "-Doptimize=ReleaseSafe", "--summary", "all", "--cache-dir", b.pathFromRoot(".cache/stable-source-local"), "--global-cache-dir", b.pathFromRoot(".cache/activation-global") });
     stable_source.has_side_effects = true;
     b.step("check-native", "Check current source semantics, sessions and restore")
         .dependOn(&stable_source.step);
