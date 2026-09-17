@@ -10,5 +10,5 @@
             .lazy = true,
         },
     },
-    .paths = .{ "LICENSE", "README.md", "build.zig", "build.zig.zon", "package.json", "bin", "src", "test", "docs", "conformance" },
+    .paths = .{ "LICENSE", "README.md", "build.zig", "build.zig.zon", "package.json", "bin", "src", "test", "docs" },
 }

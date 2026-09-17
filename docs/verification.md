@@ -48,6 +48,13 @@ are exercised by Agent's `test/agent4/setup.test.mjs` and
 remain required. Historical performance samples remain available without creating
 an old-format production dependency.
 
+The old ABI 1 Boundary locks, frozen vector bytes and repository-repair transcript
+bundle are also removed from the source package. Their current counterparts are
+the independent source-oracle suite, malformed PST3 tests, capacity checks and
+Agent's qualified repair/approval/inquiry scenarios. The retired bundles are
+available through immutable World 5.0.2 source
+`d075169a4805d999ceba4c37b3e1c925b78c3bf9`; they are not current dependencies.
+
 These checks do not prove host truthfulness, global exactly-once effects,
 historical reachability of arbitrary State, full performance acceptance, or a
 refinement theorem for the shipping implementation. Boundary's formal model is a
