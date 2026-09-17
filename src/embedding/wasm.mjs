@@ -1,5 +1,6 @@
 // Adapted from World 4.1.2 static WASM admission; MIT license.
 import { isUint8Array, worldError } from "./errors.mjs";
+import { copyBytes, digest, hex } from "./wire.mjs";
 
 export const MAXIMUM_KERNEL_BYTES = 64 * 1024 * 1024;
 export const MAXIMUM_MEMORY_PAGES = 65536;
@@ -79,6 +80,35 @@ export function inspectKernelWasm(bytes) {
       "Kernel WebAssembly structure is malformed",
     );
   }
+}
+
+// Compilation establishes full WASM validity for this privately owned snapshot.
+// ABI inspection still precedes any instantiation or guest execution.
+// One weak entry avoids retaining code after its last Kernel owner is gone.
+// Every lookup follows a fresh owned-byte digest check; no caller buffer is a key.
+let lastCompiledKernel = null;
+export async function compileKernelWasm(bytes, expectedSha256) {
+  const owned = copyBytes(bytes);
+  if (typeof expectedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(expectedSha256))
+    throw new TypeError("expected kernel SHA-256 is required");
+  if (hex(await digest(owned)) !== expectedSha256)
+    throw worldError("WORLD_KERNEL_IDENTITY_INVALID", "Kernel identity does not match the expected artifact");
+  const retained = lastCompiledKernel?.sha256 === expectedSha256 ? lastCompiledKernel.module.deref() : null;
+  if (retained) return retained;
+  let module;
+  try { module = await WebAssembly.compile(owned); }
+  catch (error) {
+    if (!(error instanceof WebAssembly.CompileError)) throw error;
+    throw worldError("WORLD_KERNEL_WASM_INVALID", "Kernel is not a valid WebAssembly 1 binary");
+  }
+  try { inspectValidated(owned); }
+  catch (error) {
+    if (error?.name === "WorldHostError") throw error;
+    throw worldError("WORLD_KERNEL_WASM_INVALID", "Kernel WebAssembly structure is malformed");
+  }
+  lastCompiledKernel = typeof WeakRef === "function"
+    ? { sha256: expectedSha256, module: new WeakRef(module) } : null;
+  return module;
 }
 
 export function assertKernelByteLength(byteLength) {

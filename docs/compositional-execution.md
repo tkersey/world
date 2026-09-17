@@ -836,3 +836,24 @@ Agent requalification and the remaining performance/review requirements follow.
 
 The buffer-ownership kernel is 459,817 bytes, SHA-256
 `d76bfe2c7949903f53e3d5b2b6b6d229887422483d383524d655f087b8609931`.
+
+## Kernel module admission and reuse
+
+The host factory binds its byte copy, expected digest, engine compilation and
+static ABI inspection in one helper. Compilation supplies full WASM validation;
+the standalone inspector retains its own validation path. ABI checks still
+complete before instantiation, so rejected imports, start functions or exports
+never execute. Caller mutation cannot alter the private snapshot between awaits.
+
+The last admitted module is held through one weak cache entry. Every lookup
+follows a fresh digest check of owned caller bytes. Each Kernel creates a fresh
+instance, identity and token table, and retains the module only for its own
+lifetime. Cache collection, replacement or unavailable WeakRef falls back to
+ordinary admission. Program and Session state are not cached here.
+
+Targeted repeated Agent-command calls improve by roughly 7–9% from removing
+duplicate validation, then another 10–13% with weak module reuse. Separate
+first-call observations remain around 20 ms and do not establish a cold-start
+speedup. [All stages and paired samples](measurements/kernel-admission.json)
+retain the no-effect compile/instantiate split experiment and the resource/
+identity preservation conditions. Full consumer remeasurement remains required.

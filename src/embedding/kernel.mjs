@@ -1,28 +1,26 @@
 // Environment-neutral byte embedding: no filesystem, Node imports, or policy callbacks.
-import { inspectKernelWasm, wasmRange } from "./wasm.mjs";
-import { copyBytes, digest, hex, u64, UTF8 } from "./wire.mjs";
+import { compileKernelWasm, wasmRange } from "./wasm.mjs";
+import { copyBytes, u64, UTF8 } from "./wire.mjs";
 import { decodeOutcome } from "./codec.mjs";
 import { worldError } from "./errors.mjs";
 const authority = Symbol("admitted kernel");
 const empty = new Uint8Array();
 
 export class Kernel {
-  #guest; #identity; #tokens = new WeakMap();
+  #guest; #module; #identity; #tokens = new WeakMap();
   static async create({ bytes, expectedSha256, instanceId }) {
-    const owned = copyBytes(bytes);
-    if (typeof expectedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(expectedSha256)) throw new TypeError("expected kernel SHA-256 is required");
-    if (hex(await digest(owned)) !== expectedSha256) throw worldError("WORLD_KERNEL_IDENTITY_INVALID", "Kernel identity does not match the expected artifact");
-    inspectKernelWasm(owned);
-    const { instance } = await WebAssembly.instantiate(owned, {});
+    const module = await compileKernelWasm(bytes, expectedSha256);
+    const instance = await WebAssembly.instantiate(module, {});
     if (instanceId === undefined) {
       const words = crypto.getRandomValues(new Uint32Array(2));
       instanceId = (BigInt(words[0]) << 32n) | BigInt(words[1]);
       if (instanceId === 0n) instanceId = 1n;
     }
-    return new Kernel(authority, instance.exports, u64(instanceId));
+    return new Kernel(authority, module, instance.exports, u64(instanceId));
   }
-  constructor(token, guest, identity) {
+  constructor(token, module, guest, identity) {
     if (token !== authority) throw new TypeError("use Kernel.create");
+    this.#module = module; // Keep the admitted code alive only with its Kernel.
     this.#guest = guest; this.#identity = identity;
     if (guest.world_abi_version() !== 3) throw worldError("WORLD_KERNEL_ABI_INVALID", "Kernel ABI is not version 3");
     this.#status(guest.world_initialize(identity));
