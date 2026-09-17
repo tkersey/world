@@ -564,7 +564,7 @@ The exact Boundary source input remains `ff8a1b277392984681e9710224313adbbb396f4
 
 ## Single current executable data contract
 
-The normal dependency now selects Boundary
+The current-record transition selected Boundary
 `a918da81be930754ecb6d6b62c09df6b80b69cf1`, which removes the predecessor codecs
 and executable record definitions. World graph utilities use `data.graph_order`
 and cancellation reasons use `data.invocation`. Instruction dispatch receives
@@ -579,6 +579,50 @@ a source override: 32 build steps, 69 source tests, 35 storage tests, 24 host te
 6,755 source-oracle observations, capacity and all current host/package lanes.
 Kernel SHA-256 is
 `89f8eb82abe322cda762fd6207b1a9374f0f1d45a48804f5b807f8018eff94c6`.
+
+## Low-word liveness projection experiment
+
+A refreshed 256-iteration variant-tag comparison reproduces the unresolved tiny
+control cost: roughly 0.28 ms for the current successor versus 0.14–0.15 ms for
+optimized BPC1. A separate five-second CPU sample attributes 803 of 4,139 samples
+inclusively to frame pruning. Small frames rebuilt their liveness mask by
+enumerating every member of an already compact immutable set.
+
+`analysis_sets.Pool.lowWord` projects IDs 0–63 directly from canonical runs/tree
+nodes. It allocates nothing and changes no set. World uses it only for its
+existing small-frame mask; large-layout handling, custody and slot storage remain
+unchanged. Tests compare ranges and sparse sets with independent membership,
+including high IDs and immutable-base overlays under an exhausted allocator.
+
+Two rotating native windows reduce median tiny-control invocation time from
+276,125 to 245,916 ns and from 287,166 to 251,500 ns (10.9% and 12.4%). Process
+median ranges do not overlap in either window. Allocation traffic and peak
+working bytes are unchanged. The 1 MiB value case also improves, while its peak
+working allocation remains above the predecessor. These are diagnostic results
+with observed background load, not full performance acceptance.
+
+The follow-up CPU sample reduces inclusive pruning attribution from 19.4% to
+14.5%. Scalar decoding, slot mutation and runtime bookkeeping remain visible
+costs. The command decoder already borrows its fields from an owned buffer;
+large-input memory work should instead examine the additional argument snapshot
+in `Session.start` and the Store's value copy, preserving caller-buffer isolation.
+
+[Raw samples and configuration](measurements/low-word-native.json) retain the
+optimized predecessor and the before/candidate results. Reconstruct the candidate
+from the recorded source revisions using the adjacent Boundary/World patches,
+then use the existing `test/v2/build_value_bench.zig` and `value-bench` commands
+described above. The normal dependency now selects Boundary
+`fb5e287037da86d27110e731a7e08b0cb4009a3d`, including this projection and the
+current source-package cleanup. The remaining tiny-control gap, peak memory,
+actual Agent improvements and complete workload matrix still require work.
+
+The normal-pin aggregate passes 32/32 steps: 69 source tests, 35 storage tests,
+24 host tests, 6,755 source-oracle observations and all current native, Node,
+Wasmtime, browser, capacity and extracted-package checks. The generic kernel is
+458,465 bytes, SHA-256
+`1767d27d6b5a15913f7fa72ea321278c6334756de76337054445d1badb54abd7`.
+
+## Earlier portable-host checkpoint
 The earlier complete portable-host results above belong to `f36994b`; they were
 not repeated for this checkpoint.
 

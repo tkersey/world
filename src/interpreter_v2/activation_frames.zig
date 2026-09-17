@@ -201,12 +201,7 @@ pub const Frames = struct {
         var retained: Present = undefined;
         const removed: Present = switch (frame.present) {
             .bits => |bits| blk: {
-                var mask: u64 = 0;
-                var members = self.pool.iterator(live);
-                while (members.next()) |slot| {
-                    if (slot >= 64) break;
-                    mask |= @as(u64, 1) << @intCast(slot);
-                }
+                const mask = self.pool.lowWord(live);
                 retained = .{ .bits = bits & mask };
                 if (bits & ~mask == 0) return;
                 break :blk .{ .bits = bits & ~mask };
