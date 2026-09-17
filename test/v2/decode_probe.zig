@@ -1,6 +1,6 @@
 //! Decoder lifecycle and memory through the existing bounded Workspace allocator.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const Workspace = @import("world").process_v2.Workspace;
 
 pub fn main(init: std.process.Init) !void {

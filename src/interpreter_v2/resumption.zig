@@ -1,6 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! One definition of deep reattachment and plain shallow context removal.
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const g = data.graph;
 
 pub fn activate(machine: anytype, token: g.Capture, after: g.NodeRef) @TypeOf(machine.*).ExecutionError!void {

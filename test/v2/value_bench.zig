@@ -2,9 +2,9 @@
 const std = @import("std");
 const boundary = @import("boundary");
 const world = @import("world");
-const data = boundary.data_v2;
+const data = if (@hasDecl(boundary, "data")) boundary.data else boundary.data_v2;
 const source = boundary.source;
-const current = @hasDecl(source, "construct");
+const current = @hasDecl(world, "Session");
 const protocol = if (current) data.invocation else data.protocol;
 const runtime = if (current) world else world.process_v2;
 
@@ -45,7 +45,7 @@ fn command(a: std.mem.Allocator, compact: bool, size: usize, tag: u64, iteration
     var b = source.Builder.init(a);
     defer b.deinit();
     const input = try module(&b);
-    var compiled = if (current) try source.construct(a, input) else try source.lower(a, input);
+    var compiled = if (current) try source.lower(a, input) else try source.lower(a, input);
     defer compiled.deinit();
     const length = if (current) try data.program_image.encodedLength(compiled.program) else if (compact) try data.compact_image.encodedLength(a, compiled.program) else try data.image.encodedLength(compiled.program);
     const image = try a.alloc(u8, length);

@@ -31,7 +31,7 @@ test "encoded cursors export canonical immutable checkpoints and restore as ordi
             .{ .variable = present, .body = unpack },
         },
     } }));
-    var compiled = try source.construct(testing.allocator, builder.module(entry, unit));
+    var compiled = try source.lower(testing.allocator, builder.module(entry, unit));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
@@ -72,14 +72,14 @@ test "encoded cursors export canonical immutable checkpoints and restore as ordi
 test "owned FIFO package queues preserve scheduling through instruction checkpoints" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.schedulerFifo(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.schedulerFifo(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
     try testing.expect(try drive(&session, null) == .yielded);
     const checkpoint = try session.checkpoint(testing.allocator);
     defer testing.allocator.free(checkpoint);
-    var graph = try boundary.data_v2.state_image.decodeGraph(testing.allocator, checkpoint);
+    var graph = try boundary.data.state_image.decodeGraph(testing.allocator, checkpoint);
     defer graph.deinit();
     var packages: usize = 0;
     for (graph.state.nodes) |node| if (node.record == .package) {
@@ -112,7 +112,7 @@ test "fast projections still reject malformed unselected input payloads" {
         const entry = try builder.declare(&.{input}, integer, &.{}, &.{});
         const projected = try builder.primitive(integer, if (variant) .variant_tag else .field, &.{try builder.reference(builder.parameter(entry, 0))}, 0);
         try builder.define(entry, try builder.pure(projected));
-        var compiled = try source.construct(testing.allocator, builder.module(entry, unit));
+        var compiled = try source.lower(testing.allocator, builder.module(entry, unit));
         defer compiled.deinit();
         const image = try programBytes(compiled.program);
         defer testing.allocator.free(image);
@@ -131,7 +131,7 @@ test "fast projections still reject malformed unselected input payloads" {
 test "higher-order scoped bodies retain definition and use capabilities with cleanup" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.retainedScope(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.retainedScope(&builder));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
@@ -183,13 +183,13 @@ test "retained scoped interaction agrees at every quantum with general resumptio
     for ([_]bool{ false, true }) |general| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.construct(testing.allocator, try source.examples.retainedScope(&builder));
+        var compiled = try source.lower(testing.allocator, try source.examples.retainedScope(&builder));
         defer compiled.deinit();
         var scratch = std.heap.ArenaAllocator.init(testing.allocator);
         defer scratch.deinit();
         var program = compiled.program;
         if (general) {
-            const ir = boundary.data_v2.activation;
+            const ir = boundary.data.activation;
             const handlers = try scratch.allocator().dupe(ir.Handler, program.handlers);
             for (handlers, builder.handlers.items) |*handler, original| {
                 const clauses = try scratch.allocator().dupe(ir.Clause, handler.clauses);
@@ -240,12 +240,12 @@ test "branching tail handlers create no resumption and survive every instruction
     for ([_]bool{ false, true }, 0..) |selected, variant| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.construct(testing.allocator, try source.examples.branchingTail(&builder));
+        var compiled = try source.lower(testing.allocator, try source.examples.branchingTail(&builder));
         defer compiled.deinit();
         const clause = compiled.program.handlers[0].clauses[0];
-        const clauses = try testing.allocator.dupe(boundary.data_v2.activation.Clause, compiled.program.handlers[0].clauses);
+        const clauses = try testing.allocator.dupe(boundary.data.activation.Clause, compiled.program.handlers[0].clauses);
         defer testing.allocator.free(clauses);
-        var handlers = [_]boundary.data_v2.activation.Handler{compiled.program.handlers[0]};
+        var handlers = [_]boundary.data.activation.Handler{compiled.program.handlers[0]};
         handlers[0].clauses = clauses;
         var program = compiled.program;
         program.handlers = &handlers;
@@ -302,7 +302,7 @@ fn checkpointTail(image: []const u8, input: u8, function: u64, selected: bool) !
 test "tail clause checkpoints retain body cleanup on cancellation" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.branchingTailProtected(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.branchingTailProtected(&builder));
     defer compiled.deinit();
     const selected = compiled.program.handlers[0].clauses[0];
     try testing.expect(selected.strategy == .tail);
@@ -356,7 +356,7 @@ test "immediate lexical calls avoid closure storage and preserve checked results
             application.computation = builder.terms.items[@intCast(binding.value)].value;
             main.body = try builder.term(.{ .apply = application });
         }
-        var compiled = try source.construct(testing.allocator, builder.module(original.entry, original.failure));
+        var compiled = try source.lower(testing.allocator, builder.module(original.entry, original.failure));
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{ 40, 0, 0, 0, 0, 0, 0, 0 });
         defer session.deinit();
@@ -375,7 +375,7 @@ test "immediate lexical calls avoid closure storage and preserve checked results
         // An unfinished direct call keeps its capture through portable State.
         const inner = &builder.functions.items[1];
         inner.body = try builder.term(.{ .yield_then = inner.body.? });
-        var yielding = try source.construct(testing.allocator, builder.module(original.entry, original.failure));
+        var yielding = try source.lower(testing.allocator, builder.module(original.entry, original.failure));
         defer yielding.deinit();
         var paused = try initFromImage(testing.allocator, yielding.program, &.{ 40, 0, 0, 0, 0, 0, 0, 0 });
         defer paused.deinit();
@@ -411,7 +411,7 @@ test "stable statistics count one-shot captures and repeated multi-shot activati
             const discarded = try builder.variable(builder.variables.items[@intCast(first.variable)]);
             builder.functions.items[@intCast(clause)].body = try builder.bind(discarded, first.value, body);
         }
-        var compiled = try source.construct(testing.allocator, builder.module(original.entry, original.failure));
+        var compiled = try source.lower(testing.allocator, builder.module(original.entry, original.failure));
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
@@ -437,7 +437,7 @@ fn releaseResident(resident: *Resident) void {
     };
 }
 
-fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, checkpoint: []const u8, control: boundary.data_v2.invocation.Control, checkpoint_mode: bool) !void {
+fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, checkpoint: []const u8, control: boundary.data.invocation.Control, checkpoint_mode: bool) !void {
     var reference = try Resident.restore(testing.allocator, prepared, checkpoint);
     defer releaseResident(&reference);
     var expected = try reference.drive(testing.allocator, control, .{ .checkpoint = checkpoint_mode });
@@ -476,11 +476,11 @@ fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, che
 }
 
 test "resident rollback preserves acquired replies, cleanup custody, and reentrant captures at every allocation failure" {
-    const protocol = boundary.data_v2.invocation;
+    const protocol = boundary.data.invocation;
     inline for (.{ retainedInputExample, source.examples.unwind, source.examples.reentrant }, 0..) |example, index| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.construct(testing.allocator, try example(&builder));
+        var compiled = try source.lower(testing.allocator, try example(&builder));
         defer compiled.deinit();
         const image = try programBytes(compiled.program);
         defer testing.allocator.free(image);
@@ -512,10 +512,10 @@ test "resident rollback preserves acquired replies, cleanup custody, and reentra
 }
 
 test "resident output capacity and checkpoint transfer preserve custody on failure" {
-    const protocol = boundary.data_v2.invocation;
+    const protocol = boundary.data.invocation;
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
@@ -566,7 +566,7 @@ test "resident output capacity and checkpoint transfer preserve custody on failu
 test "resident progress defers checkpoint publication until explicitly requested" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
@@ -594,7 +594,7 @@ test "resident progress defers checkpoint publication until explicitly requested
 test "a long resident drive journals entry state rather than transition history" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.recursive(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.recursive(&builder));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
@@ -638,7 +638,7 @@ test "resident gate rejects reentrant observation during allocator callbacks" {
     };
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
@@ -661,7 +661,7 @@ test "resident gate rejects reentrant observation during allocator callbacks" {
 }
 
 fn answerWithValue(subject: *Session, value: []const u8) !void {
-    const protocol = boundary.data_v2.invocation;
+    const protocol = boundary.data.invocation;
     var pending = try subject.pendingRequest(testing.allocator);
     defer pending.deinit();
     const response = try protocol.encodeOwned(protocol.Result, testing.allocator, .{
@@ -675,10 +675,10 @@ fn answerWithValue(subject: *Session, value: []const u8) !void {
 fn checkedCheckpoint(subject: *Session) !void {
     const bytes = try subject.checkpoint(testing.allocator);
     defer testing.allocator.free(bytes);
-    var decoded = try boundary.data_v2.state_image.decodeGraph(testing.allocator, bytes);
+    var decoded = try boundary.data.state_image.decodeGraph(testing.allocator, bytes);
     defer decoded.deinit();
-    try boundary.data_v2.state_admission.validateStable(testing.allocator, subject.program, decoded.state);
-    const reencoded = try boundary.data_v2.state_image.emit(testing.allocator, decoded.state);
+    try boundary.data.state_admission.validateStable(testing.allocator, subject.program, decoded.state);
+    const reencoded = try boundary.data.state_image.emit(testing.allocator, decoded.state);
     defer testing.allocator.free(reencoded);
     try testing.expectEqualSlices(u8, bytes, reencoded);
     const repeated = try subject.checkpoint(testing.allocator);
@@ -690,7 +690,7 @@ fn checkedCheckpoint(subject: *Session) !void {
 fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observation {
     const before = try subject.checkpoint(testing.allocator);
     defer testing.allocator.free(before);
-    const codec = boundary.data_v2.program_image;
+    const codec = boundary.data.program_image;
     const image = try testing.allocator.alloc(u8, try codec.encodedLength(subject.program));
     defer testing.allocator.free(image);
     _ = try codec.encode(testing.allocator, subject.program, image);
@@ -725,7 +725,7 @@ fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observat
             try testing.expectEqualSlices(u8, expected, fresh.record.requested.state.?);
             var pending = try subject.pendingRequest(testing.allocator);
             defer pending.deinit();
-            var decoded = try boundary.data_v2.invocation.decode(boundary.data_v2.invocation.Request, testing.allocator, fresh.record.requested.request);
+            var decoded = try boundary.data.invocation.decode(boundary.data.invocation.Request, testing.allocator, fresh.record.requested.request);
             defer decoded.deinit();
             try testing.expectEqualDeep(pending.request, decoded.value);
         },
@@ -745,7 +745,7 @@ fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observat
 }
 
 fn expectCleanupFailures(subject: *Session, bytes: []const u8) !void {
-    var reader: boundary.data_v2.wire.Reader = .{ .input = bytes };
+    var reader: boundary.data.wire.Reader = .{ .input = bytes };
     const failures = subject.exit.?.cleanup_failures;
     try testing.expectEqual(failures.len, try reader.count());
     for (failures) |value| try testing.expectEqualSlices(u8, try subject.bytes(&value), try reader.bytes());
@@ -766,7 +766,7 @@ fn checkpointFailure(allocator: std.mem.Allocator, subject: *Session, before: []
 test "failed PST3 export retains exactly the same resident instruction boundary" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.installations(&builder, 1));
+    var compiled = try source.lower(testing.allocator, try source.examples.installations(&builder, 1));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -779,8 +779,8 @@ test "failed PST3 export retains exactly the same resident instruction boundary"
     try testing.expectEqual(1, result.completed.body.scalar[0]);
 }
 
-fn initFromImage(allocator: std.mem.Allocator, program: boundary.data_v2.activation.Program, arguments: []const u8) !Session {
-    const codec = boundary.data_v2.program_image;
+fn initFromImage(allocator: std.mem.Allocator, program: boundary.data.activation.Program, arguments: []const u8) !Session {
+    const codec = boundary.data.program_image;
     const image = try allocator.alloc(u8, try codec.encodedLength(program));
     defer allocator.free(image);
     _ = try codec.encode(allocator, program, image);
@@ -789,8 +789,8 @@ fn initFromImage(allocator: std.mem.Allocator, program: boundary.data_v2.activat
     return result;
 }
 
-fn programBytes(program: boundary.data_v2.activation.Program) ![]u8 {
-    const codec = boundary.data_v2.program_image;
+fn programBytes(program: boundary.data.activation.Program) ![]u8 {
+    const codec = boundary.data.program_image;
     const bytes = try testing.allocator.alloc(u8, try codec.encodedLength(program));
     errdefer testing.allocator.free(bytes);
     _ = try codec.encode(testing.allocator, program, bytes);
@@ -801,7 +801,7 @@ test "prepared Programs reuse immutable code and facts across sequential Session
     const Prepared = @import("stable_runtime").Prepared;
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
     defer compiled.deinit();
     const bytes = try programBytes(compiled.program);
     defer testing.allocator.free(bytes);
@@ -809,7 +809,7 @@ test "prepared Programs reuse immutable code and facts across sequential Session
     defer prepared.deinit();
     @memset(bytes, 0xff);
     const retained = try prepared.storageBytes();
-    var shared_code: ?[*]const boundary.data_v2.activation.Function = null;
+    var shared_code: ?[*]const boundary.data.activation.Function = null;
     for ([_]u8{ 1, 2, 3 }) |input| {
         var session = try Session.start(testing.allocator, &prepared, &.{ input, 0, 0, 0, 0, 0, 0, 0 });
         defer session.deinit();
@@ -840,7 +840,7 @@ test "Sessions retain preparation after all external prepared handles are releas
     const Prepared = @import("stable_runtime").Prepared;
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
     defer compiled.deinit();
     const bytes = try programBytes(compiled.program);
     defer testing.allocator.free(bytes);
@@ -871,7 +871,7 @@ fn restorePreparedFailure(allocator: std.mem.Allocator, prepared: *const @import
 test "failed prepared starts and restores preserve the reusable owner" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
     defer compiled.deinit();
     const bytes = try programBytes(compiled.program);
     defer testing.allocator.free(bytes);
@@ -906,17 +906,17 @@ fn invocationFailure(allocator: std.mem.Allocator, command: []const u8) !void {
         for (output) |byte| try testing.expectEqual(0xa5, byte);
         return err;
     };
-    var decoded = try boundary.data_v2.invocation.decode(boundary.data_v2.invocation.Outcome, testing.allocator, bytes);
+    var decoded = try boundary.data.invocation.decode(boundary.data.invocation.Outcome, testing.allocator, bytes);
     defer decoded.deinit();
     try testing.expectEqualSlices(u8, &.{ 2, 0, 0, 0, 0, 0, 0, 0 }, decoded.value.completed);
 }
 
 test "current fresh invocation binds captured values and rejects stale replies without mutation" {
-    const protocol = boundary.data_v2.invocation;
+    const protocol = boundary.data.invocation;
     const fresh = @import("stable_runtime").invocation;
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try retainedInputExample(&builder));
+    var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
@@ -988,7 +988,7 @@ test "current invocation preserves explicit yield polling and cancellation befor
     const integer = try builder.scalar(u64);
     const main = try builder.declare(&.{}, integer, &.{}, &.{});
     try builder.define(main, try builder.term(.{ .yield_then = try builder.pure(try builder.constant(u64, 42)) }));
-    var compiled = try source.construct(testing.allocator, builder.module(main, try builder.scalar(void)));
+    var compiled = try source.lower(testing.allocator, builder.module(main, try builder.scalar(void)));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
@@ -1024,10 +1024,10 @@ test "current invocation preserves explicit yield polling and cancellation befor
 }
 
 test "cancellation rebinds a pending cleanup without repeating its semantic operation" {
-    const protocol = boundary.data_v2.invocation;
+    const protocol = boundary.data.invocation;
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.unwind(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.unwind(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{0});
     defer session.deinit();
@@ -1064,7 +1064,7 @@ fn restoreFailure(allocator: std.mem.Allocator, image: []const u8, checkpoint: [
 test "PST3 restore releases every partial owner on allocation failure" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.installations(&builder, 1));
+    var compiled = try source.lower(testing.allocator, try source.examples.installations(&builder, 1));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1076,8 +1076,8 @@ test "PST3 restore releases every partial owner on allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, restoreFailure, .{ image, checkpoint });
 }
 
-fn rejectCheckpoint(image: []const u8, state: boundary.data_v2.process_state.State) !void {
-    const bytes = try boundary.data_v2.state_image.emit(testing.allocator, state);
+fn rejectCheckpoint(image: []const u8, state: boundary.data.process_state.State) !void {
+    const bytes = try boundary.data.state_image.emit(testing.allocator, state);
     defer testing.allocator.free(bytes);
     if (Session.restoreImage(testing.allocator, image, bytes)) |value| {
         var accepted = value;
@@ -1087,10 +1087,10 @@ fn rejectCheckpoint(image: []const u8, state: boundary.data_v2.process_state.Sta
 }
 
 test "PST3 restore rejects wrong identity, code position, slots, and cleanup status" {
-    const data = boundary.data_v2;
+    const data = boundary.data;
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.resourceScalar(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.resourceScalar(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1152,10 +1152,10 @@ test "PST3 restore rejects wrong identity, code position, slots, and cleanup sta
 }
 
 test "PST3 restore rejects aliased unique packages after graph renumbering" {
-    const data = boundary.data_v2;
+    const data = boundary.data;
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.custodyOrder(&builder, 0));
+    var compiled = try source.lower(testing.allocator, try source.examples.custodyOrder(&builder, 0));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1184,7 +1184,7 @@ test "PST3 restore rejects aliased unique packages after graph renumbering" {
 }
 
 test "imported storage avoids payload copies and releases a large dead backing" {
-    const data = boundary.data_v2;
+    const data = boundary.data;
     const Store = @FieldType(Session, "store");
     const big = try testing.allocator.alloc(u8, 128 * 1024);
     defer testing.allocator.free(big);
@@ -1237,7 +1237,7 @@ test "imported storage avoids payload copies and releases a large dead backing" 
 test "BPI3 scalar and collection faults preserve the existing independent expectations" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.scalarContracts(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.scalarContracts(&builder));
     defer compiled.deinit();
     const expected = [_]?u64{ 3, null, null, null, null, null, null, null, null, null, null, 8, 2, 0, 4, 20, 240, 9, null };
     const faults = [_]u8{ 0, 3, 2, 3, 2, 2, 4, 5, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5 };
@@ -1265,9 +1265,9 @@ test "stable borrow admission distinguishes older from fresh references through 
                     defer builder.deinit();
                     const module = try fixture.scenario(&builder, from, initial, younger, delegated);
                     if (younger) {
-                        try testing.expectError(error.InvalidOwnership, source.construct(testing.allocator, module));
+                        try testing.expectError(error.InvalidOwnership, source.lower(testing.allocator, module));
                     } else {
-                        var compiled = try source.construct(testing.allocator, module);
+                        var compiled = try source.lower(testing.allocator, module);
                         defer compiled.deinit();
                         var session = try initFromImage(testing.allocator, compiled.program, &.{});
                         defer session.deinit();
@@ -1287,7 +1287,7 @@ test "stable resource implementations preserve private authority and loans acros
     inline for (.{ source.examples.resourceScalar, source.examples.resourcePair }) |example| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.construct(testing.allocator, try example(&builder));
+        var compiled = try source.lower(testing.allocator, try example(&builder));
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
@@ -1312,7 +1312,7 @@ test "stable resource implementations preserve private authority and loans acros
 test "stable cancellation releases the resource while its protected borrow is suspended" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.resourceScalar(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.resourceScalar(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1332,10 +1332,10 @@ test "stable cancellation releases the resource while its protected borrow is su
 
 test "stable admission rejects a fresh store hidden by a later same-slot rebind" {
     const fixture = @import("borrow_return_fixtures");
-    const data = boundary.data_v2;
+    const data = boundary.data;
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try fixture.scenario(&builder, .pair, true, false, false));
+    var compiled = try source.lower(testing.allocator, try fixture.scenario(&builder, .pair, true, false, false));
     defer compiled.deinit();
     var image = compiled.program;
     const blocks = try testing.allocator.dupe(data.activation.Block, image.blocks);
@@ -1367,7 +1367,7 @@ test "stable source installs real handlers and keeps the final checked sum after
     for ([_]usize{ 1, 8, 64, 128, 256 }) |count| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.construct(testing.allocator, try source.examples.installations(&builder, count));
+        var compiled = try source.lower(testing.allocator, try source.examples.installations(&builder, count));
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
@@ -1387,7 +1387,7 @@ test "stable source installs real handlers and keeps the final checked sum after
 test "stable source preserves non-tail resumption and handler answer transformation" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.deep(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.deep(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1399,7 +1399,7 @@ test "stable source preserves non-tail resumption and handler answer transformat
 test "stable source keeps two one-shot owners across an explicit yield" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.ownership(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.ownership(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1429,7 +1429,7 @@ test "stable source retains an external request and joins into the same activati
         .payload = try builder.constant(void, {}),
     } });
     try builder.define(main, try builder.bind(value, request, branch));
-    var compiled = try source.construct(testing.allocator, builder.module(main, unit));
+    var compiled = try source.lower(testing.allocator, builder.module(main, unit));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{1});
     defer session.deinit();
@@ -1447,7 +1447,7 @@ test "stable source retains an external request and joins into the same activati
 
 test "stable source owns its input and keeps tail-recursive control bounded" {
     var builder = source.Builder.init(testing.allocator);
-    var compiled = try source.construct(testing.allocator, try source.examples.recursive(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.recursive(&builder));
     var session = initFromImage(testing.allocator, compiled.program, &.{ 16, 39, 0, 0, 0, 0, 0, 0 }) catch |err| {
         compiled.deinit();
         builder.deinit();
@@ -1529,7 +1529,7 @@ test "stable source resumes an owned package after its handler clause has return
         .function = finish,
         .arguments = &.{try b.reference(result)},
     } })));
-    var compiled = try source.construct(testing.allocator, b.module(main, unit));
+    var compiled = try source.lower(testing.allocator, b.module(main, unit));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1538,7 +1538,7 @@ test "stable source resumes an owned package after its handler clause has return
     try testing.expectEqual(42, std.mem.readInt(u64, observed.completed.body.scalar[0..8], .little));
 }
 
-fn failingSession(allocator: std.mem.Allocator, program: boundary.data_v2.activation.Program) !void {
+fn failingSession(allocator: std.mem.Allocator, program: boundary.data.activation.Program) !void {
     var session = try initFromImage(allocator, program, &.{});
     defer session.deinit();
     const result = try drive(&session, null);
@@ -1548,7 +1548,7 @@ fn failingSession(allocator: std.mem.Allocator, program: boundary.data_v2.activa
 test "stable source releases partial native owners at every allocation failure" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.deep(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.deep(&builder));
     defer compiled.deinit();
     try testing.checkAllAllocationFailures(testing.allocator, failingSession, .{compiled.program});
 }
@@ -1563,7 +1563,7 @@ test "stable source preserves multi-shot choice and branch-local versus outer sh
     inline for (examples, 0..) |example, index| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.construct(testing.allocator, try example(&builder));
+        var compiled = try source.lower(testing.allocator, try example(&builder));
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
@@ -1577,7 +1577,7 @@ test "stable source reenters a live template-cell cycle without sharing branch c
     inline for (.{ source.examples.reentrant, source.examples.cloned }) |example| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.construct(testing.allocator, try example(&builder));
+        var compiled = try source.lower(testing.allocator, try example(&builder));
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
@@ -1618,7 +1618,7 @@ test "stable source does not read a reclaimed copyable result only assigned to a
     const main = try builder.declare(&.{}, integer, &.{}, &.{});
     const unused = try builder.variable(integer);
     try builder.define(main, try builder.bind(unused, try builder.pure(try builder.constant(u64, 7)), try builder.pure(try builder.constant(u64, 42))));
-    var compiled = try source.construct(testing.allocator, builder.module(main, unit));
+    var compiled = try source.lower(testing.allocator, builder.module(main, unit));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1628,7 +1628,7 @@ test "stable source does not read a reclaimed copyable result only assigned to a
 }
 
 test "stable retained template preserves an older activation across loop-slot rebindings" {
-    const d = boundary.data_v2;
+    const d = boundary.data;
     const program: d.activation.Program = .{
         .roots = .{ .entry = 0, .result = 0, .failure = 2 },
         .schemas = &.{
@@ -1697,7 +1697,7 @@ test "stable retained template preserves an older activation across loop-slot re
 test "stable shallow value and computation resumptions omit the original return clause" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.shallowResumptions(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.shallowResumptions(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1719,7 +1719,7 @@ test "stable injection selects definition-site versus use-site capabilities" {
     inline for (.{ source.examples.injection, source.examples.shallowInjection }) |example| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.construct(testing.allocator, try example(&builder));
+        var compiled = try source.lower(testing.allocator, try example(&builder));
         defer compiled.deinit();
         for ([_]u8{ 0, 1 }) |injecting| {
             var session = try initFromImage(testing.allocator, compiled.program, &.{injecting});
@@ -1744,7 +1744,7 @@ test "stable injection selects definition-site versus use-site capabilities" {
 test "stable successor handling preserves the shallow protocol" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.shallow(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.shallow(&builder));
     defer compiled.deinit();
     for ([_]u8{ 0, 1 }) |invalid| {
         var session = try initFromImage(testing.allocator, compiled.program, &.{invalid});
@@ -1763,7 +1763,7 @@ test "stable successor handling preserves the shallow protocol" {
 test "stable cleanup preserves primary failure and resumes external cleanup" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.unwind(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.unwind(&builder));
     defer compiled.deinit();
     for ([_]u8{ 0, 1 }) |primary| {
         var session = try initFromImage(testing.allocator, compiled.program, &.{primary});
@@ -1787,7 +1787,7 @@ test "stable cleanup preserves primary failure and resumes external cleanup" {
 test "stable cancellation during yielded cleanup preserves the first reason" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.yieldingCleanup(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.yieldingCleanup(&builder));
     defer compiled.deinit();
     for ([_]u8{ 0, 1 }) |primary| {
         var session = try initFromImage(testing.allocator, compiled.program, &.{primary});
@@ -1811,7 +1811,7 @@ test "stable unwind preserves lexical and temporary-owner cleanup order" {
     for (0..10) |mode| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.construct(testing.allocator, try source.examples.custodyOrder(&builder, @intCast(mode)));
+        var compiled = try source.lower(testing.allocator, try source.examples.custodyOrder(&builder, @intCast(mode)));
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();
@@ -1870,7 +1870,7 @@ test "stable cancellation preserves cleanup at entry yield request and answered 
         .body = try b.lambda(body, body_type),
         .cleanup = try b.lambda(cleanup, cleanup_type),
     } }));
-    var compiled = try source.construct(testing.allocator, b.module(main, integer));
+    var compiled = try source.lower(testing.allocator, b.module(main, integer));
     defer compiled.deinit();
     for (0..4) |phase| {
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
@@ -1899,7 +1899,7 @@ test "stable cancellation preserves cleanup at entry yield request and answered 
 test "stable clause failure abandons a captured cleanup without losing its primary exit" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.clauseAbort(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.clauseAbort(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1917,7 +1917,7 @@ test "stable clause failure abandons a captured cleanup without losing its prima
 test "stable generator resumes private state and closes its retained cleanup" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.generator(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.generator(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();
@@ -1950,7 +1950,7 @@ test "stable generator resumes private state and closes its retained cleanup" {
 test "stable successor return clauses retain older capability and cell references" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
-    var compiled = try source.construct(testing.allocator, try source.examples.successorState(&builder));
+    var compiled = try source.lower(testing.allocator, try source.examples.successorState(&builder));
     defer compiled.deinit();
     var session = try initFromImage(testing.allocator, compiled.program, &.{});
     defer session.deinit();

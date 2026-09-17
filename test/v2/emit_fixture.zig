@@ -1,6 +1,6 @@
 //! Handwritten target-level fixture, separate from source/lowering conformance.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const fixtures = @import("world_test_fixtures");
 
 pub fn main(init: std.process.Init) !void {

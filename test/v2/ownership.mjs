@@ -61,11 +61,11 @@ async function consumer(name, source, dependency, moduleName, extra) {
   await writeFile(join(directory,'build.zig'), `const std = @import("std");
 pub fn build(b: *std.Build) void {
  const target = b.standardTargetOptions(.{});
- const dependency = b.dependency("subject", .{ .target = target, .optimize = .ReleaseSafe${extra ? `, .@"boundary-v2-source" = ${JSON.stringify(data)}` : ''} });
+ const dependency = b.dependency("subject", .{ .target = target, .optimize = .ReleaseSafe${extra ? `, .@"boundary-source" = ${JSON.stringify(data)}` : ''} });
  const module = dependency.module(${JSON.stringify(moduleName)});
  const root = b.createModule(.{ .root_source_file = b.path("main.zig"), .target = target, .optimize = .ReleaseSafe });
  root.addImport(${JSON.stringify(moduleName)}, module);
- ${extra ? 'root.addImport("boundary_data_v2", module.import_table.get("boundary_data_v2").?);' : ''}
+ ${extra ? 'root.addImport("boundary_data", module.import_table.get("boundary_data").?);' : ''}
  const executable = b.addExecutable(.{ .name = ${JSON.stringify(name)}, .root_module = root });
  b.getInstallStep().dependOn(&b.addInstallArtifact(executable, .{}).step);
 }
@@ -89,7 +89,7 @@ const dataInventory = await inventory(data);
 await copyFiles(world, runtime, ['build.zig','build.zig.zon','src']);
 await removeTests(join(runtime,'src'));
 const runtimeInventory = await inventory(runtime);
-build(runtime, ['build-v2-kernel', `-Dboundary-v2-source=${data}`, '--prefix', join(root,'runtime-output')], 'runtime-kernel');
+build(runtime, ['build-v2-kernel', `-Dboundary-source=${data}`, '--prefix', join(root,'runtime-output')], 'runtime-kernel');
 const kernel = await readFile(join(root,'runtime-output/world-process-kernel-v2.wasm'));
 const { admitProcessKernel } = await import(pathToFileURL(join(runtime,'src/process_v2/index.mjs')));
 const host = await admitProcessKernel(kernel, { expectedSha256: sha(kernel) });

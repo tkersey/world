@@ -39,10 +39,10 @@ pub fn main(init: std.process.Init) !void {
             }
             return error.InvalidName;
         };
-        var compiled = try boundary.source.construct(init.gpa, module);
+        var compiled = try boundary.program.compile(init.gpa, module);
         defer compiled.deinit();
         if (std.mem.eql(u8, name, "retainedScopeGeneral")) {
-            const ir = boundary.data_v2.activation;
+            const ir = boundary.data.activation;
             const a = builder.allocator();
             const handlers = try a.dupe(ir.Handler, compiled.program.handlers);
             for (handlers, builder.handlers.items) |*handler, original| {
@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
             }
             compiled.program.handlers = handlers;
         }
-        const bytes = try init.gpa.alloc(u8, try boundary.data_v2.program_image.encodedLength(compiled.program));
+        const bytes = try init.gpa.alloc(u8, try boundary.data.program_image.encodedLength(compiled.program));
         defer init.gpa.free(bytes);
         _ = try compiled.encode(init.gpa, bytes);
         try output.interface.writeAll(bytes);
@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
 
 fn linkedImage(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     const examples = boundary.source.component_examples;
-    const data = boundary.data_v2;
+    const data = boundary.data;
     const doubled = std.mem.eql(u8, name, "componentsDouble");
     const recursive = std.mem.eql(u8, name, "componentsRecursive");
     const kinds: []const examples.Kind = if (recursive) &.{ .even, .odd } else &.{ .call, .state, .suspended, .double };

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! ABI 3: one generic import-free guest, fresh and resident execution.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const protocol = data.invocation;
 const runtime = @import("runtime");
 const Arena = runtime.Workspace;

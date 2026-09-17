@@ -1,5 +1,5 @@
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const heap = @import("store.zig");
 const testing = std.testing;
 

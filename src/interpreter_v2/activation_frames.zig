@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Private control-node bindings. Every registered frame owns one slot view.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const Slots = @import("activation_slots.zig").ActivationSlots;
 const sets = data.analysis_sets;
 const custody = @import("custody.zig");

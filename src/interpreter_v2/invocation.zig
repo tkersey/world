@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Fresh current-format invocation through the same stable Session evaluator.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const protocol = data.invocation;
 const runtime = @import("stable_session.zig");
 const heap = @import("store.zig");

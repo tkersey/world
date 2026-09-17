@@ -1,7 +1,7 @@
 //! Fresh invocation and saved-State interchange for one logical Program.
 const std = @import("std");
 const boundary = @import("boundary");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const world = @import("world").process_v2;
 
 const Images = struct {

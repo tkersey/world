@@ -1,5 +1,5 @@
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const c = @import("custody.zig");
 const testing = std.testing;
 const scopes = [_]data.activation.CustodyScope{

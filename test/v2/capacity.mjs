@@ -28,7 +28,7 @@ for(const [arena,capacities] of [['input',[1,1048576,65536]],['working',[262144,
   const prefix=join(output,arena);
   const options=[`-Dv2-input-capacity=${capacities[0]}`,`-Dv2-working-capacity=${capacities[1]}`,`-Dv2-output-capacity=${capacities[2]}`];
   function build(maximum) {
-    const result=spawnSync('zig',['build','build-v2-kernel',`-Dboundary-v2-source=${boundary}`,...options,
+    const result=spawnSync('zig',['build','build-v2-kernel',`-Dboundary-source=${boundary}`,...options,
       ...(maximum?[`-Dv2-maximum-memory=${maximum}`]:[]),'--cache-dir',join(output,'local'),'--global-cache-dir',join(output,'global'),'--prefix',prefix],
       {cwd:root,maxBuffer:16<<20,timeout:180000});
     assert.equal(result.status,0,result.stderr.toString());

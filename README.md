@@ -58,7 +58,7 @@ constructing Boundary's authoring compiler. It does not publish a package.
 zig build check-kernel check-codecs check-transfer check-browser
 ```
 
-During coordinated development, `-Dboundary-v2-source=/absolute/boundary-source`
+During coordinated development, `-Dboundary-source=/absolute/boundary-source`
 selects the matching source explicitly. The versioned option is pending final
 namespace retirement. Source-agreement tests remain a separate compiler-dependent
 build. Wasmtime uses the locked Python environment through uv; browser checks run

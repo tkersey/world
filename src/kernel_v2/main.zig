@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Stateless guest entry points. Every invocation starts from caller-supplied bytes.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const process = @import("world").process_v2;
 const options = @import("kernel_options");
 

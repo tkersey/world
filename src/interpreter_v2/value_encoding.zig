@@ -1,7 +1,7 @@
 //! Read-only encoding of immutable execution values. Memoized size discovery
 //! rejects cycles and avoids exponential work on shared or zero-width values.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const g = data.graph;
 const p = data.program;
 const Store = @import("store.zig").Store;

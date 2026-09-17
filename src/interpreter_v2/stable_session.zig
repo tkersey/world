@@ -2,7 +2,7 @@
 //! Low-level native evaluator. Published mutation runs in a private fresh
 //! invocation or through Resident's transaction and lifecycle boundary.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const p = data.program;
 const ir = data.activation;
 const g = data.graph;

@@ -9,7 +9,7 @@ test "frame pruning keeps initialization separate from liveness and preserves ol
 }
 
 fn pruneFrame(count: usize) !void {
-    const data = @import("boundary_data_v2");
+    const data = @import("boundary_data");
     const Frames = @import("activation_frames.zig").Frames;
     const Values = @import("values.zig").Values;
     var pool: data.analysis_sets.Pool = .{ .allocator = testing.allocator, .limit = count };
@@ -235,7 +235,7 @@ test "stable slots preserve an actual outer mutable cell across retained views" 
 }
 
 test "existing World value operations read stable slots without full-frame materialization" {
-    const data = @import("boundary_data_v2");
+    const data = @import("boundary_data");
     const Values = @import("values.zig").Values;
     const schemas = [_]data.program.Schema{
         .u64, .{ .product = &.{ 0, 0 } }, .{ .bounded_bytes = 64 },

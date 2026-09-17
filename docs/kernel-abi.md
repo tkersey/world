@@ -117,7 +117,7 @@ The independent Wasmtime lane uses the existing locked Python 3.14.7 / Wasmtime
 
 ```sh
 zig build build-kernel check-kernel check-transfer check-browser check-codecs \
-  -Dboundary-v2-source=/absolute/path/to/boundary-compositional-execution \
+  -Dboundary-source=/absolute/path/to/boundary-compositional-execution \
   --global-cache-dir .zig-global-cache --summary all
 ```
 

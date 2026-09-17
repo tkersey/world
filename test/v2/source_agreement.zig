@@ -1,7 +1,7 @@
 //! Test-only compiler/runtime composition. The production World module imports data only.
 const std = @import("std");
 const boundary = @import("boundary");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const world = @import("world").process_v2;
 const borrow_returns = @import("borrow_return_fixtures");
 

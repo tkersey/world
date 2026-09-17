@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! One instruction implementation shared during executable-layout migration.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const p = data.program;
 const g = data.graph;
 const read = @import("operands.zig").read;

@@ -64,13 +64,13 @@ proof of complete multi-shot or portable checkpoint execution.
 
 ```sh
 zig build check-v2-native check-activation-storage-wasm \
-  -Dboundary-v2-source=/absolute/path/to/boundary-compositional-execution \
+  -Dboundary-source=/absolute/path/to/boundary-compositional-execution \
   --global-cache-dir .cache/activation-global --summary all
 zig build check-v2-native -Doptimize=ReleaseSafe \
-  -Dboundary-v2-source=/absolute/path/to/boundary-compositional-execution \
+  -Dboundary-source=/absolute/path/to/boundary-compositional-execution \
   --global-cache-dir .cache/activation-global --summary all
 zig build check-v2-source check-v2-wasm \
-  -Dboundary-v2-source=/absolute/path/to/boundary-compositional-execution \
+  -Dboundary-source=/absolute/path/to/boundary-compositional-execution \
   --global-cache-dir .cache/activation-global --summary all
 ```
 
@@ -88,7 +88,7 @@ the specification's measured complete-path comparison.
 
 ## Native stable-control slice
 
-`stable_session.zig` now executes the direct Boundary `source.construct` records.
+`stable_session.zig` now executes the direct Boundary `source.lower` records.
 Function inputs populate stable slots; continuation nodes own private frame views
 rather than predecessor argument vectors. Changed-only edge assignments use
 simultaneous sources and omit dead copyable destinations. Reclamation uses set
@@ -145,7 +145,7 @@ Run the separate compiler-dependent lane with:
 
 ```sh
 zig build check-stable-source \
-  -Dboundary-v2-source=/absolute/path/to/boundary-compositional-execution \
+  -Dboundary-source=/absolute/path/to/boundary-compositional-execution \
   --global-cache-dir .cache/activation-global --summary all
 ```
 
@@ -289,7 +289,7 @@ retained form stays at five. The baseline is Boundary `adf3c7e` and World
 `321199b`, using native ReleaseSafe and Zig 0.16.0. These counts exclude Session
 initialization and are neither heap allocation counts nor elapsed-time claims.
 Run `check-stable-source` with the normal dependency pin, which now selects
-Boundary `5576f02f42ee7ae28711ff4ea304496b6d6fd3ad`.
+Boundary `7094aa5f228aa1478489e20bd9245f02eda764a2`.
 
 Total branching handler clauses now use Boundary's independently admitted
 `tail` strategy. World enters the selected function with state/payload and an
@@ -494,3 +494,12 @@ dependency. Native/storage, stable source, Node, Wasmtime, real browser transfer
 and extracted-package checks pass on this pair: 34 build steps and 94 native/storage
 tests. The default kernel is 459,817 bytes with SHA-256
 `f2e1ddd54b65fe822e586f77fc63f97c114128c98d2c936e9e8919ae59ca8204`. These checks do not establish performance acceptance.
+
+## Public compiler and data namespace
+
+The normal dependency uses Boundary's public BPI3 compiler and the
+`boundary_data` module. Current source fixtures call the ordinary public
+compiler; the source override is now `-Dboundary-source`. Native/storage, source,
+Node, Wasmtime, browser and package checks pass with the normal pin: 34 build
+steps and 94 native/storage tests. The kernel is 459,884 bytes, SHA-256
+`f436937401e3eb8c1dbd8d8dd6b3c54ac59bc6c60f1dc0a710adfbee1a3a8f67`. Remaining legacy runtime/data surfaces still need retirement.

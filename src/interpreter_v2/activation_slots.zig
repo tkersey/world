@@ -421,4 +421,4 @@ pub fn Slots(comptime Value: type) type {
     };
 }
 
-pub const ActivationSlots = Slots(@import("boundary_data_v2").graph.Value);
+pub const ActivationSlots = Slots(@import("boundary_data").graph.Value);

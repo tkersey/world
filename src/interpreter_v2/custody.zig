@@ -2,7 +2,7 @@
 //! Per-view lexical custody. Slot-indexed links permit constant-size splices;
 //! closed scopes leave no historical chain behind. This owns ordering, not values.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const Slots = @import("activation_slots.zig").Slots;
 const Item = struct {
     previous: ?usize = null,

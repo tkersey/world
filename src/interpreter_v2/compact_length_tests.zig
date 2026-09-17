@@ -1,5 +1,5 @@
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const process = @import("process.zig");
 const p = data.program;
 const maximum = std.math.maxInt(u64);

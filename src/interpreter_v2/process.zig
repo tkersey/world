@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! One production evaluator for native records and the portable guest ABI.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const p = data.program;
 const g = data.graph;
 const Machine = @import("machine.zig").Machine;

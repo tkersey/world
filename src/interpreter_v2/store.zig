@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Stable transient handles over Boundary's logical node kinds.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const g = data.graph;
 pub const Error = data.snapshot.Error;
 const empty: g.Node = .{ .environment = .{ .values = &.{}, .tail = null } };

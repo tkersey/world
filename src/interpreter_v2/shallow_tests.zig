@@ -1,6 +1,6 @@
 //! Protocol phase is authored handler state; the kernel does not know the protocol.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const p = data.program;
 const process = @import("process.zig");
 const allocator = std.testing.allocator;

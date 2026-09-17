@@ -1,6 +1,6 @@
 //! Reentry uses the same template while its first activation is still running.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const p = data.program;
 const process = @import("process.zig");
 const allocator = std.testing.allocator;

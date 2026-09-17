@@ -1,6 +1,6 @@
 //! Native allocation demand for the same complete PKI2 path as the guest.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const world = @import("world").process_v2;
 
 pub fn main(init: std.process.Init) !void {

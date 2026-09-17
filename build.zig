@@ -3,8 +3,8 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const source = b.option([]const u8, "boundary-v2-source", "Override the pinned Boundary 2 source") orelse pinned: {
-        const dependency = b.lazyDependency("boundary_v2", .{
+    const source = b.option([]const u8, "boundary-source", "Override the pinned Boundary 2 source") orelse pinned: {
+        const dependency = b.lazyDependency("boundary", .{
             .target = target,
             .optimize = optimize,
             .@"data-only" = true,
@@ -21,13 +21,13 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
+        .imports = &.{.{ .name = "boundary_data", .module = data }},
     });
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/tests.zig"),
         .target = b.graph.host,
         .optimize = optimize,
-        .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
+        .imports = &.{.{ .name = "boundary_data", .module = data }},
     }) });
     const run_native_tests = b.addRunArtifact(tests);
     b.step("check-v2-native", "Check the World-owned v2 native interpreter")
@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/interpreter_v2/activation_slots_tests.zig"),
         .target = b.graph.host,
         .optimize = optimize,
-        .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
+        .imports = &.{.{ .name = "boundary_data", .module = data }},
     }) });
     b.step("check-activation-storage", "Check stable activation storage and failure atomicity")
         .dependOn(&b.addRunArtifact(activation_tests).step);
@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
     const source_tests = b.addSystemCommand(&.{ "zig", "build", "--build-file" });
     source_tests.addFileArg(b.path("test/v2/build_source.zig"));
     source_tests.addArg(b.fmt("-Dworld-source={s}", .{b.pathFromRoot(".")}));
-    source_tests.addArg(b.fmt("-Dboundary-v2-source={s}", .{source}));
+    source_tests.addArg(b.fmt("-Dboundary-source={s}", .{source}));
     source_tests.addArgs(&.{ "-Doptimize=ReleaseSafe", "--cache-dir", b.pathFromRoot(".cache/v2/source-local"), "--global-cache-dir", b.pathFromRoot(".cache/v2/source-global") });
     source_tests.has_side_effects = true;
     const source_step = b.step("check-v2-source", "Check source agreement in a separate compiler-dependent test build");
@@ -62,7 +62,7 @@ pub fn build(b: *std.Build) void {
     const stable_source = b.addSystemCommand(&.{ "zig", "build", "--build-file" });
     stable_source.addFileArg(b.path("test/v2/build_source.zig"));
     stable_source.addArg(b.fmt("-Dworld-source={s}", .{b.pathFromRoot(".")}));
-    stable_source.addArg(b.fmt("-Dboundary-v2-source={s}", .{source}));
+    stable_source.addArg(b.fmt("-Dboundary-source={s}", .{source}));
     stable_source.addArgs(&.{ "-Dstable=true", "-Doptimize=ReleaseSafe", "--cache-dir", b.pathFromRoot(".cache/stable-source-local"), "--global-cache-dir", b.pathFromRoot(".cache/activation-global") });
     stable_source.has_side_effects = true;
     b.step("check-stable-source", "Check staged source on stable native control")
@@ -71,7 +71,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/interpreter_v2/tests.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
+        .imports = &.{.{ .name = "boundary_data", .module = data }},
     });
     const fixture_step = b.step("emit-v2-test-fixtures", "Emit handwritten target fixtures");
     var emitted_fixtures: [11]std.Build.LazyPath = undefined;
@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("test/v2/emit_fixture.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{ .{ .name = "boundary_data_v2", .module = data }, .{ .name = "world_test_fixtures", .module = fixture_module } },
+            .imports = &.{ .{ .name = "boundary_data", .module = data }, .{ .name = "world_test_fixtures", .module = fixture_module } },
         }) });
         const fixture_options = b.addOptions();
         fixture_options.addOption(usize, "fixture_index", index);
@@ -98,13 +98,13 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
-        .imports = &.{.{ .name = "boundary_data_v2", .module = wasm_data }},
+        .imports = &.{.{ .name = "boundary_data", .module = wasm_data }},
     });
     const current_runtime = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/stable_session.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
-        .imports = &.{.{ .name = "boundary_data_v2", .module = wasm_data }},
+        .imports = &.{.{ .name = "boundary_data", .module = wasm_data }},
     });
     const current_options = b.addOptions();
     current_options.addOption(usize, "input_capacity", b.option(usize, "input-capacity", "Initial current input budget") orelse 65536);
@@ -114,7 +114,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/kernel/main.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
-        .imports = &.{ .{ .name = "runtime", .module = current_runtime }, .{ .name = "boundary_data_v2", .module = wasm_data } },
+        .imports = &.{ .{ .name = "runtime", .module = current_runtime }, .{ .name = "boundary_data", .module = wasm_data } },
     });
     current_module.addOptions("kernel_options", current_options);
     const current_kernel = b.addExecutable(.{ .name = "world-kernel", .root_module = current_module });
@@ -135,7 +135,7 @@ pub fn build(b: *std.Build) void {
     const current_fixtures = b.addSystemCommand(&.{ "zig", "build", "--build-file" });
     current_fixtures.addFileArg(b.path("test/v2/build_source.zig"));
     current_fixtures.addArg(b.fmt("-Dworld-source={s}", .{b.pathFromRoot(".")}));
-    current_fixtures.addArg(b.fmt("-Dboundary-v2-source={s}", .{source}));
+    current_fixtures.addArg(b.fmt("-Dboundary-source={s}", .{source}));
     current_fixtures.addArgs(&.{ "-Dcurrent-fixtures=true", "-Doptimize=ReleaseSafe", "--prefix", b.getInstallPath(.prefix, "current"), "--cache-dir", b.pathFromRoot(".cache/current-fixture-local"), "--global-cache-dir", b.pathFromRoot(".cache/activation-global") });
     current_fixtures.has_side_effects = true;
     const current_package_check = b.addSystemCommand(&.{"node"});
@@ -176,7 +176,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/interpreter_v2/activation_slots.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSafe,
-        .imports = &.{.{ .name = "boundary_data_v2", .module = wasm_data }},
+        .imports = &.{.{ .name = "boundary_data", .module = wasm_data }},
     });
     const activation_wasm = b.addExecutable(.{ .name = "activation-storage-test", .root_module = b.createModule(.{
         .root_source_file = b.path("test/v2/activation_storage_wasm.zig"),
@@ -202,7 +202,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/kernel_v2/main.zig"),
         .target = wasm_target,
         .optimize = .ReleaseSmall,
-        .imports = &.{ .{ .name = "world", .module = wasm_world }, .{ .name = "boundary_data_v2", .module = wasm_data } },
+        .imports = &.{ .{ .name = "world", .module = wasm_world }, .{ .name = "boundary_data", .module = wasm_data } },
     });
     kernel_module.addOptions("kernel_options", options);
     const kernel = b.addExecutable(.{ .name = "world-process-kernel-v2", .root_module = kernel_module });
@@ -221,20 +221,20 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("test/v2/native_records.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{ .{ .name = "boundary_data_v2", .module = data }, .{ .name = "world", .module = world } },
+        .imports = &.{ .{ .name = "boundary_data", .module = data }, .{ .name = "world", .module = world } },
     }) });
     const probe = b.addExecutable(.{ .name = "v2-economy-probe", .root_module = b.createModule(.{
         .root_source_file = b.path("test/v2/economy_probe.zig"),
         .target = target,
         .optimize = .ReleaseSafe,
-        .imports = &.{ .{ .name = "boundary_data_v2", .module = data }, .{ .name = "world", .module = world } },
+        .imports = &.{ .{ .name = "boundary_data", .module = data }, .{ .name = "world", .module = world } },
     }) });
     b.step("build-v2-economy-probe", "Build the native allocation-demand observer").dependOn(&b.addInstallArtifact(probe, .{}).step);
     const decoder_probe = b.addExecutable(.{ .name = "v2-decode-probe", .root_module = b.createModule(.{
         .root_source_file = b.path("test/v2/decode_probe.zig"),
         .target = target,
         .optimize = .ReleaseSafe,
-        .imports = &.{ .{ .name = "boundary_data_v2", .module = data }, .{ .name = "world", .module = world } },
+        .imports = &.{ .{ .name = "boundary_data", .module = data }, .{ .name = "world", .module = world } },
     }) });
     b.step("build-v2-decode-probe", "Measure decoder time and bounded allocator demand")
         .dependOn(&b.addInstallArtifact(decoder_probe, .{}).step);
@@ -242,14 +242,14 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/interpreter_v2/economy_phases.zig"),
         .target = target,
         .optimize = .ReleaseSafe,
-        .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
+        .imports = &.{.{ .name = "boundary_data", .module = data }},
     }) });
     b.step("build-v2-economy-phases", "Build the isolated production-transition profiler").dependOn(&b.addInstallArtifact(phases, .{}).step);
     const rejections = b.addExecutable(.{ .name = "v2-emit-rejections", .root_module = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/emit_rejections.zig"),
         .target = b.graph.host,
         .optimize = .ReleaseSafe,
-        .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
+        .imports = &.{.{ .name = "boundary_data", .module = data }},
     }) });
     b.step("build-v2-rejections", "Build the standalone malformed-State fixture producer").dependOn(&b.addInstallArtifact(rejections, .{}).step);
     const lifting = b.step("check-v2-bpi1", "Compare pure BPI1 lifting against the frozen public v1 kernel");
@@ -323,7 +323,7 @@ pub fn build(b: *std.Build) void {
                 },
                 .target = b.graph.host,
                 .optimize = .ReleaseSafe,
-                .imports = &.{.{ .name = "boundary_data_v2", .module = data }},
+                .imports = &.{.{ .name = "boundary_data", .module = data }},
             }),
         });
         const compact_source = b.addSystemCommand(&.{"node"});

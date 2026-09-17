@@ -4,7 +4,7 @@ test {
     _ = @import("allocation_budget.zig");
 }
 pub const cleanup = @import("cleanup_tests.zig").program();
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const process = @import("process.zig");
 const p = data.program;
 const allocator = std.testing.allocator;

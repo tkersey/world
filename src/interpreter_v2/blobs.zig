@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Application-independent operations on canonical pointer-free blobs.
 const std = @import("std");
-const data = @import("boundary_data_v2");
+const data = @import("boundary_data");
 const p = data.program;
 const g = data.graph;
 const Values = @import("values.zig").Values;

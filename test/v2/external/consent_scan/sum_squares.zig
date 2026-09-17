@@ -3,7 +3,7 @@ const boundary = @import("boundary");
 const options = @import("options");
 const source = boundary.computation;
 
-fn arithmetic(b: *source.Builder, opcode: boundary.data_v2.program.Opcode, left: u64, right: u64, fault: u64) !u64 {
+fn arithmetic(b: *source.Builder, opcode: boundary.data.program.Opcode, left: u64, right: u64, fault: u64) !u64 {
     return b.value(.{ .schema = try b.scalar(u64), .expression = .{ .primitive = .{
         .opcode = opcode,
         .operands = &.{ left, right },
@@ -47,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         var compiled = try boundary.program.compile(init.gpa, module);
         defer compiled.deinit();
-        const bytes = try init.gpa.alloc(u8, try boundary.image_v2.encodedLength(compiled.program));
+        const bytes = try init.gpa.alloc(u8, try boundary.data.program_image.encodedLength(compiled.program));
         defer init.gpa.free(bytes);
         _ = try compiled.encode(init.gpa, bytes);
         try output.interface.writeAll(bytes);

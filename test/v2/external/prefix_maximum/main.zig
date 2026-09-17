@@ -119,7 +119,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         var compiled = try boundary.program.compile(allocator, module);
         defer compiled.deinit();
-        const bytes = try allocator.alloc(u8, try boundary.image_v2.encodedLength(compiled.program));
+        const bytes = try allocator.alloc(u8, try boundary.data.program_image.encodedLength(compiled.program));
         defer allocator.free(bytes);
         _ = try compiled.encode(allocator, bytes);
         try output.interface.writeAll(bytes);

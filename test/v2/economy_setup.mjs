@@ -29,7 +29,7 @@ const builds = [];
 for (let sample = 0; sample < 5; sample++) {
   const directory = join(scratch, `build-${sample}`);
   const started = performance.now();
-  command('zig', ['build', 'build-v2-kernel', `-Dboundary-v2-source=${boundary}`, '-Doptimize=ReleaseSafe',
+  command('zig', ['build', 'build-v2-kernel', `-Dboundary-source=${boundary}`, '-Doptimize=ReleaseSafe',
     '--cache-dir', join(directory, 'local'), '--global-cache-dir', join(directory, 'global'), '--prefix', join(directory, 'output')]);
   const elapsedMs = performance.now() - started;
   assert.equal(sha256(await readFile(join(directory, 'output/world-process-kernel-v2.wasm'))), kernelSha256);
