@@ -24,7 +24,7 @@ test "encoded sequence cursors avoid rebuilding progressively shorter tails" {
         const root = try store.add(.{ .environment = .{ .values = &.{queue}, .tail = null } });
         for (0..count) |i| {
             const slots: []const g.Value = &.{queue};
-            const result = try values.evaluate(.{ .opcode = .sequence_pop, .result_type = 4, .operands = &.{0} }, slots);
+            const result = try values.evaluate(.{ .opcode = .sequence_pop, .destination = 0, .operands = &.{0} }, 4, slots);
             const optional = try values.split(result);
             try std.testing.expectEqual(1, optional.tag);
             const pair = try values.split(optional.fields[0]);
@@ -63,7 +63,7 @@ test "consuming structured queues preserves order and measures descriptor copyin
         const root = try store.add(.{ .environment = .{ .values = &.{queue}, .tail = null } });
         for (0..count) |index| {
             const slots: []const g.Value = &.{queue};
-            const popped = try values.evaluate(.{ .opcode = .sequence_pop, .result_type = 5, .operands = &.{0} }, slots);
+            const popped = try values.evaluate(.{ .opcode = .sequence_pop, .destination = 0, .operands = &.{0} }, 5, slots);
             const optional = try values.split(popped);
             try std.testing.expectEqual(1, optional.tag);
             const pair = try values.split(optional.fields[0]);
@@ -135,17 +135,18 @@ test "admitted tag and field probes measure unrelated payload materialization" {
             var statistics: @import("store.zig").Statistics = .{};
             store.statistics = &statistics;
             var values: Values = .{ .allocator = a, .schemas = &schemas, .store = &store, .facts = facts };
-            const instruction: p.Instruction = .{
+            const result_type: p.Id = if (mode == 3) 2 else 0;
+            const instruction: data.activation.Instruction = .{
                 .opcode = if (mode < 2) .field else if (mode == 2) .variant_tag else .variant_payload,
-                .result_type = if (mode == 3) 2 else 0,
+                .destination = 0,
                 .operands = &.{0},
                 .immediate = if (mode == 1 or mode == 3) 1 else 0,
             };
             const slots: []const g.Value = &.{value};
             if (mode == 3) {
-                try std.testing.expectError(error.WrongVariant, values.evaluate(instruction, slots));
+                try std.testing.expectError(error.WrongVariant, values.evaluate(instruction, result_type, slots));
             } else {
-                const result = try values.evaluate(instruction, slots);
+                const result = try values.evaluate(instruction, result_type, slots);
                 try std.testing.expectEqual(@as(u64, if (mode < 2) 42 else 0), std.mem.readInt(u64, result.body.scalar[0..8], .little));
             }
             copies[mode] = statistics.copied_blob_bytes;
@@ -168,7 +169,7 @@ test "a projected blob survives collection of its containing product" {
     const parent = try store.literal(&schemas, literal);
     var values: Values = .{ .allocator = a, .schemas = &schemas, .store = &store, .facts = facts };
     const slots: []const g.Value = &.{parent};
-    var selected = try values.evaluate(.{ .opcode = .field, .result_type = 0, .operands = &.{0}, .immediate = 1 }, slots);
+    var selected = try values.evaluate(.{ .opcode = .field, .destination = 0, .operands = &.{0}, .immediate = 1 }, 0, slots);
     const holder = try store.add(.{ .environment = .{ .values = &.{selected}, .tail = null } });
     try store.collect(.{ .current = holder });
     try std.testing.expect(!store.blob_alive.items[@intCast(parent.body.blob.id)]);
@@ -180,9 +181,9 @@ fn evaluate(v: *Values, opcode: p.Opcode, result: p.Id, args: []const g.Value) !
     for (args, 0..) |_, index| operands[index] = index;
     const value = try v.evaluate(.{
         .opcode = opcode,
-        .result_type = result,
+        .destination = 0,
         .operands = operands[0..args.len],
-    }, args);
+    }, result, args);
     const facts = try data.admission.schemas(v.allocator, v.schemas);
     try data.admission.value(v.allocator, v.schemas, facts, .{
         .schema = result,
@@ -265,17 +266,10 @@ test "zero-width collection operations preserve full cardinality in fixed storag
                 .{ .sum = &.{ 2, 5 } },
                 .{ .product = &.{ 1, 4 } },
             };
-            const program: p.Program = .{
-                .roots = .{ .entry = 0, .result = 3, .failure = 2 },
-                .schemas = &schemas,
-                .constants = &.{},
-                .effects = &.{},
-                .functions = &.{},
-                .blocks = &.{},
-            };
+
             var store: Store = .{ .allocator = allocator };
             defer store.deinit();
-            var values: Values = .{ .allocator = allocator, .schemas = program.schemas, .store = &store };
+            var values: Values = .{ .allocator = allocator, .schemas = &schemas, .store = &store };
             try checkCollection(&values, count);
         };
     }
@@ -285,26 +279,19 @@ test "encoded collection slices preserve variable-width elements and their order
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const program: p.Program = .{
-        .roots = .{ .entry = 0, .result = 3, .failure = 2 },
-        .schemas = &.{
-            .bytes,                 .{ .seq = 0 },              .unit,                  .u64,
-            .{ .sum = &.{ 2, 0 } }, .{ .product = &.{ 0, 1 } }, .{ .sum = &.{ 2, 5 } }, .{ .product = &.{ 1, 4 } },
-        },
-        .constants = &.{},
-        .effects = &.{},
-        .functions = &.{},
-        .blocks = &.{},
+    const schemas: []const p.Schema = &.{
+        .bytes,                 .{ .seq = 0 },              .unit,                  .u64,
+        .{ .sum = &.{ 2, 0 } }, .{ .product = &.{ 0, 1 } }, .{ .sum = &.{ 2, 5 } }, .{ .product = &.{ 1, 4 } },
     };
     var store: Store = .{ .allocator = allocator };
     defer store.deinit();
-    var v: Values = .{ .allocator = allocator, .schemas = program.schemas, .store = &store };
-    const items = try store.literal(program.schemas, .{
+    var v: Values = .{ .allocator = allocator, .schemas = schemas, .store = &store };
+    const items = try store.literal(schemas, .{
         .schema = 1,
         .bytes = &.{ 3, 1, 'a', 0, 2, 'b', 'c' },
     });
-    const other = try store.literal(program.schemas, .{ .schema = 1, .bytes = &.{ 1, 1, 'x' } });
-    const replacement = try store.literal(program.schemas, .{ .schema = 0, .bytes = &.{ 2, 'd', 'e' } });
+    const other = try store.literal(schemas, .{ .schema = 1, .bytes = &.{ 1, 1, 'x' } });
+    const replacement = try store.literal(schemas, .{ .schema = 0, .bytes = &.{ 2, 'd', 'e' } });
     const index = Values.natural(3, 1);
     const got = try evaluate(&v, .sequence_get, 4, &.{ items, index });
     try std.testing.expectEqualSlices(u8, &.{ 1, 0 }, try v.bytes(&got));

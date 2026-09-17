@@ -29,7 +29,7 @@ pub fn instantiateFrames(allocator: std.mem.Allocator, store: *Store, template: 
     try copy.capture(template, false);
     var index: usize = 0;
     var propagated: usize = 0;
-    var refs: std.ArrayList(data.snapshot.Reference) = .empty;
+    var refs: std.ArrayList(data.graph_order.Reference) = .empty;
     while (index < copy.pending.items.len or propagated < copy.originals.items.len or copy.templates.items.len != 0) {
         if (copy.templates.pop()) |ref| {
             try copy.template(ref);
@@ -48,7 +48,7 @@ pub fn instantiateFrames(allocator: std.mem.Allocator, store: *Store, template: 
             else => false,
         };
         refs.clearRetainingCapacity();
-        try data.snapshot.references(g.Node, node, &refs, scratch);
+        try data.graph_order.references(g.Node, node, &refs, scratch);
         try copy.frames.references(original.id, &refs, scratch);
         index += 1;
         for (refs.items) |reference| if (reference == .node) {
@@ -164,7 +164,7 @@ fn Cloner(comptime FrameOwner: type) type {
 }
 
 const NoFrames = struct {
-    fn references(_: NoFrames, _: p.Id, _: *std.ArrayList(data.snapshot.Reference), _: std.mem.Allocator) Error!void {}
+    fn references(_: NoFrames, _: p.Id, _: *std.ArrayList(data.graph_order.Reference), _: std.mem.Allocator) Error!void {}
     fn copyFrame(_: NoFrames, _: p.Id, _: p.Id) Error!void {}
     fn rebaseFrame(_: NoFrames, _: p.Id, _: Map) Error!void {}
 };

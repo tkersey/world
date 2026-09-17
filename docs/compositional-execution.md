@@ -561,6 +561,24 @@ native/Node/Wasmtime transfer, both browser families and the extracted package.
 The generic kernel is 459,863 bytes with SHA-256
 `a824bc4404a6dfd9e579a96bd88f72694483c85bd557ec322ba7f69070606104`.
 The exact Boundary source input remains `ff8a1b277392984681e9710224313adbbb396f4c`.
+
+## Single current executable data contract
+
+The normal dependency now selects Boundary
+`a918da81be930754ecb6d6b62c09df6b80b69cf1`, which removes the predecessor codecs
+and executable record definitions. World graph utilities use `data.graph_order`
+and cancellation reasons use `data.invocation`. Instruction dispatch receives
+the current instruction directly with its result schema resolved from the
+function layout; it no longer constructs the old block-argument instruction.
+Private value/blob operations retain their independent tests with explicit
+result schemas. Shared graph record/helper cleanup and consumer/performance
+qualification remain separate open work.
+
+The full current aggregate also passes through the normal Boundary pin, without
+a source override: 32 build steps, 69 source tests, 35 storage tests, 24 host tests,
+6,755 source-oracle observations, capacity and all current host/package lanes.
+Kernel SHA-256 is
+`89f8eb82abe322cda762fd6207b1a9374f0f1d45a48804f5b807f8018eff94c6`.
 The earlier complete portable-host results above belong to `f36994b`; they were
 not repeated for this checkpoint.
 

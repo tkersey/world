@@ -36,7 +36,7 @@ pub const Observation = union(enum) {
     requested: struct { effect: p.Id, payload: g.Value },
     completed: g.Value,
     failed: g.Value,
-    cancelled: data.protocol.Reason,
+    cancelled: data.invocation.Reason,
 };
 
 pub const Session = struct {
@@ -253,7 +253,7 @@ pub const Session = struct {
         defer self.allocator.free(values);
         try @import("unwind.zig").failValues(self, value, control.parent, values);
     }
-    pub fn cancel(self: *Session, reason: data.protocol.Reason) Error!void {
+    pub fn cancel(self: *Session, reason: data.invocation.Reason) Error!void {
         if (self.poisoned or self.terminal != null) return error.InvalidState;
         if (reason == .text and !std.unicode.utf8ValidateSlice(reason.text)) return error.InvalidUtf8;
         errdefer self.poisoned = true;
@@ -286,7 +286,7 @@ pub const Session = struct {
         return values.bytes(value);
     }
 
-    pub fn instructionFailure(self: *Session, instruction: p.Instruction, fault: p.Fault) Error!g.Value {
+    pub fn instructionFailure(self: *Session, instruction: ir.Instruction, fault: p.Fault) Error!g.Value {
         for (instruction.failures) |failure| if (failure.kind == fault)
             return self.store.literal(self.program.schemas, self.program.constants[@intCast(failure.value)]);
         return error.InvalidProgram;
@@ -397,13 +397,6 @@ pub const Session = struct {
     fn executeInstruction(self: *Session, current: g.NodeRef, code: ir.Block, frame: *bindings.Frame) Error!void {
         const source = code.instructions[frame.position];
         const layout = self.program.functions[@intCast(code.function)].layout.slots;
-        const operation: p.Instruction = .{
-            .opcode = source.opcode,
-            .result_type = layout[@intCast(source.destination)],
-            .operands = source.operands,
-            .immediate = source.immediate,
-            .failures = source.failures,
-        };
         const reader = try self.frames.slots.reader(frame.view);
         var temporary = std.heap.ArenaAllocator.init(self.allocator);
         defer temporary.deinit();
@@ -414,7 +407,7 @@ pub const Session = struct {
             .facts = self.value_facts,
             .traits = self.uses,
         };
-        switch (try @import("instruction.zig").execute(self, operation, reader, &values)) {
+        switch (try @import("instruction.zig").execute(self, source, layout[@intCast(source.destination)], reader, &values)) {
             .failed => |failure| try self.failCurrent(current, failure),
             .value => |value| {
                 if (!source.opcode.borrowsOperands()) for (source.operands) |slot| {

@@ -5,7 +5,7 @@ const data = @import("boundary_data");
 const Slots = @import("activation_slots.zig").ActivationSlots;
 const sets = data.analysis_sets;
 const custody = @import("custody.zig");
-pub const Error = Slots.Error || data.snapshot.Error;
+pub const Error = Slots.Error || data.graph_order.Error;
 /// Runtime initialization is not an authority or a liveness declaration. Small
 /// layouts need no interned analysis nodes; large layouts keep compact trees.
 pub const Present = union(enum) {
@@ -226,7 +226,7 @@ pub const Frames = struct {
         // discard/poison failed frames or restore Resident's retained backup.
         frame.present = retained;
     }
-    pub fn copyFrame(self: *Frames, from: data.program.Id, to: data.program.Id) data.snapshot.Error!void {
+    pub fn copyFrame(self: *Frames, from: data.program.Id, to: data.program.Id) data.graph_order.Error!void {
         var copy = self.entries.get(from) orelse return;
         if (self.entries.contains(to)) return error.InvalidState;
         copy = self.forkFrame(copy) catch |err| return switch (err) {
@@ -237,7 +237,7 @@ pub const Frames = struct {
         try self.entries.put(self.allocator, to, copy);
     }
 
-    pub fn rebaseFrame(self: *Frames, id: data.program.Id, map: anytype) data.snapshot.Error!void {
+    pub fn rebaseFrame(self: *Frames, id: data.program.Id, map: anytype) data.graph_order.Error!void {
         var frame = self.entries.get(id) orelse return;
         var members = frame.present.iterator(self.pool);
         while (members.next()) |slot| {
@@ -257,10 +257,10 @@ pub const Frames = struct {
         self.update(id, frame);
     }
 
-    pub fn references(self: *Frames, id: data.program.Id, output: *std.ArrayList(data.snapshot.Reference), allocator: std.mem.Allocator) data.snapshot.Error!void {
+    pub fn references(self: *Frames, id: data.program.Id, output: *std.ArrayList(data.graph_order.Reference), allocator: std.mem.Allocator) data.graph_order.Error!void {
         const frame = self.entries.get(id) orelse return;
         var iterator = self.slots.iterator(frame.view) catch return error.InvalidState;
         while (iterator.next() catch return error.InvalidState) |binding|
-            try data.snapshot.references(data.graph.Value, binding.value, output, allocator);
+            try data.graph_order.references(data.graph.Value, binding.value, output, allocator);
     }
 };

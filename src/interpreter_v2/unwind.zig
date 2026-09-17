@@ -73,7 +73,7 @@ fn discardFrame(machine: anytype, frame: g.NodeRef, parent: ?g.NodeRef) @TypeOf(
     machine.frames.remove(frame.id);
 }
 
-pub fn cancel(machine: anytype, reason: data.protocol.Reason) @TypeOf(machine.*).ExecutionError!void {
+pub fn cancel(machine: anytype, reason: data.invocation.Reason) @TypeOf(machine.*).ExecutionError!void {
     if (reason == .text and !std.unicode.utf8ValidateSlice(reason.text)) return error.InvalidUtf8;
     if (machine.roots.exit == null) {
         const cursor = if (machine.roots.pending) |pending| (try machine.store.get(pending)).pending.continuation else machine.roots.current;

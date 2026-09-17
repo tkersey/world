@@ -3,7 +3,7 @@
 const std = @import("std");
 const data = @import("boundary_data");
 const g = data.graph;
-pub const Error = data.snapshot.Error;
+pub const Error = data.graph_order.Error;
 const empty: g.Node = .{ .environment = .{ .values = &.{}, .tail = null } };
 
 pub const Statistics = struct {
@@ -45,7 +45,7 @@ pub const Store = struct {
     interned: std.HashMapUnmanaged(g.Blob, usize, BlobContext, 80) = .empty,
     marks: std.ArrayList(bool) = .empty,
     blob_marks: std.ArrayList(bool) = .empty,
-    pending: std.ArrayList(data.snapshot.Reference) = .empty,
+    pending: std.ArrayList(data.graph_order.Reference) = .empty,
     imported: ?data.state_image.Owned = null,
     borrowed_nodes: []bool = &.{},
     borrowed_blobs: []bool = &.{},
@@ -484,7 +484,7 @@ pub const Store = struct {
         @memset(blob_marks, false);
         const pending = &self.pending;
         pending.clearRetainingCapacity();
-        try data.snapshot.references(g.Roots, roots, pending, self.allocator);
+        try data.graph_order.references(g.Roots, roots, pending, self.allocator);
         if (self.statistics) |s| s.traced_edges +|= pending.items.len;
         while (pending.pop()) |reference| switch (reference) {
             .node => |id| {
@@ -492,7 +492,7 @@ pub const Store = struct {
                 if (marks[@intCast(id)]) continue;
                 marks[@intCast(id)] = true;
                 const before = pending.items.len;
-                try data.snapshot.references(g.Node, self.nodes.items[@intCast(id)], pending, self.allocator);
+                try data.graph_order.references(g.Node, self.nodes.items[@intCast(id)], pending, self.allocator);
                 if (self.encoded_sequences.get(@intCast(id))) |sequence|
                     try pending.append(self.allocator, .{ .blob = sequence.backing.id });
                 try frames.references(id, pending, self.allocator);
@@ -616,6 +616,6 @@ pub fn release(comptime T: type, allocator: std.mem.Allocator, value: T) void {
 }
 
 const NoFrames = struct {
-    fn references(_: NoFrames, _: data.program.Id, _: *std.ArrayList(data.snapshot.Reference), _: std.mem.Allocator) Error!void {}
+    fn references(_: NoFrames, _: data.program.Id, _: *std.ArrayList(data.graph_order.Reference), _: std.mem.Allocator) Error!void {}
     fn remove(_: NoFrames, _: data.program.Id) void {}
 };

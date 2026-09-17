@@ -257,32 +257,32 @@ test "existing World value operations read stable slots without full-frame mater
     const reader = try store.reader(view);
     const product = try values.evaluate(.{
         .opcode = .product,
-        .result_type = 1,
+        .destination = 0,
         .operands = &.{ 11, 1031 },
-    }, reader);
+    }, 1, reader);
     try store.set(view, 2047, product);
     const field = try values.evaluate(.{
         .opcode = .field,
-        .result_type = 0,
+        .destination = 0,
         .operands = &.{2047},
         .immediate = 1,
-    }, reader);
+    }, 0, reader);
     try testing.expectEqual(42, std.mem.readInt(u64, &field.body.scalar, .little));
     try testing.expectEqualSlices(u8, &.{ 7, 0, 0, 0, 0, 0, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0 }, try values.bytes(&product));
     try store.set(view, 3, try heap.literal(&schemas, .{ .schema = 2, .bytes = &.{ 1, 'a' } }));
     try store.set(view, 1900, try heap.literal(&schemas, .{ .schema = 2, .bytes = &.{ 1, 'b' } }));
     const result = try @import("blobs.zig").evaluate(&values, .{
         .opcode = .blob_concat,
-        .result_type = 2,
+        .destination = 0,
         .operands = &.{ 3, 1900 },
-    }, reader);
+    }, 2, reader);
     try testing.expectEqualSlices(u8, &.{ 2, 'a', 'b' }, try values.bytes(&result.value));
     try store.release(view);
     try testing.expectError(error.InvalidState, values.evaluate(.{
         .opcode = .field,
-        .result_type = 0,
+        .destination = 0,
         .operands = &.{2047},
-    }, reader));
+    }, 0, reader));
 }
 
 test "stable slots match an independent flat model across mixed view lifecycles" {

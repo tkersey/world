@@ -13,5 +13,5 @@ pub const Statistics = struct {
     multi_templates: u64 = 0,
     branch_activations: u64 = 0,
     storage: @import("store.zig").Statistics = .{},
-    snapshot: data.snapshot.Statistics = .{},
+    snapshot: data.graph_order.Statistics = .{},
 };

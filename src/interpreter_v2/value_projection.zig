@@ -64,15 +64,15 @@ pub fn project(allocator: std.mem.Allocator, schemas: []const data.program.Schem
         .{ .record = .{ .environment = .{ .values = &.{}, .tail = null } } };
     const visited = try allocator.alloc(bool, nodes.len);
     @memset(visited, false);
-    var pending: std.ArrayList(data.snapshot.Reference) = .empty;
-    try data.snapshot.references(g.Roots, state.roots, &pending, allocator);
+    var pending: std.ArrayList(data.graph_order.Reference) = .empty;
+    try data.graph_order.references(g.Roots, state.roots, &pending, allocator);
     while (pending.pop()) |reference| if (reference == .node) {
         const id: usize = @intCast(reference.node);
         if (id >= nodes.len) return error.InvalidReference;
         if (visited[id]) continue;
         visited[id] = true;
         nodes[id] = try projection.convert(Node, state.nodes[id]);
-        try data.snapshot.references(Node, nodes[id], &pending, allocator);
+        try data.graph_order.references(Node, nodes[id], &pending, allocator);
     };
     var result = state;
     result.nodes = nodes;

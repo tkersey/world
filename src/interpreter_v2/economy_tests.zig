@@ -76,8 +76,8 @@ test "collection and canonicalization traverse each reachable node and edge once
     try std.testing.expectEqual(@as(u64, 2), statistics.traced_nodes);
     try std.testing.expectEqual(@as(u64, 5), statistics.traced_edges);
     try std.testing.expectEqual(@as(u64, 3), statistics.swept_slots);
-    var measured: data.snapshot.Statistics = .{};
-    var normalized = try data.snapshot.canonicalizeMeasured(allocator, store.state(@splat(0), .active, roots), &measured);
+    var measured: data.graph_order.Statistics = .{};
+    var normalized = try data.graph_order.canonicalize(allocator, store.state(@splat(0), .active, roots), &measured);
     defer normalized.deinit();
     try std.testing.expectEqual(statistics.traced_nodes, measured.nodes);
     try std.testing.expectEqual(statistics.traced_edges, measured.edges);

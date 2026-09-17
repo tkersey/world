@@ -35,9 +35,9 @@ fn blob(values: *Values, schema: p.Id, parts: []const []const u8) Error!Result {
     for (parts) |part| try writer.put(part);
     return .{ .value = try values.store.literalOwned(values.schemas, schema, output) };
 }
-pub fn evaluate(values: *Values, op: p.Instruction, slots: anytype) Error!Result {
+pub fn evaluate(values: *Values, op: data.activation.Instruction, result_type: p.Id, slots: anytype) Error!Result {
     const left = (try read(slots, op.operands[0]));
-    const result = op.result_type;
+    const result = result_type;
     switch (op.opcode) {
         .text_scalar => {
             const raw = std.mem.readInt(u32, left.body.scalar[0..4], .little);

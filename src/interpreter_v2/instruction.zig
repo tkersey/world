@@ -1,5 +1,5 @@
 // Copyright (c) 2026 World contributors. MIT license.
-//! One instruction implementation shared during executable-layout migration.
+//! Interpret current instructions using their function layout result schema.
 const std = @import("std");
 const data = @import("boundary_data");
 const p = data.program;
@@ -7,7 +7,7 @@ const g = data.graph;
 const read = @import("operands.zig").read;
 pub const Result = union(enum) { value: g.Value, failed: g.Value };
 
-pub fn execute(machine: anytype, instruction: p.Instruction, slots: anytype, aggregate_values: *@import("values.zig").Values) @TypeOf(machine.*).ExecutionError!Result {
+pub fn execute(machine: anytype, instruction: data.activation.Instruction, result_type: p.Id, slots: anytype, aggregate_values: *@import("values.zig").Values) @TypeOf(machine.*).ExecutionError!Result {
     const value: g.Value = switch (instruction.opcode) {
         .constant => try machine.store.literal(machine.program.schemas, machine.program.constants[@intCast(instruction.immediate)]),
         .move => (try read(slots, instruction.operands[0])),
@@ -22,13 +22,13 @@ pub fn execute(machine: anytype, instruction: p.Instruction, slots: anytype, agg
                     const failure = try machine.instructionFailure(instruction, fault);
                     return .{ .failed = failure };
                 },
-                .value => |value| break :blk .{ .schema = instruction.result_type, .body = .{ .scalar = value } },
+                .value => |value| break :blk .{ .schema = result_type, .body = .{ .scalar = value } },
             }
         },
         .integer_bit_not, .integer_convert, .enum_tag => blk: {
             const source = (try read(slots, instruction.operands[0]));
-            switch (try data.scalar.unary(instruction.opcode, machine.program.schemas[@intCast(source.schema)], machine.program.schemas[@intCast(instruction.result_type)], source.body.scalar)) {
-                .value => |value| break :blk .{ .schema = instruction.result_type, .body = .{ .scalar = value } },
+            switch (try data.scalar.unary(instruction.opcode, machine.program.schemas[@intCast(source.schema)], machine.program.schemas[@intCast(result_type)], source.body.scalar)) {
+                .value => |value| break :blk .{ .schema = result_type, .body = .{ .scalar = value } },
                 .fault => |fault| {
                     return .{ .failed = try machine.instructionFailure(instruction, fault) };
                 },
@@ -37,15 +37,15 @@ pub fn execute(machine: anytype, instruction: p.Instruction, slots: anytype, agg
         .boolean_not => blk: {
             var value = [_]u8{0} ** 8;
             value[0] = 1 - (try machine.bytes(&(try read(slots, instruction.operands[0]))))[0];
-            break :blk .{ .schema = instruction.result_type, .body = .{ .scalar = value } };
+            break :blk .{ .schema = result_type, .body = .{ .scalar = value } };
         },
         .computation => blk: {
             const environment = try captureEnvironment(machine, slots, instruction.operands);
             const closure = try machine.store.add(.{ .computation = .{ .constructor = instruction.immediate, .environment = environment } });
-            const use = machine.program.schemas[@intCast(instruction.result_type)].internal.computation.use;
-            break :blk .{ .schema = instruction.result_type, .body = if (use == .reusable or use == .multi) .{ .reference = closure } else .{ .owned = .{ .node = closure } } };
+            const use = machine.program.schemas[@intCast(result_type)].internal.computation.use;
+            break :blk .{ .schema = result_type, .body = if (use == .reusable or use == .multi) .{ .reference = closure } else .{ .owned = .{ .node = closure } } };
         },
-        .product, .field, .variant, .variant_tag, .variant_payload, .select, .sequence, .sequence_length, .sequence_get, .sequence_append, .sequence_concat, .sequence_pop, .sequence_set, .sequence_take, .sequence_pop_last => aggregate_values.evaluate(instruction, slots) catch |err| {
+        .product, .field, .variant, .variant_tag, .variant_payload, .select, .sequence, .sequence_length, .sequence_get, .sequence_append, .sequence_concat, .sequence_pop, .sequence_set, .sequence_take, .sequence_pop_last => aggregate_values.evaluate(instruction, result_type, slots) catch |err| {
             const fault: p.Fault = switch (err) {
                 error.CollectionCapacity => .capacity_exceeded,
                 error.ElementIndex => .invalid_index,
@@ -55,7 +55,7 @@ pub fn execute(machine: anytype, instruction: p.Instruction, slots: anytype, agg
             return .{ .failed = try machine.instructionFailure(instruction, fault) };
         },
         .blob_length, .blob_concat, .blob_slice, .blob_compare, .blob_byte, .text_scalar, .text_integer, .blob_from_byte => blk: {
-            switch (try @import("blobs.zig").evaluate(aggregate_values, instruction, slots)) {
+            switch (try @import("blobs.zig").evaluate(aggregate_values, instruction, result_type, slots)) {
                 .value => |value| break :blk value,
                 .fault => |fault| {
                     return .{ .failed = try machine.instructionFailure(instruction, fault) };
@@ -64,8 +64,8 @@ pub fn execute(machine: anytype, instruction: p.Instruction, slots: anytype, agg
         },
         .cell_new => blk: {
             const region = valueRef((try read(slots, instruction.operands[0])));
-            const cell = try machine.store.add(.{ .cell = .{ .schema = instruction.result_type, .region = region, .value = (try read(slots, instruction.operands[1])) } });
-            break :blk .{ .schema = instruction.result_type, .body = .{ .reference = cell } };
+            const cell = try machine.store.add(.{ .cell = .{ .schema = result_type, .region = region, .value = (try read(slots, instruction.operands[1])) } });
+            break :blk .{ .schema = result_type, .body = .{ .reference = cell } };
         },
         .cell_get => (try machine.store.get(valueRef((try read(slots, instruction.operands[0]))))).cell.value orelse return error.InvalidState,
         .cell_set => blk: {
@@ -73,23 +73,23 @@ pub fn execute(machine: anytype, instruction: p.Instruction, slots: anytype, agg
             var cell = (try machine.store.get(reference)).cell;
             cell.value = (try read(slots, instruction.operands[1]));
             try machine.store.replace(reference, .{ .cell = cell });
-            break :blk .{ .schema = instruction.result_type, .body = .{ .scalar = [_]u8{0} ** 8 } };
+            break :blk .{ .schema = result_type, .body = .{ .scalar = [_]u8{0} ** 8 } };
         },
         .package => blk: {
-            const package = try machine.store.add(.{ .package = .{ .schema = instruction.result_type, .continuation = (try read(slots, instruction.operands[0])) } });
-            break :blk .{ .schema = instruction.result_type, .body = .{ .owned = .{ .node = package } } };
+            const package = try machine.store.add(.{ .package = .{ .schema = result_type, .continuation = (try read(slots, instruction.operands[0])) } });
+            break :blk .{ .schema = result_type, .body = .{ .owned = .{ .node = package } } };
         },
         .unpack => (try machine.store.get(valueRef((try read(slots, instruction.operands[0]))))).package.continuation,
         .clone_resumption => blk: {
             var captured = try machine.takeCapture((try read(slots, instruction.operands[0])));
-            captured.schema = instruction.result_type;
+            captured.schema = result_type;
             const template = try machine.store.add(.{ .multi_template = captured });
             if (machine.statistics) |statistics| statistics.multi_templates +|= 1;
-            break :blk .{ .schema = instruction.result_type, .body = .{ .reference = template } };
+            break :blk .{ .schema = result_type, .body = .{ .reference = template } };
         },
         .resource_pack => blk: {
-            const resource = try machine.store.add(.{ .resource = .{ .schema = instruction.result_type, .value = (try read(slots, instruction.operands[0])) } });
-            break :blk .{ .schema = instruction.result_type, .body = .{ .owned = .{ .node = resource } } };
+            const resource = try machine.store.add(.{ .resource = .{ .schema = result_type, .value = (try read(slots, instruction.operands[0])) } });
+            break :blk .{ .schema = result_type, .body = .{ .owned = .{ .node = resource } } };
         },
         .resource_unpack => blk: {
             const record = try machine.store.get(valueRef((try read(slots, instruction.operands[0]))));

@@ -334,10 +334,10 @@ pub const Values = struct {
 
     pub fn evaluate(
         self: *Values,
-        instruction: p.Instruction,
+        instruction: data.activation.Instruction,
+        result: p.Id,
         slots: anytype,
     ) EvaluationError!g.Value {
-        const result = instruction.result_type;
         if (instruction.opcode == .select) {
             const condition = (try read(slots, instruction.operands[0])).body.scalar[0] == 1;
             return (try read(slots, instruction.operands[if (condition) @as(usize, 1) else 2]));
@@ -357,15 +357,15 @@ pub const Values = struct {
             .variant_payload => return self.variantPayload(source, instruction.immediate),
             else => {},
         }
-        return self.evaluateCollection(instruction, slots);
+        return self.evaluateCollection(instruction, result, slots);
     }
 
     fn evaluateCollection(
         self: *Values,
-        instruction: p.Instruction,
+        instruction: data.activation.Instruction,
+        result: p.Id,
         slots: anytype,
     ) EvaluationError!g.Value {
-        const result = instruction.result_type;
         const source = (try read(slots, instruction.operands[0]));
         const items = try self.collection(source);
         switch (instruction.opcode) {
@@ -413,7 +413,7 @@ pub const Values = struct {
                 });
             },
             .sequence_pop, .sequence_pop_last => {
-                return self.popCollection(instruction, source.schema, items);
+                return self.popCollection(instruction, result, source.schema, items);
             },
             else => return error.UnsupportedTransition,
         }
@@ -421,11 +421,11 @@ pub const Values = struct {
 
     fn popCollection(
         self: *Values,
-        instruction: p.Instruction,
+        instruction: data.activation.Instruction,
+        result: p.Id,
         source: p.Id,
         items: Collection,
     ) EvaluationError!g.Value {
-        const result = instruction.result_type;
         const present = items.count != 0;
         switch (instruction.opcode) {
             .sequence_pop => {
