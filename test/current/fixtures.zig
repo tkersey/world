@@ -29,6 +29,7 @@ pub fn main(init: std.process.Init) !void {
         var builder = boundary.source.Builder.init(init.gpa);
         defer builder.deinit();
         const module = blk: {
+            if (std.mem.eql(u8, name, "largeRequest")) break :blk try largeRequest(&builder);
             if (std.mem.eql(u8, name, "retainedScopeGeneral"))
                 break :blk try boundary.source.examples.retainedScope(&builder);
             if (std.mem.eql(u8, name, "install")) break :blk try boundary.source.examples.installations(&builder, 64);
@@ -61,6 +62,17 @@ pub fn main(init: std.process.Init) !void {
         try output.interface.writeAll(bytes);
     } else return error.InvalidMode;
     try output.interface.flush();
+}
+
+fn largeRequest(b: *boundary.source.Builder) !boundary.source.Module {
+    const bytes = try b.schema(.bytes);
+    const unit = try b.scalar(void);
+    const effect = try b.effect(.{ .identity = "capacity/large", .payload = bytes, .result = unit });
+    const entry = try b.declare(&.{bytes}, bytes, &.{effect}, &.{});
+    const input = try b.reference(b.parameter(entry, 0));
+    const request = try b.term(.{ .perform = .{ .effect = effect, .payload = input } });
+    try b.define(entry, try b.bind(try b.variable(unit), request, try b.pure(input)));
+    return b.module(entry, unit);
 }
 
 fn linkedImage(allocator: std.mem.Allocator, name: []const u8) ![]u8 {

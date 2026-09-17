@@ -55,13 +55,16 @@ arguments or checkpoint, reply/cancellation/yield control, and optional quantum.
 constructing Boundary's authoring compiler. It does not publish a package.
 
 ```sh
-zig build check-native check-storage check-kernel check-codecs check-transfer check-browser check-package
+zig build check
 ```
 
 During coordinated development, `-Dboundary-source=/absolute/boundary-source`
 selects the matching source explicitly. `check-native` runs current source and
 Session regressions in a separate compiler-dependent build. `check-storage`
 also retains native regressions still being migrated from the old evaluator.
+`check-source` compares all 41 emitted BPI3 examples with the independent source
+oracle and fresh native/WASM execution. `check-capacity` checks arena exhaustion,
+fixed physical memory, and unchanged retries. Both are included in `check`.
 Wasmtime uses the locked Python environment through uv; browser checks run
 real Chromium and Firefox Workers.
 
@@ -80,3 +83,6 @@ World does not provide external rollback or global exactly-once effects.
 Complete Agent migration, selective/value performance acceptance, remaining legacy
 retirement and final package qualification are still in progress. No merge or
 release is implied by this development package.
+
+See [verification](docs/verification.md) for the current coverage and the
+remaining migration boundaries.

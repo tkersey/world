@@ -23,7 +23,7 @@
     "world-kernel.wasm"
   ],
   "scripts": {
-    "check": "zig build check-kernel check-codecs",
-    "check:codecs": "node --test test/current/codec.test.mjs"
+    "check": "zig build check",
+    "check:codecs": "zig build check-codecs"
   }
 }

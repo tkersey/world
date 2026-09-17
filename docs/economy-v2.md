@@ -1,5 +1,10 @@
 # World 5 development economy measurements
 
+Historical evidence only. The World 5 comparison and acquisition drivers are
+retired from current builds; reconstruct them from the immutable World 5.0.2
+source `d075169a4805d999ceba4c37b3e1c925b78c3bf9`. The favorable and unfavorable
+raw measurements below remain unchanged and do not establish World 6 acceptance.
+
 These are development measurements from September 9, 2026 UTC. Release acceptance
 must bind the final source and delivered kernel separately. The measured kernel
 is `c372950bfc184f04e54f0e9ce8339c931634c616a69c4e07e82803980745b17d`.

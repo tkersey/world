@@ -1,96 +1,62 @@
-// Source oracle comparison belongs to conformance tooling, outside the kernel.
+// Preserve independent source semantics while comparing current native/WASM bytes.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile as read } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { admitProcessKernel, encodeInput, decodeRequest, encodeResult, decodeOutcome } from "../../src/process_v2/index.mjs";
-import { wasmtimePeer } from "./wasmtime_peer.mjs";
+import { Kernel, encodeInput, decodeRequest, encodeResult, decodeOutcome } from "../../src/embedding/index.mjs";
 
-const args = process.argv.slice(2);
-const compactAt = args.indexOf("--compact-converter");
-let compactConverter = null;
-if (compactAt >= 0) {
-  assert.equal(compactAt, args.length - 2, "--compact-converter requires one final path");
-  compactConverter = args[compactAt + 1];
-  args.splice(compactAt, 2);
+const requiredExamples = ["lexical","deep","recursive","choices-all","choices-first","generator","state-local","state-shared","resource-scalar","resource-pair","answers","scoped-reader","writer-raise","scheduler","queens-dfs","queens-bfs","cell-order","nested","shallow","injection","indexed","abort-custody","unwind","reentrant","cloned","clause-abort","bounded-values","scalar-contracts","ownership","shallow-resumptions","shallow-injection","handle-operand-order","protect-operand-order","successor-state","clause-payload","yielding-cleanup","borrow-operands","cleanup-disposal","cleanup-disposal-running","cleanup-disposal-failure","cleanup-disposal-owned"];
+const visitedSources = new Set(), visitedImages = new Set();
+async function readFile(file, ...options) {
+  const match = String(file).match(/\/source-([^/]+)\.(json|bpi3)$/);
+  if (match) (match[2] === "json" ? visitedSources : visitedImages).add(match[1]);
+  return read(file, ...options);
 }
-if (args.length !== 4 && args.length !== 5) throw new Error("expected kernel, native embedding, fixtures, oracle, and optional Wasmtime project paths");
-const [kernelPath, nativePath, fixtures, oraclePath, project] = args;
+
+const [kernelPath, nativePath, fixtures, oraclePath] = process.argv.slice(2);
 const { execute } = await import(pathToFileURL(oraclePath).href);
 const kernel = new Uint8Array(await readFile(kernelPath));
-const host = await admitProcessKernel(kernel, { expectedSha256: createHash("sha256").update(kernel).digest("hex") });
-const peer = project ? await wasmtimePeer(project, kernelPath, host.sha256) : null;
+const host = await Kernel.create({ bytes: kernel, expectedSha256: createHash("sha256").update(kernel).digest("hex") });
+host.setLimits({ input: 8 << 20, working: 64 << 20, output: 8 << 20 });
+const yielded = new Set();
+const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 let observations = 0;
-async function observe(mode, input) {
-  const encoded = encodeInput({ ...input, mode });
-  const native = spawnSync(nativePath, [], { input: encoded, maxBuffer: 64 << 20 });
-  let result;
-  try { result = await host[mode](input); }
+async function compare(mode, input) {
+  const control = input.cancel !== undefined ? "cancel_text" : input.result !== undefined ? "reply"
+    : input.state && yielded.has(digest(input.state)) ? "resume_yield" : "none";
+  const encoded = encodeInput({ image: input.image, initialArgs: input.initialArgs, state: input.state,
+    control, value: input.cancel ?? input.result, quantum: mode === "advance" ? 1 : null });
+  const native = spawnSync(nativePath, ["invoke"], { input: encoded, maxBuffer: 64 << 20 });
+  let bytes;
+  try { bytes = host.invoke(encoded); }
   catch (error) {
     assert.notEqual(native.status, 0);
-    assert.ok(native.stderr.toString().includes(error.message));
-    if (peer) await assert.rejects(peer.invoke(encoded), (other) => other.message === error.message);
-    throw error;
+    const diagnostic = error.details?.diagnostic;
+    assert.ok(diagnostic, "expected a semantic rejection, not physical capacity");
+    assert.ok(native.stderr.toString().includes(diagnostic), native.stderr.toString());
+    throw new Error(diagnostic, { cause: error });
   }
-  assert.equal(native.status, 0, native.stderr?.toString());
-  const nativeBytes = new Uint8Array(native.stdout);
-  assert.deepEqual(result.bytes, nativeBytes);
-  const producers = [result, { ...decodeOutcome(nativeBytes), bytes: nativeBytes }];
-  if (peer) {
-    const independent = await peer.invoke(encoded);
-    assert.deepEqual(independent, result.bytes);
-    producers.push({ ...decodeOutcome(independent), bytes: independent });
+  assert.equal(native.status, 0, native.stderr.toString());
+  assert.deepEqual(bytes, new Uint8Array(native.stdout));
+  // Alternate the actual producer whose portable State is used next.
+  const selected = observations++ % 2 ? new Uint8Array(native.stdout) : bytes;
+  const result = decodeOutcome(selected);
+  if (result.kind === "yielded") yielded.add(digest(result.state));
+  result.kind = result.kind[0].toUpperCase() + result.kind.slice(1);
+  for (const field of ["reason", "cancellation"]) if (result[field] != null) {
+    assert.equal(result[field].kind, "text");
+    result[field] = result[field].value;
   }
-  // Cross the actual native/JS/Wasmtime producers, including cross-version runs.
-  return producers;
+  return { ...result, bytes: selected };
 }
-const packedImages = new Map();
-function packed(image) {
-  const key = createHash("sha256").update(image).digest("hex");
-  if (!packedImages.has(key)) {
-    const converted = spawnSync(compactConverter, [], { input: image, maxBuffer: 64 << 20 });
-    assert.equal(converted.status, 0, converted.stderr?.toString());
-    packedImages.set(key, new Uint8Array(converted.stdout));
-  }
-  return packedImages.get(key);
-}
-async function compare(mode, input) {
-  const compactInput = compactConverter ? { ...input, image: packed(input.image) } : null;
-  let producers;
-  try { producers = await observe(mode, input); }
-  catch (error) {
-    if (compactInput) await assert.rejects(observe(mode, compactInput), other => other.message === error.message);
-    throw error;
-  }
-  if (compactInput) {
-    const others = await observe(mode, compactInput);
-    for (const other of others) assert.deepEqual(other.bytes, producers[0].bytes);
-    producers.push(...others);
-  }
-  return producers[observations++ % producers.length];
-}
-try {
-  // These regression vectors postdate the pinned compiler's fixture bundle.
-  // World carries their source-derived expectations rather than requiring an
-  // unpinned compiler checkout (whose predecessor oracle had a known defect).
-  const cleanupRoot = join(import.meta.dirname, "cleanup-fixtures");
-  const cleanup = JSON.parse(await readFile(join(cleanupRoot, "expectations.json"), "utf8"));
-  const oracleSha256 = createHash("sha256").update(await readFile(oraclePath)).digest("hex");
-  assert.deepEqual(cleanup.entries.map(entry => entry.name), [
-    "cleanup-disposal", "cleanup-disposal-running", "cleanup-disposal-failure", "cleanup-disposal-owned",
-  ]);
-  for (const { name, sourceSha256, imageSha256, expected, legacyExpected } of cleanup.entries) {
-    const source = await readFile(join(cleanupRoot, `source-${name}.json`));
-    const image = new Uint8Array(await readFile(join(cleanupRoot, `source-${name}.bpi2`)));
-    assert.equal(createHash("sha256").update(source).digest("hex"), sourceSha256);
-    assert.equal(createHash("sha256").update(image).digest("hex"), imageSha256);
-    // Preserve execution of the supplied oracle, including its exact known
-    // predecessor result. Kernel expectations always use the corrected source
-    // semantics; recognizing the old oracle never blesses its missing finalizer.
-    assert.deepEqual(execute(JSON.parse(source), []),
-      oracleSha256 === cleanup.provenance.legacyOracleSha256 ? legacyExpected : expected);
+
+const cleanup = JSON.parse(await readFile(new URL("./cleanup-expectations.json", import.meta.url), "utf8"));
+  for (const { name, expected } of cleanup.entries) {
+    const source = await readFile(join(fixtures, `source-${name}.json`));
+    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi3`)));
+    assert.deepEqual(execute(JSON.parse(source), []), expected);
     const checkTerminal = (result) => {
       assert.equal(result.kind, expected.kind, name);
       assert.deepEqual(Array.from(result.value), expected.value, name);
@@ -109,6 +75,10 @@ try {
           let cancelled = await compare("advance", { image, state: result.state, cancel: "stop" });
           if (cancelled.kind === "Progressed" || cancelled.kind === "Yielded")
             cancelled = await compare("run", { image, state: cancelled.state, cancel: "later" });
+          // Cancellation during an existing failure records its reason but keeps
+          // this already-observed yield parked; PKI3 resumes it explicitly.
+          if (cancelled.kind === "Yielded")
+            cancelled = await compare("run", { image, state: cancelled.state });
           assert.equal(cancelled.kind, "Failed");
           assert.deepEqual(Array.from(cancelled.value), []);
           assert.deepEqual(cancelled.cleanupFailures, []);
@@ -131,7 +101,7 @@ try {
   }
   {
     const source = JSON.parse(await readFile(join(fixtures, "source-borrow-operands.json"), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, "source-borrow-operands.bpi2")));
+    const image = new Uint8Array(await readFile(join(fixtures, "source-borrow-operands.bpi3")));
     for (let index = 0; index < 42; index++) {
       const oracle = execute(source, [index], index >= 32 ? [[], []] : []);
       const populated = index % 2 === 1, owned = index >= 12;
@@ -144,13 +114,13 @@ try {
         let step = await compare(mode, { image, initialArgs: Uint8Array.of(index) });
         let transitions = 0;
         while (["Progressed", "Yielded", "Requested"].includes(step.kind)) {
-          assert.ok(transitions++ < 128, "finite operand fixture exceeded its test horizon");
+          assert.ok(transitions++ < 1024, `operand ${index}: current instruction horizon exceeded`);
           if (step.kind === "Yielded") trace.push({ kind: "Yielded" });
           let response;
           if (step.kind === "Requested") {
-            const request = decodeRequest(step.request);
+            const request = await decodeRequest(step.request);
             trace.push({ kind: "Requested", identity: request.semanticIdentity, payload: [...request.payload] });
-            response = encodeResult(step.request, new Uint8Array());
+            response = await encodeResult(step.request, new Uint8Array());
           }
           step = await compare(mode, { image, state: step.state, result: response });
         }
@@ -169,7 +139,7 @@ try {
   }
   {
     const source = JSON.parse(await readFile(join(fixtures, "source-scalar-contracts.json"), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, "source-scalar-contracts.bpi2")));
+    const image = new Uint8Array(await readFile(join(fixtures, "source-scalar-contracts.bpi3")));
     for (let index = 0; index < 19; index++) {
       const oracle = execute(source, [index]);
       const result = await compare("run", { image, initialArgs: Uint8Array.of(index) });
@@ -182,7 +152,7 @@ try {
   }
   for (const [name, initial] of [["lexical", [40, 0, 0, 0, 0, 0, 0, 0]], ["deep", []], ["recursive", [16, 39, 0, 0, 0, 0, 0, 0]], ["choices-all", []], ["choices-first", []], ["state-local", []], ["state-shared", []], ["answers", []], ["writer-raise", []], ["cell-order", []], ["nested", []], ["shallow", [0]], ["shallow", [1]], ["injection", [0]], ["injection", [1]], ["abort-custody", [1]], ["bounded-values", []], ["shallow-resumptions", []], ["shallow-injection", [0]], ["shallow-injection", [1]], ["handle-operand-order", []], ["protect-operand-order", []]]) {
     const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi2`)));
+    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi3`)));
     const oracle = execute(source, initial);
     const result = await compare("run", { image, initialArgs: Uint8Array.from(initial) });
     assert.equal(result.kind, oracle.kind);
@@ -196,7 +166,7 @@ try {
   }
   for (const name of ["generator", "scheduler", "reentrant", "cloned", "ownership", "successor-state", "clause-payload"]) {
     const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi2`)));
+    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi3`)));
     const oracle = execute(source, [], name === "generator" ? [[]] : []);
     for (const mode of ["advance", "run"]) {
       const trace = [];
@@ -205,9 +175,9 @@ try {
         let result;
         if (step.kind === "Yielded") trace.push({ kind: step.kind });
         else if (step.kind === "Requested") {
-          const request = decodeRequest(step.request);
+          const request = await decodeRequest(step.request);
           trace.push({ kind: step.kind, identity: request.semanticIdentity, payload: [...request.payload] });
-          result = encodeResult(step.request, new Uint8Array());
+          result = await encodeResult(step.request, new Uint8Array());
         } else assert.equal(step.kind, "Progressed");
         step = await compare(mode, { image, state: step.state, result });
       }
@@ -217,7 +187,7 @@ try {
   }
   for (const name of ["resource-scalar", "resource-pair", "scoped-reader", "indexed", "abort-custody", "clause-abort"]) {
     const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi2`)));
+    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi3`)));
     const responses = name === "scoped-reader" ? [[], [], []] : name === "indexed" ? [[37, 0, 0, 0, 0, 0, 0, 0], [1]] : name === "abort-custody" || name === "clause-abort" ? [[]] : [[41, 0, 0, 0, 0, 0, 0, 0], [], []];
     const initialArgs = Uint8Array.from(name === "abort-custody" ? [0] : []);
     const oracle = execute(source, [...initialArgs], responses);
@@ -227,8 +197,8 @@ try {
       while (step.kind !== "Completed" && step.kind !== "Failed") {
         let result;
         if (step.kind === "Requested") {
-          const request = decodeRequest(step.request);
-          result = encodeResult(step.request, Uint8Array.from(responses[trace.length]));
+          const request = await decodeRequest(step.request);
+          result = await encodeResult(step.request, Uint8Array.from(responses[trace.length]));
           trace.push({ kind: step.kind, identity: request.semanticIdentity, payload: [...request.payload] });
         } else assert.equal(step.kind, "Progressed");
         step = await compare(mode, { image, state: step.state, result });
@@ -240,7 +210,7 @@ try {
   }
   for (const name of ["queens-dfs", "queens-bfs"]) {
     const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi2`)));
+    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi3`)));
     const responses = [[201, 0, 0, 0, 0, 0, 0, 0], [], [], [202, 0, 0, 0, 0, 0, 0, 0], [], []];
     const oracle = execute(source, [], responses);
     const trace = [];
@@ -251,9 +221,9 @@ try {
       if (step.kind === "Yielded") trace.push({ kind: step.kind });
       else {
         assert.equal(step.kind, "Requested");
-        const request = decodeRequest(step.request);
+        const request = await decodeRequest(step.request);
         trace.push({ kind: step.kind, identity: request.semanticIdentity, payload: [...request.payload] });
-        result = encodeResult(step.request, Uint8Array.from(responses[requests++]));
+        result = await encodeResult(step.request, Uint8Array.from(responses[requests++]));
       }
       // Every checkpoint crosses a fresh engine. Compare one bounded transition
       // and then the public run boundary from that exact successor in both engines.
@@ -266,37 +236,37 @@ try {
   }
   for (const name of ["resource-scalar", "resource-pair"]) for (const duringCleanup of [false, true]) {
     const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi2`)));
+    const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi3`)));
     const controls = duringCleanup ? [{ at: 2, reason: "stop" }, { at: 2, reason: "later" }] : [{ at: 1, reason: "stop" }, { at: 2, reason: "later" }];
     const number = [41, 0, 0, 0, 0, 0, 0, 0];
     const oracle = execute(source, [], duringCleanup ? [number, [], []] : [number, []], controls);
     const trace = [];
-    const observe = (step) => {
+    const observe = async (step) => {
       assert.equal(step.kind, "Requested");
-      const request = decodeRequest(step.request);
+      const request = await decodeRequest(step.request);
       trace.push({ kind: "Requested", identity: request.semanticIdentity, payload: [...request.payload] });
     };
     let step = await compare("run", { image, initialArgs: new Uint8Array() });
-    observe(step);
-    step = await compare("run", { image, state: step.state, result: encodeResult(step.request, Uint8Array.from(number)) });
-    observe(step);
+    await observe(step);
+    step = await compare("run", { image, state: step.state, result: await encodeResult(step.request, Uint8Array.from(number)) });
+    await observe(step);
     step = duringCleanup
-      ? await compare("run", { image, state: step.state, result: encodeResult(step.request, new Uint8Array()) })
+      ? await compare("run", { image, state: step.state, result: await encodeResult(step.request, new Uint8Array()) })
       : await compare("run", { image, state: step.state, cancel: "stop" });
-    observe(step);
-    const obtained = encodeResult(step.request, new Uint8Array());
-    const oldRequest = decodeRequest(step.request);
+    await observe(step);
+    const obtained = await encodeResult(step.request, new Uint8Array());
+    const oldRequest = await decodeRequest(step.request);
     const rebound = await compare("run", { image, state: step.state, cancel: duringCleanup ? "stop" : "later" });
-    const newRequest = decodeRequest(rebound.request);
+    const newRequest = await decodeRequest(rebound.request);
     assert.deepEqual(newRequest.payload, oldRequest.payload);
-    assert.deepEqual(newRequest.residualContractDigest, oldRequest.residualContractDigest);
+    assert.deepEqual(newRequest.resumeSchema, oldRequest.resumeSchema);
     if (duringCleanup) {
       assert.notDeepEqual(newRequest.requestIdentity, oldRequest.requestIdentity);
       await assert.rejects(compare("run", { image, state: rebound.state, result: obtained }), /InvalidResult/);
     } else assert.deepEqual(rebound.bytes, step.bytes);
     const repeated = await compare("run", { image, state: rebound.state, cancel: "later" });
     assert.deepEqual(repeated.bytes, rebound.bytes);
-    step = await compare("run", { image, state: repeated.state, result: encodeResult(repeated.request, new Uint8Array()) });
+    step = await compare("run", { image, state: repeated.state, result: await encodeResult(repeated.request, new Uint8Array()) });
     assert.equal(step.kind, oracle.kind);
     assert.equal(step.reason, oracle.reason);
     assert.deepEqual(step.cleanupFailures.map((bytes) => [...bytes]), oracle.cleanupFailures);
@@ -304,32 +274,32 @@ try {
   }
   for (const primary of [0, 1]) for (const cancel of [false, true]) {
     const source = JSON.parse(await readFile(join(fixtures, "source-unwind.json"), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, "source-unwind.bpi2")));
+    const image = new Uint8Array(await readFile(join(fixtures, "source-unwind.bpi3")));
     const oracle = execute(source, [primary], [[], []], cancel ? [{ at: 0, reason: "stop" }, { at: 0, reason: "later" }] : []);
     const trace = [];
     let step = await compare("run", { image, initialArgs: Uint8Array.of(primary) });
     while (step.kind === "Requested") {
-      const request = decodeRequest(step.request);
+      const request = await decodeRequest(step.request);
       trace.push({ kind: "Requested", identity: request.semanticIdentity, payload: [...request.payload] });
       if (cancel && trace.length === 1) {
-        const obtained = encodeResult(step.request, new Uint8Array());
+        const obtained = await encodeResult(step.request, new Uint8Array());
         step = await compare("run", { image, state: step.state, cancel: "stop" });
         await assert.rejects(compare("run", { image, state: step.state, result: obtained }), /InvalidResult/);
         const repeated = await compare("run", { image, state: step.state, cancel: "later" });
         assert.deepEqual(repeated.bytes, step.bytes);
         step = repeated;
       }
-      step = await compare("run", { image, state: step.state, result: encodeResult(step.request, new Uint8Array()) });
+      step = await compare("run", { image, state: step.state, result: await encodeResult(step.request, new Uint8Array()) });
     }
     assert.equal(step.kind, oracle.kind);
     assert.deepEqual(step.value, Uint8Array.from(oracle.value));
     assert.deepEqual(step.cleanupFailures.map((bytes) => [...bytes]), oracle.cleanupFailures);
-    assert.equal(step.cancellation, oracle.cancellation);
+    assert.equal(step.cancellation, oracle.cancellation ?? null);
     assert.deepEqual(trace, oracle.trace);
   }
   for (const primary of [0, 1]) for (const cancel of [false, true]) {
     const source = JSON.parse(await readFile(join(fixtures, "source-yielding-cleanup.json"), "utf8"));
-    const image = new Uint8Array(await readFile(join(fixtures, "source-yielding-cleanup.bpi2")));
+    const image = new Uint8Array(await readFile(join(fixtures, "source-yielding-cleanup.bpi3")));
     const oracle = execute(source, [primary], [[], []], cancel ? [{ at: 0, reason: "stop" }, { at: 2, reason: "later" }] : []);
     for (const mode of ["advance", "run"]) {
       const trace = [];
@@ -343,22 +313,23 @@ try {
           if (cancel) input.cancel = yields === 0 ? "stop" : "later";
           yields++;
         } else if (step.kind === "Requested") {
-          const request = decodeRequest(step.request);
+          const request = await decodeRequest(step.request);
           trace.push({ kind: "Requested", identity: request.semanticIdentity, payload: [...request.payload] });
-          input.result = encodeResult(step.request, new Uint8Array());
+          input.result = await encodeResult(step.request, new Uint8Array());
           requests++;
         } else assert.equal(step.kind, "Progressed");
         step = await compare(mode, input);
+        if (input.cancel !== undefined && step.kind === "Yielded")
+          step = await compare(mode, { image, state: step.state });
       }
       assert.equal(yields, 2); assert.equal(requests, 2);
       assert.equal(step.kind, oracle.kind);
       assert.deepEqual(step.value, Uint8Array.from(oracle.value));
       assert.deepEqual(step.cleanupFailures.map(bytes => [...bytes]), oracle.cleanupFailures);
-      assert.equal(step.cancellation, oracle.cancellation);
+      assert.equal(step.cancellation, oracle.cancellation ?? null);
       assert.deepEqual(trace, oracle.trace);
     }
   }
-  console.log("source oracle/native/WASM agreement and fresh transfers passed for forty-one compiled source examples and cancellation scenarios");
-  if (compactConverter) console.log(`BPI2/BPC1 exact outcomes and alternating fresh transfers matched ${observations} calls over ${packedImages.size} images`);
-  if (peer) console.log(`Wasmtime ${peer.identity.wasmtime} matched all source checkpoints; kernel ${peer.identity.kernel_sha256}`);
-} finally { if (peer) await peer.close(); }
+assert.deepEqual([...visitedSources].sort(), requiredExamples.toSorted());
+assert.deepEqual([...visitedImages].sort(), requiredExamples.toSorted());
+console.log(JSON.stringify({ check: "current source oracle/native/WASM agreement", fixtures: 41, observations }));

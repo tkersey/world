@@ -511,7 +511,9 @@ transfer, browser and package checks. The old ABI 2 build/release graph and publ
 `process_v2` export are removed. Shared runtime errors and statistics no longer
 import the old evaluator. Its private implementation remains pending the rest of
 the migration. Capture and return-path regressions now use current source/PST3.
-Old host/guest source files are not yet physically retired.
+The old ABI 2 JavaScript API and guest, v1 replay runtime, release/acquisition
+drivers and frozen cleanup images are now physically removed. Current fixtures
+come from Boundary's ordinary BPI3 emitter without historical pin exceptions.
 
 Current host tests preserve independent byte ownership, value framing, ABI and
 file-input expectations. They exposed two corrections: `encodeResult` snapshots
@@ -550,6 +552,32 @@ are removed after this migration. `zig build check-native check-storage
 the current source suite contains 53 tests and the remaining native/storage suite
 passes 76 tests. Focused Debug capture/return tests, formatting and diff checks
 pass. This does not establish full `check` or performance acceptance.
+
+`check-source` now retains the old host conformance assertions on the current
+protocol: all 41 source examples, 42 borrow-operand inputs, the four independently
+specified cleanup-disposal cases, cancellation and fresh native/WASM transfers.
+The migration run passed 6,755 byte-identical observations. Cancellation during
+an existing failure preserves an already-observed yield until explicit PKI3
+resumption. The operand test horizon now counts up to 1,024 current instructions
+rather than 128 predecessor block transitions; terminal and trace assertions are
+unchanged. The harness checks the exact expected fixture name set.
+
+`check-capacity` covers each arena limit and a kernel whose maximum physical
+memory equals its initial memory. A request larger than the initial 1 MiB backing
+forces actual growth failure. Rejections publish no State; identical input retries
+match the successful native/WASM observation. Final output demand remains exact;
+allocator demands use ABI 3's conservative lower-bound provenance. Historical
+measurements remain intact. Current coverage and the remaining native migration
+boundaries are summarized in [verification.md](verification.md).
+
+After removal, the expanded `zig build check -Dboundary-source=BOUNDARY_CHECKOUT
+-j4 --global-cache-dir .zig-global-cache --summary all` passes 32/32 build steps
+with Boundary `ff8a1b277392984681e9710224313adbbb396f4c`: 76 native/storage tests,
+the 53-test source suite, 24 JavaScript host tests, the 6,755 source-oracle
+observations, all capacity checks, 257 native/Node boundaries with 23 transfers,
+174 Wasmtime boundaries, Chromium 153.0.8010.12 and Firefox 155.0 Worker transfers,
+and the extracted 14-file package/CLI. Kernel SHA-256 remains
+`19d8fda6a667e1e2a278713f683e20eedb476c24e03ee589faf3cfa830953daf`.
 
 The normal Boundary pin is still `7094aa5f228aa1478489e20bd9245f02eda764a2`.
 Agent still selects World `f36994b26b6506bfc2b80ee1db8a9dfdbdef5b77`; its previous

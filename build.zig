@@ -108,6 +108,29 @@ pub fn build(b: *std.Build) void {
     current_check.step.dependOn(&current_fixtures.step);
     current_check.has_side_effects = true;
     b.step("check-kernel", "Check ABI 3 and current native/Node transfer").dependOn(&current_check.step);
+    const source_examples = b.addSystemCommand(&.{ "zig", "build", "emit-examples", "--build-file" });
+    source_examples.addArg(b.pathJoin(&.{ source, "build.zig" }));
+    source_examples.addArgs(&.{ "-Doptimize=ReleaseSafe", "--prefix", b.getInstallPath(.prefix, "source"), "--cache-dir", b.pathFromRoot(".cache/source-examples"), "--global-cache-dir", b.pathFromRoot(".cache/activation-global") });
+    const source_agreement = b.addSystemCommand(&.{"node"});
+    source_agreement.addFileArg(b.path("test/current/source_agreement.mjs"));
+    source_agreement.addFileArg(current_kernel.getEmittedBin());
+    source_agreement.addArg(b.getInstallPath(.prefix, "current/bin/current-fixtures"));
+    source_agreement.addArg(b.getInstallPath(.prefix, "source"));
+    source_agreement.addArg(b.pathJoin(&.{ source, "test/v2/source_oracle.mjs" }));
+    source_agreement.step.dependOn(&source_examples.step);
+    source_agreement.step.dependOn(&current_fixtures.step);
+    source_agreement.has_side_effects = true;
+    b.step("check-source", "Compare current native/WASM execution with independent source semantics")
+        .dependOn(&source_agreement.step);
+    const capacity = b.addSystemCommand(&.{"node"});
+    capacity.addFileArg(b.path("test/current/capacity.mjs"));
+    capacity.addFileArg(current_kernel.getEmittedBin());
+    capacity.addArg(b.getInstallPath(.prefix, "current/bin/current-fixtures"));
+    capacity.addArg(source);
+    capacity.step.dependOn(&current_fixtures.step);
+    capacity.has_side_effects = true;
+    b.step("check-capacity", "Check all current arena limits, physical memory and unchanged retries")
+        .dependOn(&capacity.step);
     const current_transfer = b.addSystemCommand(&.{"node"});
     current_transfer.addFileArg(b.path("test/current/transfer.mjs"));
     current_transfer.addFileArg(current_kernel.getEmittedBin());
@@ -156,6 +179,8 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&stable_source.step);
     check.dependOn(&activation_wasm_run.step);
     check.dependOn(&current_check.step);
+    check.dependOn(&source_agreement.step);
+    check.dependOn(&capacity.step);
     check.dependOn(&current_transfer.step);
     check.dependOn(&current_browser.step);
     check.dependOn(&current_codecs.step);
