@@ -289,7 +289,7 @@ retained form stays at five. The baseline is Boundary `adf3c7e` and World
 `321199b`, using native ReleaseSafe and Zig 0.16.0. These counts exclude Session
 initialization and are neither heap allocation counts nor elapsed-time claims.
 Run `check-stable-source` with the normal dependency pin, which now selects
-Boundary `c00b2a70180e8488627359724d7c50ba3d6a8670`.
+Boundary `e28d5b32fbf92a7013cb18cb8c81128a9b53cd6b`.
 
 Total branching handler clauses now use Boundary's independently admitted
 `tail` strategy. World enters the selected function with state/payload and an
@@ -309,3 +309,134 @@ work-count results, not the full performance acceptance matrix.
 Agent migration and its actual compiled-tool/file transfer, component contract completion,
 selective execution, value/performance acceptance, complete consumer package cutover, legacy
 retirement and linked draft-PR/serial-review delivery remain mandatory.
+
+The retained scoped-interaction witness supplies an effectful body to an
+operation, stores a computation across a yield, and executes it under a new
+interpretation. Definition-site and scope-supplied capabilities remain distinct
+(10 and 20), and the complete return transformations produce `[1121, 99]`.
+Cleanup requests payload 77 exactly once on normal completion and cancellation.
+The native test checks the retained closure graph and portable cleanup state;
+selected and general resumption forms agree at every instruction boundary across
+fresh, resident and restored execution. Node/native qualification now covers 257
+boundaries and 23 transfers; independent Wasmtime covers 174 boundaries.
+Chromium and Firefox each transfer both forms through native execution and a
+fresh Worker. These additions leave the production kernel bytes unchanged.
+
+## Targeted value access
+
+`Values` now reads a variant's tag directly and materializes only the requested
+product field. A wrong-variant projection fails before materializing its payload.
+Structured internal aggregates keep their existing ownership semantics. Encoded
+projections copy the selected nonscalar value into Store-owned storage; they do
+not return a borrow into a possibly reclaimed parent blob. Preceding product
+fields are still parsed to locate a later field, so this is not a constant-time
+index or a claim that all repeated decoding has been eliminated.
+
+The controlled probe loads only the whole aggregate, then measures Store copying
+for first-field, last-field, tag, and wrong-variant access. This avoids an existing
+child blob masking the baseline cost through interning. With Zig 0.16.0 native
+ReleaseSafe and the same admitted values, every operation copied 1/1,026/1,048,579
+bytes for sibling payloads of 0/1,024/1,048,576 bytes in `c677647`'s implementation.
+Each now copies zero sibling-payload bytes. The selected scalar values and
+wrong-variant error are unchanged. These are deterministic work counts, not
+elapsed-time or full-path performance acceptance.
+
+Tests also collect the containing product while retaining a projected blob, and
+reject truncated or invalid-UTF-8 payloads at Session initialization even when
+the requested field/tag would not inspect that payload. Full input and State
+admission remain required. Native semantics and current native/Node/Wasmtime/
+browser checks pass with the new accessors; consuming sequence traversal and
+matched-baseline performance acceptance remain open.
+
+### Native full-invocation variant comparison
+
+The optional `test/v2/build_value_bench.zig` accepts explicit frozen Boundary and
+World source paths. It does not fetch historical dependencies or enter normal CI.
+The same authored loop inspects a supplied variant 256 times and accumulates its
+tag. A tag-1 control must return 256; tag-0 byte payloads must return zero.
+
+The two-window comparison uses the specified Boundary 2.0.2 / World 5.0.2 commits
+with both BPI2 and BPC1, the published successor before projection changes, and
+that same successor with only `values.zig` changed. All use Zig 0.16.0 native
+ReleaseSafe, a 32 MiB working arena, three warmups and nine samples per process,
+and three rotating processes per window. Timing includes arena initialization,
+input decoding, admission, execution, outcome encoding and owner release. Process
+startup, program production and caller result verification are outside timing.
+Allocation diagnostics use a separate replay. Background desktop/security activity
+was observed; these are diagnostic native results, not an uncontended-host claim.
+
+| Workload | BPC1 window medians | Candidate window medians |
+| --- | --- | --- |
+| Tag 1, no payload | 0.141 / 0.141 ms | 0.588 / 0.582 ms |
+| Tag 0, 1 KiB payload | 0.199 / 0.196 ms | 0.581 / 0.577 ms |
+| Tag 0, 1 MiB payload | 38.038 / 38.020 ms | 0.724 / 0.739 ms |
+
+For 1 MiB, the pre-change successor takes 20.924 / 20.955 ms. Candidate allocation
+traffic is 3,860,552 bytes versus BPC1's 269,740,101 bytes, but candidate peak live
+working allocation is **higher**: 3,691,844 versus 2,103,211 bytes. The tiny control
+also remains roughly four times slower than BPC1. These costs remain open; the
+large-value win does not discharge control-heavy, actual-Agent or complete-matrix
+acceptance. Full BPI2 results, all raw samples, binary/source hashes and configuration
+are in [the measurement record](measurements/variant-tag-native.json).
+
+Reproduce by building the probe separately for each frozen source pair:
+`zig build --build-file test/v2/build_value_bench.zig -Dboundary-source=ABSOLUTE
+-Dworld-source=ABSOLUTE --cache-dir=ISOLATED --global-cache-dir=ISOLATED --prefix=OUTPUT`.
+Invoke `OUTPUT/bin/value-bench FORMAT PAYLOAD_BYTES TAG` with BPI2/BPC1 on the
+predecessor or BPI3 on the successor. Formats are lowercase. The preserved matrix
+is `(0,1)`, `(0,0)`, `(1024,0)`, `(1048576,0)`; each process emits its nine samples
+and separate allocation diagnostics as JSON. Program production uses the same
+builder function for every source pair.
+
+### Runtime initialization bookkeeping
+
+Sampling the tiny-loop benchmark attributed substantial execution time to
+interning and rebuilding runtime initialization sets. Batched pruning now computes
+the surviving initialized set once, clears discarded values/custody, and publishes
+that set after the private transition. Frames with at most 64 slots use a private
+word-sized initialization mask; larger frames retain compact shared trees.
+Liveness still comes from independently derived Program facts, and custody still
+owns disposal order. Neither is inferred from the mask. Wire State and slot-view
+copy-on-write behavior are unchanged.
+
+The tests cover 3/64/65/256-slot frames with holes in initialization, preservation
+of older views, instruction checkpoints, and the existing resident allocation-
+failure/rollback and generalized-effect cases. Native/Node/Wasmtime/browser
+qualification passes. The word-sized path has a fixed 64-slot bound; it does not
+create a per-boundary prefix table or replace large layouts with flat bitsets.
+
+In two rotating diagnostic windows, tiny-loop process medians are 0.572–0.617 ms
+with the projection-only successor, 0.509–0.537 ms with batched pruning, and
+0.268–0.289 ms with the small-frame mask. The 1 MiB value workload improves from
+0.728–0.752 ms to 0.417–0.451 ms. This still does not match the predecessor's
+approximately 0.141 ms tiny-loop result. That remaining cost and full performance
+acceptance remain open. Raw samples and allocation diagnostics are preserved in
+[the frame measurement record](measurements/frame-initialization-native.json).
+
+### Encoding into the final value owner
+
+Exportable aggregate, collection and blob construction now allocates its encoding
+with the Store allocator and transfers that completed buffer into the Store.
+`literalOwned` consumes an independent buffer only on success; failures retain
+caller ownership. Interning consumes/frees a duplicate buffer, and scalar results
+consume the buffer after copying into inline storage. Publication follows all
+fallible capacity and journal preparation. Borrowed literals retain their existing
+copying interface, so projections and input admission acquire no new borrowed
+lifetimes.
+
+The product-construction probe previously copied 9/1,034/1,048,587 encoded bytes
+from scratch to Store for payloads of 0/1,024/1,048,576 bytes. That second copy is
+now zero in each case. Payload bytes are still written once into the final
+encoding; this is not a zero-data-movement or elapsed-time claim. Allocation-failure
+sweeps cover transfer, interning, inline values, journal rollback and freed-ID reuse.
+Native semantics, resident rollback, current host transfers and extracted-package
+checks pass. Efficient consuming sequence traversal and full matched performance
+acceptance remain separate open requirements.
+
+The measurement directory preserves `projection-only.patch` and
+`frame-mask.patch` against `c677647`. Both reconstructed sources match the SHA-256
+values recorded during measurement, so later value-construction changes do not
+silently change those candidates. Apply the projection patch plus the frame patch
+with `git apply --unidiff-zero` to reproduce the final mask candidate. Raw prune-only observations remain, but
+its source and binary hashes were not recorded; that intermediate has a weaker
+reproduction record.

@@ -3,6 +3,41 @@ const data = @import("boundary_data_v2");
 const heap = @import("store.zig");
 const testing = std.testing;
 
+fn ownedLiteral(allocator: std.mem.Allocator, store: *heap.Store, schema: data.program.Id, contents: []const u8) !data.graph.Value {
+    const buffer = try allocator.dupe(u8, contents);
+    errdefer allocator.free(buffer);
+    return store.literalOwned(&.{ .bytes, .u64 }, schema, buffer);
+}
+
+fn ownedConstruction(allocator: std.mem.Allocator) !void {
+    var store: heap.Store = .{ .allocator = allocator };
+    defer store.deinit();
+    const buffer = try allocator.dupe(u8, &.{ 3, 'o', 'n', 'e' });
+    var transferred = false;
+    defer if (!transferred) allocator.free(buffer);
+    const first = try store.literalOwned(&.{ .bytes, .u64 }, 0, buffer);
+    transferred = true;
+    try testing.expect(store.blobs.items[@intCast(first.body.blob.id)].bytes.ptr == buffer.ptr);
+    const duplicate = try ownedLiteral(allocator, &store, 0, &.{ 3, 'o', 'n', 'e' });
+    try testing.expectEqual(first.body.blob.id, duplicate.body.blob.id);
+    const scalar = try ownedLiteral(allocator, &store, 1, &.{ 42, 0, 0, 0, 0, 0, 0, 0 });
+    try testing.expectEqual(42, scalar.body.scalar[0]);
+    const root = try store.add(.{ .environment = .{ .values = &.{first}, .tail = null } });
+    const roots: data.graph.Roots = .{ .current = root };
+    try store.begin();
+    try store.replace(root, .{ .environment = .{ .values = &.{}, .tail = null } });
+    try store.collect(roots);
+    const replacement = try ownedLiteral(allocator, &store, 0, &.{ 3, 't', 'w', 'o' });
+    try testing.expectEqual(first.body.blob.id, replacement.body.blob.id);
+    store.rollback();
+    const restored = (try store.get(root)).environment.values[0];
+    try testing.expectEqualSlices(u8, &.{ 3, 'o', 'n', 'e' }, store.blobs.items[@intCast(restored.body.blob.id)].bytes);
+}
+
+test "owned blob construction transfers only on success and survives journal reuse" {
+    try testing.checkAllAllocationFailures(testing.allocator, ownedConstruction, .{});
+}
+
 fn bytes(store: *heap.Store, roots: data.graph.Roots) ![]u8 {
     const nodes = try testing.allocator.alloc(data.process_state.Node, store.nodes.items.len);
     defer testing.allocator.free(nodes);

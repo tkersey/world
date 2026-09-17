@@ -29,16 +29,32 @@ pub fn main(init: std.process.Init) !void {
         var builder = boundary.source.Builder.init(init.gpa);
         defer builder.deinit();
         const module = blk: {
+            if (std.mem.eql(u8, name, "retainedScopeGeneral"))
+                break :blk try boundary.source.examples.retainedScope(&builder);
             if (std.mem.eql(u8, name, "install")) break :blk try boundary.source.examples.installations(&builder, 64);
             if (std.mem.eql(u8, name, "resource")) break :blk try boundary.source.examples.resourceScalar(&builder);
             if (std.mem.eql(u8, name, "custody")) break :blk try boundary.source.examples.custodyOrder(&builder, 0);
-            inline for (.{ "branchingTail", "branchingTailProtected", "deep", "recursive", "reentrant", "generator", "shallow", "scalarContracts" }) |candidate| {
+            inline for (.{ "retainedScope", "branchingTail", "branchingTailProtected", "deep", "recursive", "reentrant", "generator", "shallow", "scalarContracts" }) |candidate| {
                 if (std.mem.eql(u8, name, candidate)) break :blk try @field(boundary.source.examples, candidate)(&builder);
             }
             return error.InvalidName;
         };
         var compiled = try boundary.source.construct(init.gpa, module);
         defer compiled.deinit();
+        if (std.mem.eql(u8, name, "retainedScopeGeneral")) {
+            const ir = boundary.data_v2.activation;
+            const a = builder.allocator();
+            const handlers = try a.dupe(ir.Handler, compiled.program.handlers);
+            for (handlers, builder.handlers.items) |*handler, original| {
+                const clauses = try a.dupe(ir.Clause, handler.clauses);
+                for (clauses, original.clauses) |*clause, source_clause| {
+                    clause.strategy = .general;
+                    clause.function = source_clause.function;
+                }
+                handler.clauses = clauses;
+            }
+            compiled.program.handlers = handlers;
+        }
         const bytes = try init.gpa.alloc(u8, try boundary.data_v2.program_image.encodedLength(compiled.program));
         defer init.gpa.free(bytes);
         _ = try compiled.encode(init.gpa, bytes);

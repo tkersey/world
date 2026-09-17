@@ -11,12 +11,12 @@ const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
 const peer = await wasmtimePeer(kernelPath, expectedSha256);
 let boundaries = 0;
 try {
-  for (const name of ["branchingTailProtected", "branchingTail", "resource", "generator", "reentrant", "custody", "components", "componentsDouble"]) {
+  for (const name of ["retainedScope", "retainedScopeGeneral", "branchingTailProtected", "branchingTail", "resource", "generator", "reentrant", "custody", "components", "componentsDouble"]) {
     const image = new Uint8Array(execFileSync(fixtures, ["image", name]));
     const k = await Kernel.create({ bytes, expectedSha256 });
     k.setLimits({ input: 2 << 20, working: 8 << 20, output: 2 << 20 });
     const p = k.prepare(image), s = k.start(p, name.startsWith("branchingTail") ? Uint8Array.of(1) : new Uint8Array());
-    const quantum = name.startsWith("branchingTail") ? 1 : 17;
+    const quantum = name.startsWith("branchingTail") || name.startsWith("retainedScope") ? 1 : 17;
     const initial = k.checkpoint(s, { transfer: true });
     k.releasePrepared(p);
     const prepared = await peer.call("prepare", { bytes: image });
@@ -33,6 +33,10 @@ try {
       const outcome = decodeOutcome(actual.bytes);
       boundaries++;
       if (["completed", "failed", "cancelled"].includes(outcome.kind)) {
+        if (name.startsWith("retainedScope")) {
+          assert.equal(outcome.kind, "completed");
+          assert.deepEqual(outcome.value, Uint8Array.of(0x61, 4, 0, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0, 0, 0, 0));
+        }
         if (name.startsWith("branchingTail")) {
           assert.equal(outcome.kind, "completed");
           assert.deepEqual(outcome.value, Uint8Array.of(60, 0, 0, 0, 0, 0, 0, 0));
@@ -51,7 +55,8 @@ try {
       k.releasePrepared(restored);
       if (outcome.kind === "requested") {
         const request = await decodeRequest(outcome.request);
-        assert.ok(["example/tail-cleanup", "example/resource-acquire", "example/resource-use", "example/resource-release", "example/generator-release", "custody/release", "component/release"].includes(request.semanticIdentity));
+        assert.ok(["retained-scope/release", "example/tail-cleanup", "example/resource-acquire", "example/resource-use", "example/resource-release", "example/generator-release", "custody/release", "component/release"].includes(request.semanticIdentity));
+        if (request.semanticIdentity === "retained-scope/release") assert.deepEqual(request.payload, Uint8Array.of(77, 0, 0, 0, 0, 0, 0, 0));
         if (request.semanticIdentity === "component/release") assert.deepEqual(request.payload, Uint8Array.of(83, 0, 0, 0, 0, 0, 0, 0));
         const result = request.semanticIdentity === "example/resource-acquire" ? Uint8Array.of(41, 0, 0, 0, 0, 0, 0, 0) : new Uint8Array();
         value = await encodeResult(outcome.request, result); control = 1;

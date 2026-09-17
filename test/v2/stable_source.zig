@@ -5,6 +5,144 @@ const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 const Resident = @import("stable_runtime").Resident;
 
+test "fast projections still reject malformed unselected input payloads" {
+    for (0..3) |mode| {
+        const variant = mode != 0;
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        const integer = try builder.scalar(u64);
+        const bytes = try builder.schema(if (mode == 2) .text else .bytes);
+        const unit = try builder.scalar(void);
+        const input = try builder.schema(if (variant)
+            .{ .sum = &.{ bytes, unit } }
+        else
+            .{ .product = &.{ integer, bytes } });
+        const entry = try builder.declare(&.{input}, integer, &.{}, &.{});
+        const projected = try builder.primitive(integer, if (variant) .variant_tag else .field, &.{try builder.reference(builder.parameter(entry, 0))}, 0);
+        try builder.define(entry, try builder.pure(projected));
+        var compiled = try source.construct(testing.allocator, builder.module(entry, unit));
+        defer compiled.deinit();
+        const image = try programBytes(compiled.program);
+        defer testing.allocator.free(image);
+        const truncated: []const u8 = if (variant) &.{ 0, 16 } else &.{ 42, 0, 0, 0, 0, 0, 0, 0, 16 };
+        try testing.expectError(error.Truncated, Session.initImage(testing.allocator, image, truncated));
+        if (mode == 2) try testing.expectError(error.InvalidUtf8, Session.initImage(testing.allocator, image, &.{ 0, 1, 0xff }));
+        const valid: []const u8 = if (variant) &.{ 0, 0 } else &.{ 42, 0, 0, 0, 0, 0, 0, 0, 0 };
+        var session = try Session.initImage(testing.allocator, image, valid);
+        defer session.deinit();
+        const result = try session.run(null);
+        try testing.expect(result == .completed);
+        try testing.expectEqual(@as(u8, if (variant) 0 else 42), result.completed.body.scalar[0]);
+    }
+}
+
+test "higher-order scoped bodies retain definition and use capabilities with cleanup" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.retainedScope(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    for ([_]bool{ false, true }) |cancel| {
+        var session = try Session.initImage(testing.allocator, image, &.{});
+        var alive = true;
+        defer if (alive) session.deinit();
+        try testing.expect(try session.run(null) == .yielded);
+        try session.store.collectWith(session.roots, &session.frames);
+        var retained = false;
+        for (session.store.nodes.items, session.store.alive.items) |node, live| {
+            if (!live or node != .computation) continue;
+            const captures = (try session.store.get(node.computation.environment)).environment.values;
+            if (captures.len != 2) continue;
+            if (captures[0].schema != captures[1].schema) continue;
+            const schema = session.program.schemas[@intCast(captures[0].schema)];
+            if (schema != .internal or schema.internal != .capability) continue;
+            try testing.expect(captures[0].body.reference.id != captures[1].body.reference.id);
+            retained = true;
+        }
+        try testing.expect(retained);
+        const state = try session.checkpoint(testing.allocator);
+        defer testing.allocator.free(state);
+        session.deinit();
+        alive = false;
+        var restored = try Session.restoreImage(testing.allocator, image, state);
+        defer restored.deinit();
+        if (cancel) try restored.cancel(.{ .text = "stop" }) else try restored.resumeYield();
+        const cleanup = try restored.run(null);
+        try testing.expect(cleanup == .requested);
+        try testing.expectEqualStrings("retained-scope/release", restored.program.effects[@intCast(cleanup.requested.effect)].identity);
+        try testing.expectEqual(77, cleanup.requested.payload.body.scalar[0]);
+        const cleaning = try restored.checkpoint(testing.allocator);
+        defer testing.allocator.free(cleaning);
+        var finished = try Session.restoreImage(testing.allocator, image, cleaning);
+        defer finished.deinit();
+        try answerWithValue(&finished, &.{});
+        const result = try finished.run(null);
+        if (cancel) {
+            try testing.expect(result == .cancelled);
+        } else {
+            try testing.expect(result == .completed);
+            try testing.expectEqualSlices(u8, &.{ 0x61, 4, 0, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0, 0, 0, 0 }, try finished.bytes(&result.completed));
+        }
+    }
+}
+
+test "retained scoped interaction agrees at every quantum with general resumptions" {
+    for ([_]bool{ false, true }) |general| {
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        var compiled = try source.construct(testing.allocator, try source.examples.retainedScope(&builder));
+        defer compiled.deinit();
+        var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+        defer scratch.deinit();
+        var program = compiled.program;
+        if (general) {
+            const ir = boundary.data_v2.activation;
+            const handlers = try scratch.allocator().dupe(ir.Handler, program.handlers);
+            for (handlers, builder.handlers.items) |*handler, original| {
+                const clauses = try scratch.allocator().dupe(ir.Clause, handler.clauses);
+                for (clauses, original.clauses) |*clause, source_clause| {
+                    clause.strategy = .general;
+                    clause.function = source_clause.function;
+                }
+                handler.clauses = clauses;
+            }
+            program.handlers = handlers;
+        }
+        var session = try initFromImage(testing.allocator, program, &.{});
+        defer session.deinit();
+        var yields: usize = 0;
+        var releases: usize = 0;
+        var completed = false;
+        for (0..256) |_| {
+            const outcome = try drive(&session, 1);
+            switch (outcome) {
+                .progressed => {},
+                .yielded => {
+                    yields += 1;
+                    try session.resumeYield();
+                },
+                .requested => |request| {
+                    try testing.expectEqualStrings("retained-scope/release", session.program.effects[@intCast(request.effect)].identity);
+                    try testing.expectEqual(77, request.payload.body.scalar[0]);
+                    releases += 1;
+                    try answerWithValue(&session, &.{});
+                },
+                .completed => |value| {
+                    var result = value;
+                    try testing.expectEqualSlices(u8, &.{ 0x61, 4, 0, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&result));
+                    completed = true;
+                    break;
+                },
+                else => return error.TestUnexpectedResult,
+            }
+        }
+        try testing.expect(completed);
+        try testing.expectEqual(1, yields);
+        try testing.expectEqual(1, releases);
+    }
+}
+
 test "branching tail handlers create no resumption and survive every instruction checkpoint" {
     var nodes: [2]u64 = undefined;
     for ([_]bool{ false, true }, 0..) |selected, variant| {

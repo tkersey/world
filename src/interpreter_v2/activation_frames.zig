@@ -6,9 +6,56 @@ const Slots = @import("activation_slots.zig").ActivationSlots;
 const sets = data.analysis_sets;
 const custody = @import("custody.zig");
 pub const Error = Slots.Error || data.snapshot.Error;
+/// Runtime initialization is not an authority or a liveness declaration. Small
+/// layouts need no interned analysis nodes; large layouts keep compact trees.
+pub const Present = union(enum) {
+    bits: u64,
+    tree: sets.Root,
+
+    fn changed(self: Present, pool: *sets.Pool, slot: u64, add: bool) Error!Present {
+        return switch (self) {
+            .bits => |bits| blk: {
+                if (slot >= 64) return error.InvalidSlot;
+                const bit = @as(u64, 1) << @intCast(slot);
+                break :blk .{ .bits = if (add) bits | bit else bits & ~bit };
+            },
+            .tree => |root| .{ .tree = if (add)
+                try pool.insert(root, slot)
+            else
+                try pool.remove(root, slot) },
+        };
+    }
+    pub fn contains(self: Present, pool: *const sets.Pool, slot: u64) bool {
+        return switch (self) {
+            .bits => |bits| slot < 64 and bits & (@as(u64, 1) << @intCast(slot)) != 0,
+            .tree => |root| pool.contains(root, slot),
+        };
+    }
+    fn iterator(self: Present, pool: *const sets.Pool) Iterator {
+        return switch (self) {
+            .bits => |bits| .{ .bits = bits },
+            .tree => |root| .{ .tree = pool.iterator(root) },
+        };
+    }
+    const Iterator = union(enum) {
+        bits: u64,
+        tree: sets.Iterator,
+        fn next(self: *Iterator) ?u64 {
+            return switch (self.*) {
+                .bits => |*bits| blk: {
+                    if (bits.* == 0) break :blk null;
+                    const slot = @ctz(bits.*);
+                    bits.* &= bits.* - 1;
+                    break :blk slot;
+                },
+                .tree => |*tree| tree.next(),
+            };
+        }
+    };
+};
 pub const Frame = struct {
     view: Slots.Handle,
-    present: sets.Root = sets.empty,
+    present: Present,
     position: usize = 0,
     function: data.program.Id,
     custody: custody.State,
@@ -106,7 +153,10 @@ pub const Frames = struct {
         const definition = self.program.functions[@intCast(function)];
         const view = try self.slots.create(definition.layout.slots.len);
         errdefer self.slots.release(view) catch unreachable;
-        return .{ .view = view, .function = function, .custody = try self.custody.create(definition.layout.slots.len, definition.custody.len) };
+        return .{ .view = view, .function = function, .present = if (definition.layout.slots.len <= 64)
+            .{ .bits = 0 }
+        else
+            .{ .tree = sets.empty }, .custody = try self.custody.create(definition.layout.slots.len, definition.custody.len) };
     }
     pub fn releaseFrame(self: *Frames, frame: Frame) void {
         self.slots.release(frame.view) catch unreachable;
@@ -128,7 +178,7 @@ pub const Frames = struct {
         try self.rewriteValue(frame, slot, value);
     }
     fn rewriteValue(self: *Frames, frame: *Frame, slot: data.program.Id, value: data.graph.Value) Error!void {
-        const present = try self.pool.insert(frame.present, slot);
+        const present = try frame.present.changed(self.pool, slot, true);
         try self.slots.set(frame.view, @intCast(slot), value);
         frame.present = present;
     }
@@ -142,15 +192,39 @@ pub const Frames = struct {
         return values;
     }
     pub fn clear(self: *Frames, frame: *Frame, slot: data.program.Id) Error!void {
-        const present = try self.pool.remove(frame.present, slot);
+        const present = try frame.present.changed(self.pool, slot, false);
         try self.custody.remove(&frame.custody, @intCast(slot));
         try self.slots.clear(frame.view, @intCast(slot));
         frame.present = present;
     }
     pub fn prune(self: *Frames, frame: *Frame, live: sets.Root) Error!void {
-        const removed = try self.pool.difference(frame.present, live);
-        var iterator = self.pool.iterator(removed);
-        while (iterator.next()) |slot| try self.clear(frame, slot);
+        var retained: Present = undefined;
+        const removed: Present = switch (frame.present) {
+            .bits => |bits| blk: {
+                var mask: u64 = 0;
+                var members = self.pool.iterator(live);
+                while (members.next()) |slot| {
+                    if (slot >= 64) break;
+                    mask |= @as(u64, 1) << @intCast(slot);
+                }
+                retained = .{ .bits = bits & mask };
+                if (bits & ~mask == 0) return;
+                break :blk .{ .bits = bits & ~mask };
+            },
+            .tree => |root| blk: {
+                retained = .{ .tree = try self.pool.intersect(root, live) };
+                if (retained.tree == root) return;
+                break :blk .{ .tree = try self.pool.difference(root, live) };
+            },
+        };
+        var iterator = removed.iterator(self.pool);
+        while (iterator.next()) |slot| {
+            try self.custody.remove(&frame.custody, @intCast(slot));
+            try self.slots.clear(frame.view, @intCast(slot));
+        }
+        // Publish one set root after the complete private transition. Callers
+        // discard/poison failed frames or restore Resident's retained backup.
+        frame.present = retained;
     }
     pub fn copyFrame(self: *Frames, from: data.program.Id, to: data.program.Id) data.snapshot.Error!void {
         var copy = self.entries.get(from) orelse return;
@@ -165,7 +239,7 @@ pub const Frames = struct {
 
     pub fn rebaseFrame(self: *Frames, id: data.program.Id, map: anytype) data.snapshot.Error!void {
         var frame = self.entries.get(id) orelse return;
-        var members = self.pool.iterator(frame.present);
+        var members = frame.present.iterator(self.pool);
         while (members.next()) |slot| {
             var value = self.slots.get(frame.view, @intCast(slot)) catch return error.InvalidState;
             const reference = switch (value.body) {

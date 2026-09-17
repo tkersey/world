@@ -6,6 +6,100 @@ const Values = @import("values.zig").Values;
 const Store = @import("store.zig").Store;
 const maximum = std.math.maxInt(u64);
 
+test "immutable construction measures the second output copy" {
+    const schemas = [_]p.Schema{ .bytes, .u64, .{ .product = &.{ 0, 1 } } };
+    for ([_]usize{ 0, 1024, 1 << 20 }) |size| {
+        var scratch = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const input = try a.alloc(u8, size + 16);
+        var writer: data.wire.Writer = .{ .output = input };
+        try writer.natural(size);
+        const payload = try a.alloc(u8, size);
+        @memset(payload, 0xa7);
+        try writer.put(payload);
+        var store: Store = .{ .allocator = std.testing.allocator };
+        defer store.deinit();
+        const value = try store.literal(&schemas, .{ .schema = 0, .bytes = input[0..writer.position] });
+        var statistics: @import("store.zig").Statistics = .{};
+        store.statistics = &statistics;
+        var values: Values = .{ .allocator = a, .schemas = &schemas, .store = &store };
+        var result = try values.aggregate(2, .{ .fields = &.{ value, Values.natural(1, 42) } });
+        const encoded = try values.bytes(&result);
+        try std.testing.expectEqualSlices(u8, input[0..writer.position], encoded[0..writer.position]);
+        try std.testing.expectEqual(42, std.mem.readInt(u64, encoded[writer.position..][0..8], .little));
+        try std.testing.expectEqual(0, statistics.copied_blob_bytes);
+        std.debug.print("aggregate payload={d} second_copy={d}\n", .{ size, statistics.copied_blob_bytes });
+    }
+}
+
+test "admitted tag and field probes measure unrelated payload materialization" {
+    const schemas = [_]p.Schema{ .u64, .bytes, .unit, .{ .product = &.{ 0, 1 } }, .{ .product = &.{ 1, 0 } }, .{ .sum = &.{ 1, 2 } } };
+    for ([_]usize{ 0, 1024, 1 << 20 }) |size| {
+        const payload = try std.testing.allocator.alloc(u8, size);
+        defer std.testing.allocator.free(payload);
+        @memset(payload, 0xa7);
+        var copies: [4]u64 = undefined;
+        for (0..4) |mode| {
+            var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            var store: Store = .{ .allocator = std.testing.allocator };
+            defer store.deinit();
+            const facts = try data.admission.schemas(a, &schemas);
+            const encoded = try a.alloc(u8, size + 32);
+            var writer: data.wire.Writer = .{ .output = encoded };
+            if (mode >= 2) try writer.natural(0);
+            if (mode == 0) try writer.fixed(u64, 42);
+            try writer.natural(size);
+            try writer.put(payload);
+            if (mode == 1) try writer.fixed(u64, 42);
+            const literal: p.Literal = .{ .schema = if (mode < 2) 3 + mode else 5, .bytes = encoded[0..writer.position] };
+            try data.admission.value(a, &schemas, facts, literal);
+            const value = try store.literal(&schemas, literal);
+            var statistics: @import("store.zig").Statistics = .{};
+            store.statistics = &statistics;
+            var values: Values = .{ .allocator = a, .schemas = &schemas, .store = &store, .facts = facts };
+            const instruction: p.Instruction = .{
+                .opcode = if (mode < 2) .field else if (mode == 2) .variant_tag else .variant_payload,
+                .result_type = if (mode == 3) 2 else 0,
+                .operands = &.{0},
+                .immediate = if (mode == 1 or mode == 3) 1 else 0,
+            };
+            const slots: []const g.Value = &.{value};
+            if (mode == 3) {
+                try std.testing.expectError(error.WrongVariant, values.evaluate(instruction, slots));
+            } else {
+                const result = try values.evaluate(instruction, slots);
+                try std.testing.expectEqual(@as(u64, if (mode < 2) 42 else 0), std.mem.readInt(u64, result.body.scalar[0..8], .little));
+            }
+            copies[mode] = statistics.copied_blob_bytes;
+            try std.testing.expectEqual(0, copies[mode]);
+        }
+        std.debug.print("projection payload={d} copied={any}\n", .{ size, copies });
+    }
+}
+
+test "a projected blob survives collection of its containing product" {
+    const schemas = [_]p.Schema{ .bytes, .{ .product = &.{ 0, 0 } } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var store: Store = .{ .allocator = std.testing.allocator };
+    defer store.deinit();
+    const facts = try data.admission.schemas(a, &schemas);
+    const literal: p.Literal = .{ .schema = 1, .bytes = &.{ 3, 'a', 'b', 'c', 4, 'd', 'e', 'f', 'g' } };
+    try data.admission.value(a, &schemas, facts, literal);
+    const parent = try store.literal(&schemas, literal);
+    var values: Values = .{ .allocator = a, .schemas = &schemas, .store = &store, .facts = facts };
+    const slots: []const g.Value = &.{parent};
+    var selected = try values.evaluate(.{ .opcode = .field, .result_type = 0, .operands = &.{0}, .immediate = 1 }, slots);
+    const holder = try store.add(.{ .environment = .{ .values = &.{selected}, .tail = null } });
+    try store.collect(.{ .current = holder });
+    try std.testing.expect(!store.blob_alive.items[@intCast(parent.body.blob.id)]);
+    try std.testing.expectEqualSlices(u8, &.{ 4, 'd', 'e', 'f', 'g' }, try values.bytes(&selected));
+}
+
 fn evaluate(v: *Values, opcode: p.Opcode, result: p.Id, args: []const g.Value) !g.Value {
     var operands: [3]p.Id = undefined;
     for (args, 0..) |_, index| operands[index] = index;

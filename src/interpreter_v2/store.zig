@@ -225,6 +225,35 @@ pub const Store = struct {
         if (self.interned.get(key)) |id| return .{ .schema = value.schema, .body = .{ .blob = .{ .id = id } } };
         const copied: g.Blob = .{ .schema = value.schema, .bytes = try self.allocator.dupe(u8, value.bytes) };
         errdefer self.allocator.free(copied.bytes);
+        const result = try self.insertBlobOwned(copied);
+        if (self.statistics) |statistics| statistics.copied_blob_bytes +|= copied.bytes.len;
+        return result;
+    }
+
+    /// Takes a unique, independently allocated buffer from this Store's allocator
+    /// on success only. It must not alias existing Store storage. Success consumes
+    /// it even when interning finds an existing value or the result is inline.
+    pub fn literalOwned(
+        self: *Store,
+        schemas: []const data.program.Schema,
+        schema: data.program.Id,
+        bytes: []u8,
+    ) Error!g.Value {
+        if (data.scalar.width(schemas[@intCast(schema)])) |width| {
+            var scalar = [_]u8{0} ** 8;
+            @memcpy(scalar[0..width], bytes);
+            self.allocator.free(bytes);
+            return .{ .schema = schema, .body = .{ .scalar = scalar } };
+        }
+        const value: g.Blob = .{ .schema = schema, .bytes = bytes };
+        if (self.interned.get(value)) |id| {
+            self.allocator.free(bytes);
+            return .{ .schema = schema, .body = .{ .blob = .{ .id = id } } };
+        }
+        return self.insertBlobOwned(value);
+    }
+
+    fn insertBlobOwned(self: *Store, copied: g.Blob) Error!g.Value {
         try self.interned.ensureUnusedCapacity(self.allocator, 1);
         const id = if (self.free_blobs.items.len != 0) blk: {
             const free = self.free_blobs.items[self.free_blobs.items.len - 1];
@@ -242,8 +271,7 @@ pub const Store = struct {
             break :blk id;
         };
         self.interned.putAssumeCapacity(copied, id);
-        if (self.statistics) |s| s.copied_blob_bytes +|= copied.bytes.len;
-        return .{ .schema = value.schema, .body = .{ .blob = .{ .id = id } } };
+        return .{ .schema = copied.schema, .body = .{ .blob = .{ .id = id } } };
     }
 
     pub fn import(self: *Store, incoming: g.State) Error!void {

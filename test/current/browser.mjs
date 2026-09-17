@@ -72,7 +72,32 @@ try {
       assert.deepEqual(decodeOutcome(new Uint8Array(done.output)).value, Uint8Array.of(42, 0, 0, 0, 0, 0, 0, 0));
       assert.equal(done.workingLive, "0");
       await terminate(second.id);
-      results.push({ engine, version: browser.version(), workersDestroyed: 3 });
+      for (const name of ["retainedScope", "retainedScopeGeneral"]) {
+        const program = new Uint8Array(execFileSync(fixtureTool, ["image", name]));
+        const paused = await start({ op: "start", sha256, image: Array.from(program), transfer: true });
+        assert.equal(paused.result.error, undefined);
+        assert.equal(decodeOutcome(new Uint8Array(paused.result.output)).kind, "yielded");
+        assert.equal(paused.result.workingLive, "0");
+        await terminate(paused.id);
+        const resumed = encodeInput({ image: program,
+          state: new Uint8Array(paused.result.state), control: "resume_yield" });
+        const cleaning = decodeOutcome(new Uint8Array(execFileSync(fixtureTool, ["invoke"], { input: resumed })));
+        assert.equal(cleaning.kind, "requested");
+        const cleanup = await decodeRequest(cleaning.request);
+        assert.equal(cleanup.semanticIdentity, "retained-scope/release");
+        assert.deepEqual(cleanup.payload, Uint8Array.of(77, 0, 0, 0, 0, 0, 0, 0));
+        const finished = await start({ op: "restore", sha256, image: Array.from(program),
+          state: Array.from(cleaning.state), control: "reply",
+          value: Array.from(await encodeResult(cleaning.request, new Uint8Array())), close: true });
+        assert.equal(finished.result.error, undefined);
+        const result = decodeOutcome(new Uint8Array(finished.result.output));
+        assert.equal(result.kind, "completed");
+        assert.deepEqual(result.value, Uint8Array.of(0x61, 4, 0, 0, 0, 0, 0, 0, 99, 0, 0, 0, 0, 0, 0, 0));
+        assert.equal(finished.result.workingLive, "0");
+        await terminate(finished.id);
+      }
+      results.push({ engine, version: browser.version(), workersDestroyed: 7,
+        retainedScopedComputations: 2 });
     } finally { await browser.close(); }
   }
 } finally { await new Promise(resolve => server.close(resolve)); }

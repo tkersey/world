@@ -28,11 +28,12 @@ fn blob(values: *Values, schema: p.Id, parts: []const []const u8) Error!Result {
     if (size > maximum(values.schemas[@intCast(schema)])) return .{ .fault = .capacity_exceeded };
     var measure: data.wire.Writer = .{};
     try measure.natural(size);
-    const output = try values.allocator.alloc(u8, std.math.add(usize, measure.position, size) catch return error.OutOfMemory);
+    const output = try values.store.allocator.alloc(u8, std.math.add(usize, measure.position, size) catch return error.OutOfMemory);
+    errdefer values.store.allocator.free(output);
     var writer: data.wire.Writer = .{ .output = output };
     try writer.natural(size);
     for (parts) |part| try writer.put(part);
-    return .{ .value = try values.store.literal(values.schemas, .{ .schema = schema, .bytes = output }) };
+    return .{ .value = try values.store.literalOwned(values.schemas, schema, output) };
 }
 pub fn evaluate(values: *Values, op: p.Instruction, slots: anytype) Error!Result {
     const left = (try read(slots, op.operands[0]));

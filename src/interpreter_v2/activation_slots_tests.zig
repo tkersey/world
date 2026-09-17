@@ -4,6 +4,46 @@ const slots = @import("activation_slots.zig");
 const Slots = slots.Slots(u64);
 const testing = std.testing;
 
+test "frame pruning keeps initialization separate from liveness and preserves older views" {
+    for ([_]usize{ 3, 64, 65, 256 }) |count| try pruneFrame(count);
+}
+
+fn pruneFrame(count: usize) !void {
+    const data = @import("boundary_data_v2");
+    const Frames = @import("activation_frames.zig").Frames;
+    const Values = @import("values.zig").Values;
+    var pool: data.analysis_sets.Pool = .{ .allocator = testing.allocator, .limit = count };
+    defer pool.deinit();
+    const layout = try testing.allocator.alloc(data.program.Id, count);
+    defer testing.allocator.free(layout);
+    @memset(layout, 0);
+    const last = count - 1;
+    const program: data.activation.Program = .{
+        .roots = .{ .entry = 0, .result = 0, .failure = 0 },
+        .schemas = &.{.u64},
+        .constants = &.{},
+        .effects = &.{},
+        .blocks = &.{},
+        .functions = &.{.{ .entry = 0, .inputs = &.{ 0, last }, .layout = .{ .slots = layout }, .result = 0 }},
+    };
+    var frames = try Frames.init(testing.allocator, &pool, program);
+    defer frames.deinit();
+    var original = try frames.create(0);
+    defer frames.releaseFrame(original);
+    try frames.write(&original, 0, Values.natural(0, 42));
+    try frames.write(&original, last, Values.natural(0, 99));
+    var successor = try frames.forkFrame(original);
+    defer frames.releaseFrame(successor);
+    try frames.prune(&successor, try pool.run(0, last));
+    try testing.expect(successor.present.contains(&pool, 0));
+    try testing.expect(!successor.present.contains(&pool, 1));
+    try testing.expect(!successor.present.contains(&pool, last));
+    try testing.expectError(error.UninitializedSlot, frames.slots.get(successor.view, 1));
+    try testing.expectError(error.UninitializedSlot, frames.slots.get(successor.view, last));
+    try testing.expectEqual(99, (try frames.slots.get(original.view, last)).body.scalar[0]);
+    try testing.expectEqual(42, (try frames.slots.get(successor.view, 0)).body.scalar[0]);
+}
+
 test "stable slots establish growing bindings without copying prior values" {
     for ([_]usize{ 1, 8, 64, 128, 256, 4096 }) |count| {
         var store = try Slots.init(testing.allocator);

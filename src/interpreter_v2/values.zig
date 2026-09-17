@@ -111,27 +111,75 @@ pub const Values = struct {
         if ((try self.schemaFacts()).exportable[@intCast(schema)]) {
             var measure: data.wire.Writer = .{};
             try self.write(&measure, schema, parts);
-            const buffer = try self.allocator.alloc(u8, measure.position);
+            const buffer = try self.store.allocator.alloc(u8, measure.position);
+            errdefer self.store.allocator.free(buffer);
             var writer: data.wire.Writer = .{ .output = buffer };
             try self.write(&writer, schema, parts);
-            return self.store.literal(self.schemas, .{ .schema = schema, .bytes = buffer });
+            return self.store.literalOwned(self.schemas, schema, buffer);
         }
         if (self.traits == null) self.traits = try data.traits.derive(self.allocator, self.schemas);
         const reference = try self.store.add(.{ .aggregate = .{ .schema = schema, .tag = parts.tag, .fields = parts.fields } });
         return .{ .schema = schema, .body = if (self.traits.?.copy[@intCast(schema)]) .{ .reference = reference } else .{ .owned = .{ .node = reference } } };
     }
-    pub fn split(self: *Values, value: g.Value) Error!Parts {
+    fn structured(self: *Values, value: g.Value) Error!?Parts {
         switch (value.body) {
             .reference, .owned => {
                 const ref = if (value.body == .reference)
                     value.body.reference
                 else
                     value.body.owned.node;
-                const record = (try self.store.get(ref)).aggregate;
-                return .{ .tag = record.tag, .fields = record.fields };
+                const record = try self.store.get(ref);
+                if (record != .aggregate) return error.TypeMismatch;
+                return .{ .tag = record.aggregate.tag, .fields = record.aggregate.fields };
             },
             else => {},
         }
+        return null;
+    }
+
+    /// These accessors consume already admitted or constructed values. Input and
+    /// State admission still validate the entire encoding, including unused data.
+    fn readTag(self: *Values, value: g.Value) Error!p.Id {
+        if (try self.structured(value)) |parts| return parts.tag;
+        const shape = self.schemas[@intCast(value.schema)];
+        if (shape != .sum) return error.TypeMismatch;
+        var reader: data.wire.Reader = .{ .input = try self.bytes(&value) };
+        const selected = try reader.natural();
+        if (selected >= shape.sum.len) return error.InvalidValue;
+        return selected;
+    }
+
+    fn projectField(self: *Values, value: g.Value, index: p.Id) Error!g.Value {
+        if (try self.structured(value)) |parts| return parts.fields[@intCast(index)];
+        const shape = self.schemas[@intCast(value.schema)];
+        if (shape != .product or index >= shape.product.len) return error.TypeMismatch;
+        var reader: data.wire.Reader = .{ .input = try self.bytes(&value) };
+        const facts = try self.schemaFacts();
+        for (shape.product[0..@intCast(index)]) |schema|
+            _ = try data.admission.readValue(self.allocator, self.schemas, facts, schema, &reader);
+        const schema = shape.product[@intCast(index)];
+        const encoded = try data.admission.readValue(self.allocator, self.schemas, facts, schema, &reader);
+        // Materialize only the selected value into its own Store lifetime.
+        return self.store.literal(self.schemas, .{ .schema = schema, .bytes = encoded });
+    }
+
+    fn variantPayload(self: *Values, value: g.Value, expected: p.Id) EvaluationError!g.Value {
+        if (try self.structured(value)) |parts| {
+            if (parts.tag != expected) return error.WrongVariant;
+            return parts.fields[0];
+        }
+        const selected = try self.readTag(value);
+        if (selected != expected) return error.WrongVariant;
+        var reader: data.wire.Reader = .{ .input = try self.bytes(&value) };
+        _ = try reader.natural();
+        return self.store.literal(self.schemas, .{
+            .schema = self.schemas[@intCast(value.schema)].sum[@intCast(selected)],
+            .bytes = reader.input[reader.position..],
+        });
+    }
+
+    pub fn split(self: *Values, value: g.Value) Error!Parts {
+        if (try self.structured(value)) |parts| return parts;
         var reader: data.wire.Reader = .{ .input = try self.bytes(&value) };
         const shape = self.schemas[@intCast(value.schema)];
         var tag: p.Id = 0;
@@ -222,10 +270,11 @@ pub const Values = struct {
         if ((try self.schemaFacts()).exportable[@intCast(schema)]) {
             var measure: data.wire.Writer = .{};
             try self.writeCollection(&measure, schema, count, segments);
-            const buffer = try self.allocator.alloc(u8, measure.position);
+            const buffer = try self.store.allocator.alloc(u8, measure.position);
+            errdefer self.store.allocator.free(buffer);
             var writer: data.wire.Writer = .{ .output = buffer };
             try self.writeCollection(&writer, schema, count, segments);
-            return self.store.literal(self.schemas, .{ .schema = schema, .bytes = buffer });
+            return self.store.literalOwned(self.schemas, schema, buffer);
         }
         const physical_count = std.math.cast(usize, count) orelse return error.OutOfMemory;
         const fields = try self.allocator.alloc(g.Value, physical_count);
@@ -261,14 +310,9 @@ pub const Values = struct {
         }
         const source = (try read(slots, instruction.operands[0]));
         switch (instruction.opcode) {
-            .field, .variant_tag, .variant_payload => {
-                const parts = try self.split(source);
-                if (instruction.opcode == .field)
-                    return parts.fields[@intCast(instruction.immediate)];
-                if (instruction.opcode == .variant_tag) return natural(result, parts.tag);
-                if (parts.tag != instruction.immediate) return error.WrongVariant;
-                return parts.fields[0];
-            },
+            .field => return self.projectField(source, instruction.immediate),
+            .variant_tag => return natural(result, try self.readTag(source)),
+            .variant_payload => return self.variantPayload(source, instruction.immediate),
             else => {},
         }
         return self.evaluateCollection(instruction, slots);

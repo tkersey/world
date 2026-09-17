@@ -33,6 +33,10 @@ async function leaf(request) {
     assert.deepEqual(decoded.payload, integer(83));
     return encodeResult(request, new Uint8Array());
   }
+  if (name === "retained-scope/release") {
+    assert.deepEqual(decoded.payload, integer(77));
+    return encodeResult(request, new Uint8Array());
+  }
   if (["example/tail-cleanup", "example/resource-use", "example/resource-release", "example/generator-release", "custody/release"].includes(name)) return encodeResult(request, new Uint8Array());
   throw new Error(`unbound fixture operation ${name}`);
 }
@@ -47,9 +51,9 @@ await assert.rejects(Kernel.create({ bytes: wrongProfile, expectedSha256: create
 
 let boundaries = 0, transfers = 0;
 const terminal = [];
-for (const [name, args] of [["branchingTailProtected", [1]], ["branchingTail", [1]], ["install", []], ["deep", []], ["recursive", integer(100)], ["resource", []], ["custody", []], ["reentrant", []], ["generator", []], ["shallow", [0]], ["scalarContracts", [0]], ["components", []], ["componentsDouble", []], ["componentsRecursive", integer(100)]]) {
+for (const [name, args] of [["retainedScope", []], ["retainedScopeGeneral", []], ["branchingTailProtected", [1]], ["branchingTail", [1]], ["install", []], ["deep", []], ["recursive", integer(100)], ["resource", []], ["custody", []], ["reentrant", []], ["generator", []], ["shallow", [0]], ["scalarContracts", [0]], ["components", []], ["componentsDouble", []], ["componentsRecursive", integer(100)]]) {
   const program = image(name);
-  const quantum = name.startsWith("branchingTail") ? 1 : 23;
+  const quantum = name.startsWith("branchingTail") || name.startsWith("retainedScope") ? 1 : 23;
   let k = await kernel();
   const prepared = k.prepare(program);
   let session = k.start(prepared, new Uint8Array(args));
@@ -67,7 +71,7 @@ for (const [name, args] of [["branchingTailProtected", [1]], ["branchingTail", [
     const outcome = decodeOutcome(actual);
     boundaries++;
     if (["completed", "failed", "cancelled"].includes(outcome.kind)) {
-      if (name === "components" || name === "componentsDouble") {
+      if (name === "components" || name === "componentsDouble" || name.startsWith("retainedScope")) {
         assert.equal(yields, 1);
         assert.equal(releases, 1);
       }
@@ -80,7 +84,7 @@ for (const [name, args] of [["branchingTailProtected", [1]], ["branchingTail", [
     state = outcome.state;
     assert.ok(state);
     if (outcome.kind === "requested") {
-      if ((await decodeRequest(outcome.request)).semanticIdentity === "component/release") releases++;
+      if (["component/release", "retained-scope/release"].includes((await decodeRequest(outcome.request)).semanticIdentity)) releases++;
       control = "reply"; value = await leaf(outcome.request);
     }
     else { control = outcome.kind === "yielded" ? "resume_yield" : "none"; value = new Uint8Array(); }
@@ -102,6 +106,8 @@ for (const [name, args] of [["branchingTailProtected", [1]], ["branchingTail", [
 }
 assert.equal(terminal.find(x => x.name === "branchingTail").value, "3c00000000000000");
 assert.equal(terminal.find(x => x.name === "branchingTailProtected").value, "3c00000000000000");
+for (const name of ["retainedScope", "retainedScopeGeneral"])
+  assert.equal(terminal.find(x => x.name === name).value, "61040000000000006300000000000000");
 assert.equal(terminal.find(x => x.name === "install").value, "2008000000000000");
 assert.equal(terminal.find(x => x.name === "resource").value, "2a00000000000000");
 assert.equal(terminal.find(x => x.name === "reentrant").value, "7100000000000000");
