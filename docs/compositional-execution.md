@@ -509,8 +509,8 @@ steps and 94 native/storage tests. The kernel is 459,884 bytes, SHA-256
 The default build graph now exposes current native, storage, kernel, codec,
 transfer, browser and package checks. The old ABI 2 build/release graph and public
 `process_v2` export are removed. Shared runtime errors and statistics no longer
-import the old evaluator. Its private implementation and meaningful capture and
-return-path regressions remain until their current replacements are established.
+import the old evaluator. Its private implementation remains pending the rest of
+the migration. Capture and return-path regressions now use current source/PST3.
 Old host/guest source files are not yet physically retired.
 
 Current host tests preserve independent byte ownership, value framing, ABI and
@@ -527,12 +527,29 @@ package and its CLI. This checkpoint's rebuilt kernel SHA-256 is
 The earlier complete portable-host results above belong to `f36994b`; they were
 not repeated for this checkpoint.
 
-The current source suite reports 51 passing tests and one failing new test,
-`PST3 captured handler state obeys one-shot and multi bounds and reference kinds`,
-with `TypeMismatch`. Its hand-built positive captured-handler fixture still
-needs diagnosis; this checkpoint does not claim the capture regression migrated
-or full `check` acceptance. The test is retained, not skipped. Existing old
-capture and return-path tests remain available.
+The captured-handler test failed with `TypeMismatch` at checkpoint `014e207`:
+the multishot fixture inserted a handler accepting the final list rather than
+the captured body's boolean pair. The corrected identity handler uses the source
+handler's input type. One-shot and multi-shot cases now admit and execute when
+their capture bound includes the added state, reject specifically with
+`InvalidOwnership` otherwise, and reject every incorrect handler node kind.
+
+The current return-path test constructs states through the public compiler and
+actual execution. It inserts disposal markers into all six independently required
+paths: active, yielded, saved continuation, protection, normal exit and capture.
+Each canonical mutant rejects with `InvalidState` through public restore. A
+separate marker signature preserves effect admissibility so that an unrelated
+effect rejection cannot mask this check. Valid execution restores from PST3 at
+every boundary, including a captured continuation during cleanup, and preserves
+the independent results 67, 60 and failure 9. All six paths must be visited.
+
+The two superseded old-record test modules and their old rejection-emitter cases
+are removed after this migration. `zig build check-native check-storage
+-Dboundary-source=BOUNDARY_CHECKOUT --global-cache-dir .zig-global-cache
+--summary all` passes with Boundary `ff8a1b277392984681e9710224313adbbb396f4c`:
+the current source suite contains 53 tests and the remaining native/storage suite
+passes 76 tests. Focused Debug capture/return tests, formatting and diff checks
+pass. This does not establish full `check` or performance acceptance.
 
 The normal Boundary pin is still `7094aa5f228aa1478489e20bd9245f02eda764a2`.
 Agent still selects World `f36994b26b6506bfc2b80ee1db8a9dfdbdef5b77`; its previous

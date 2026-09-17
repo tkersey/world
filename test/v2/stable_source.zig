@@ -1985,6 +1985,133 @@ fn emptyRecordPayload(comptime T: type) T {
     };
 }
 
+const ReturnPathKind = enum { active, yielded, continuation, protection, normal_exit, captured };
+
+fn returnParent(record: *boundary.data.graph.Node) ?*?boundary.data.graph.NodeRef {
+    return switch (record.*) {
+        .control => &record.control.parent,
+        .continuation => &record.continuation.parent,
+        .attachment => &record.attachment.return_to,
+        .protection => &record.protection.return_to,
+        .region_scope => &record.region_scope.return_to,
+        .cleanup_return => &record.cleanup_return.parent,
+        .disposal_return => &record.disposal_return.parent,
+        else => null,
+    };
+}
+
+fn rejectDisposalParent(image: []const u8, original: boundary.data.process_state.State, frame: usize, schema: u64) !void {
+    const data = boundary.data;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var state = original;
+    const nodes = try arena.allocator().alloc(data.process_state.Node, state.nodes.len + 1);
+    @memcpy(nodes[0..state.nodes.len], state.nodes);
+    const parent = returnParent(&nodes[frame].record) orelse return error.ExpectedReturnParent;
+    nodes[state.nodes.len] = .{ .record = .{ .disposal_return = .{
+        .schema = schema,
+        .parent = parent.*,
+    } } };
+    parent.* = .{ .id = state.nodes.len };
+    state.nodes = nodes;
+    const encoded = try data.state_image.emit(testing.allocator, state);
+    defer testing.allocator.free(encoded);
+    // The public restore path must reject the canonical bytes before execution.
+    try testing.expectError(error.InvalidState, Session.restoreImage(testing.allocator, image, encoded));
+}
+
+fn checkReturnPaths(session: *Session, image: []const u8, schema: u64, seen: *std.EnumSet(ReturnPathKind), captured_cleanup: *bool) !void {
+    const data = boundary.data;
+    const bytes = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(bytes);
+    var decoded = try data.state_image.decodeGraph(testing.allocator, bytes);
+    defer decoded.deinit();
+    const state = decoded.state;
+    try data.state_admission.validateStable(testing.allocator, session.program, state);
+    var selected = std.EnumArray(ReturnPathKind, ?usize).initFill(null);
+    var cursor = state.roots.current;
+    if (cursor) |ref| {
+        if (state.status == .active) selected.set(.active, @intCast(ref.id));
+        if (state.status == .yielded) selected.set(.yielded, @intCast(ref.id));
+    }
+    const nodes = @constCast(state.nodes);
+    while (cursor) |ref| {
+        const record = &nodes[@intCast(ref.id)].record;
+        if (record.* == .continuation) selected.set(.continuation, @intCast(ref.id));
+        if (record.* == .protection) selected.set(.protection, @intCast(ref.id));
+        cursor = if (returnParent(record)) |parent| parent.* else null;
+    }
+    for (nodes) |node| switch (node.record) {
+        .exit => |exit| if (exit.reason == .normal) {
+            if (exit.stop) |stop| selected.set(.normal_exit, @intCast(stop.id));
+        },
+        .one_shot, .multi_template => |token| {
+            selected.set(.captured, @intCast(token.capture.?.id));
+            if (state.roots.exit != null) captured_cleanup.* = true;
+        },
+        else => {},
+    };
+    for (std.enums.values(ReturnPathKind)) |kind| if (!seen.contains(kind)) {
+        if (selected.get(kind)) |frame| {
+            try rejectDisposalParent(image, state, frame, schema);
+            seen.insert(kind);
+        }
+    };
+    // Continue from actual restored bytes at every boundary, including cleanup.
+    const restored = try Session.restoreImage(testing.allocator, image, bytes);
+    session.deinit();
+    session.* = restored;
+}
+
+test "PST3 normal return paths reject disposal markers while captured cleanup stays valid" {
+    var seen = std.EnumSet(ReturnPathKind).initEmpty();
+    var captured_cleanup = false;
+    for (0..3) |example| {
+        var b = source.Builder.init(testing.allocator);
+        defer b.deinit();
+        const module = switch (example) {
+            0 => try source.examples.deep(&b),
+            1 => try source.examples.branchingTailProtected(&b),
+            else => try source.examples.clauseAbort(&b),
+        };
+        if (example == 0) {
+            const entry = &b.functions.items[@intCast(module.entry)];
+            entry.body = try b.term(.{ .yield_then = entry.body.? });
+        }
+        // Keep effect admission valid so rejection must detect the return path.
+        var marker = b.schemas.items[@intCast(b.handlers.items[0].clauses[0].resumption)];
+        const effects = try b.allocator().alloc(u64, b.effects.items.len);
+        for (effects, 0..) |*effect, id| effect.* = id;
+        marker.internal.resumption.effects = effects;
+        const marker_schema = try b.schema(marker);
+        var compiled = try source.lower(testing.allocator, b.module(module.entry, module.failure));
+        defer compiled.deinit();
+        const image = try programBytes(compiled.program);
+        defer testing.allocator.free(image);
+        var session = try Session.initImage(testing.allocator, image, if (example == 1) &.{1} else &.{});
+        defer session.deinit();
+        for (0..512) |_| {
+            try checkReturnPaths(&session, image, marker_schema, &seen, &captured_cleanup);
+            if (session.terminal != null) break;
+            switch (session.status) {
+                .yielded => try session.resumeYield(),
+                .parked => try answerWithValue(&session, &.{}),
+                else => try session.step(),
+            }
+        }
+        const result = session.terminal orelse return error.TestDidNotTerminate;
+        if (example == 2) {
+            try testing.expect(result == .failed);
+            try testing.expectEqual(9, result.failed.body.scalar[0]);
+        } else {
+            try testing.expect(result == .completed);
+            try testing.expectEqual(if (example == 0) @as(u8, 67) else 60, result.completed.body.scalar[0]);
+        }
+    }
+    try testing.expectEqual(std.EnumSet(ReturnPathKind).initFull().bits, seen.bits);
+    try testing.expect(captured_cleanup);
+}
+
 test "PST3 captured handler state obeys one-shot and multi bounds and reference kinds" {
     const data = boundary.data;
     const g = data.graph;
@@ -1992,7 +2119,8 @@ test "PST3 captured handler state obeys one-shot and multi bounds and reference 
         var b = source.Builder.init(testing.allocator);
         defer b.deinit();
         const module = if (multi) try source.examples.choicesAll(&b) else try source.examples.deep(&b);
-        const result_type = b.functions.items[@intCast(module.entry)].result;
+        // The captured body returns the handler input, before answer transformation.
+        const result_type = b.handlers.items[0].input;
         const wide = try b.scalar(u16);
         const returns = try b.declare(&.{ wide, result_type }, result_type, &.{}, &.{});
         try b.define(returns, try b.pure(try b.reference(b.parameter(returns, 1))));
