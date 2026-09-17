@@ -3,6 +3,89 @@ const data = @import("boundary_data_v2");
 const heap = @import("store.zig");
 const testing = std.testing;
 
+fn encodedCursorFailure(allocator: std.mem.Allocator) !void {
+    var store: heap.Store = .{ .allocator = allocator };
+    defer store.deinit();
+    const schemas = [_]data.program.Schema{ .u64, .{ .seq = 0 } };
+    const original = try store.literal(&schemas, .{ .schema = 1, .bytes = &.{ 2, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0 } });
+    const cursor = try store.encodedSequence(1, .{
+        .backing = original.body.blob,
+        .start = 9,
+        .length = 8,
+        .count = 1,
+    });
+    const root = try store.add(.{ .environment = .{
+        .values = &.{.{ .schema = 1, .body = .{ .reference = cursor } }},
+        .tail = null,
+    } });
+    const roots: data.graph.Roots = .{ .current = root };
+    try store.collect(roots);
+    try testing.expect(store.blob_alive.items[@intCast(original.body.blob.id)]);
+    try store.begin();
+    try store.replace(root, .{ .environment = .{ .values = &.{}, .tail = null } });
+    try store.collect(roots);
+    _ = try store.literal(&schemas, .{ .schema = 1, .bytes = &.{0} });
+    _ = try store.add(.{ .environment = .{ .values = &.{}, .tail = null } });
+    store.rollback();
+    try testing.expectEqual(@as(u64, 1), store.encoded_sequences.get(@intCast(cursor.id)).?.count);
+    const encoded = try @import("value_encoding.zig").encode(allocator, &schemas, &store, .{ .schema = 1, .body = .{ .reference = cursor } });
+    defer allocator.free(encoded);
+    try testing.expectEqualSlices(u8, &.{ 1, 2, 0, 0, 0, 0, 0, 0, 0 }, encoded);
+}
+
+test "encoded cursor backing participates in collection rollback and allocation failures" {
+    try testing.checkAllAllocationFailures(testing.allocator, encodedCursorFailure, .{});
+}
+
+fn sharedFieldsFailure(allocator: std.mem.Allocator) !void {
+    var store: heap.Store = .{ .allocator = allocator };
+    defer store.deinit();
+    var fields: [32]data.graph.Value = undefined;
+    for (&fields, 0..) |*value, i| value.* = @import("values.zig").Values.natural(0, i);
+    const base = try store.add(.{ .aggregate = .{ .schema = 1, .tag = 0, .fields = &fields } });
+    const first = try store.aggregateSlice(1, base, 0, fields.len);
+    const root = try store.add(.{ .environment = .{
+        .values = &.{.{ .schema = 1, .body = .{ .reference = first } }},
+        .tail = null,
+    } });
+    const roots: data.graph.Roots = .{ .current = root };
+    try store.collect(roots);
+    const before = try bytes(&store, roots);
+    defer testing.allocator.free(before);
+    try store.begin();
+    const tail = try store.aggregateSlice(1, first, 1, 31);
+    try store.replace(root, .{ .environment = .{
+        .values = &.{.{ .schema = 1, .body = .{ .reference = tail } }},
+        .tail = null,
+    } });
+    try store.collect(roots);
+    const short = try store.aggregateSlice(1, tail, 27, 4);
+    try store.replace(root, .{ .environment = .{
+        .values = &.{.{ .schema = 1, .body = .{ .reference = short } }},
+        .tail = null,
+    } });
+    try store.collect(roots);
+    store.rollback();
+    const restored = try bytes(&store, roots);
+    defer testing.allocator.free(restored);
+    try testing.expectEqualSlices(u8, before, restored);
+    try testing.expectEqual(32, store.shared_field_values);
+    try store.begin();
+    const last = try store.aggregateSlice(1, first, 31, 1);
+    try store.replace(root, .{ .environment = .{
+        .values = &.{.{ .schema = 1, .body = .{ .reference = last } }},
+        .tail = null,
+    } });
+    try store.collect(roots);
+    store.commit();
+    try testing.expectEqual(1, store.shared_field_values);
+    try testing.expectEqual(31, (try store.get(last)).aggregate.fields[0].body.scalar[0]);
+}
+
+test "shared sequence backing survives rollback collection and every allocation failure" {
+    try testing.checkAllAllocationFailures(testing.allocator, sharedFieldsFailure, .{});
+}
+
 fn ownedLiteral(allocator: std.mem.Allocator, store: *heap.Store, schema: data.program.Id, contents: []const u8) !data.graph.Value {
     const buffer = try allocator.dupe(u8, contents);
     errdefer allocator.free(buffer);

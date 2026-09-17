@@ -41,11 +41,12 @@ pub const Machine = struct {
     }
 
     pub fn bytes(self: *Machine, value: *const g.Value) Error![]const u8 {
-        return switch (value.body) {
-            .scalar => |*scalar| scalar[0..data.scalar.width(self.program.schemas[@intCast(value.schema)]).?],
-            .blob => |ref| self.store.blobs.items[@intCast(ref.id)].bytes,
-            else => error.UnsupportedTransition,
+        const values: @import("values.zig").Values = .{
+            .allocator = self.allocator,
+            .schemas = self.program.schemas,
+            .store = &self.store,
         };
+        return values.bytes(value);
     }
 
     pub fn continuation(self: *Machine, source: p.Id, slots: []const g.Value, control: g.Control) Error!g.NodeRef {
@@ -494,7 +495,8 @@ pub const Machine = struct {
         errdefer arena.deinit();
         const output = arena.allocator();
         const measurement = if (self.statistics) |s| &s.snapshot else null;
-        var emission = try data.snapshot.emit(self.allocator, self.store.state(self.identity, self.status, self.roots), output, measurement);
+        const public_state = try @import("value_projection.zig").project(output, self.program.schemas, &self.store, self.store.state(self.identity, self.status, self.roots));
+        var emission = try data.snapshot.emit(self.allocator, public_state, output, measurement);
         defer emission.normalized.deinit();
         const normalized = emission.normalized;
         try data.state_admission.validate(self.allocator, self.program, normalized.state);

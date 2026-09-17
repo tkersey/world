@@ -5,6 +5,98 @@ const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 const Resident = @import("stable_runtime").Resident;
 
+test "encoded cursors export canonical immutable checkpoints and restore as ordinary values" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    const integer = try builder.scalar(u64);
+    const unit = try builder.scalar(void);
+    const sequence = try builder.schema(.{ .seq = integer });
+    const pair = try builder.schema(.{ .product = &.{ integer, sequence } });
+    const optional = try builder.schema(.{ .sum = &.{ unit, pair } });
+    const entry = try builder.declare(&.{sequence}, sequence, &.{}, &.{});
+    const popped = try builder.primitive(optional, .sequence_pop, &.{try builder.reference(builder.parameter(entry, 0))}, 0);
+    const empty = try builder.variable(unit);
+    const present = try builder.variable(pair);
+    const head = try builder.variable(integer);
+    const tail = try builder.variable(sequence);
+    const unpack = try builder.term(.{ .unpack_product = .{
+        .value = try builder.reference(present),
+        .variables = &.{ head, tail },
+        .body = try builder.term(.{ .yield_then = try builder.pure(try builder.reference(tail)) }),
+    } });
+    try builder.define(entry, try builder.term(.{ .match_sum = .{
+        .value = popped,
+        .cases = &.{
+            .{ .variable = empty, .body = try builder.pure(try builder.primitive(sequence, .sequence, &.{}, 0)) },
+            .{ .variable = present, .body = unpack },
+        },
+    } }));
+    var compiled = try source.construct(testing.allocator, builder.module(entry, unit));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var input: [513]u8 = undefined;
+    input[0] = 64;
+    for (0..64) |i| std.mem.writeInt(u64, input[1 + i * 8 ..][0..8], i, .little);
+    var session = try Session.initImage(testing.allocator, image, &input);
+    defer session.deinit();
+    const initial = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(initial);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    for ([_]bool{ false, true }) |checkpoint_mode|
+        try residentFailureSweep(&prepared, initial, .none, checkpoint_mode);
+    try testing.expect(try drive(&session, null) == .yielded);
+    try testing.expect(session.store.encoded_sequences.count() != 0);
+    const nodes = session.store.nodes.items.len;
+    const blobs = session.store.blobs.items.len;
+    const state = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(state);
+    const again = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(again);
+    try testing.expectEqualSlices(u8, state, again);
+    try testing.expectEqual(nodes, session.store.nodes.items.len);
+    try testing.expectEqual(blobs, session.store.blobs.items.len);
+    var restored = try Session.restoreImage(testing.allocator, image, state);
+    defer restored.deinit();
+    try testing.expectEqual(0, restored.store.encoded_sequences.count());
+    try restored.resumeYield();
+    const result = try drive(&restored, null);
+    try testing.expect(result == .completed);
+    var expected: [505]u8 = undefined;
+    expected[0] = 63;
+    @memcpy(expected[1..], input[9..]);
+    try testing.expectEqualSlices(u8, &expected, try restored.bytes(&result.completed));
+}
+
+test "owned FIFO package queues preserve scheduling through instruction checkpoints" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.construct(testing.allocator, try source.examples.schedulerFifo(&builder));
+    defer compiled.deinit();
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
+    defer session.deinit();
+    try testing.expect(try drive(&session, null) == .yielded);
+    const checkpoint = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(checkpoint);
+    var graph = try boundary.data_v2.state_image.decodeGraph(testing.allocator, checkpoint);
+    defer graph.deinit();
+    var packages: usize = 0;
+    for (graph.state.nodes) |node| if (node.record == .package) {
+        packages += 1;
+    };
+    try testing.expectEqual(2, packages);
+    try session.resumeYield();
+    for (0..1024) |_| {
+        const outcome = try drive(&session, 1);
+        if (outcome == .progressed) continue;
+        try testing.expect(outcome == .completed);
+        try testing.expectEqualSlices(u8, &.{ 30, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&outcome.completed));
+        return;
+    }
+    return error.TestUnexpectedResult;
+}
+
 test "fast projections still reject malformed unselected input payloads" {
     for (0..3) |mode| {
         const variant = mode != 0;

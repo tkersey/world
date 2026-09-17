@@ -217,13 +217,14 @@ pub const Session = struct {
             nodes[count - 1] = .{ .record = .{ .exit = exit } };
             roots = .{ .exit = .{ .id = count - 1 } };
         }
-        return data.state_image.emitWith(self.allocator, .{
+        const public_state = try @import("value_projection.zig").project(a, self.program.schemas, &self.store, data.process_state.State{
             .program_identity = self.program_identity,
             .status = status,
             .roots = roots,
             .nodes = nodes,
             .blobs = self.store.blobs.items,
-        }, allocator);
+        });
+        return data.state_image.emitWith(self.allocator, public_state, allocator);
     }
 
     pub fn continuation(self: *Session, block: p.Id, _: anytype, control: g.Control) Error!g.NodeRef {
@@ -277,11 +278,12 @@ pub const Session = struct {
     }
 
     pub fn bytes(self: *Session, value: *const g.Value) Error![]const u8 {
-        return switch (value.body) {
-            .scalar => |*scalar| scalar[0..data.scalar.width(self.program.schemas[@intCast(value.schema)]).?],
-            .blob => |reference| self.store.blobs.items[@intCast(reference.id)].bytes,
-            else => error.InvalidValue,
+        const values: @import("values.zig").Values = .{
+            .allocator = self.allocator,
+            .schemas = self.program.schemas,
+            .store = &self.store,
         };
+        return values.bytes(value);
     }
 
     pub fn instructionFailure(self: *Session, instruction: p.Instruction, fault: p.Fault) Error!g.Value {

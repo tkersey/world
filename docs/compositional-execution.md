@@ -440,3 +440,48 @@ silently change those candidates. Apply the projection patch plus the frame patc
 with `git apply --unidiff-zero` to reproduce the final mask candidate. Raw prune-only observations remain, but
 its source and binary hashes were not recorded; that intermediate has a weaker
 reproduction record.
+
+## Structured sequence views
+
+Structured sequence slicing now creates a logical aggregate over immutable shared
+field storage. The first slice of an ordinary/imported aggregate copies its live
+fields into an owned backing; later slices share that backing. When a survivor
+falls to a quarter of the backing, it receives a smaller allocation. A consuming
+chain therefore copies a geometric series rather than every successive tail.
+The physical backing is not a graph root: tracing and PST3 serialization inspect
+only each aggregate's live field slice, so consumed prefixes cannot keep semantic
+owners executable. Graph records and the public wire grammar are unchanged.
+
+Store owns the backing reference counts, including journal-held versions. Commit
+releases saved ownership; rollback removes successor owners before restoring saved
+ones, using retained map capacity and no allocation. This physical sharing does
+not grant permission to copy a linear sequence. Existing type/use admission and
+value consumption continue to enforce one logical owner.
+
+The controlled resource-queue probe preserves FIFO order. Stored descriptor
+copies for 16/64/256 elements fall from 184/2,272/33,664 to 82/337/1,360. Tests bound
+the count by six copies per input element and retained backing after collection
+by four times the live remainder. Allocation-failure sweeps cover sharing,
+compaction, collection, freed-ID reuse, commit and rollback. The authored FIFO
+scheduler retains its two unique suspension packages and returns the independently
+expected result/log through instruction-by-instruction fresh/resident/checkpoint
+agreement. Existing native, Wasmtime, browser and package checks pass.
+
+Exportable encoded sequences now retain immutable cursors into their admitted
+backing bytes. Consuming a tail parses the skipped prefix and reuses the suffix;
+quarter-size compaction bounds retained backing. Product/sum wrappers can retain
+these private values until observation instead of immediately encoding the tail.
+The 16/64/256/1,024-element consuming probe constructs 180/584/2,140/8,307 bytes,
+respectively, including compaction. These are construction counters, not timings.
+
+Checkpoints use a read-only projection to ordinary canonical values; no private
+cursor or new tag crosses the wire. Restoring a checkpoint needs no cursor
+metadata. Repeated exports are byte-identical and do not change Store node/blob
+counts. Allocation-failure sweeps cover cursor backing, collection, ID reuse,
+rollback and resident execution/checkpointing. The source witness agrees across
+fresh, resident and restored execution and returns the independently expected
+remaining sequence.
+
+Repeated append/update costs, full sequence performance measurements and broader
+performance acceptance remain open. These changes do not establish completion
+of the full specification.

@@ -6,6 +6,81 @@ const Values = @import("values.zig").Values;
 const Store = @import("store.zig").Store;
 const maximum = std.math.maxInt(u64);
 
+test "encoded sequence cursors avoid rebuilding progressively shorter tails" {
+    const schemas = [_]p.Schema{ .unit, .u64, .{ .seq = 1 }, .{ .product = &.{ 1, 2 } }, .{ .sum = &.{ 0, 3 } } };
+    for ([_]usize{ 16, 64, 256, 1024 }) |count| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const encoded = try a.alloc(u8, count * 8 + 10);
+        var writer: data.wire.Writer = .{ .output = encoded };
+        try writer.natural(count);
+        for (0..count) |i| try writer.fixed(u64, i);
+        var statistics: @import("store.zig").Statistics = .{};
+        var store: Store = .{ .allocator = std.testing.allocator, .statistics = &statistics };
+        defer store.deinit();
+        var values: Values = .{ .allocator = a, .schemas = &schemas, .store = &store };
+        var queue = try store.literal(&schemas, .{ .schema = 2, .bytes = encoded[0..writer.position] });
+        const root = try store.add(.{ .environment = .{ .values = &.{queue}, .tail = null } });
+        for (0..count) |i| {
+            const slots: []const g.Value = &.{queue};
+            const result = try values.evaluate(.{ .opcode = .sequence_pop, .result_type = 4, .operands = &.{0} }, slots);
+            const optional = try values.split(result);
+            try std.testing.expectEqual(1, optional.tag);
+            const pair = try values.split(optional.fields[0]);
+            try std.testing.expectEqual(i, std.mem.readInt(u64, pair.fields[0].body.scalar[0..8], .little));
+            queue = pair.fields[1];
+            try store.replace(root, .{ .environment = .{ .values = &.{queue}, .tail = null } });
+            try store.collect(.{ .current = root });
+            var retained: usize = 0;
+            for (store.blobs.items, store.blob_alive.items) |blob, alive| if (alive) {
+                retained += blob.bytes.len;
+            };
+            try std.testing.expect(retained <= 4 * ((count - i - 1) * 8 + 10));
+        }
+        try std.testing.expectEqualSlices(u8, &.{0}, try values.bytes(&queue));
+        try std.testing.expect(statistics.owned_blob_bytes <= 32 * count);
+        std.debug.print("encoded queue elements={d} constructed_bytes={d}\n", .{ count, statistics.owned_blob_bytes });
+    }
+}
+
+test "consuming structured queues preserves order and measures descriptor copying" {
+    const schemas = [_]p.Schema{ .unit, .u64, .{ .internal = .{ .abstract_resource = 0 } }, .{ .seq = 2 }, .{ .product = &.{ 2, 3 } }, .{ .sum = &.{ 0, 4 } } };
+    for ([_]usize{ 16, 64, 256 }) |count| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var statistics: @import("store.zig").Statistics = .{};
+        var store: Store = .{ .allocator = std.testing.allocator, .statistics = &statistics };
+        defer store.deinit();
+        var values: Values = .{ .allocator = a, .schemas = &schemas, .store = &store };
+        const fields = try a.alloc(g.Value, count);
+        for (fields, 0..) |*value, index| {
+            const ref = try store.add(.{ .resource = .{ .schema = 2, .value = Values.natural(1, index) } });
+            value.* = .{ .schema = 2, .body = .{ .owned = .{ .node = ref } } };
+        }
+        var queue = try values.aggregate(3, .{ .fields = fields });
+        const root = try store.add(.{ .environment = .{ .values = &.{queue}, .tail = null } });
+        for (0..count) |index| {
+            const slots: []const g.Value = &.{queue};
+            const popped = try values.evaluate(.{ .opcode = .sequence_pop, .result_type = 5, .operands = &.{0} }, slots);
+            const optional = try values.split(popped);
+            try std.testing.expectEqual(1, optional.tag);
+            const pair = try values.split(optional.fields[0]);
+            const resource = (try store.get(pair.fields[0].body.owned.node)).resource;
+            try std.testing.expectEqual(index, std.mem.readInt(u64, resource.value.body.scalar[0..8], .little));
+            queue = pair.fields[1];
+            try store.replace(root, .{ .environment = .{ .values = &.{queue}, .tail = null } });
+            try store.collect(.{ .current = root });
+            try std.testing.expect(store.shared_field_values <= 4 * (count - index - 1));
+        }
+        try std.testing.expect(statistics.aggregate_field_copies <= 6 * count);
+        try std.testing.expectEqual(0, store.shared_field_values);
+        try std.testing.expectEqual(0, (try values.split(queue)).fields.len);
+        std.debug.print("queue elements={d} field_copies={d}\n", .{ count, statistics.aggregate_field_copies });
+    }
+}
+
 test "immutable construction measures the second output copy" {
     const schemas = [_]p.Schema{ .bytes, .u64, .{ .product = &.{ 0, 1 } } };
     for ([_]usize{ 0, 1024, 1 << 20 }) |size| {
