@@ -2344,3 +2344,35 @@ test "resident terminal compaction preserves rollback and releases backing at co
         break;
     }
 }
+
+test "handler continuation transfers the active view after staging call operands" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.installations(&builder, 8));
+    defer compiled.deinit();
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
+    defer session.deinit();
+    for (0..256) |_| {
+        const current = session.roots.current.?;
+        const control = (try session.store.get(current)).control;
+        const block = session.program.blocks[@intCast(control.block)];
+        const frame = try session.frames.get(current.id);
+        if (frame.position == block.instructions.len and block.terminator == .handle) {
+            try session.step();
+            const body = (try session.store.get(session.roots.current.?)).control;
+            const attachment = (try session.store.get(body.parent.?)).attachment;
+            const saved = try session.frames.get(attachment.return_to.?.id);
+            try testing.expectEqualDeep(frame.view, saved.view);
+            try testing.expectEqual(current.id, attachment.return_to.?.id);
+            try testing.expect(try session.store.get(current) == .continuation);
+            const checkpoint = try session.checkpoint(testing.allocator);
+            defer testing.allocator.free(checkpoint);
+            const result = try drive(&session, null);
+            try testing.expect(result == .completed);
+            try testing.expectEqual(36, std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
+            return;
+        }
+        try session.step();
+    }
+    return error.TestUnexpectedResult;
+}

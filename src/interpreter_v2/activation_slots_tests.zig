@@ -348,3 +348,46 @@ test "stable slots match an independent flat model across mixed view lifecycles"
     try testing.expectEqual(0, store.statistics.live_pages);
     try testing.expectEqual(0, store.statistics.live_directories);
 }
+
+test "unshared sparse insertion preserves existing directory prefixes" {
+    var store = try Slots.init(testing.allocator);
+    defer store.deinit();
+    const view = try store.create(4096);
+    for ([_]usize{ 0, 16, 256, 4095 }) |slot| try store.set(view, slot, slot + 1);
+    try testing.expectEqual(0, store.statistics.directory_copies);
+    try testing.expectEqual(0, store.statistics.value_copies);
+    for ([_]usize{ 0, 16, 256, 4095 }) |slot|
+        try testing.expectEqual(slot + 1, try store.get(view, slot));
+}
+
+fn failedSharedSuffix(allocator: std.mem.Allocator) !void {
+    var store = try Slots.init(allocator);
+    defer store.deinit();
+    const view = try store.create(4096);
+    try store.set(view, 0, 11);
+    try store.set(view, 16, 22);
+    const retained = try store.fork(view);
+    // Copy the root while its original low subtree remains shared.
+    try store.set(view, 256, 33);
+    const pages = store.statistics.live_pages;
+    const directories = store.statistics.live_directories;
+    var before = try store.iterator(view);
+    store.set(view, 16, 44) catch |err| {
+        try testing.expectEqual(11, (try before.next()).?.value);
+        try testing.expectEqual(22, (try before.next()).?.value);
+        try testing.expectEqual(33, (try before.next()).?.value);
+        try testing.expect(try before.next() == null);
+        try testing.expectEqual(22, try store.get(retained, 16));
+        try testing.expectEqual(pages, store.statistics.live_pages);
+        try testing.expectEqual(directories, store.statistics.live_directories);
+        return err;
+    };
+    try testing.expectEqual(44, try store.get(view, 16));
+    try testing.expectEqual(22, try store.get(retained, 16));
+    try testing.expectError(error.UninitializedSlot, store.get(retained, 256));
+    try testing.expectError(error.StaleIterator, before.next());
+}
+
+test "shared suffix allocation failures leave unique prefixes and retained views unchanged" {
+    try testing.checkAllAllocationFailures(testing.allocator, failedSharedSuffix, .{});
+}

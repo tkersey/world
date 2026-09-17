@@ -193,14 +193,7 @@ pub fn Slots(comptime Value: type) type {
                 const page = locate(entry.root, entry.depth, slot) orelse return;
                 if (page.initialized & mask(slot) == 0) return;
             }
-            if (uniquePath(entry.root, entry.depth, slot)) {
-                self.changeUnique(&entry.root, entry.depth, slot, value);
-            } else {
-                const successor = try self.changed(entry.root, entry.depth, slot, value);
-                const previous = entry.root;
-                entry.root = successor;
-                self.drop(previous);
-            }
+            try self.changeOwned(&entry.root, entry.depth, slot, value);
             entry.revision += 1;
             self.statistics.writes +|= 1;
         }
@@ -267,7 +260,21 @@ pub fn Slots(comptime Value: type) type {
             return .{ .page = page };
         }
 
-        fn changeUnique(self: *Self, node: *Node, depth: u8, slot: usize, value: ?Value) void {
+        /// A unique prefix stays in place. Build the first shared/missing suffix
+        /// before publishing it; unwinding this recursion performs no fallible work.
+        fn changeOwned(self: *Self, node: *Node, depth: u8, slot: usize, value: ?Value) Error!void {
+            const unique = switch (node.*) {
+                .empty => false,
+                .page => |page| page.references == 1,
+                .branch => |branch| branch.references == 1,
+            };
+            if (!unique) {
+                const successor = try self.changed(node.*, depth, slot, value);
+                const previous = node.*;
+                node.* = successor;
+                self.drop(previous);
+                return;
+            }
             if (depth == 0) {
                 assign(node.page, slot, value);
                 if (node.page.initialized == 0) {
@@ -277,7 +284,7 @@ pub fn Slots(comptime Value: type) type {
                 return;
             }
             const index = childIndex(depth, slot);
-            self.changeUnique(&node.branch.children[index], depth - 1, slot, value);
+            try self.changeOwned(&node.branch.children[index], depth - 1, slot, value);
             for (node.branch.children) |child| if (child != .empty) return;
             self.drop(node.*);
             node.* = .empty;
@@ -300,18 +307,6 @@ pub fn Slots(comptime Value: type) type {
         fn childIndex(depth: u8, slot: usize) usize {
             std.debug.assert(depth > 0 and depth <= maximum_depth);
             return (slot >> @intCast(bits * depth)) & (width - 1);
-        }
-
-        fn uniquePath(root: Node, levels: u8, slot: usize) bool {
-            var node = root;
-            var depth = levels;
-            while (node != .empty) {
-                if (depth == 0) return node.page.references == 1;
-                if (node.branch.references != 1) return false;
-                node = node.branch.children[childIndex(depth, slot)];
-                depth -= 1;
-            }
-            return false;
         }
 
         fn locate(root: Node, levels: u8, slot: usize) ?*Page {

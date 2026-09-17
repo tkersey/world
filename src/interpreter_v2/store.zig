@@ -211,6 +211,14 @@ pub const Store = struct {
         self.* = undefined;
     }
 
+    /// Prepare a known batch before its temporary values become live. IDs and
+    /// logical records remain unchanged; add still validates its own capacity.
+    pub fn reserveNodes(self: *Store, count: usize) Error!void {
+        const additional = count -| self.free_nodes.items.len;
+        try self.nodes.ensureUnusedCapacity(self.allocator, additional);
+        try self.alive.ensureUnusedCapacity(self.allocator, additional);
+    }
+
     pub fn add(self: *Store, value: g.Node) Error!g.NodeRef {
         const copied = try duplicate(g.Node, self.allocator, value);
         errdefer release(g.Node, self.allocator, copied);

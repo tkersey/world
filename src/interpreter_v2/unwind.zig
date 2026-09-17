@@ -94,21 +94,22 @@ pub fn cancel(machine: anytype, reason: data.invocation.Reason) @TypeOf(machine.
 }
 
 pub fn protect(machine: anytype, protection: anytype, slots: anytype, control: g.Control) @TypeOf(machine.*).ExecutionError!void {
+    const body = try @import("operands.zig").read(slots, protection.body);
     const resource: ?g.Value = if (protection.resource) |slot| (try @import("operands.zig").read(slots, slot)) else null;
     const obligation = try machine.store.add(.{ .obligation = .{ .source_block = control.block, .cleanup = (try @import("operands.zig").read(slots, protection.cleanup)), .resource = resource, .status = .pending } });
-    const after = try machine.continuation(control.block, slots, control);
     const loan: ?g.NodeRef = if (protection.loan_region) |descriptor| try machine.store.add(.{ .region = .{ .descriptor = descriptor, .outer = control.region, .obligations = &.{} } }) else null;
-    const frame = try machine.store.add(.{ .protection = .{ .source_block = control.block, .obligation = .{ .node = obligation }, .return_to = after, .evidence = control.evidence, .region = control.region, .loan = loan } });
     const extra: usize = @intFromBool(resource != null);
     const arguments = try machine.allocator.alloc(g.Value, protection.arguments.len + extra);
     defer machine.allocator.free(arguments);
     if (resource) |owned| {
-        const schema = machine.program.schemas[@intCast((try @import("operands.zig").read(slots, protection.body)).schema)].internal.computation.parameters[0];
+        const schema = machine.program.schemas[@intCast(body.schema)].internal.computation.parameters[0];
         const borrowed = try machine.store.add(.{ .borrow = .{ .schema = schema, .resource = owned.body.owned.node, .region = loan.? } });
         arguments[0] = .{ .schema = schema, .body = .{ .reference = borrowed } };
     }
     for (arguments[extra..], protection.arguments) |*argument, slot| argument.* = (try @import("operands.zig").read(slots, slot));
-    try machine.applyComputation((try @import("operands.zig").read(slots, protection.body)), arguments, frame, control.evidence, loan orelse control.region);
+    const after = try machine.continuation(control.block, slots, control);
+    const frame = try machine.store.add(.{ .protection = .{ .source_block = control.block, .obligation = .{ .node = obligation }, .return_to = after, .evidence = control.evidence, .region = control.region, .loan = loan } });
+    try machine.applyComputation(body, arguments, frame, control.evidence, loan orelse control.region);
 }
 
 pub fn dispose(machine: anytype, disposal: anytype, slots: anytype, control: g.Control) @TypeOf(machine.*).ExecutionError!void {

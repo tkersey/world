@@ -178,3 +178,35 @@ fn ownedExitReplacementCase(a: std.mem.Allocator) !void {
 test "owned exit replacement retains nested cancellation bytes and both field buffers" {
     try std.testing.checkAllAllocationFailures(allocator, ownedExitReplacementCase, .{});
 }
+
+test "node reservation prepares record capacity without publishing nodes" {
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    var store: Store = .{ .allocator = failing.allocator() };
+    defer store.deinit();
+    try store.reserveNodes(3);
+    try std.testing.expectEqual(0, store.nodes.items.len);
+    try std.testing.expectEqual(0, store.alive.items.len);
+    failing.fail_index = failing.alloc_index;
+    for (0..3) |_| _ = try store.add(.{ .environment = .{ .values = &.{}, .tail = null } });
+    try std.testing.expectEqual(3, store.nodes.items.len);
+    try std.testing.expect(!failing.has_induced_failure);
+}
+
+fn failedNodeReservation(a: std.mem.Allocator) !void {
+    var store: Store = .{ .allocator = a };
+    defer store.deinit();
+    const original = try store.add(.{ .environment = .{ .values = &.{}, .tail = null } });
+    const record = try store.get(original);
+    store.reserveNodes(100) catch |err| {
+        try std.testing.expectEqual(1, store.nodes.items.len);
+        try std.testing.expectEqual(1, store.alive.items.len);
+        try std.testing.expectEqualDeep(record, try store.get(original));
+        return err;
+    };
+    try std.testing.expectEqualDeep(record, try store.get(original));
+    try std.testing.expectEqual(1, store.nodes.items.len);
+}
+
+test "failed node reservation preserves existing record identities and contents" {
+    try std.testing.checkAllAllocationFailures(allocator, failedNodeReservation, .{});
+}

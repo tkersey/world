@@ -379,8 +379,10 @@ pub const Session = struct {
                 try self.executeInstruction(current, code, &frame);
             } else try self.executeControl(current, control, code, &frame);
         }
-        if (self.roots.current == null or self.roots.current.?.id != current.id)
-            self.frames.remove(current.id);
+        if (self.roots.current == null or self.roots.current.?.id != current.id) {
+            // A saved continuation keeps custody at the old control-node ID.
+            if (try self.store.get(current) == .control) self.frames.remove(current.id);
+        }
         self.transitions +%= 1;
         if (self.statistics) |statistics| statistics.transitions +|= 1;
         if (self.terminal != null or self.transitions % 256 == 0)
@@ -455,17 +457,17 @@ pub const Session = struct {
                     .outer = saved.region,
                     .obligations = &.{},
                 } });
+                const body = try read(reader, region.body);
+                const parameters = self.program.schemas[@intCast(body.schema)].internal.computation.parameters;
+                const args = try scratch.alloc(g.Value, region.arguments.len + 1);
+                args[0] = .{ .schema = parameters[0], .body = .{ .reference = descriptor } };
+                for (args[1..], region.arguments) |*value, slot| value.* = try read(reader, slot);
                 const after = try self.captureContinuation(current, saved, frame.*, region.next);
                 const wrapper = try self.store.add(.{ .region_scope = .{
                     .source_block = saved.block,
                     .region = descriptor,
                     .return_to = after,
                 } });
-                const body = try read(reader, region.body);
-                const parameters = self.program.schemas[@intCast(body.schema)].internal.computation.parameters;
-                const args = try scratch.alloc(g.Value, region.arguments.len + 1);
-                args[0] = .{ .schema = parameters[0], .body = .{ .reference = descriptor } };
-                for (args[1..], region.arguments) |*value, slot| value.* = try read(reader, slot);
                 try self.applyComputation(body, args, wrapper, saved.evidence, descriptor);
             },
             else => return error.UnsupportedTransition,
@@ -479,9 +481,16 @@ pub const Session = struct {
                 const token = try self.takeCapture(resumption);
                 defer if (self.program.schemas[@intCast(resumption.schema)].internal.resumption.use == .multi)
                     self.allocator.free(token.use_site_capabilities);
+                const argument = try read(reader, if (comptime kind == .resume_computation)
+                    operation.computation
+                else
+                    operation.argument);
+                const state = if (comptime kind == .resume_with)
+                    try self.collectArguments(scratch, reader, operation.state)
+                else
+                    &.{};
                 const after = try self.captureContinuation(current, control, frame, operation.next);
                 if (comptime kind == .resume_with) {
-                    const state = try self.collectArguments(scratch, reader, operation.state);
                     const handler = try self.store.add(.{ .handler = .{
                         .definition = operation.handler,
                         .state = state,
@@ -494,15 +503,15 @@ pub const Session = struct {
                         .return_to = after,
                         .region = control.region,
                     } });
-                    try self.resumeContinuation(token.capture.?, try read(reader, operation.argument));
+                    try self.resumeContinuation(token.capture.?, argument);
                 } else {
                     const evidence = try @import("resumption.zig").prepare(self, token, after);
                     if (comptime kind == .resume_value) {
-                        try self.resumeContinuation(token.capture.?, try read(reader, operation.argument));
+                        try self.resumeContinuation(token.capture.?, argument);
                     } else {
                         const saved = (try self.store.get(token.capture.?)).continuation;
                         const injection = try self.store.add(.{ .injection = .{ .continuation = token.capture.? } });
-                        try self.applyComputation(try read(reader, operation.computation), token.use_site_capabilities, injection, evidence, saved.region);
+                        try self.applyComputation(argument, token.use_site_capabilities, injection, evidence, saved.region);
                     }
                 }
             },
@@ -526,16 +535,18 @@ pub const Session = struct {
     fn enter(self: *Session, function: p.Id, args: []const g.Value, parent: ?g.NodeRef, evidence: ?g.NodeRef, region: ?g.NodeRef) Error!void {
         const target = self.program.functions[@intCast(function)];
         if (target.inputs.len != args.len) return error.InvalidState;
-        var frame = try self.frames.create(function);
-        errdefer self.frames.releaseFrame(frame);
-        for (args, target.inputs) |value, slot| try self.frames.write(&frame, slot, value);
-        try self.frames.prune(&frame, self.flow.facts.live[@intCast(target.entry)][0]);
+        // Reserve the control record before its activation allocates storage.
+        // The current root is published only after both owners are complete.
         const control = try self.store.add(.{ .control = .{
             .block = target.entry,
             .parent = parent,
             .evidence = evidence,
             .region = region,
         } });
+        var frame = try self.frames.create(function);
+        errdefer self.frames.releaseFrame(frame);
+        for (args, target.inputs) |value, slot| try self.frames.write(&frame, slot, value);
+        try self.frames.prune(&frame, self.flow.facts.live[@intCast(target.entry)][0]);
         try self.frames.put(control.id, frame);
         self.roots.current = control;
         self.roots.evidence = evidence;
@@ -561,18 +572,20 @@ pub const Session = struct {
         return root;
     }
 
-    fn captureContinuation(self: *Session, _: g.NodeRef, control: g.Control, original: bindings.Frame, edge: ir.Edge) Error!g.NodeRef {
-        var frame = try self.frames.forkFrame(original);
-        errdefer self.frames.releaseFrame(frame);
+    // All remaining operands must be gathered before this phase transition.
+    // Admission gives the active control one custodian; it becomes the saved
+    // continuation in place. Multi-shot activation still clones its template.
+    fn captureContinuation(self: *Session, current: g.NodeRef, control: g.Control, original: bindings.Frame, edge: ir.Edge) Error!g.NodeRef {
+        var frame = original;
         try self.frames.prune(&frame, try self.retainedSlots(edge));
-        const saved = try self.store.add(.{ .continuation = .{
+        try self.store.replace(current, .{ .continuation = .{
             .source_block = control.block,
             .parent = control.parent,
             .evidence = control.evidence,
             .region = control.region,
         } });
-        try self.frames.put(saved.id, frame);
-        return saved;
+        self.frames.update(current.id, frame);
+        return current;
     }
 
     fn assignEdge(self: *Session, frame: *bindings.Frame, next: ir.Edge, returned: ?g.Value) Error!void {
@@ -655,7 +668,13 @@ pub const Session = struct {
 
     fn install(self: *Session, current: g.NodeRef, control: g.Control, frame: bindings.Frame, operation: anytype, reader: anytype, scratch: std.mem.Allocator) Error!void {
         const definition = self.program.handlers[@intCast(operation.handler)];
+        // Handler, attachment and callee control; capture reuses the current node.
+        try self.store.reserveNodes(3);
         const state = try self.collectArguments(scratch, reader, operation.state);
+        const body = try read(reader, operation.body);
+        const signature = self.program.schemas[@intCast(body.schema)].internal.computation;
+        const args = try scratch.alloc(g.Value, definition.clauses.len + operation.arguments.len);
+        for (args[definition.clauses.len..], operation.arguments) |*value, slot| value.* = try read(reader, slot);
         const handler = try self.store.add(.{ .handler = .{
             .definition = operation.handler,
             .state = state,
@@ -669,19 +688,15 @@ pub const Session = struct {
             .return_to = after,
             .region = control.region,
         } });
-        const body = try read(reader, operation.body);
-        const signature = self.program.schemas[@intCast(body.schema)].internal.computation;
-        const args = try scratch.alloc(g.Value, definition.clauses.len + operation.arguments.len);
         for (definition.clauses, 0..) |_, index|
             args[index] = .{ .schema = signature.parameters[index], .body = .{ .reference = attachment } };
-        for (args[definition.clauses.len..], operation.arguments) |*value, slot| value.* = try read(reader, slot);
         try self.applyComputation(body, args, attachment, attachment, control.region);
     }
 
     fn performEffect(self: *Session, current: g.NodeRef, control: g.Control, frame: bindings.Frame, operation: ir.Perform, reader: anytype, scratch: std.mem.Allocator) Error!void {
         const payload = try read(reader, operation.payload);
-        const captured = try self.captureContinuation(current, control, frame, operation.next);
         if (operation.capability == null) {
+            const captured = try self.captureContinuation(current, control, frame, operation.next);
             self.roots.pending = try self.store.add(.{ .pending = .{
                 .effect = operation.effect,
                 .payload = payload,
@@ -706,10 +721,17 @@ pub const Session = struct {
             break;
         };
         const clause = found orelse return error.InvalidEffect;
-        if (clause.strategy == .tail)
+        if (clause.strategy == .tail) {
+            const captured = try self.captureContinuation(current, control, frame, operation.next);
             return self.enterTailClause(scratch, handler, clause.function, payload, captured);
+        }
         const use_site = try self.collectArguments(scratch, reader, operation.use_site_capabilities);
         const multi = self.program.schemas[@intCast(clause.resumption)].internal.resumption.use == .multi;
+        const args = try scratch.alloc(g.Value, handler.state.len + operation.bodies.len + 2);
+        @memcpy(args[0..handler.state.len], handler.state);
+        args[handler.state.len] = payload;
+        for (operation.bodies, 0..) |slot, index| args[handler.state.len + 1 + index] = try read(reader, slot);
+        const captured = try self.captureContinuation(current, control, frame, operation.next);
         const capture: g.Capture = .{
             .schema = clause.resumption,
             .capture = captured,
@@ -721,10 +743,6 @@ pub const Session = struct {
         if (self.statistics) |statistics| {
             if (multi) statistics.multi_templates +|= 1 else statistics.one_shot_captures +|= 1;
         }
-        const args = try scratch.alloc(g.Value, handler.state.len + operation.bodies.len + 2);
-        @memcpy(args[0..handler.state.len], handler.state);
-        args[handler.state.len] = payload;
-        for (operation.bodies, 0..) |slot, index| args[handler.state.len + 1 + index] = try read(reader, slot);
         args[args.len - 1] = .{ .schema = clause.resumption, .body = if (multi) .{ .reference = token } else .{ .owned = .{ .node = token } } };
         const parent = attachment.return_to;
         attachment.return_to = null;

@@ -100,6 +100,37 @@ owner, so there is no clone entry point that silently omits frame values.
 The obsolete raw graph State and Store import/export helpers are also removed;
 portable projection and restoration use `process_state.State` with activations.
 
+The local continuation-transfer candidate gathers actual outgoing operands before
+pruning, then changes the singly-custodied active control into its continuation in
+place. Its frame handle and node ID remain owned by that continuation. Departed
+control frames are released; saved continuation frames remain live. Multi-shot
+activation still clones its template. Resident's existing Store journal and Frames
+backup restore a failed transition; fresh failures discard the private Session.
+
+Slot writes preserve unique directory prefixes and prepare the first shared or
+missing suffix before publishing it. Handler installation reserves exactly its
+three new node slots before temporary values, and control-record allocation precedes
+frame allocation. These changes reduce copying and overlapping storage without
+changing the working arena, checkpoint grammar, or authored effect/disposal order.
+
+Native 64-installation medians improve from 446.6/440.6 to 401.8/391.2 microseconds
+in two rotating windows; allocation calls fall from 1,165 to 830 and working peak
+from 284,973 to 284,448 bytes. This still trails optimized BPC1 at 237.9/239.2
+microseconds and 121,956 bytes. At 256 installations the candidate takes
+1.892/1.870 ms versus BPC1's 2.300/2.293 ms. All measured control/value working peaks
+are unchanged or lower. Small higher medians on two value guards remain
+indeterminate, with overlapping first-window process ranges.
+
+[Paired samples, isolated candidates and limitations](measurements/continuation-transfer.json)
+retain the rejected inline representation, under-target variants, and the failed
+temporary-buffer hypothesis. The local normal-pin aggregate passes 32 steps,
+74 source tests, 39 storage tests, 30 host tests, 6,755 source-oracle observations,
+native/Node/Wasmtime/browser transfer and extracted-package checks. All 86 commands
+captured from the published Agent document scenarios reproduce identical complete
+output bytes in the candidate native runtime. The kernel grows by 368 bytes to
+460,851 bytes. This is local qualification; coordinated Agent repinning, full
+consumer qualification, the remaining performance matrix and serial reviews remain.
+
 The graph cloner includes stable frames. Captured branch-local cells
 are relocated, genuinely outer cells remain shared, and only changed references
 cause slot-page copies. Native source checks pass for 1/8/64/128/256 real handler
