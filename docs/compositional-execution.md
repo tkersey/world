@@ -4,10 +4,11 @@ This is an incomplete part of the accepted Boundary 3 / World 6 / Agent successo
 The complete specification, including draft publication and serial review closeout,
 remains the goal. No merge, release or application data operation has occurred.
 
-World starts at `d075169a4805d999ceba4c37b3e1c925b78c3bf9` on the dedicated
-`feat/compositional-execution` branch. Validation uses the separate Boundary
-successor worktree at `5c7a38e1ad63445b633f30ba82eff60b0af0c697`, Zig 0.16.0,
-and Node 26.8.2. The normal dependency pin remains the predecessor until cutover.
+World develops on `feat/compositional-execution` from the 5.0.2 reference
+`d075169a4805d999ceba4c37b3e1c925b78c3bf9`. The normal manifest selects Boundary
+`711325d3453f9fbb4d43f3ca9438c038fb7c14d7`; normal-pin aggregate validation uses
+Zig 0.16.0 and Node 26.8.2. Measurements below retain their individual source
+bindings and do not automatically qualify later code.
 
 ## Private activation slots
 
@@ -93,11 +94,13 @@ Function inputs populate stable slots; continuation nodes own private frame view
 rather than predecessor argument vectors. Changed-only edge assignments use
 simultaneous sources and omit dead copyable destinations. Reclamation uses set
 differences, and the graph collector traces bindings in live control frames.
-The same instruction implementation serves both layouts during migration.
-The predecessor controller remains until the successor contract is complete;
-unsupported successor features never dispatch to it.
+The predecessor controller and control/continuation argument vectors are retired.
+Control values exist only in the activation owner. The graph cloner requires that
+owner, so there is no clone entry point that silently omits frame values.
+The obsolete raw graph State and Store import/export helpers are also removed;
+portable projection and restoration use `process_state.State` with activations.
 
-The existing graph cloner now includes stable frames. Captured branch-local cells
+The graph cloner includes stable frames. Captured branch-local cells
 are relocated, genuinely outer cells remain shared, and only changed references
 cause slot-page copies. Native source checks pass for 1/8/64/128/256 real handler
 installations with the final checked sum preserved, non-tail answer transformation,

@@ -11,6 +11,19 @@ fn value(ref: g.NodeRef) g.Value {
 test "one eight and sixty-four branches share immutable environments and blobs" {
     var mismatches: usize = 0;
     for ([_]usize{ 1, 8, 64 }) |count| {
+        var pool: data.analysis_sets.Pool = .{ .allocator = allocator, .limit = 2 };
+        defer pool.deinit();
+        const program: data.activation.Program = .{
+            .roots = .{ .entry = 0, .result = 0, .failure = 0 },
+            .schemas = &.{.u64},
+            .constants = &.{},
+            .effects = &.{},
+            .blocks = &.{},
+            .functions = &.{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = &.{ 0, 0 } }, .result = 0 }},
+        };
+        var frames = try @import("activation_frames.zig").Frames.init(allocator, &pool, program);
+        defer frames.deinit();
+
         var statistics: @import("store.zig").Statistics = .{};
         var store: Store = .{ .allocator = allocator, .statistics = &statistics };
         defer store.deinit();
@@ -30,18 +43,22 @@ test "one eight and sixty-four branches share immutable environments and blobs" 
         const cell = try store.add(.{ .cell = .{ .schema = 0, .region = local, .value = blob } });
         const immutable = try store.add(.{ .environment = .{ .values = &.{ blob, value(shared) }, .tail = null } });
         const rebased = try store.add(.{ .environment = .{ .values = &.{ value(cell), value(cell) }, .tail = immutable } });
-        const position = try store.add(.{ .continuation = .{ .source_block = 0, .arguments = &.{ value(immutable), value(rebased) }, .parent = scope, .evidence = delimiter, .region = local } });
+        const position = try store.add(.{ .continuation = .{ .source_block = 0, .parent = scope, .evidence = delimiter, .region = local } });
+        try frames.restore(position.id, 0, .{ .position = 0, .scope = 0, .bindings = &.{
+            .{ .slot = 0, .value = value(immutable) }, .{ .slot = 1, .value = value(rebased) },
+        }, .owners = &.{} });
         const template: g.Capture = .{ .schema = 0, .capture = position, .delimiter = delimiter, .evidence = delimiter };
         const before = statistics.added_nodes;
         var cells = std.AutoHashMap(u64, void).init(allocator);
         defer cells.deinit();
         var shared_environments: usize = 0;
         for (0..count) |_| {
-            const copied = try @import("clone.zig").instantiate(allocator, &store, template);
+            const copied = try @import("clone.zig").instantiate(allocator, &store, template, &frames);
             defer allocator.free(copied.use_site_capabilities);
             const continuation = (try store.get(copied.capture.?)).continuation;
-            if (continuation.arguments[0].?.body.reference.id == immutable.id) shared_environments += 1;
-            const environment = (try store.get(continuation.arguments[1].?.body.reference)).environment;
+            const view = (try frames.get(copied.capture.?.id)).view;
+            if ((try frames.slots.get(view, 0)).body.reference.id == immutable.id) shared_environments += 1;
+            const environment = (try store.get((try frames.slots.get(view, 1)).body.reference)).environment;
             const left = environment.values[0].body.reference;
             try std.testing.expectEqual(left.id, environment.values[1].body.reference.id);
             try std.testing.expect(left.id != cell.id);
@@ -54,6 +71,8 @@ test "one eight and sixty-four branches share immutable environments and blobs" 
             // Updating a branch cannot alter the template or another branch.
             try store.replace(left, .{ .cell = .{ .schema = 0, .region = copied_cell.region, .value = null } });
             try std.testing.expect((try store.get(cell)).cell.value != null);
+            const original_view = (try frames.get(position.id)).view;
+            try std.testing.expectEqual(rebased.id, (try frames.slots.get(original_view, 1)).body.reference.id);
         }
         std.debug.print("branches={d} cloned_nodes={d} shared_environments={d} blob_copies={d} payload_bytes={d}\n", .{ count, statistics.added_nodes - before, shared_environments, store.blobs.items.len, statistics.copied_blob_bytes });
         try std.testing.expectEqual(@as(usize, 1), store.blobs.items.len);
@@ -77,7 +96,16 @@ test "collection and canonicalization traverse each reachable node and edge once
     try std.testing.expectEqual(@as(u64, 5), statistics.traced_edges);
     try std.testing.expectEqual(@as(u64, 3), statistics.swept_slots);
     var measured: data.graph_order.Statistics = .{};
-    var normalized = try data.graph_order.canonicalize(allocator, store.state(@splat(0), .active, roots), &measured);
+    const nodes = try allocator.alloc(data.process_state.Node, store.nodes.items.len);
+    defer allocator.free(nodes);
+    for (nodes, store.nodes.items) |*node, record| node.* = .{ .record = record };
+    var normalized = try data.graph_order.canonicalize(allocator, data.process_state.State{
+        .program_identity = @splat(0),
+        .status = .active,
+        .roots = roots,
+        .nodes = nodes,
+        .blobs = store.blobs.items,
+    }, &measured);
     defer normalized.deinit();
     try std.testing.expectEqual(statistics.traced_nodes, measured.nodes);
     try std.testing.expectEqual(statistics.traced_edges, measured.edges);
@@ -109,14 +137,14 @@ fn ownedInsertionCase(a: std.mem.Allocator) !void {
         const values = try a.alloc(g.Value, 2);
         errdefer a.free(values);
         @memset(values, .{ .schema = 0, .body = .{ .scalar = @splat(7) } });
-        const ref = try store.addOwned(.{ .control = .{ .block = 0, .arguments = values } });
-        try std.testing.expectEqual(values.ptr, (try store.get(ref)).control.arguments.ptr);
+        const ref = try store.addOwned(.{ .environment = .{ .values = values, .tail = null } });
+        try std.testing.expectEqual(values.ptr, (try store.get(ref)).environment.values.ptr);
         break :blk ref;
     };
     // Borrowed replacement remains safe even when it aliases the previous node.
-    const previous = (try store.get(ref)).control;
-    try store.replace(ref, .{ .control = .{ .block = 0, .arguments = previous.arguments[1..] } });
-    try std.testing.expectEqual(@as(usize, 1), (try store.get(ref)).control.arguments.len);
+    const previous = (try store.get(ref)).environment;
+    try store.replace(ref, .{ .environment = .{ .values = previous.values[1..], .tail = null } });
+    try std.testing.expectEqual(@as(usize, 1), (try store.get(ref)).environment.values.len);
     try store.collect(.{ .current = ref });
     try store.collect(.{});
 }

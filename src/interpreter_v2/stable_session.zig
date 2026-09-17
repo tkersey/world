@@ -186,7 +186,7 @@ pub const Session = struct {
         for (self.store.nodes.items, self.store.alive.items, 0..) |node, alive, id| {
             // A reachable dead handle must fail graph shape checks, never become
             // a plausible empty semantic object in a checkpoint.
-            nodes[id] = if (alive) .{ .record = node, .activation = try self.frames.project(id, a) } else .{ .record = .{ .control = .{ .block = std.math.maxInt(u64), .arguments = &.{} } } };
+            nodes[id] = if (alive) .{ .record = node, .activation = try self.frames.project(id, a) } else .{ .record = .{ .control = .{ .block = std.math.maxInt(u64) } } };
         }
         const roots = self.roots;
         var status: data.process_state.Status = @enumFromInt(@intFromEnum(self.status));
@@ -532,7 +532,6 @@ pub const Session = struct {
         try self.frames.prune(&frame, self.flow.facts.live[@intCast(target.entry)][0]);
         const control = try self.store.add(.{ .control = .{
             .block = target.entry,
-            .arguments = &.{},
             .parent = parent,
             .evidence = evidence,
             .region = region,
@@ -568,7 +567,6 @@ pub const Session = struct {
         try self.frames.prune(&frame, try self.retainedSlots(edge));
         const saved = try self.store.add(.{ .continuation = .{
             .source_block = control.block,
-            .arguments = &.{},
             .parent = control.parent,
             .evidence = control.evidence,
             .region = control.region,
@@ -616,7 +614,6 @@ pub const Session = struct {
         const next = nextEdge(self.program.blocks[@intCast(saved.source_block)].terminator).?;
         const current = try self.store.add(.{ .control = .{
             .block = next.block,
-            .arguments = &.{},
             .parent = saved.parent,
             .evidence = saved.evidence,
             .region = saved.region,
@@ -757,7 +754,7 @@ pub const Session = struct {
         const reference = valueRef(value);
         const record = try self.store.get(reference);
         if (record == .multi_template) {
-            const branch = try @import("clone.zig").instantiateFrames(self.allocator, &self.store, record.multi_template, &self.frames);
+            const branch = try @import("clone.zig").instantiate(self.allocator, &self.store, record.multi_template, &self.frames);
             if (self.statistics) |statistics| statistics.branch_activations +|= 1;
             return branch;
         }

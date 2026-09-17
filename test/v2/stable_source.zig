@@ -1218,12 +1218,11 @@ test "imported storage avoids payload copies and releases a large dead backing" 
     defer baseline.deinit();
     var baseline_statistics: @TypeOf(statistics) = .{};
     baseline.statistics = &baseline_statistics.storage;
-    try baseline.import(.{
-        .program_identity = state.program_identity,
-        .status = .active,
-        .roots = state.roots,
-        .nodes = &.{state.nodes[0].record},
-        .blobs = state.blobs,
+    // Contrast transferred checkpoint storage with ordinary copying insertion.
+    for (state.nodes) |node| _ = try baseline.add(node.record);
+    for (state.blobs) |blob| _ = try baseline.literal(&.{.bytes}, .{
+        .schema = blob.schema,
+        .bytes = blob.bytes,
     });
     try testing.expectEqual(big.len + 5, baseline_statistics.storage.copied_blob_bytes);
     try store.importOwned(&decoded);
@@ -1381,11 +1380,6 @@ test "stable source installs real handlers and keeps the final checked sum after
         try testing.expectEqual(count * (count + 1) / 2, std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
         try testing.expectEqual(0, session.frames.entries.count());
         try testing.expect(session.frames.slots.statistics.value_copies <= 32 * count + 128);
-        for (session.store.nodes.items, session.store.alive.items) |node, alive| {
-            if (!alive) continue;
-            if (node == .continuation) try testing.expectEqual(0, node.continuation.arguments.len);
-            if (node == .control) try testing.expectEqual(0, node.control.arguments.len);
-        }
     }
 }
 

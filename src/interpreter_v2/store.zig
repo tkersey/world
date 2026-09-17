@@ -398,23 +398,6 @@ pub const Store = struct {
         return .{ .schema = copied.schema, .body = .{ .blob = .{ .id = id } } };
     }
 
-    pub fn import(self: *Store, incoming: g.State) Error!void {
-        if (self.journal != null) return error.InvalidState;
-        // Preserve incoming IDs until the next canonical emission.
-        for (incoming.nodes) |record| _ = try self.add(record);
-        for (incoming.blobs) |record| {
-            const bytes = try self.allocator.dupe(u8, record.bytes);
-            errdefer self.allocator.free(bytes);
-            try self.blobs.ensureUnusedCapacity(self.allocator, 1);
-            try self.blob_alive.ensureUnusedCapacity(self.allocator, 1);
-            try self.interned.ensureUnusedCapacity(self.allocator, 1);
-            self.interned.putAssumeCapacity(.{ .schema = record.schema, .bytes = bytes }, self.blobs.items.len);
-            self.blobs.appendAssumeCapacity(.{ .schema = record.schema, .bytes = bytes });
-            self.blob_alive.appendAssumeCapacity(true);
-            if (self.statistics) |s| s.copied_blob_bytes +|= bytes.len;
-        }
-    }
-
     /// Own one snapshot of the complete argument buffer. All typed blob slices
     /// are derived here, so no external borrowed storage can enter this backing.
     /// Result descriptors belong to scratch and are used only during Session entry.
@@ -537,10 +520,6 @@ pub const Store = struct {
         self.allocator.free(self.borrowed_blobs);
         self.borrowed_nodes = &.{};
         self.borrowed_blobs = &.{};
-    }
-
-    pub fn state(self: Store, identity: [32]u8, status: g.Status, roots: g.Roots) g.State {
-        return .{ .program_identity = identity, .status = status, .roots = roots, .nodes = self.nodes.items, .blobs = self.blobs.items };
     }
 
     /// Traces strong reachability, including cycles. Reclamation performs no effects.
