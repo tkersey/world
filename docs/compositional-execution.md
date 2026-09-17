@@ -289,7 +289,7 @@ retained form stays at five. The baseline is Boundary `adf3c7e` and World
 `321199b`, using native ReleaseSafe and Zig 0.16.0. These counts exclude Session
 initialization and are neither heap allocation counts nor elapsed-time claims.
 Run `check-stable-source` with the normal dependency pin, which now selects
-Boundary `e28d5b32fbf92a7013cb18cb8c81128a9b53cd6b`.
+Boundary `5576f02f42ee7ae28711ff4ea304496b6d6fd3ad`.
 
 Total branching handler clauses now use Boundary's independently admitted
 `tail` strategy. World enters the selected function with state/payload and an
@@ -485,3 +485,12 @@ remaining sequence.
 Repeated append/update costs, full sequence performance measurements and broader
 performance acceptance remain open. These changes do not establish completion
 of the full specification.
+
+## Component borrow-contract integration
+
+The normal Boundary pin now carries checked BMO1 import assumptions and derived
+export guarantees. World still consumes only closed BPI3, through its data-only
+dependency. Native/storage, stable source, Node, Wasmtime, real browser transfer
+and extracted-package checks pass on this pair: 34 build steps and 94 native/storage
+tests. The default kernel is 459,817 bytes with SHA-256
+`f2e1ddd54b65fe822e586f77fc63f97c114128c98d2c936e9e8919ae59ca8204`. These checks do not establish performance acceptance.
