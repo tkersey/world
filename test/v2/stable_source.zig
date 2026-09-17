@@ -737,7 +737,7 @@ fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observat
         .completed => |value| try testing.expectEqualSlices(u8, try subject.bytes(&value), fresh.record.completed),
         .failed => |value| {
             try testing.expectEqualSlices(u8, try subject.bytes(&value), fresh.record.failed.value);
-            try testing.expectEqualDeep(subject.exit.?.cancellation, fresh.record.failed.cancellation);
+            try testing.expectEqualDeep((try subject.terminalExit()).cancellation, fresh.record.failed.cancellation);
             try expectCleanupFailures(subject, fresh.record.failed.cleanup_failures);
         },
         .cancelled => |reason| {
@@ -751,7 +751,7 @@ fn drive(subject: *Session, quantum: ?usize) !@import("stable_runtime").Observat
 
 fn expectCleanupFailures(subject: *Session, bytes: []const u8) !void {
     var reader: boundary.data.wire.Reader = .{ .input = bytes };
-    const failures = subject.exit.?.cleanup_failures;
+    const failures = (try subject.terminalExit()).cleanup_failures;
     try testing.expectEqual(failures.len, try reader.count());
     for (failures) |value| try testing.expectEqualSlices(u8, try subject.bytes(&value), try reader.bytes());
     try reader.finish();
@@ -1055,7 +1055,7 @@ test "cancellation rebinds a pending cleanup without repeating its semantic oper
     try answerWithValue(&session, &.{});
     const result = try session.run(null);
     try testing.expect(result == .failed);
-    try testing.expectEqualStrings("stop", session.exit.?.cancellation.?.text);
+    try testing.expectEqualStrings("stop", (try session.terminalExit()).cancellation.?.text);
 }
 
 fn restoreFailure(allocator: std.mem.Allocator, image: []const u8, checkpoint: []const u8) !void {
@@ -1229,7 +1229,7 @@ test "imported storage avoids payload copies and releases a large dead backing" 
     try store.importOwned(&decoded);
     moved = true;
     try testing.expectEqual(0, statistics.storage.copied_blob_bytes);
-    try testing.expect(store.imported.?.arena.queryCapacity() >= big.len);
+    try testing.expect(store.imported.?.capacity() >= big.len);
     try store.replace(.{ .id = 0 }, .{ .environment = .{ .values = &.{small}, .tail = null } });
     try store.collect(state.roots);
     try testing.expect(store.imported == null);
@@ -1783,9 +1783,9 @@ test "stable cleanup preserves primary failure and resumes external cleanup" {
         const result = try drive(&session, null);
         try testing.expect(result == .failed);
         try testing.expectEqual(@as(u8, if (primary == 1) 9 else 7), result.failed.body.scalar[0]);
-        try testing.expectEqual(2, session.exit.?.cleanup_failures.len);
-        try testing.expectEqual(7, session.exit.?.cleanup_failures[0].body.scalar[0]);
-        try testing.expectEqual(8, session.exit.?.cleanup_failures[1].body.scalar[0]);
+        try testing.expectEqual(2, (try session.terminalExit()).cleanup_failures.len);
+        try testing.expectEqual(7, (try session.terminalExit()).cleanup_failures[0].body.scalar[0]);
+        try testing.expectEqual(8, (try session.terminalExit()).cleanup_failures[1].body.scalar[0]);
     }
 }
 
@@ -1808,7 +1808,7 @@ test "stable cancellation during yielded cleanup preserves the first reason" {
         const result = try drive(&session, null);
         try testing.expect(result == .failed);
         try testing.expectEqual(@as(u8, if (primary == 1) 9 else 7), result.failed.body.scalar[0]);
-        try testing.expectEqualStrings("stop", session.exit.?.cancellation.?.text);
+        try testing.expectEqualStrings("stop", (try session.terminalExit()).cancellation.?.text);
     }
 }
 
@@ -1897,7 +1897,7 @@ test "stable cancellation preserves cleanup at entry yield request and answered 
         }
         try testing.expect(result == .cancelled);
         try testing.expectEqualStrings("stop", result.cancelled.text);
-        try testing.expectEqual(0, session.exit.?.cleanup_failures.len);
+        try testing.expectEqual(0, (try session.terminalExit()).cleanup_failures.len);
     }
 }
 
@@ -2104,7 +2104,7 @@ test "PST3 normal return paths reject disposal markers while captured cleanup st
                 else => try session.step(),
             }
         }
-        const result = session.terminal orelse return error.TestDidNotTerminate;
+        const result = try session.observe();
         if (example == 2) {
             try testing.expect(result == .failed);
             try testing.expectEqual(9, result.failed.body.scalar[0]);
@@ -2194,4 +2194,159 @@ test "PST3 captured handler state obeys one-shot and multi bounds and reference 
         const expected: []const u8 = if (multi) &.{ 4, 0, 0, 0, 1, 1, 0, 1, 1 } else &.{ 67, 0, 0, 0, 0, 0, 0, 0 };
         try testing.expectEqualSlices(u8, expected, try restored.bytes(&result.completed));
     };
+}
+
+fn argumentImage() ![]u8 {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    const bytes = try builder.schema(.bytes);
+    const unit = try builder.scalar(void);
+    const entry = try builder.declare(&.{ bytes, bytes, bytes }, bytes, &.{}, &.{});
+    try builder.define(entry, try builder.pure(try builder.reference(builder.parameter(entry, 1))));
+    var compiled = try source.lower(testing.allocator, builder.module(entry, unit));
+    defer compiled.deinit();
+    return programBytes(compiled.program);
+}
+
+fn argumentBytes(size: usize) ![]u8 {
+    const payload = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(payload);
+    @memset(payload, 0x39);
+    var measure: boundary.data.wire.Writer = .{};
+    try measure.bytes(payload);
+    try measure.bytes("small");
+    try measure.bytes("small");
+    const bytes = try testing.allocator.alloc(u8, measure.position);
+    var writer: boundary.data.wire.Writer = .{ .output = bytes };
+    try writer.bytes(payload);
+    try writer.bytes("small");
+    try writer.bytes("small");
+    return bytes;
+}
+
+fn argumentSessionFailure(allocator: std.mem.Allocator, prepared: *const @import("stable_runtime").Prepared, input: []const u8) !void {
+    var session = try Session.start(allocator, prepared, input);
+    defer session.deinit();
+    const result = try session.run(null);
+    try testing.expect(result == .completed);
+    try testing.expectEqualSlices(u8, &.{ 5, 's', 'm', 'a', 'l', 'l' }, try session.bytes(&result.completed));
+}
+
+test "argument backing releases every partial Session owner on allocation failure" {
+    const image = try argumentImage();
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    const input = try argumentBytes(4096);
+    defer testing.allocator.free(input);
+    try testing.checkAllAllocationFailures(testing.allocator, argumentSessionFailure, .{ &prepared, input });
+}
+
+test "argument Session survives caller release and sheds a large dead payload" {
+    const image = try argumentImage();
+    defer testing.allocator.free(image);
+    const input = try argumentBytes(1 << 20);
+    var session = Session.initImage(testing.allocator, image, input) catch |err| {
+        testing.allocator.free(input);
+        return err;
+    };
+    defer session.deinit();
+    @memset(input, 0xff);
+    testing.allocator.free(input);
+    const checkpoint = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(checkpoint);
+    var restored = try Session.restoreImage(testing.allocator, image, checkpoint);
+    defer restored.deinit();
+    const result = try session.run(null);
+    const transferred = try restored.run(null);
+    const expected = [_]u8{ 5, 's', 'm', 'a', 'l', 'l' };
+    try testing.expect(result == .completed and transferred == .completed);
+    try testing.expectEqualSlices(u8, &expected, try session.bytes(&result.completed));
+    try testing.expectEqualSlices(u8, &expected, try restored.bytes(&transferred.completed));
+    try testing.expect(session.store.imported == null);
+}
+
+fn argumentStoreFailure(allocator: std.mem.Allocator, prepared: *const @import("stable_runtime").Prepared, input: []const u8) !void {
+    const core = try prepared.acquire();
+    defer core.release();
+    var store: @FieldType(Session, "store") = .{ .allocator = allocator };
+    defer store.deinit();
+    var temporary = std.heap.ArenaAllocator.init(allocator);
+    defer temporary.deinit();
+    const values = try store.importArguments(core.admitted(), input, temporary.allocator());
+    try testing.expectEqual(2, store.blobs.items.len);
+    try testing.expectEqualDeep(values[1], values[2]);
+    const root = try store.add(.{ .environment = .{ .values = values, .tail = null } });
+    try store.begin();
+    try store.replace(root, .{ .environment = .{ .values = &.{}, .tail = null } });
+    try store.collect(.{ .current = root });
+    try testing.expect(store.imported != null);
+    _ = try store.literal(core.admitted().program().schemas, .{ .schema = values[1].schema, .bytes = &.{ 3, 'n', 'e', 'w' } });
+    store.rollback();
+    const original = (try store.get(root)).environment.values;
+    try testing.expectEqualDeep(values, original);
+    try testing.expectEqualSlices(u8, &.{ 5, 's', 'm', 'a', 'l', 'l' }, store.blobs.items[@intCast(values[1].body.blob.id)].bytes);
+    var reader: boundary.data.wire.Reader = .{ .input = input };
+    const count = try reader.count();
+    _ = try reader.take(count);
+    try testing.expectEqualSlices(u8, input[0..reader.position], store.blobs.items[@intCast(values[0].body.blob.id)].bytes);
+    try store.replace(root, .{ .environment = .{ .values = values[1..2], .tail = null } });
+    try store.collect(.{ .current = root });
+    try testing.expect(store.imported == null);
+    try testing.expectEqualSlices(u8, &.{ 5, 's', 'm', 'a', 'l', 'l' }, store.blobs.items[@intCast(values[1].body.blob.id)].bytes);
+    const same = try store.literal(core.admitted().program().schemas, .{ .schema = values[1].schema, .bytes = &.{ 5, 's', 'm', 'a', 'l', 'l' } });
+    try testing.expectEqualDeep(values[1], same);
+}
+
+test "argument backing survives journal collection and reuse then compacts a tiny survivor" {
+    const image = try argumentImage();
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    const input = try argumentBytes(4096);
+    defer testing.allocator.free(input);
+    try testing.checkAllAllocationFailures(testing.allocator, argumentStoreFailure, .{ &prepared, input });
+}
+
+test "resident terminal compaction preserves rollback and releases backing at commit" {
+    const image = try argumentImage();
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    const input = try argumentBytes(4096);
+    defer testing.allocator.free(input);
+    var initial = try Session.start(testing.allocator, &prepared, input);
+    defer initial.deinit();
+    const checkpoint = try initial.checkpoint(testing.allocator);
+    defer testing.allocator.free(checkpoint);
+    const expected = try boundary.data.invocation.encodeOwned(boundary.data.invocation.Outcome, testing.allocator, .{ .completed = &.{ 5, 's', 'm', 'a', 'l', 'l' } });
+    defer testing.allocator.free(expected);
+    var failures: usize = 0;
+    while (true) : (failures += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{});
+        var resident = try Resident.start(failing.allocator(), &prepared, input);
+        defer releaseResident(&resident);
+        failing.fail_index = failing.alloc_index + failures;
+        failing.resize_fail_index = failing.resize_index;
+        const output = resident.driveEncoded(failing.allocator(), .none, .{}) catch |err| {
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+            try testing.expectEqual(error.OutOfMemory, err);
+            const unchanged = try resident.checkpoint(testing.allocator);
+            defer testing.allocator.free(unchanged);
+            try testing.expectEqualSlices(u8, checkpoint, unchanged);
+            const retry = try resident.driveEncoded(testing.allocator, .none, .{});
+            defer testing.allocator.free(retry);
+            try testing.expectEqualSlices(u8, expected, retry);
+            try testing.expect(resident.session.?.store.imported == null);
+            continue;
+        };
+        defer failing.allocator().free(output);
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try testing.expectEqualSlices(u8, expected, output);
+        try testing.expect(resident.session.?.store.imported == null);
+        try testing.expect(failures > 0);
+        break;
+    }
 }

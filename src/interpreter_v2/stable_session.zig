@@ -53,8 +53,8 @@ pub const Session = struct {
     frames: bindings.Frames,
     roots: g.Roots = .{},
     status: g.Status = .active,
-    terminal: ?Observation = null,
-    exit: ?g.Exit = null,
+    /// Terminal observations are derived from this Store-owned exit node.
+    terminal: ?g.NodeRef = null,
     poisoned: bool = false,
     transitions: usize = 0,
     statistics: ?*@import("runtime_types.zig").Statistics = null,
@@ -63,8 +63,7 @@ pub const Session = struct {
         frames: bindings.Frames.Backup,
         roots: g.Roots,
         status: g.Status,
-        terminal: ?Observation,
-        exit: ?g.Exit,
+        terminal: ?g.NodeRef,
         poisoned: bool,
         transitions: usize,
 
@@ -79,7 +78,6 @@ pub const Session = struct {
             session.roots = self.roots;
             session.status = self.status;
             session.terminal = self.terminal;
-            session.exit = self.exit;
             session.poisoned = self.poisoned;
             session.transitions = self.transitions;
             self.* = undefined;
@@ -95,7 +93,6 @@ pub const Session = struct {
             .roots = self.roots,
             .status = self.status,
             .terminal = self.terminal,
-            .exit = self.exit,
             .poisoned = self.poisoned,
             .transitions = self.transitions,
         };
@@ -112,9 +109,7 @@ pub const Session = struct {
     pub fn start(allocator: std.mem.Allocator, prepared: *const Prepared, arguments: []const u8) Error!Session {
         var result = try empty(allocator, prepared);
         errdefer result.deinit();
-        const owned = try allocator.dupe(u8, arguments);
-        defer allocator.free(owned);
-        try result.initialize(owned);
+        try result.initialize(arguments);
         return result;
     }
 
@@ -166,14 +161,7 @@ pub const Session = struct {
         if (@intFromEnum(state.status) < 4) {
             result.status = @enumFromInt(@intFromEnum(state.status));
         } else {
-            const exit = state.nodes[@intCast(state.roots.exit.?.id)].record.exit;
-            result.exit = exit;
-            result.terminal = switch (state.status) {
-                .completed => .{ .completed = exit.reason.normal },
-                .failed => .{ .failed = exit.reason.failure },
-                .cancelled => .{ .cancelled = exit.cancellation.? },
-                else => unreachable,
-            };
+            result.terminal = state.roots.exit;
         }
         return result;
     }
@@ -193,30 +181,24 @@ pub const Session = struct {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
-        const count = std.math.add(usize, self.store.nodes.items.len, @intFromBool(self.terminal != null)) catch return error.Capacity;
+        const count = self.store.nodes.items.len;
         const nodes = try a.alloc(data.process_state.Node, count);
         for (self.store.nodes.items, self.store.alive.items, 0..) |node, alive, id| {
             // A reachable dead handle must fail graph shape checks, never become
             // a plausible empty semantic object in a checkpoint.
             nodes[id] = if (alive) .{ .record = node, .activation = try self.frames.project(id, a) } else .{ .record = .{ .control = .{ .block = std.math.maxInt(u64), .arguments = &.{} } } };
         }
-        var roots = self.roots;
+        const roots = self.roots;
         var status: data.process_state.Status = @enumFromInt(@intFromEnum(self.status));
-        if (self.terminal) |terminal| {
-            const exit: g.Exit = switch (terminal) {
-                .completed => |value| .{ .reason = .{ .normal = value } },
-                .failed, .cancelled => self.exit orelse return error.InvalidState,
+        if (self.terminal != null) {
+            status = switch ((try self.terminalExit()).reason) {
+                .normal => .completed,
+                .failure => .failed,
+                .cancellation => .cancelled,
                 else => return error.InvalidState,
             };
-            status = switch (terminal) {
-                .completed => .completed,
-                .failed => .failed,
-                .cancelled => .cancelled,
-                else => unreachable,
-            };
-            nodes[count - 1] = .{ .record = .{ .exit = exit } };
-            roots = .{ .exit = .{ .id = count - 1 } };
         }
+
         const public_state = try @import("value_projection.zig").project(a, self.program.schemas, &self.store, data.process_state.State{
             .program_identity = self.program_identity,
             .status = status,
@@ -238,14 +220,25 @@ pub const Session = struct {
         try self.returnTo(parent, value);
         return if (self.terminal != null) {} else null;
     }
-    pub fn finishUnwind(self: *Session, reason: g.Exit) Error!void {
-        self.exit = reason;
-        self.terminal = switch (reason.reason) {
-            .failure => |value| .{ .failed = value },
-            .cancellation => .{ .cancelled = reason.cancellation orelse return error.InvalidState },
-            else => return error.InvalidState,
+    /// The Store owns terminal fields and their transitive values. Keeping only
+    /// a handle here allows collection and imported-backing compaction without
+    /// invalidating a cached cancellation reason or cleanup-failure slice.
+    pub fn terminalExit(self: *const Session) Error!g.Exit {
+        const node = try self.store.get(self.terminal orelse return error.InvalidState);
+        return switch (node) {
+            .exit => |exit| exit,
+            else => error.InvalidState,
         };
-        self.roots.current = null;
+    }
+    fn finishTerminal(self: *Session, reason: g.Exit) Error!void {
+        const exit = try self.store.add(.{ .exit = reason });
+        self.roots = .{ .exit = exit };
+        self.terminal = exit;
+    }
+    pub fn finishUnwind(self: *Session, reason: g.Exit) Error!void {
+        if (reason.reason != .failure and reason.reason != .cancellation) return error.InvalidState;
+        if (reason.reason == .cancellation and reason.cancellation == null) return error.InvalidState;
+        try self.finishTerminal(reason);
     }
     fn failCurrent(self: *Session, current: g.NodeRef, value: g.Value) Error!void {
         const control = (try self.store.get(current)).control;
@@ -264,17 +257,9 @@ pub const Session = struct {
         var temporary = std.heap.ArenaAllocator.init(self.allocator);
         defer temporary.deinit();
         const scratch = temporary.allocator();
-        const facts = self.value_facts;
-        const entry = self.program.functions[@intCast(self.program.roots.entry)];
-        const values = try scratch.alloc(g.Value, entry.inputs.len);
-        var reader: data.wire.Reader = .{ .input = input };
-        for (values, entry.inputs) |*value, slot| {
-            const schema = entry.layout.slots[@intCast(slot)];
-            const encoded = try data.admission.readValue(scratch, self.program.schemas, facts, schema, &reader);
-            value.* = try self.store.literal(self.program.schemas, .{ .schema = schema, .bytes = encoded });
-        }
-        try reader.finish();
+        const values = try self.store.importArguments(self.prepared.admitted(), input, scratch);
         try self.enter(self.program.roots.entry, values, null, null, null);
+        try self.store.compactImported();
     }
 
     pub fn bytes(self: *Session, value: *const g.Value) Error![]const u8 {
@@ -294,7 +279,15 @@ pub const Session = struct {
 
     pub fn observe(self: *Session) Error!Observation {
         if (self.poisoned) return error.InvalidState;
-        if (self.terminal) |result| return result;
+        if (self.terminal != null) {
+            const exit = try self.terminalExit();
+            return switch (exit.reason) {
+                .normal => |value| .{ .completed = value },
+                .failure => |value| .{ .failed = value },
+                .cancellation => .{ .cancelled = exit.cancellation orelse return error.InvalidState },
+                else => error.InvalidState,
+            };
+        }
         return switch (self.status) {
             .active => .progressed,
             .yielded => .yielded,
@@ -390,7 +383,7 @@ pub const Session = struct {
             self.frames.remove(current.id);
         self.transitions +%= 1;
         if (self.statistics) |statistics| statistics.transitions +|= 1;
-        if (self.terminal == null and self.transitions % 256 == 0)
+        if (self.terminal != null or self.transitions % 256 == 0)
             try self.store.collectWith(self.roots, &self.frames);
     }
 
@@ -660,8 +653,7 @@ pub const Session = struct {
             }
             return;
         }
-        self.terminal = .{ .completed = value };
-        self.roots.current = null;
+        try self.finishTerminal(.{ .reason = .{ .normal = value } });
     }
 
     fn install(self: *Session, current: g.NodeRef, control: g.Control, frame: bindings.Frame, operation: anytype, reader: anytype, scratch: std.mem.Allocator) Error!void {

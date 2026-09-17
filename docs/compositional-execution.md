@@ -611,7 +611,7 @@ in `Session.start` and the Store's value copy, preserving caller-buffer isolatio
 optimized predecessor and the before/candidate results. Reconstruct the candidate
 from the recorded source revisions using the adjacent Boundary/World patches,
 then use the existing `test/v2/build_value_bench.zig` and `value-bench` commands
-described above. The normal dependency now selects Boundary
+described above. The low-word checkpoint selected Boundary
 `fb5e287037da86d27110e731a7e08b0cb4009a3d`, including this projection and the
 current source-package cleanup. The remaining tiny-control gap, peak memory,
 actual Agent improvements and complete workload matrix still require work.
@@ -621,6 +621,127 @@ The normal-pin aggregate passes 32/32 steps: 69 source tests, 35 storage tests,
 Wasmtime, browser, capacity and extracted-package checks. The generic kernel is
 458,465 bytes, SHA-256
 `1767d27d6b5a15913f7fa72ea321278c6334756de76337054445d1badb54abd7`.
+
+## Argument ownership and terminal retention
+
+The memory-ownership candidate removes two sources of large-input memory overhead.
+Boundary's invocation decoder owns an exact-sized byte buffer instead of a
+geometrically grown arena. Every decoded slice remains backed by that owner.
+World copies the complete argument buffer once into its Store, validates every
+argument before publishing values, and derives typed blob views internally.
+Scalars remain inline. Callers cannot introduce arbitrary borrowed slices, and
+caller overwrite/free does not alter execution.
+
+The first Store-backed candidate exposed a terminal-retention defect: a short
+computation could finish before the periodic collector ran and keep a large dead
+argument indefinitely. Session now stores a handle to a Store-owned terminal exit
+rather than caching borrowed outcome and cleanup fields. Observation and snapshot
+projection read that owner, and terminal collection traces its complete result.
+Resident compaction prepares survivor copies inside the journal, retains old
+backing for rollback, and releases it after commit without further allocation.
+Use `Session.observe()` and `terminalExit()` for terminal data; the former
+`Session.exit` field and observation-valued `terminal` field are removed.
+
+For the unchanged 256-iteration variant-tag invocation with a 1 MiB payload,
+peak working allocation falls from 3,691,908 to 2,128,044 bytes (42.4%); allocation
+traffic falls from 3,858,832 to 2,285,570 bytes (40.8%). Optimized predecessor
+BPC1 still peaks at 2,103,211 bytes, 24,833 bytes lower. The exact-buffer lever
+alone removes 524,435 peak bytes; Store argument ownership alone removes
+1,039,429 bytes and misses its original 1 MiB target by 9,147 bytes. Their
+combination exceeds that target; neither isolated result is relabeled.
+
+In two final rotating windows after task-owned builds exited, large-invocation
+process medians were 0.400–0.443 ms and 0.398–0.405 ms for the candidate, versus
+0.400–0.428 ms and 0.395–0.402 ms for the prior successor. These ranges overlap;
+no latency improvement is claimed. Optimized BPC1 remained approximately
+38 ms for this value-heavy case. Tiny-control medians remain around 0.25 ms,
+versus approximately 0.14 ms for BPC1; that gap is unresolved. Earlier contended
+observations are retained separately, not discarded.
+
+Boundary passes 216 steps and 210 Zig tests. World passes its full 32-step
+aggregate with the explicit local Boundary source: 73 source tests, 35 storage
+tests, 24 host tests, 6,755 independent source-oracle observations, native/Node/
+Wasmtime agreement, real Chromium/Firefox transfer, capacity and extracted-package
+checks. New tests cover every envelope family's caller release, exact-sized large
+command ownership, duplicate arguments, tiny survivors, allocation-failure sweeps
+for argument construction and compaction, journal collection/ID reuse, and resident
+terminal commit/rollback. The kernel is 457,997 bytes with SHA-256
+`bbd75266aa43fdb25985093bb154d7935cd0ded91a83c7ef24cbd8a21b6b9acf`.
+
+[Raw observations and source reconstruction](measurements/argument-backing-native.json)
+include separate lever measurements and both contended and final windows. Apply
+the adjacent argument-backing Boundary/World patches to the named published
+heads to reconstruct the candidate. This checkpoint is superseded by the control-set candidate below. The full required matrix,
+control-heavy and actual Agent gains, remaining cleanup and serial reviews are
+still open; this diagnostic does not establish milestone acceptance.
+
+## Matched control measurements and canonical word sets
+
+The normal dependency selects Boundary
+`58bf6fb133e7d5bba1210c6ad64cd59f51755620`. The generic kernel is
+459,416 bytes, SHA-256
+`9e9b789ddb72c67d728de2eabedb74a22f3042a9399545110e517fd0a29de63a`. The normal-pin World aggregate passes without source overrides.
+
+The public installations and deep-handler builders are byte-identical across
+the optimized predecessor and successor. The native control probe checks the
+complete u64 result (42, 67, or n(n+1)/2), includes decoding, fresh preparation,
+execution and output encoding, and records BPI2 and BPC1 separately. Three
+warmups precede nine samples in each process; three rotating processes per
+format/case are repeated in two windows. The workspace is 128 MiB for every
+control case. Reported peaks count tracked working allocation, not process RSS
+or that fixed reservation. Compilation/emission occurs before timing and is
+recorded separately. No image-size result substitutes for runtime measurements.
+
+The first complete control comparison exposed a regression: 64 installations
+needed about 0.92 ms and 1,589,165 peak bytes versus optimized BPC1's 0.24 ms and
+121,956 bytes. A five-second CPU sample attributed 2,128 of 3,714 thread samples
+inclusively to preparation. A separate allocation replay retained 1,478,042
+bytes in the prepared owner. This is recorded as CEX-4711e1b9b63d4c219e0f1eb5;
+the performance requirement remains open.
+
+Analysis sets now use canonical bitmap leaves for sparse subsets of an aligned
+64-ID word, retain single-node intervals, and share larger binary subtrees.
+Their interner stores immutable node IDs and derives comparison from the owning
+array, avoiding a second full node copy. Canonical bounds and cardinality select
+the payload representation; constructors normalize intervals before publication.
+The explicit private layout keeps nodes at 40 bytes on native 64-bit targets.
+Tests exhaust all pairs of eight-member subsets across word boundaries and high
+IDs, check insertion-order identity and immutable overlays, and preserve prior
+allocation-failure, large-ID and monotonic-prefix bounds.
+
+The selected combination improves the prior successor but still loses to BPC1.
+Each timing cell below reports the two window medians, in milliseconds:
+
+| Installations | BPC1 ms | Before ms | Selected ms | Selected peak bytes |
+|---|---:|---:|---:|---:|
+| 1 | 0.008 / 0.008 | 0.015 / 0.015 | 0.014 / 0.014 | 19709 |
+| 8 | 0.023 / 0.023 | 0.073 / 0.072 | 0.058 / 0.057 | 89951 |
+| 64 | 0.238 / 0.248 | 0.911 / 0.920 | 0.652 / 0.651 | 530351 |
+| 128 | 0.697 / 0.705 | 1.989 / 1.960 | 1.462 / 1.477 | 1435037 |
+| 256 | 2.302 / 2.303 | 4.288 / 4.348 | 3.287 / 3.344 | 2268977 |
+
+The 64-case peak drops to 530,351 bytes (66.6% lower); its latency drops about
+29%. The 256-case remains around 3.3 ms versus BPC1's 2.3 ms. Small-case memory
+and the prior value witness do not regress in the selected combination. The
+1 MiB value witness peaks at 2,127,750 bytes, still above BPC1's 2,103,211 bytes.
+Ordinary bitmap and union-layout attempts, plus the index-only variant's slower
+timings, remain in the raw observations rather than being discarded.
+
+Boundary passes 216 steps and 212 Zig tests. World passes all 32 current steps,
+including 73 source tests, 35 storage tests, 24 host tests, independent source
+agreement, capacity, native/Node/Wasmtime, browser transfer and extracted-package
+checks. The package test now requests a one-byte working budget explicitly:
+its old assumption that install64 must exceed the default budget was invalidated
+by the memory improvement. Failure and unchanged-input retry remain asserted.
+
+[Raw paired measurements and reconstruction](measurements/control-native.json)
+and [the preparation sample](measurements/control-preparation-profile.txt) retain
+the method, source/body parity, input identities, all observed windows and
+allocation counts. Build `test/v2/build_execution_bench.zig` with explicit
+`-Dboundary-source` and `-Dworld-source` paths; the frozen predecessor also uses
+`-Dlegacy-names=true`. Run `execution-bench FORMAT scalar 0`, `deep 0`, or
+`install COUNT`. The remaining workload matrix, consumer measurements, build/
+edit/link costs and serial review closeout are still required.
 
 ## Earlier portable-host checkpoint
 The earlier complete portable-host results above belong to `f36994b`; they were

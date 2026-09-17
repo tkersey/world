@@ -58,7 +58,7 @@ pub const Resident = struct {
             },
         };
         transaction.commit(session);
-        if (session.terminal == null) session.store.compactImported() catch {};
+        session.store.compactImported() catch {};
         return published;
     }
 

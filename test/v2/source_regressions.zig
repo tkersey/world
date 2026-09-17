@@ -132,7 +132,7 @@ test "current cleanup rejects duplicate obligations and a forged running continu
         }
     }
     try testing.expect(duplicate and running);
-    const result = session.terminal orelse return error.FiniteFixtureDidNotTerminate;
+    const result = try session.observe();
     try testing.expect(result == .failed);
     try testing.expectEqual(7, result.failed.body.scalar[0]);
 }
@@ -169,7 +169,7 @@ test "current yielded cleanup preserves binary and text first cancellation throu
             const result = try session.run(null);
             try testing.expect(result == .failed);
             try testing.expectEqual(if (primary == 0) @as(u8, 7) else 9, result.failed.body.scalar[0]);
-            try testing.expectEqualDeep(reason, session.exit.?.cancellation.?);
+            try testing.expectEqualDeep(reason, (try session.terminalExit()).cancellation.?);
         }
     }
 }
@@ -236,7 +236,7 @@ test "current suspended delimiters cannot terminate a live return spine" {
         try session.step();
     }
     try testing.expect(checked);
-    const result = session.terminal orelse return error.FiniteFixtureDidNotTerminate;
+    const result = try session.observe();
     try testing.expect(result == .completed);
     try testing.expectEqualSlices(u8, &.{ 9, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&result.completed));
 }
@@ -363,7 +363,7 @@ test "current captured delimiters and branch-local region aliases reject corrupt
             try session.step();
         }
         try testing.expect(session.terminal != null);
-        try testing.expect(session.terminal.? == .completed);
+        try testing.expect(try session.observe() == .completed);
     }
     try testing.expect(one_shot and multi and local_alias);
 }
@@ -893,7 +893,7 @@ test "saved same-family capability substitution cannot escape through a helper r
             try session.step();
         }
         try testing.expect(rejected >= if (through_pair) @as(usize, 2) else 1);
-        const result = session.terminal orelse return error.FiniteFixtureDidNotTerminate;
+        const result = try session.observe();
         try testing.expect(result == .completed);
         try testing.expectEqual(0, (try session.bytes(&result.completed)).len);
     }

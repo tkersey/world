@@ -27,7 +27,12 @@ try {
   const input = world.encodeInput({ image, initialArgs: new Uint8Array() });
   const expected = execFileSync(fixtures, ["invoke"], { input });
   const kernel = await world.Kernel.create({ bytes, expectedSha256 });
+  // Test an insufficient budget explicitly; optimization can make this fixture
+  // fit the default budget without changing the capacity-failure contract.
+  const unchanged = input.slice();
+  kernel.setLimits({ input: 65536, working: 1, output: 65536 });
   assert.throws(() => kernel.invoke(input), error => error.code === "WORLD_CAPACITY" && error.details.arena === "working");
+  assert.deepEqual(input, unchanged);
   kernel.setLimits({ input: 65536, working: 8 << 20, output: 65536 });
   assert.deepEqual(Buffer.from(kernel.invoke(input)), expected);
   const inputPath = join(scratch, "input.pki3");

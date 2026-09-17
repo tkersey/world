@@ -66,7 +66,7 @@ pub fn finish(allocator: std.mem.Allocator, session: *runtime.Session, checkpoin
         .failed => |value| .{ .failed = .{
             .value = try a.dupe(u8, try session.bytes(&value)),
             .cleanup_failures = try failures(a, session),
-            .cancellation = if (session.exit.?.cancellation) |reason| try heap.duplicate(protocol.Reason, a, reason) else null,
+            .cancellation = if ((try session.terminalExit()).cancellation) |reason| try heap.duplicate(protocol.Reason, a, reason) else null,
         } },
         .cancelled => |reason| .{ .cancelled = .{ .reason = try heap.duplicate(protocol.Reason, a, reason), .cleanup_failures = try failures(a, session) } },
     };
@@ -74,7 +74,7 @@ pub fn finish(allocator: std.mem.Allocator, session: *runtime.Session, checkpoin
 }
 
 fn failures(allocator: std.mem.Allocator, session: *runtime.Session) Error![]const u8 {
-    const values = session.exit.?.cleanup_failures;
+    const values = (try session.terminalExit()).cleanup_failures;
     var measure: data.wire.Writer = .{};
     try measure.natural(values.len);
     for (values) |value| try measure.bytes(try session.bytes(&value));

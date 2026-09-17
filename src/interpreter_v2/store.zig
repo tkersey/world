@@ -33,6 +33,23 @@ const Journal = struct {
     }
 };
 
+const Backing = union(enum) {
+    state: data.state_image.Owned,
+    arguments: []u8,
+    pub fn capacity(self: Backing) usize {
+        return switch (self) {
+            .state => |owner| owner.arena.queryCapacity(),
+            .arguments => |bytes| bytes.len,
+        };
+    }
+    fn deinit(self: *Backing, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .state => |*owner| owner.deinit(),
+            .arguments => |bytes| allocator.free(bytes),
+        }
+    }
+};
+
 pub const Store = struct {
     allocator: std.mem.Allocator,
     statistics: ?*Statistics = null,
@@ -46,7 +63,7 @@ pub const Store = struct {
     marks: std.ArrayList(bool) = .empty,
     blob_marks: std.ArrayList(bool) = .empty,
     pending: std.ArrayList(data.graph_order.Reference) = .empty,
-    imported: ?data.state_image.Owned = null,
+    imported: ?Backing = null,
     borrowed_nodes: []bool = &.{},
     borrowed_blobs: []bool = &.{},
     journal: ?Journal = null,
@@ -176,7 +193,7 @@ pub const Store = struct {
         if (self.journal != null) self.rollback();
         for (self.nodes.items, self.alive.items, 0..) |item, live, id| if (live) self.releaseNode(id, item);
         for (self.blobs.items, self.blob_alive.items, 0..) |blob, live, id| if (live) self.releaseBlob(id, blob);
-        if (self.imported) |*base| base.deinit();
+        if (self.imported) |*base| base.deinit(self.allocator);
         self.allocator.free(self.borrowed_nodes);
         self.allocator.free(self.borrowed_blobs);
         self.nodes.deinit(self.allocator);
@@ -398,6 +415,57 @@ pub const Store = struct {
         }
     }
 
+    /// Own one snapshot of the complete argument buffer. All typed blob slices
+    /// are derived here, so no external borrowed storage can enter this backing.
+    /// Result descriptors belong to scratch and are used only during Session entry.
+    pub fn importArguments(self: *Store, admitted: *const data.program_image.Admitted, input: []const u8, scratch: std.mem.Allocator) (Error || data.program_image.Error)![]g.Value {
+        if (self.nodes.items.len != 0 or self.blobs.items.len != 0 or self.imported != null or
+            self.journal != null) return error.InvalidState;
+        const owned = try self.allocator.dupe(u8, input);
+        errdefer self.allocator.free(owned);
+        const program = admitted.program();
+        const entry = program.functions[@intCast(program.roots.entry)];
+        const literals = try scratch.alloc(data.program.Literal, entry.inputs.len);
+        const values = try scratch.alloc(g.Value, entry.inputs.len);
+        var reader: data.wire.Reader = .{ .input = owned };
+        var blob_count: usize = 0;
+        for (literals, entry.inputs) |*item, slot| {
+            const schema = entry.layout.slots[@intCast(slot)];
+            item.* = .{ .schema = schema, .bytes = try data.admission.readValue(scratch, program.schemas, admitted.schemaFacts(), schema, &reader) };
+            if (data.scalar.width(program.schemas[@intCast(schema)]) == null) blob_count += 1;
+        }
+        try reader.finish();
+        const flags = try self.allocator.alloc(bool, blob_count);
+        errdefer self.allocator.free(flags);
+        @memset(flags, false);
+        try self.blobs.ensureTotalCapacityPrecise(self.allocator, blob_count);
+        try self.blob_alive.ensureTotalCapacityPrecise(self.allocator, blob_count);
+        try self.interned.ensureUnusedCapacity(self.allocator, std.math.cast(u32, blob_count) orelse return error.Capacity);
+        // Every fallible operation precedes backing/blob publication.
+        for (literals, values) |item, *value| {
+            if (data.scalar.width(program.schemas[@intCast(item.schema)])) |width| {
+                var scalar: [8]u8 = @splat(0);
+                @memcpy(scalar[0..width], item.bytes);
+                value.* = .{ .schema = item.schema, .body = .{ .scalar = scalar } };
+                continue;
+            }
+            const blob: g.Blob = .{ .schema = item.schema, .bytes = item.bytes };
+            const id = self.interned.get(blob) orelse fresh: {
+                const id = self.blobs.items.len;
+                self.blobs.appendAssumeCapacity(blob);
+                self.blob_alive.appendAssumeCapacity(true);
+                self.interned.putAssumeCapacity(blob, id);
+                flags[id] = true;
+                break :fresh id;
+            };
+            value.* = .{ .schema = item.schema, .body = .{ .blob = .{ .id = id } } };
+        }
+        self.borrowed_blobs = flags;
+        self.imported = .{ .arguments = owned };
+        if (self.statistics) |statistics| statistics.copied_blob_bytes +|= owned.len;
+        return values;
+    }
+
     /// Adopt immutable decoded storage; transfer only on complete success.
     /// Semantic admission belongs to the caller before this physical operation.
     pub fn importOwned(self: *Store, incoming: *data.state_image.Owned) Error!void {
@@ -425,14 +493,13 @@ pub const Store = struct {
         @memset(blob_flags, true);
         self.borrowed_nodes = node_flags;
         self.borrowed_blobs = blob_flags;
-        self.imported = incoming.*;
+        self.imported = .{ .state = incoming.* };
         incoming.* = undefined;
     }
 
     /// Release a large imported backing once only small records survive. Copies
     /// are prepared individually before publication; failure preserves graph values.
     pub fn compactImported(self: *Store) Error!void {
-        if (self.journal != null) return;
         const base = self.imported orelse return;
         var retained: usize = 0;
         for (self.borrowed_nodes, 0..) |borrowed, id| if (borrowed) {
@@ -441,22 +508,30 @@ pub const Store = struct {
         for (self.borrowed_blobs, 0..) |borrowed, id| if (borrowed) {
             retained +|= @sizeOf(g.Blob) +| self.blobs.items[id].bytes.len;
         };
-        if (retained > base.arena.queryCapacity() / 4) return;
+        if (retained > base.capacity() / 4) return;
         for (self.borrowed_nodes, 0..) |borrowed, id| if (borrowed) {
             const copy = try duplicate(g.Node, self.allocator, self.nodes.items[id]);
+            errdefer release(g.Node, self.allocator, copy);
+            _ = try self.holdNode(id);
             self.nodes.items[id] = copy;
             self.borrowed_nodes[id] = false;
         };
         for (self.borrowed_blobs, 0..) |borrowed, id| if (borrowed) {
             const previous = self.blobs.items[id];
             const copy: g.Blob = .{ .schema = previous.schema, .bytes = try self.allocator.dupe(u8, previous.bytes) };
+            errdefer self.allocator.free(copy.bytes);
+            _ = try self.holdBlob(id);
             _ = self.interned.remove(previous);
             self.interned.putAssumeCapacity(copy, id);
             self.blobs.items[id] = copy;
             self.borrowed_blobs[id] = false;
             if (self.statistics) |statistics| statistics.copied_blob_bytes +|= copy.bytes.len;
         };
-        self.imported.?.deinit();
+        // Prepare current owners while rollback can still recover the borrowed
+        // entry versions. Only the commit fence makes their backing releasable.
+        // The post-commit call therefore releases it without allocating.
+        if (self.journal != null) return;
+        self.imported.?.deinit(self.allocator);
         self.imported = null;
         self.allocator.free(self.borrowed_nodes);
         self.allocator.free(self.borrowed_blobs);
