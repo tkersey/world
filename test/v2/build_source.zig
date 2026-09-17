@@ -30,7 +30,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "boundary", .module = boundary }},
     });
-    const stable = b.option(bool, "stable", "Check successor native control") orelse false;
     const stable_runtime = b.createModule(.{
         .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, "src/interpreter_v2/stable_session.zig" }) },
         .target = b.graph.host,
@@ -48,7 +47,7 @@ pub fn build(b: *std.Build) void {
         return;
     }
     const tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, if (stable) "test/v2/stable_source.zig" else "test/v2/source_agreement.zig" }) },
+        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, "test/v2/stable_source.zig" }) },
         .target = b.graph.host,
         .optimize = optimize,
         .imports = &.{

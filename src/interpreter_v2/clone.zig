@@ -5,7 +5,7 @@ const data = @import("boundary_data");
 const p = data.program;
 const g = data.graph;
 const Store = @import("store.zig").Store;
-const Error = @import("process.zig").Error;
+const Error = @import("runtime_types.zig").Error;
 const Map = std.AutoHashMap(p.Id, g.NodeRef);
 
 pub fn instantiate(allocator: std.mem.Allocator, store: *Store, template: g.Capture) Error!g.Capture {

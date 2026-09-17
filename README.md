@@ -55,13 +55,14 @@ arguments or checkpoint, reply/cancellation/yield control, and optional quantum.
 constructing Boundary's authoring compiler. It does not publish a package.
 
 ```sh
-zig build check-kernel check-codecs check-transfer check-browser
+zig build check-native check-storage check-kernel check-codecs check-transfer check-browser check-package
 ```
 
 During coordinated development, `-Dboundary-source=/absolute/boundary-source`
-selects the matching source explicitly. The versioned option is pending final
-namespace retirement. Source-agreement tests remain a separate compiler-dependent
-build. Wasmtime uses the locked Python environment through uv; browser checks run
+selects the matching source explicitly. `check-native` runs current source and
+Session regressions in a separate compiler-dependent build. `check-storage`
+also retains native regressions still being migrated from the old evaluator.
+Wasmtime uses the locked Python environment through uv; browser checks run
 real Chromium and Firefox Workers.
 
 ## State and effects

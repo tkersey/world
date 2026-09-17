@@ -2,7 +2,7 @@
 //! One operand access boundary for temporary call arrays and stable activations.
 const std = @import("std");
 const data = @import("boundary_data");
-const Error = @import("process.zig").Error;
+const Error = @import("runtime_types.zig").Error;
 
 pub fn read(storage: anytype, id: data.program.Id) Error!data.graph.Value {
     const slot = std.math.cast(usize, id) orelse return error.InvalidState;

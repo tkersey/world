@@ -7,20 +7,10 @@ const g = data.graph;
 const Machine = @import("machine.zig").Machine;
 pub const Workspace = @import("arena.zig").Arena;
 
-pub const Error = data.image.Error || data.state_admission.Error || data.protocol.Error || data.scalar.Error || error{UnsupportedTransition};
+pub const Error = @import("runtime_types.zig").Error;
 pub const ProgramInput = union(enum) { records: p.Program, image: []const u8 };
 pub const Instance = union(enum) { initial_args: []const u8, records: g.State, snapshot: []const u8 };
-/// Optional observation of native execution. Counters are never serialized and
-/// saturate rather than imposing an execution limit.
-pub const Statistics = struct {
-    transitions: u64 = 0,
-    direct_clauses: u64 = 0,
-    one_shot_captures: u64 = 0,
-    multi_templates: u64 = 0,
-    branch_activations: u64 = 0,
-    storage: @import("store.zig").Statistics = .{},
-    snapshot: data.snapshot.Statistics = .{},
-};
+pub const Statistics = @import("runtime_types.zig").Statistics;
 pub const Invocation = struct {
     program: ProgramInput,
     instance: Instance,

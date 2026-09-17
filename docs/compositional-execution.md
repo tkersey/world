@@ -503,3 +503,40 @@ compiler; the source override is now `-Dboundary-source`. Native/storage, source
 Node, Wasmtime, browser and package checks pass with the normal pin: 34 build
 steps and 94 native/storage tests. The kernel is 459,884 bytes, SHA-256
 `f436937401e3eb8c1dbd8d8dd6b3c54ac59bc6c60f1dc0a710adfbee1a3a8f67`. Remaining legacy runtime/data surfaces still need retirement.
+
+## Host and build retirement checkpoint
+
+The default build graph now exposes current native, storage, kernel, codec,
+transfer, browser and package checks. The old ABI 2 build/release graph and public
+`process_v2` export are removed. Shared runtime errors and statistics no longer
+import the old evaluator. Its private implementation and meaningful capture and
+return-path regressions remain until their current replacements are established.
+Old host/guest source files are not yet physically retired.
+
+Current host tests preserve independent byte ownership, value framing, ABI and
+file-input expectations. They exposed two corrections: `encodeResult` snapshots
+the reply before awaiting request hashing, and the CLI enforces the 64 MiB kernel
+limit before reading or allocating file contents. `zig build check-storage
+check-codecs --global-cache-dir .zig-global-cache --summary all` passes 80 native
+tests and 24 JavaScript tests; formatting and diff checks pass.
+
+`zig build build-runtime check-package --global-cache-dir .zig-global-cache
+--summary all` also passes all 20 steps, including execution from the extracted
+package and its CLI. This checkpoint's rebuilt kernel SHA-256 is
+`19d8fda6a667e1e2a278713f683e20eedb476c24e03ee589faf3cfa830953daf`.
+The earlier complete portable-host results above belong to `f36994b`; they were
+not repeated for this checkpoint.
+
+The current source suite reports 51 passing tests and one failing new test,
+`PST3 captured handler state obeys one-shot and multi bounds and reference kinds`,
+with `TypeMismatch`. Its hand-built positive captured-handler fixture still
+needs diagnosis; this checkpoint does not claim the capture regression migrated
+or full `check` acceptance. The test is retained, not skipped. Existing old
+capture and return-path tests remain available.
+
+The normal Boundary pin is still `7094aa5f228aa1478489e20bd9245f02eda764a2`.
+Agent still selects World `f36994b26b6506bfc2b80ee1db8a9dfdbdef5b77`; its previous
+integration results do not validate this checkpoint. Repinning and full triad
+qualification, remaining retirement, performance acceptance and serial reviews
+remain required. Linked drafts stay incomplete, with eventual landing order
+Boundary, World, Agent only after complete acceptance and separate authorization.

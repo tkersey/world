@@ -5,7 +5,7 @@ const data = @import("boundary_data");
 const g = data.graph;
 const p = data.program;
 const Store = @import("store.zig").Store;
-const Error = @import("process.zig").Error;
+const Error = @import("runtime_types.zig").Error;
 const Size = struct { done: bool = false, bytes: usize = 0 };
 const Visit = struct { value: g.Value, leave: bool = false };
 

@@ -16,7 +16,7 @@ pub const Prepared = @import("prepared.zig").Prepared;
 pub const Resident = @import("resident.zig").Resident;
 pub const Workspace = @import("arena.zig").Arena;
 pub const AllocationBudget = @import("allocation_budget.zig").Budget;
-pub const Error = @import("process.zig").Error || bindings.Error || data.activation_ownership.Error || data.program_image.Error || protocol.Error;
+pub const Error = @import("runtime_types.zig").Error || bindings.Error || data.activation_ownership.Error || data.program_image.Error || protocol.Error;
 pub const Pending = struct {
     allocator: std.mem.Allocator,
     state: []u8,
@@ -57,7 +57,7 @@ pub const Session = struct {
     exit: ?g.Exit = null,
     poisoned: bool = false,
     transitions: usize = 0,
-    statistics: ?*@import("process.zig").Statistics = null,
+    statistics: ?*@import("runtime_types.zig").Statistics = null,
 
     pub const Transaction = struct {
         frames: bindings.Frames.Backup,

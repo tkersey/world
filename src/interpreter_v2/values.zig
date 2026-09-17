@@ -5,7 +5,7 @@ const data = @import("boundary_data");
 const p = data.program;
 const g = data.graph;
 const Store = @import("store.zig").Store;
-const Error = @import("process.zig").Error;
+const Error = @import("runtime_types.zig").Error;
 const read = @import("operands.zig").read;
 pub const Parts = struct { tag: p.Id = 0, fields: []const g.Value };
 pub const EvaluationError = Error || error{ CollectionCapacity, ElementIndex, WrongVariant };

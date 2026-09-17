@@ -7,9 +7,4 @@ pub const Resident = current.Resident;
 pub const invocation = current.invocation;
 pub const Workspace = current.Workspace;
 pub const AllocationBudget = current.AllocationBudget;
-pub const Statistics = @import("interpreter_v2/process.zig").Statistics;
-pub const process_v2 = @import("interpreter_v2/process.zig");
-
-test {
-    _ = process_v2;
-}
+pub const Statistics = @import("interpreter_v2/runtime_types.zig").Statistics;

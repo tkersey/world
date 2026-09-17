@@ -71,8 +71,8 @@ export async function decodeRequest(bytes) {
   return result;
 }
 export async function encodeResult(requestBytes, value) {
-  const request = await decodeRequest(requestBytes);
   value = copyBytes(value);
+  const request = await decodeRequest(requestBytes);
   validateValue(request.resumeSchema, value);
   return frame("ABL_ERS3", concat(request.requestIdentity, field(value)));
 }

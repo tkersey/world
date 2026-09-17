@@ -4,7 +4,7 @@ const std = @import("std");
 const data = @import("boundary_data");
 const g = data.graph;
 const Store = @import("store.zig").Store;
-const Error = @import("process.zig").Error;
+const Error = @import("runtime_types.zig").Error;
 
 const Projection = struct {
     allocator: std.mem.Allocator,

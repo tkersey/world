@@ -1961,3 +1961,104 @@ test "stable successor return clauses retain older capability and cell reference
     try testing.expect(result == .completed);
     try testing.expectEqualSlices(u8, &.{ 42, 0, 0, 0, 0, 0, 0, 0, 37, 0, 0, 0, 0, 0, 0, 0 }, try session.bytes(&result.completed));
 }
+
+fn captureFrameCheckpoint(session: *Session) ![]u8 {
+    for (0..512) |_| {
+        try session.step();
+        for (session.store.nodes.items, session.store.alive.items) |node, alive| {
+            if (alive and (node == .one_shot or node == .multi_template))
+                return session.checkpoint(testing.allocator);
+        }
+    }
+    return error.MissingCapture;
+}
+
+fn emptyRecordPayload(comptime T: type) T {
+    return switch (@typeInfo(T)) {
+        .@"struct" => |info| blk: {
+            var value: T = undefined;
+            inline for (info.fields) |field| @field(value, field.name) = emptyRecordPayload(field.type);
+            break :blk value;
+        },
+        .@"union" => |info| @unionInit(T, info.fields[0].name, emptyRecordPayload(info.fields[0].type)),
+        else => std.mem.zeroes(T),
+    };
+}
+
+test "PST3 captured handler state obeys one-shot and multi bounds and reference kinds" {
+    const data = boundary.data;
+    const g = data.graph;
+    inline for (.{ false, true }) |multi| inline for (.{ false, true }) |allowed| {
+        var b = source.Builder.init(testing.allocator);
+        defer b.deinit();
+        const module = if (multi) try source.examples.choicesAll(&b) else try source.examples.deep(&b);
+        const result_type = b.functions.items[@intCast(module.entry)].result;
+        const wide = try b.scalar(u16);
+        const returns = try b.declare(&.{ wide, result_type }, result_type, &.{}, &.{});
+        try b.define(returns, try b.pure(try b.reference(b.parameter(returns, 1))));
+        const extra = try b.handler(.{ .mode = .deep, .input = result_type, .answer = result_type, .return_function = returns, .state = &.{wide}, .clauses = &.{} });
+        if (allowed) for (b.schemas.items) |*schema| {
+            if (schema.* != .internal or schema.internal != .resumption) continue;
+            const old = schema.internal.resumption.capture_bound;
+            const extended = try b.allocator().alloc(u64, old.len + 1);
+            @memcpy(extended[0..old.len], old);
+            extended[old.len] = wide;
+            schema.internal.resumption.capture_bound = extended;
+        };
+        var compiled = try source.lower(testing.allocator, b.module(module.entry, module.failure));
+        defer compiled.deinit();
+        var session = try initFromImage(testing.allocator, compiled.program, &.{});
+        defer session.deinit();
+        const bytes = try captureFrameCheckpoint(&session);
+        defer testing.allocator.free(bytes);
+        var decoded = try data.state_image.decodeGraph(testing.allocator, bytes);
+        defer decoded.deinit();
+        try data.state_admission.validateStable(testing.allocator, compiled.program, decoded.state);
+        const a = decoded.arena.allocator();
+        const count = decoded.state.nodes.len;
+        const nodes = try a.alloc(data.process_state.Node, count + 2);
+        @memcpy(nodes[0..count], decoded.state.nodes);
+        const token = for (nodes[0..count]) |node| {
+            if (node.record == .one_shot or node.record == .multi_template)
+                break if (node.record == .one_shot) node.record.one_shot else node.record.multi_template;
+        } else return error.MissingCapture;
+        const saved = &nodes[@intCast(token.capture.?.id)].record.continuation;
+        nodes[count] = .{ .record = .{ .handler = .{ .definition = extra, .state = try a.dupe(g.Value, &.{.{ .schema = wide, .body = .{ .scalar = @splat(0) } }}), .evidence = saved.evidence, .region = saved.region } } };
+        nodes[count + 1] = .{ .record = .{ .attachment = .{ .handler = .{ .id = count }, .outer = saved.evidence, .return_to = saved.parent, .region = saved.region } } };
+        saved.parent = .{ .id = count + 1 };
+        decoded.state.nodes = nodes;
+        const encoded = try data.state_image.emit(testing.allocator, decoded.state);
+        defer testing.allocator.free(encoded);
+        var canonical = try data.state_image.decodeGraph(testing.allocator, encoded);
+        defer canonical.deinit();
+        const checked_nodes = @constCast(canonical.state.nodes);
+        const handler_index = for (checked_nodes, 0..) |node, index| {
+            if (node.record == .handler and node.record.handler.definition == extra) break index;
+        } else return error.MissingInsertedHandler;
+        if (!allowed) {
+            try testing.expectError(error.InvalidOwnership, data.state_admission.validateStable(testing.allocator, compiled.program, canonical.state));
+            continue;
+        }
+        try data.state_admission.validateStable(testing.allocator, compiled.program, canonical.state);
+        const original = checked_nodes[handler_index];
+        inline for (@typeInfo(g.Node).@"union".fields) |field| {
+            if (comptime !std.mem.eql(u8, field.name, "handler")) {
+                checked_nodes[handler_index].record = @unionInit(g.Node, field.name, emptyRecordPayload(field.type));
+                if (data.state_admission.validateStable(testing.allocator, compiled.program, canonical.state)) |_| {
+                    return error.AcceptedWrongCapturedHandlerKind;
+                } else |err| try testing.expect(err != error.OutOfMemory);
+                checked_nodes[handler_index] = original;
+            }
+        }
+        const image = try programBytes(compiled.program);
+        defer testing.allocator.free(image);
+        const checkpoint = try data.state_image.emit(testing.allocator, canonical.state);
+        defer testing.allocator.free(checkpoint);
+        var restored = try Session.restoreImage(testing.allocator, image, checkpoint);
+        defer restored.deinit();
+        const result = try restored.run(null);
+        try testing.expect(result == .completed);
+        const expected: []const u8 = if (multi) &.{ 4, 0, 0, 0, 1, 1, 0, 1, 1 } else &.{ 67, 0, 0, 0, 0, 0, 0, 0 };
+        try testing.expectEqualSlices(u8, expected, try restored.bytes(&result.completed));
+    };
+}

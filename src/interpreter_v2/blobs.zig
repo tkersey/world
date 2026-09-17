@@ -5,7 +5,7 @@ const data = @import("boundary_data");
 const p = data.program;
 const g = data.graph;
 const Values = @import("values.zig").Values;
-const Error = @import("process.zig").Error;
+const Error = @import("runtime_types.zig").Error;
 const read = @import("operands.zig").read;
 pub const Result = union(enum) { value: g.Value, fault: p.Fault };
 

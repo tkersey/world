@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readRegularFile } from "../src/node/file-input.mjs";
 import { Kernel, packageVersion } from "../src/embedding/index.mjs";
+import { assertKernelByteLength } from "../src/embedding/wasm.mjs";
 
 async function main(args) {
   if (args.length === 1 && args[0] === "--version") { console.log(packageVersion); return; }
@@ -24,7 +25,7 @@ async function main(args) {
     limits[name] = BigInt(value);
   }
   const read = path => readRegularFile(path, length => { if (length > (256n << 20n)) throw new RangeError("input file exceeds 256 MiB host limit"); });
-  const kernel = await Kernel.create({ bytes: await read(options.get("--kernel")), expectedSha256: options.get("--sha256") });
+  const kernel = await Kernel.create({ bytes: await readRegularFile(options.get("--kernel"), assertKernelByteLength), expectedSha256: options.get("--sha256") });
   kernel.setLimits(limits);
   process.stdout.write(kernel.invoke(await read(options.get("--input"))));
 }
