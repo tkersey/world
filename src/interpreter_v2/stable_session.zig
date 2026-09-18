@@ -409,9 +409,8 @@ pub const Session = struct {
                     if (!self.uses.copy[@intCast(layout[@intCast(slot)])])
                         try self.frames.clear(frame, slot);
                 };
-                try self.frames.write(frame, source.destination, value);
                 frame.position += 1;
-                try self.frames.prune(frame, self.flow.facts.live[@intCast((try self.store.get(current)).control.block)][frame.position]);
+                try self.frames.apply(frame, self.flow.facts.live[@intCast((try self.store.get(current)).control.block)][frame.position], @as([]const p.Id, &.{source.destination}), &.{value});
                 self.frames.update(current.id, frame.*);
             },
         }
@@ -545,8 +544,7 @@ pub const Session = struct {
         } });
         var frame = try self.frames.create(function);
         errdefer self.frames.releaseFrame(frame);
-        for (args, target.inputs) |value, slot| try self.frames.write(&frame, slot, value);
-        try self.frames.prune(&frame, self.flow.facts.live[@intCast(target.entry)][0]);
+        try self.frames.apply(&frame, self.flow.facts.live[@intCast(target.entry)][0], target.inputs, args);
         try self.frames.put(control.id, frame);
         self.roots.current = control;
         self.roots.evidence = evidence;
@@ -606,12 +604,8 @@ pub const Session = struct {
             if (!self.uses.copy[@intCast(layout[@intCast(slot)])]) try self.frames.clear(frame, slot);
         };
         try self.frames.scope(frame, block.custody);
-        for (next.assignments, 0..) |assignment, index| {
-            if (self.flow.facts.pool.contains(live, assignment.destination))
-                try self.frames.write(frame, assignment.destination, values[index]);
-        }
+        try self.frames.apply(frame, live, next.assignments, values);
         frame.position = 0;
-        try self.frames.prune(frame, self.flow.facts.live[@intCast(next.block)][0]);
     }
 
     fn jump(self: *Session, current: g.NodeRef, control: g.Control, frame: *bindings.Frame, next: ir.Edge, returned: ?g.Value) Error!void {

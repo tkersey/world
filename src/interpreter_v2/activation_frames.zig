@@ -6,13 +6,12 @@ const Slots = @import("activation_slots.zig").ActivationSlots;
 const sets = data.analysis_sets;
 const custody = @import("custody.zig");
 pub const Error = Slots.Error || data.graph_order.Error;
-/// Runtime initialization is not an authority or a liveness declaration. Small
-/// layouts need no interned analysis nodes; large layouts keep compact trees.
-pub const Present = union(enum) {
+// A pruning bound may include uninitialized slots. Small bounds stay inline.
+pub const Bound = union(enum) {
     bits: u64,
     tree: sets.Root,
 
-    fn changed(self: Present, pool: *sets.Pool, slot: u64, add: bool) Error!Present {
+    fn changed(self: Bound, pool: *sets.Pool, slot: u64, add: bool) Error!Bound {
         return switch (self) {
             .bits => |bits| blk: {
                 if (slot >= 64) return error.InvalidSlot;
@@ -25,13 +24,13 @@ pub const Present = union(enum) {
                 try pool.remove(root, slot) },
         };
     }
-    pub fn contains(self: Present, pool: *const sets.Pool, slot: u64) bool {
+    pub fn contains(self: Bound, pool: *const sets.Pool, slot: u64) bool {
         return switch (self) {
             .bits => |bits| slot < 64 and bits & (@as(u64, 1) << @intCast(slot)) != 0,
             .tree => |root| pool.contains(root, slot),
         };
     }
-    fn iterator(self: Present, pool: *const sets.Pool) Iterator {
+    fn iterator(self: Bound, pool: *const sets.Pool) Iterator {
         return switch (self) {
             .bits => |bits| .{ .bits = bits },
             .tree => |root| .{ .tree = pool.iterator(root) },
@@ -55,7 +54,8 @@ pub const Present = union(enum) {
 };
 pub const Frame = struct {
     view: Slots.Handle,
-    present: Present,
+    // Reclamation upper bound, never evidence that a slot is initialized.
+    live_bound: Bound,
     position: usize = 0,
     function: data.program.Id,
     custody: custody.State,
@@ -153,10 +153,7 @@ pub const Frames = struct {
         const definition = self.program.functions[@intCast(function)];
         const view = try self.slots.create(definition.layout.slots.len);
         errdefer self.slots.release(view) catch unreachable;
-        return .{ .view = view, .function = function, .present = if (definition.layout.slots.len <= 64)
-            .{ .bits = 0 }
-        else
-            .{ .tree = sets.empty }, .custody = try self.custody.create(definition.layout.slots.len, definition.custody.len) };
+        return .{ .view = view, .function = function, .live_bound = if (definition.layout.slots.len <= 64) .{ .bits = 0 } else .{ .tree = sets.empty }, .custody = try self.custody.create(definition.layout.slots.len, definition.custody.len) };
     }
     pub fn releaseFrame(self: *Frames, frame: Frame) void {
         self.slots.release(frame.view) catch unreachable;
@@ -178,9 +175,9 @@ pub const Frames = struct {
         try self.rewriteValue(frame, slot, value);
     }
     fn rewriteValue(self: *Frames, frame: *Frame, slot: data.program.Id, value: data.graph.Value) Error!void {
-        const present = try frame.present.changed(self.pool, slot, true);
+        const bound = try frame.live_bound.changed(self.pool, slot, true);
         try self.slots.set(frame.view, @intCast(slot), value);
-        frame.present = present;
+        frame.live_bound = bound;
     }
     pub fn discards(self: *Frames, id: data.program.Id) Error![]data.graph.Value {
         const frame = try self.get(id);
@@ -192,34 +189,43 @@ pub const Frames = struct {
         return values;
     }
     pub fn clear(self: *Frames, frame: *Frame, slot: data.program.Id) Error!void {
-        const present = try frame.present.changed(self.pool, slot, false);
         try self.custody.remove(&frame.custody, @intCast(slot));
         try self.slots.clear(frame.view, @intCast(slot));
-        frame.present = present;
+    }
+    /// Writes and reclamation share one owner. The admitted liveness bound may
+    /// include uninitialized slots; only Slots.get/iterator observe actual values.
+    pub fn apply(self: *Frames, frame: *Frame, live: sets.Root, destinations: anytype, values: []const data.graph.Value) Error!void {
+        if (destinations.len != values.len) return error.InvalidState;
+        const selection: Bound = switch (frame.live_bound) {
+            .bits => .{ .bits = self.pool.lowWord(live) },
+            .tree => .{ .tree = live },
+        };
+        for (destinations, 0..) |destination, index| {
+            const slot: data.program.Id = if (@TypeOf(destination) == data.program.Id) destination else destination.destination;
+            if (!selection.contains(self.pool, slot)) continue;
+            const value = values[index];
+            try self.custody.remove(&frame.custody, @intCast(slot));
+            if (value.body == .owned) try self.custody.establish(&frame.custody, self.program.functions[@intCast(frame.function)].custody, @intCast(slot));
+            try self.slots.set(frame.view, @intCast(slot), value);
+        }
+        try self.prune(frame, live);
     }
     pub fn prune(self: *Frames, frame: *Frame, live: sets.Root) Error!void {
-        var retained: Present = undefined;
-        const removed: Present = switch (frame.present) {
-            .bits => |bits| blk: {
-                const mask = self.pool.lowWord(live);
-                retained = .{ .bits = bits & mask };
-                if (bits & ~mask == 0) return;
-                break :blk .{ .bits = bits & ~mask };
-            },
-            .tree => |root| blk: {
-                retained = .{ .tree = try self.pool.intersect(root, live) };
-                if (retained.tree == root) return;
-                break :blk .{ .tree = try self.pool.difference(root, live) };
-            },
+        const retained: Bound = switch (frame.live_bound) {
+            .bits => .{ .bits = self.pool.lowWord(live) },
+            .tree => .{ .tree = live },
         };
+        const removed: Bound = switch (frame.live_bound) {
+            .bits => |bits| .{ .bits = bits & ~retained.bits },
+            .tree => |root| .{ .tree = try self.pool.difference(root, live) },
+        };
+        const limit = self.program.functions[@intCast(frame.function)].layout.slots.len;
         var iterator = removed.iterator(self.pool);
         while (iterator.next()) |slot| {
-            try self.custody.remove(&frame.custody, @intCast(slot));
-            try self.slots.clear(frame.view, @intCast(slot));
+            if (slot >= limit) break;
+            try self.clear(frame, slot);
         }
-        // Publish one set root after the complete private transition. Callers
-        // discard/poison failed frames or restore Resident's retained backup.
-        frame.present = retained;
+        frame.live_bound = retained;
     }
     pub fn copyFrame(self: *Frames, from: data.program.Id, to: data.program.Id) data.graph_order.Error!void {
         var copy = self.entries.get(from) orelse return;
@@ -233,10 +239,15 @@ pub const Frames = struct {
     }
 
     pub fn rebaseFrame(self: *Frames, id: data.program.Id, map: anytype) data.graph_order.Error!void {
-        var frame = self.entries.get(id) orelse return;
-        var members = frame.present.iterator(self.pool);
+        const frame = self.entries.get(id) orelse return;
+        var members = frame.live_bound.iterator(self.pool);
+        const limit = self.program.functions[@intCast(frame.function)].layout.slots.len;
         while (members.next()) |slot| {
-            var value = self.slots.get(frame.view, @intCast(slot)) catch return error.InvalidState;
+            if (slot >= limit) break;
+            var value = self.slots.get(frame.view, @intCast(slot)) catch |err| switch (err) {
+                error.UninitializedSlot => continue,
+                else => return error.InvalidState,
+            };
             const reference = switch (value.body) {
                 .reference => |*ref| ref,
                 .owned => |*owned| &owned.node,
@@ -244,12 +255,11 @@ pub const Frames = struct {
             };
             const replacement = map.get(reference.id) orelse continue;
             reference.* = replacement;
-            self.rewriteValue(&frame, slot, value) catch |err| return switch (err) {
+            self.slots.set(frame.view, @intCast(slot), value) catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 else => error.InvalidState,
             };
         }
-        self.update(id, frame);
     }
 
     pub fn references(self: *Frames, id: data.program.Id, output: *std.ArrayList(data.graph_order.Reference), allocator: std.mem.Allocator) data.graph_order.Error!void {

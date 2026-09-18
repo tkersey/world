@@ -35,9 +35,9 @@ fn pruneFrame(count: usize) !void {
     var successor = try frames.forkFrame(original);
     defer frames.releaseFrame(successor);
     try frames.prune(&successor, try pool.run(0, last));
-    try testing.expect(successor.present.contains(&pool, 0));
-    try testing.expect(!successor.present.contains(&pool, 1));
-    try testing.expect(!successor.present.contains(&pool, last));
+    try testing.expect(successor.live_bound.contains(&pool, 0));
+    if (last > 1) try testing.expect(successor.live_bound.contains(&pool, 1));
+    try testing.expect(!successor.live_bound.contains(&pool, last));
     try testing.expectError(error.UninitializedSlot, frames.slots.get(successor.view, 1));
     try testing.expectError(error.UninitializedSlot, frames.slots.get(successor.view, last));
     try testing.expectEqual(99, (try frames.slots.get(original.view, last)).body.scalar[0]);
@@ -390,4 +390,53 @@ fn failedSharedSuffix(allocator: std.mem.Allocator) !void {
 
 test "shared suffix allocation failures leave unique prefixes and retained views unchanged" {
     try testing.checkAllAllocationFailures(testing.allocator, failedSharedSuffix, .{});
+}
+
+test "frame batch writes derive initialization from values rather than liveness bounds" {
+    for ([_]usize{ 4, 65, 256 }) |count| {
+        try batchFrame(testing.allocator, count);
+        try testing.checkAllAllocationFailures(testing.allocator, batchFrame, .{count});
+    }
+}
+
+fn batchFrame(allocator: std.mem.Allocator, count: usize) !void {
+    const data = @import("boundary_data");
+    const Frames = @import("activation_frames.zig").Frames;
+    const Values = @import("values.zig").Values;
+    var pool: data.analysis_sets.Pool = .{ .allocator = allocator, .limit = count };
+    defer pool.deinit();
+    const layout = try allocator.alloc(data.program.Id, count);
+    defer allocator.free(layout);
+    @memset(layout, 0);
+    const last = count - 1;
+    const program: data.activation.Program = .{
+        .roots = .{ .entry = 0, .result = 0, .failure = 0 },
+        .schemas = &.{.u64},
+        .constants = &.{},
+        .effects = &.{},
+        .blocks = &.{},
+        .functions = &.{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = layout }, .result = 0 }},
+    };
+    var frames = try Frames.init(allocator, &pool, program);
+    defer frames.deinit();
+    var original = try frames.create(0);
+    defer frames.releaseFrame(original);
+    try frames.apply(&original, try pool.run(0, last), @as([]const data.program.Id, &.{ 0, last }), &.{ Values.natural(0, 42), Values.natural(0, 99) });
+    try testing.expectEqual(42, (try frames.slots.get(original.view, 0)).body.scalar[0]);
+    for ([_]usize{ 1, 2, last }) |slot|
+        try testing.expectError(error.UninitializedSlot, frames.slots.get(original.view, slot));
+    var next = try frames.forkFrame(original);
+    defer frames.releaseFrame(next);
+    frames.apply(&next, try pool.run(1, last), @as([]const data.program.Id, &.{1}), &.{Values.natural(0, 7)}) catch |err| {
+        try testing.expectEqual(42, (try frames.slots.get(original.view, 0)).body.scalar[0]);
+        try testing.expectError(error.UninitializedSlot, frames.slots.get(original.view, 1));
+        return err;
+    };
+    try testing.expectEqual(7, (try frames.slots.get(next.view, 1)).body.scalar[0]);
+    try testing.expectError(error.UninitializedSlot, frames.slots.get(next.view, 0));
+    try testing.expectError(error.UninitializedSlot, frames.slots.get(next.view, 2));
+    try testing.expectEqual(42, (try frames.slots.get(original.view, 0)).body.scalar[0]);
+    var bindings = try frames.slots.iterator(next.view);
+    try testing.expectEqual(1, (try bindings.next()).?.slot);
+    try testing.expect((try bindings.next()) == null);
 }

@@ -2,77 +2,67 @@
 
 World 6.0.0-dev.0 executes Boundary's stable-activation Program through one evaluator,
 with fresh and prepared/resident operation, portable checkpoints and a browser-neutral
-embedding. The successor remains incomplete. Implementation has resumed after archive
-cleanup; all linked PRs remain drafts.
+embedding. The successor remains incomplete; all linked PRs remain drafts.
 
 Current contracts and checks are described in [kernel-abi.md](kernel-abi.md) and
 [verification.md](verification.md). The dependency manifest selects the current
-Boundary source. No experimental evidence directory belongs in the dependency package.
+Boundary source. Experimental evidence is excluded from the dependency package.
 
-Current checks pass: 75 native source tests, 41 storage tests, 6,755
-source-oracle observations, 257 native/Node boundaries, 174 Wasmtime transfer
-boundaries, real Chromium 153.0.8010.12 and Firefox 155.0 Worker transfers, and
-extracted runtime/CLI checks. Agent's compiled-tool transfer must be requalified
-after its normal dependency lock selects the new kernel. These are semantic/portability
-checks; they do not establish performance acceptance.
+## Current validation
 
-## Current results and unresolved work
+The current evaluator passes 75 native source tests, 42 storage tests, 14 activation
+storage tests, 6,755 source-oracle observations, 257 native/Node boundaries and 23
+transfers, 174 Wasmtime boundaries, real Chromium 153.0.8010.12 and Firefox 155.0
+Worker transfers, capacity/retry checks, and extracted runtime/CLI checks.
+Agent must also qualify this kernel through its normal dependency lock.
+These checks establish their tested semantic/portability cases, not performance acceptance.
 
-The kernel is 459,961 bytes with SHA-256
-`a32c2a807f5b8c10cec4f44d235c2dae938e72b78c7d654843cf968fb4a6cf7c`.
-Canonical set nodes now use 24 bytes instead of 32 without narrowing members or
-roots. Cardinality is derived from ranges, words and children. Compact predecessor
-storage remains specific to 64-bit hosts; smaller set nodes apply on both targets.
-Type validation reuses its existing schema exportability table for borrow checking.
-This removes one duplicate derivation; working peaks are unchanged and no speedup
-is claimed from the local reuse.
+The kernel is 460,161 bytes with SHA-256
+`dbb929681cb7675affaccefbfee9fd8fc5ee579e0d76276eedab882fd35642a8`.
 
-The workspace now skips a known allocated prefix while preserving first-fit
-selection. Frees update the hint only when segment address order proves list
-order; other growth orders fall back to scanning. A 20,000-operation differential
-trace preserves offsets, failures, live bytes and capacity accounting. In
-control256, inspected blocks fall from 139,600 to 71,306 for the same 3,071
-allocations. Block metadata, allocation counts and working peaks are unchanged.
+## Frame storage and current results
 
-Two rotating native timing windows support roughly 3–5% improvements on
-control8/64/256. The confirmation medians for control64/256 are about 350 / 1,714
-microseconds; control128 and tiny-program changes remain indeterminate. Across
-128 prescribed Agent invocation replays, per-scenario differences remain below
-1%, so no Agent latency gain is claimed from the hint.
+Slot pages alone determine initialization. A frame retains a conservative pruning
+bound, which may contain uninitialized slots and grants no read or ownership authority.
+Batch transitions write selected values and reclaim slots outside the next admitted
+liveness bound. This avoids maintaining an exact interned set after every write.
+Small bounds remain inline; large bounds reuse analysis roots. Restore/unpack writes
+extend the bound, reads and projection use actual slots, and retained views remain
+copy-on-write. Failed private transitions are discarded/poisoned or restored from
+Resident's backup. Tests cover both bound representations, unavailable live slots,
+retained views, allocation failure, cleanup, restore, and reentrant execution.
 
-Native control64 is about 350 microseconds and 214,595 working bytes, versus
-about 238 microseconds and 121,956 bytes for optimized BPC1. That gap remains open.
-Control128/256 peaks are 353,313 / 715,953 bytes, below both the preceding
-successor and BPC1's 435,558 / 1,324,938. The retained large variant-tag
-improvement has not been remeasured for this change.
+Against World d571cbb with Boundary c6d9cf4, two isolated rotating-order native
+windows (seven pairs each, nine measured fresh invocations per process) improve
+64/128/256 installations by about 8% / 10% / 11%. Confirmation medians are
+325 / 713 / 1,562 microseconds. Input bytes and independent results match.
+Tiny scalar, deep, and 1/8-installation timing changes remain indeterminate.
+Working peaks are 214,595 / 349,093 / 715,953 bytes; only control128 falls
+(from 353,313). The kernel grows 200 bytes. Agent latency is not claimed here.
 
-Contract encoding now releases canonicalization scratch before retaining its
-finished bytes. Inquiry/repeated/ReAct preparation retains 1,265,868 / 1,275,378 /
-2,812,770 bytes instead of 1,583,444 / 1,692,696 / 3,057,524. Across 13 unchanged
-Agent scenarios and 128 paired native invocations, inquiry/ReAct working peaks
-fall from 2,367,460 / 3,656,504 to 2,049,764 / 3,534,020 bytes. Outcomes and
-transition/copy counters match the preceding native runtime and pinned Node/Wasmtime
-runtime. ReAct now peaks during admission rather than contract retention.
+The workspace retains first-fit allocation with a search hint; a 20,000-operation
+differential trace preserves offsets, failures, contents and capacity accounting.
+Set nodes use 24 bytes without narrowing members; schema exportability is reused.
+Contract encoding releases scratch before retaining finished bytes. The preceding
+qualified Agent inquiry/ReAct working peaks are 2,049,764 / 3,534,020 bytes;
+these numbers require confirmation for the current kernel.
 
-Five rotating native timing windows and a second eight-window control comparison
-show overlapping timing variability; no latency improvement is claimed. Scalar,
-deep and 1/8/64/128/256 installation working peaks are unchanged. Working allocation
-is not RSS or reserved memory. This comparison isolates the current change, not
-final acceptance against BPC1: inquiry/ReAct remain above its 1,853,961 / 2,061,220
-byte peaks.
+## Unresolved acceptance
 
-Agent inquiry/ReAct working peaks and ReAct guest latency remain unresolved against
-BPC1. The remaining workload matrix, final coordinated
-qualification and serial reviews are still required. Passing semantic checks do
-not establish full performance acceptance.
+Optimized BPC1 control64 remains faster and smaller in working memory: about
+238 microseconds / 121,956 bytes. Inquiry/ReAct remain above BPC1's
+1,853,961 / 2,061,220-byte working peaks, and ReAct guest latency remains open.
+The remaining workload matrix, final coordinated qualification, and serial reviews
+are still required. Working payload is not RSS or reserved memory. No full
+performance-acceptance claim follows from these local improvements.
 
-Standalone native probes remain under `test/v2/`: `build_execution_bench.zig`,
-`build_value_bench.zig`, and `build_replay_bench.zig`. They accept explicit source
-inputs. Historical raw samples, profiles and experiment patches have been removed.
-Defect records retain historical provenance at their recorded Git revisions.
+Standalone probes under `test/v2/` accept explicit source inputs:
+`build_execution_bench.zig`, `build_value_bench.zig`, and `build_replay_bench.zig`.
+Raw samples, profiles and historical experiment patches are not maintained.
 
 Linked drafts: [Boundary #152](https://github.com/tkersey/boundary/pull/152),
 [World #54](https://github.com/tkersey/world/pull/54),
 [Agent #32](https://github.com/tkersey/agent/pull/32).
+Future landing order is Boundary → World → Agent, only when separately authorized.
 No merge, promotion or release is authorized. Current-tree deletion does not purge
 historical Git objects.
