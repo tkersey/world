@@ -16,22 +16,22 @@ Chromium/Firefox transfer. Those broader host lanes still need final requalifica
 
 ## Current results and unresolved work
 
-The qualified kernel is 461,374 bytes with SHA-256
-`353d8ca5ba0a94b09c4e6b83345adca5ae834236c7948ec7370ae6069b933e6e`.
-It incorporates Boundary's temporary flow-storage release and bounded FIFO worklists.
-The compact predecessor follow-up applies only on 64-bit hosts; the complete
-32-bit guest runtime stays byte-identical to this qualified kernel.
+The qualified kernel is 459,875 bytes with SHA-256
+`39320df71108e646a68183f4fd4394401c30933d238f01dee4abbaa52ae7adaa`.
+Canonical set nodes now use 24 bytes instead of 32 without narrowing members or
+roots. Cardinality is derived from ranges, words and children. Compact predecessor
+storage remains specific to 64-bit hosts; smaller set nodes apply on both targets.
 
-Native control64 is about 362 microseconds and 219,987 working bytes, versus
+Native control64 is about 360 microseconds and 214,595 working bytes, versus
 about 238 microseconds and 121,956 bytes for optimized BPC1. That gap remains open.
-Control128/256 peaks are 368,337 / 761,625 bytes, below both the preceding
+Control128/256 peaks are 353,313 / 715,953 bytes, below both the preceding
 successor and BPC1's 435,558 / 1,324,938. The retained large variant-tag
 improvement has not been remeasured for this change.
 
 Across 13 unchanged Agent scenarios, native inquiry/ReAct peaks fall from
-2,847,222 / 4,239,618 to 2,408,588 / 3,795,384 bytes. Native/Node outcomes and work
-counts agree. The all-target compact builder worsened guest timing, so 32-bit targets retain
-the existing builder. No guest speed change is claimed. Working allocation is not RSS or reserved memory.
+2,847,222 / 4,239,618 to 2,367,460 / 3,656,504 bytes. Native/Node outcomes and work
+counts agree. Five paired guest windows show mixed medians within the observed variability;
+no general guest speedup is claimed. Working allocation is not RSS or reserved memory.
 
 Agent inquiry/ReAct working peaks and ReAct guest latency remain unresolved against
 BPC1. The remaining workload matrix, consumer retirement, final coordinated
