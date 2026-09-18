@@ -9,24 +9,27 @@ Current contracts and checks are described in [kernel-abi.md](kernel-abi.md) and
 [verification.md](verification.md). The dependency manifest selects the current
 Boundary source. No experimental evidence directory belongs in the dependency package.
 
-The last implementation qualification passed 32 build steps, 74 source tests,
-39 storage tests, 30 host tests and 6,755 independent source-oracle observations,
-including native, Node, Wasmtime, real Chromium/Firefox transfer and extracted-package
-checks. Cleanup changes no evaluator code or semantic test expectation and does not
-repeat the full matrix.
+The latest flow-storage candidate passes 74 source tests, 52 storage tests,
+257 native/Node boundaries, 23 transfers and extracted runtime/CLI checks. Prior
+qualification also covered 6,755 source-oracle observations, Wasmtime and real
+Chromium/Firefox transfer. Those broader host lanes still need final requalification.
 
 ## Current results and unresolved work
 
-The qualified kernel is 460,851 bytes with SHA-256
-`b0cee0db452b46d9cf8f3f3067c52693383d566b9670a38da778793e29de66ee`.
-Its bytes are unchanged by the retained native index-width optimization.
+The qualified kernel is 461,374 bytes with SHA-256
+`353d8ca5ba0a94b09c4e6b83345adca5ae834236c7948ec7370ae6069b933e6e`.
+It incorporates Boundary's temporary flow-storage release and bounded FIFO worklists.
 
-Native control64 measured 363/359 microseconds and 241,495 working bytes, versus
+Native control64 is about 362 microseconds and 219,987 working bytes, versus
 about 238 microseconds and 121,956 bytes for optimized BPC1. That gap remains open.
-Control256 measured about 1.76 ms versus 2.33 ms for BPC1. The large variant-tag
-workload retained its substantial full-invocation improvement; some small value
-medians remain slightly higher. These observations are scoped to their workloads;
-working allocation is not RSS or reserved memory.
+Control128/256 peaks are 417,163 / 881,349 bytes: above the preceding successor's
+415,111 / 788,285 but below BPC1's 435,558 / 1,324,938. The retained large variant-tag
+improvement has not been remeasured for this change.
+
+Across 13 unchanged Agent scenarios, native inquiry/ReAct peaks fall from
+2,847,222 / 4,239,618 to 2,408,588 / 3,841,782 bytes. Native/Node outcomes and work
+counts agree. Five paired guest windows overlap substantially; guest speed is
+indeterminate. Working allocation is not RSS or reserved memory.
 
 Agent inquiry/ReAct working peaks and ReAct guest latency remain unresolved against
 BPC1. The remaining workload matrix, consumer retirement, final coordinated
