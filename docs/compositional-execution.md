@@ -32,25 +32,30 @@ copy-on-write. Failed private transitions are discarded/poisoned or restored fro
 Resident's backup. Tests cover both bound representations, unavailable live slots,
 retained views, allocation failure, cleanup, restore, and reentrant execution.
 
-Against World d571cbb with Boundary c6d9cf4, two isolated rotating-order native
-windows (seven pairs each, nine measured fresh invocations per process) improve
-64/128/256 installations by about 8% / 10% / 11%. Confirmation medians are
-325 / 713 / 1,562 microseconds. Input bytes and independent results match.
-Tiny scalar, deep, and 1/8-installation timing changes remain indeterminate.
-Working peaks are 214,595 / 349,093 / 715,953 bytes; only control128 falls
-(from 353,313). The kernel grows 200 bytes. Agent latency is not claimed here.
+Native 64-bit analysis pools now use 16-byte nodes when their declared member
+limit fits in 32 bits, retaining 24-byte nodes for full-width domains. Public
+members stay u64. Control64/128/256 working peaks are 201,927 / 320,429 /
+608,169 bytes; tiny scalar and one-installation peaks rise by 38 / 66 bytes.
+Current native control64 is about 320 microseconds. Tiny scalar invocations cost
+roughly 40–80 ns more; other control differences are mixed. No broad latency claim
+follows from this storage change.
 
-The workspace retains first-fit allocation with a search hint; a 20,000-operation
-differential trace preserves offsets, failures, contents and capacity accounting.
-Set nodes use 24 bytes without narrowing members; schema exportability is reused.
-Contract encoding releases scratch before retaining finished bytes. The preceding
-qualified Agent inquiry/ReAct working peaks are 2,049,764 / 3,534,020 bytes;
-these numbers require confirmation for the current kernel.
+Across 13 fixed Agent scenarios and 128 paired invocations, canonical outcomes
+and transition/control/copy counters agree. Native Session inquiry/ReAct peaks
+fall from 2,049,764 / 3,534,020 to 1,952,780 / 3,084,054 bytes. Whole-invocation
+peaks (including framing) fall from 2,147,127 / 3,676,006 to 2,050,143 / 3,226,040.
+The final native replay windows show no material latency regression.
+
+The all-target tagged compact layout slowed sampled fresh wasm32 inquiry/ReAct
+invocations by about 3% / 7%; that variant is rejected. wasm32 retains its prior
+untagged storage, producing the byte-identical 460,161-byte kernel above. No guest
+latency or memory gain is claimed. The workspace still preserves first-fit
+allocation, and contract encoding releases scratch before retaining finished bytes.
 
 ## Unresolved acceptance
 
 Optimized BPC1 control64 remains faster and smaller in working memory: about
-238 microseconds / 121,956 bytes. Inquiry/ReAct remain above BPC1's
+238 microseconds / 121,956 bytes. Native Session inquiry/ReAct remain above BPC1's
 1,853,961 / 2,061,220-byte working peaks, and ReAct guest latency remains open.
 The remaining workload matrix, final coordinated qualification, and serial reviews
 are still required. Working payload is not RSS or reserved memory. No full
