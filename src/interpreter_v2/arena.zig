@@ -13,6 +13,10 @@ pub const Arena = struct {
     const block_alignment = @alignOf(Block);
     buffer: []u8,
     first: ?*Block,
+    // Blocks before this hint are known allocated. Unsuccessful holes remain
+    // candidates for later, smaller allocations.
+    search: ?*Block = null,
+    address_ordered: bool = true,
     live_payload: usize = 0,
     live_blocks: usize = 0,
     peak_payload: usize = 0,
@@ -49,11 +53,13 @@ pub const Arena = struct {
         const demand = @as(u64, self.live_payload) +| length +| live_metadata;
         self.required = @max(self.required, demand);
         const requested_alignment = @max(alignment.toByteUnits(), @alignOf(usize));
-        var cursor = self.first;
+        var cursor = self.search orelse self.first;
         var last: ?*Block = null;
+        var first_available: ?*Block = null;
         while (cursor) |block| : (cursor = block.next) {
             last = block;
             if (!block.available) continue;
+            if (first_available == null) first_available = block;
             const start = @intFromPtr(block);
             const header_end = std.math.add(usize, start, @sizeOf(Block) + @sizeOf(usize)) catch return null;
             const padding = (0 -% header_end) & (requested_alignment - 1);
@@ -71,6 +77,7 @@ pub const Arena = struct {
             }
             block.available = false;
             block.requested = length;
+            self.search = if (first_available == block) block.next else first_available;
             const saved: *usize = @ptrFromInt(address - @sizeOf(usize));
             saved.* = start;
             self.live_payload += length;
@@ -84,8 +91,10 @@ pub const Arena = struct {
             const segment = grow(self.grow_context.?, needed) orelse return null;
             const added = Arena.init(segment);
             const first = added.first orelse return null;
+            if (last) |tail| self.address_ordered = self.address_ordered and @intFromPtr(tail) < @intFromPtr(first);
             if (last) |tail| tail.next = first else self.first = first;
             first.previous = last;
+            self.search = first_available orelse first;
             // The new segment was requested with sufficient alignment and metadata.
             const saved_grow = self.grow;
             self.grow = null;
@@ -102,6 +111,7 @@ pub const Arena = struct {
         self.live_payload -= block.requested;
         self.live_blocks -= 1;
         block.available = true;
+        var merged = block;
         if (block.next) |next| if (next.available and @intFromPtr(block) + block.length == @intFromPtr(next)) {
             block.length += next.length;
             block.next = next.next;
@@ -111,7 +121,15 @@ pub const Arena = struct {
             previous.length += block.length;
             previous.next = block.next;
             if (block.next) |after| after.previous = previous;
+            merged = previous;
         };
+        // Address order is a proof of list order only while appended segments
+        // remain ordered. Otherwise invalidate and use the original full scan.
+        if (self.address_ordered) {
+            if (self.search) |hint| {
+                if (@intFromPtr(merged) < @intFromPtr(hint)) self.search = merged;
+            }
+        } else self.search = null;
     }
 };
 
@@ -149,4 +167,62 @@ test "unrepresentable allocation demand preserves live workspace contents" {
     try std.testing.expect(arena.required >= std.math.maxInt(usize));
     const next = try allocator.alloc(u8, 32);
     allocator.free(next);
+}
+
+test "search hint preserves earlier holes after a larger allocation" {
+    var bytes: [4096]u8 align(64) = undefined;
+    var arena = Arena.init(&bytes);
+    const a = arena.allocator();
+    const small = try a.alloc(u8, 32);
+    const separator = try a.alloc(u8, 16);
+    const large = try a.alloc(u8, 256);
+    const end = try a.alloc(u8, 16);
+    a.free(small);
+    a.free(large);
+    const middle = try a.alloc(u8, 128);
+    try std.testing.expectEqual(@intFromPtr(large.ptr), @intFromPtr(middle.ptr));
+    const first = try a.alloc(u8, 16);
+    try std.testing.expectEqual(@intFromPtr(small.ptr), @intFromPtr(first.ptr));
+    a.free(first);
+    a.free(middle);
+    a.free(separator);
+    a.free(end);
+    try std.testing.expectEqual(@as(usize, 0), arena.live_payload);
+    const whole = try a.alloc(u8, 4000);
+    a.free(whole);
+}
+
+test "search hint resets on free and preserves segment order during growth" {
+    const Growth = struct {
+        bytes: []u8,
+        used: bool = false,
+        fn grow(context: *anyopaque, minimum: usize) ?[]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.used or minimum > self.bytes.len) return null;
+            self.used = true;
+            return self.bytes;
+        }
+    };
+    for ([_]usize{ 0, 1 }) |initial| {
+        var buffers: [2][256]u8 align(64) = undefined;
+        var growth: Growth = .{ .bytes = &buffers[1 - initial] };
+        // Exercise both address orders. A free tail in the new segment must
+        // not hide a subsequently freed block in the first segment.
+        var arena = Arena.init(&buffers[initial]);
+        arena.grow_context = &growth;
+        arena.grow = Growth.grow;
+        const a = arena.allocator();
+        const first = try a.alloc(u8, 200);
+        const second = try a.alloc(u8, 64);
+        try std.testing.expect(growth.used);
+        try std.testing.expectEqual(initial == 1, @intFromPtr(second.ptr) < @intFromPtr(first.ptr));
+        try std.testing.expectError(error.OutOfMemory, a.alloc(u8, 200));
+        a.free(first);
+        const reused = try a.alloc(u8, 64);
+        try std.testing.expectEqual(@intFromPtr(first.ptr), @intFromPtr(reused.ptr));
+        a.free(reused);
+        a.free(second);
+        try std.testing.expectEqual(@as(usize, 0), arena.live_payload);
+        try std.testing.expectEqual(@as(usize, 0), arena.live_blocks);
+    }
 }

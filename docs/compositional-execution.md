@@ -9,7 +9,7 @@ Current contracts and checks are described in [kernel-abi.md](kernel-abi.md) and
 [verification.md](verification.md). The dependency manifest selects the current
 Boundary source. No experimental evidence directory belongs in the dependency package.
 
-Current checks pass: 75 native source tests, 39 storage tests, 6,755
+Current checks pass: 75 native source tests, 41 storage tests, 6,755
 source-oracle observations, 257 native/Node boundaries, 174 Wasmtime transfer
 boundaries, real Chromium 153.0.8010.12 and Firefox 155.0 Worker transfers, and
 extracted runtime/CLI checks. Agent's compiled-tool transfer must be requalified
@@ -18,8 +18,8 @@ checks; they do not establish performance acceptance.
 
 ## Current results and unresolved work
 
-The kernel is 459,873 bytes with SHA-256
-`c5f33c3b1328c9bf2f9d1f8c3597da29bd6f1d8fddfddbecda1b575f902ec330`.
+The kernel is 459,961 bytes with SHA-256
+`a32c2a807f5b8c10cec4f44d235c2dae938e72b78c7d654843cf968fb4a6cf7c`.
 Canonical set nodes now use 24 bytes instead of 32 without narrowing members or
 roots. Cardinality is derived from ranges, words and children. Compact predecessor
 storage remains specific to 64-bit hosts; smaller set nodes apply on both targets.
@@ -27,7 +27,20 @@ Type validation reuses its existing schema exportability table for borrow checki
 This removes one duplicate derivation; working peaks are unchanged and no speedup
 is claimed from the local reuse.
 
-Native control64 is about 360 microseconds and 214,595 working bytes, versus
+The workspace now skips a known allocated prefix while preserving first-fit
+selection. Frees update the hint only when segment address order proves list
+order; other growth orders fall back to scanning. A 20,000-operation differential
+trace preserves offsets, failures, live bytes and capacity accounting. In
+control256, inspected blocks fall from 139,600 to 71,306 for the same 3,071
+allocations. Block metadata, allocation counts and working peaks are unchanged.
+
+Two rotating native timing windows support roughly 3–5% improvements on
+control8/64/256. The confirmation medians for control64/256 are about 350 / 1,714
+microseconds; control128 and tiny-program changes remain indeterminate. Across
+128 prescribed Agent invocation replays, per-scenario differences remain below
+1%, so no Agent latency gain is claimed from the hint.
+
+Native control64 is about 350 microseconds and 214,595 working bytes, versus
 about 238 microseconds and 121,956 bytes for optimized BPC1. That gap remains open.
 Control128/256 peaks are 353,313 / 715,953 bytes, below both the preceding
 successor and BPC1's 435,558 / 1,324,938. The retained large variant-tag
