@@ -192,6 +192,22 @@ pub const Frames = struct {
         try self.custody.remove(&frame.custody, @intCast(slot));
         try self.slots.clear(frame.view, @intCast(slot));
     }
+    /// Restart the same function after its caller has gathered simultaneous
+    /// arguments. Retained views remain isolated by Slots' existing COW owner.
+    pub fn restart(self: *Frames, frame: *Frame, live: sets.Root, values: []const data.graph.Value) Error!void {
+        if (frame.custody.initialized) return error.InvalidState;
+        const function = self.program.functions[@intCast(frame.function)];
+        if (function.inputs.len != values.len) return error.InvalidState;
+        var old = frame.live_bound.iterator(self.pool);
+        while (old.next()) |slot| {
+            if (slot >= function.layout.slots.len) break;
+            if (std.mem.indexOfScalar(data.program.Id, function.inputs, slot) == null)
+                try self.clear(frame, slot);
+        }
+        frame.custody.scope = 0;
+        try self.apply(frame, live, function.inputs, values);
+        frame.position = 0;
+    }
     /// Writes and reclamation share one owner. The admitted liveness bound may
     /// include uninitialized slots; only Slots.get/iterator observe actual values.
     pub fn apply(self: *Frames, frame: *Frame, live: sets.Root, destinations: anytype, values: []const data.graph.Value) Error!void {

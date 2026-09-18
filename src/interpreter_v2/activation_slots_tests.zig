@@ -440,3 +440,52 @@ fn batchFrame(allocator: std.mem.Allocator, count: usize) !void {
     try testing.expectEqual(1, (try bindings.next()).?.slot);
     try testing.expect((try bindings.next()) == null);
 }
+
+test "tail restart clears old locals and preserves retained input permutations on allocation failure" {
+    for ([_]usize{ 4, 65, 256 }) |count| {
+        try restartFrame(testing.allocator, count);
+        try testing.checkAllAllocationFailures(testing.allocator, restartFrame, .{count});
+    }
+}
+
+fn restartFrame(allocator: std.mem.Allocator, count: usize) !void {
+    const data = @import("boundary_data");
+    const Frames = @import("activation_frames.zig").Frames;
+    const Values = @import("values.zig").Values;
+    var pool: data.analysis_sets.Pool = .{ .allocator = allocator, .limit = count };
+    defer pool.deinit();
+    const layout = try allocator.alloc(data.program.Id, count);
+    defer allocator.free(layout);
+    @memset(layout, 0);
+    const program: data.activation.Program = .{
+        .roots = .{ .entry = 0, .result = 0, .failure = 0 },
+        .schemas = &.{.u64},
+        .constants = &.{},
+        .effects = &.{},
+        .blocks = &.{},
+        .functions = &.{.{ .entry = 0, .inputs = &.{ 0, 1 }, .layout = .{ .slots = layout }, .result = 0 }},
+    };
+    var frames = try Frames.init(allocator, &pool, program);
+    defer frames.deinit();
+    var original = try frames.create(0);
+    defer frames.releaseFrame(original);
+    try frames.write(&original, 0, Values.natural(0, 10));
+    try frames.write(&original, 1, Values.natural(0, 20));
+    try frames.write(&original, count - 1, Values.natural(0, 99));
+    var next = try frames.forkFrame(original);
+    defer frames.releaseFrame(next);
+    next.position = 3;
+    const arguments = [_]data.graph.Value{ try frames.slots.get(next.view, 1), try frames.slots.get(next.view, 0) };
+    frames.restart(&next, try pool.run(0, 2), &arguments) catch |err| {
+        try testing.expectEqual(10, (try frames.slots.get(original.view, 0)).body.scalar[0]);
+        try testing.expectEqual(99, (try frames.slots.get(original.view, count - 1)).body.scalar[0]);
+        return err;
+    };
+    try testing.expectEqual(0, next.position);
+    try testing.expectEqual(20, (try frames.slots.get(next.view, 0)).body.scalar[0]);
+    try testing.expectEqual(10, (try frames.slots.get(next.view, 1)).body.scalar[0]);
+    try testing.expectError(error.UninitializedSlot, frames.slots.get(next.view, count - 1));
+    try testing.expectEqual(10, (try frames.slots.get(original.view, 0)).body.scalar[0]);
+    try testing.expectEqual(20, (try frames.slots.get(original.view, 1)).body.scalar[0]);
+    try testing.expectEqual(99, (try frames.slots.get(original.view, count - 1)).body.scalar[0]);
+}

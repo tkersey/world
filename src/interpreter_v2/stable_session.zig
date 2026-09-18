@@ -437,6 +437,15 @@ pub const Session = struct {
             },
             .call => |call| {
                 const arguments = try self.collectArguments(scratch, reader, call.arguments);
+                if (call.function == frame.function and self.isTail(call.next) and !frame.custody.initialized) {
+                    const entry = self.program.functions[@intCast(call.function)].entry;
+                    try self.frames.restart(frame, self.flow.facts.live[@intCast(entry)][0], arguments);
+                    var changed = saved;
+                    changed.block = entry;
+                    try self.store.replace(current, .{ .control = changed });
+                    self.frames.update(current.id, frame.*);
+                    return;
+                }
                 const parent = if (self.isTail(call.next)) saved.parent else try self.captureContinuation(current, saved, frame.*, call.next);
                 try self.enter(call.function, arguments, parent, saved.evidence, saved.region);
             },

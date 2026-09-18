@@ -10,15 +10,15 @@ Boundary source. Experimental evidence is excluded from the dependency package.
 
 ## Current validation
 
-The current evaluator passes 77 native source tests, 42 storage tests, 14 activation
+The current evaluator passes 77 native source tests, 43 storage tests, 15 activation
 storage tests, 6,755 source-oracle observations, 257 native/Node boundaries and 23
 transfers, 174 Wasmtime boundaries, real Chromium 153.0.8010.12 and Firefox 155.0
 Worker transfers, capacity/retry checks, and extracted runtime/CLI checks.
 Agent must also qualify this kernel through its normal dependency lock.
 These checks establish their tested semantic/portability cases, not performance acceptance.
 
-The kernel is 460,179 bytes with SHA-256
-`30f58a84f006bb9d4102d11aea340a81617becd8adb608bc5504b6e30d370240`.
+The kernel is 460,854 bytes with SHA-256
+`5788520b6a11c9f59b602ec6cbebdb976116d176a7e417afc2258c08ee25968c`.
 
 ## Suspension reclamation
 
@@ -179,7 +179,25 @@ Reproduce with `build_value_bench.zig` using explicit source paths, then run
 and sequence; omitted fixture selects the original variant workload. The reported
 producer/input time includes fixture construction and encoding, not native build time.
 
-## Retained-loop comparison
+## Tail-frame reuse
+
+Direct same-function tail calls without initialized ownership custody now reuse
+the current control/frame storage. Arguments are gathered before mutation; old
+non-input locals are cleared, entry liveness is applied, and execution restarts at
+the entry position. Existing COW slot ownership protects retained continuation
+views. Other calls retain normal frame entry. No checkpoint format, transition
+count, disposal order or authority rule changes. Tests cover argument permutation,
+stale locals, old views and allocation failures in both slot representations.
+
+Against World 257fd00 with Boundary 3b8a69f, two isolated native windows (five pairs
+per case) improve the 256-iteration retained loop by about 14–16%; confirmation is
+640.79 → 537.13 µs. Peak working bytes fall 28,681 → 22,701 and allocation calls
+1,615 → 589. Fresh Node/WASM observations, including module setup, improve about
+6–8% across two five-pair windows. Other sampled controls have small mixed timing
+changes and unchanged peaks. The kernel grows 675 bytes. This local gain does not
+close all predecessor regressions or establish final Agent performance acceptance.
+
+## Retained-loop comparison before tail-frame reuse
 
 The `retained_loop` execution fixture captures a multi-shot continuation before
 updating recursive loop parameters, then resumes the retained template twice.
