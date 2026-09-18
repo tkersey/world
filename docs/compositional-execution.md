@@ -19,17 +19,19 @@ Chromium/Firefox transfer. Those broader host lanes still need final requalifica
 The qualified kernel is 461,374 bytes with SHA-256
 `353d8ca5ba0a94b09c4e6b83345adca5ae834236c7948ec7370ae6069b933e6e`.
 It incorporates Boundary's temporary flow-storage release and bounded FIFO worklists.
+The compact predecessor follow-up applies only on 64-bit hosts; the complete
+32-bit guest runtime stays byte-identical to this qualified kernel.
 
 Native control64 is about 362 microseconds and 219,987 working bytes, versus
 about 238 microseconds and 121,956 bytes for optimized BPC1. That gap remains open.
-Control128/256 peaks are 417,163 / 881,349 bytes: above the preceding successor's
-415,111 / 788,285 but below BPC1's 435,558 / 1,324,938. The retained large variant-tag
+Control128/256 peaks are 368,337 / 761,625 bytes, below both the preceding
+successor and BPC1's 435,558 / 1,324,938. The retained large variant-tag
 improvement has not been remeasured for this change.
 
 Across 13 unchanged Agent scenarios, native inquiry/ReAct peaks fall from
-2,847,222 / 4,239,618 to 2,408,588 / 3,841,782 bytes. Native/Node outcomes and work
-counts agree. Five paired guest windows overlap substantially; guest speed is
-indeterminate. Working allocation is not RSS or reserved memory.
+2,847,222 / 4,239,618 to 2,408,588 / 3,795,384 bytes. Native/Node outcomes and work
+counts agree. The all-target compact builder worsened guest timing, so 32-bit targets retain
+the existing builder. No guest speed change is claimed. Working allocation is not RSS or reserved memory.
 
 Agent inquiry/ReAct working peaks and ReAct guest latency remain unresolved against
 BPC1. The remaining workload matrix, consumer retirement, final coordinated
