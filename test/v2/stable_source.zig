@@ -184,11 +184,21 @@ test "higher-order scoped bodies retain definition and use capabilities with cle
     }
 }
 
+// Data-level mutation fixtures need declarations that a closed compiler can prune.
+// No imports are present; programBytes/initFromImage still perform closed admission.
+fn compileDeclarations(module: source.Module) !source.Compiled {
+    return (try source.component.compile(testing.allocator, module, .{ .exports = &.{} })).construction;
+}
+
 test "retained scoped interaction agrees at every quantum with general resumptions" {
     for ([_]bool{ false, true }) |general| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.lower(testing.allocator, try source.examples.retainedScope(&builder));
+        const module = try source.examples.retainedScope(&builder);
+        var compiled = if (general)
+            try compileDeclarations(module)
+        else
+            try source.lower(testing.allocator, module);
         defer compiled.deinit();
         var scratch = std.heap.ArenaAllocator.init(testing.allocator);
         defer scratch.deinit();
@@ -245,7 +255,11 @@ test "branching tail handlers create no resumption and survive every instruction
     for ([_]bool{ false, true }, 0..) |selected, variant| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
-        var compiled = try source.lower(testing.allocator, try source.examples.branchingTail(&builder));
+        const module = try source.examples.branchingTail(&builder);
+        var compiled = if (selected)
+            try source.lower(testing.allocator, module)
+        else
+            try compileDeclarations(module);
         defer compiled.deinit();
         const clause = compiled.program.handlers[0].clauses[0];
         const clauses = try testing.allocator.dupe(boundary.data.activation.Clause, compiled.program.handlers[0].clauses);
@@ -2083,7 +2097,7 @@ test "PST3 normal return paths reject disposal markers while captured cleanup st
         for (effects, 0..) |*effect, id| effect.* = id;
         marker.internal.resumption.effects = effects;
         const marker_schema = try b.schema(marker);
-        var compiled = try source.lower(testing.allocator, b.module(module.entry, module.failure));
+        var compiled = try compileDeclarations(b.module(module.entry, module.failure));
         defer compiled.deinit();
         const image = try programBytes(compiled.program);
         defer testing.allocator.free(image);
@@ -2132,7 +2146,7 @@ test "PST3 captured handler state obeys one-shot and multi bounds and reference 
             extended[old.len] = wide;
             schema.internal.resumption.capture_bound = extended;
         };
-        var compiled = try source.lower(testing.allocator, b.module(module.entry, module.failure));
+        var compiled = try compileDeclarations(b.module(module.entry, module.failure));
         defer compiled.deinit();
         var session = try initFromImage(testing.allocator, compiled.program, &.{});
         defer session.deinit();

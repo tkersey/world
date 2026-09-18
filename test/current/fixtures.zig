@@ -40,7 +40,12 @@ pub fn main(init: std.process.Init) !void {
             }
             return error.InvalidName;
         };
-        var compiled = try boundary.program.compile(init.gpa, module);
+        // The general reference fixture rewrites clause functions by source ID.
+        // A component retains those declarations; encoding still admits a closed Program.
+        var compiled = if (std.mem.eql(u8, name, "retainedScopeGeneral"))
+            (try boundary.source.component.compile(init.gpa, module, .{ .exports = &.{} })).construction
+        else
+            try boundary.program.compile(init.gpa, module);
         defer compiled.deinit();
         if (std.mem.eql(u8, name, "retainedScopeGeneral")) {
             const ir = boundary.data.activation;
