@@ -1,6 +1,6 @@
 //! Frozen source-pair controls; complete fresh invocations and independent traces.
 //! Usage: execution-bench FORMAT FIXTURE COUNT. COUNT is 1..256 for
-//! install/mixed/irregular and zero for the fixed examples. Three warmups precede
+//! install/retained_loop/mixed/irregular and zero for the fixed examples. Three warmups precede
 //! nine samples; allocation counters use a separate replay. Host reply encoding
 //! and oracle checks are outside invocation clocks. Requests receive fixture
 //! replies; no external operation is dispatched.
@@ -13,13 +13,14 @@ const current = @hasDecl(world, "Session");
 const protocol = if (current) data.invocation else data.protocol;
 const runtime = if (current) world else world.process_v2;
 
-const Fixture = enum { scalar, install, mixed, irregular, deep, residual, reentrant, shallow, generator, scheduler, queens_dfs, queens_bfs, cleanup };
+const Fixture = enum { scalar, install, retained_loop, mixed, irregular, deep, residual, reentrant, shallow, generator, scheduler, queens_dfs, queens_bfs, cleanup };
 const Command = struct { bytes: []u8, image: []u8 };
 fn command(a: std.mem.Allocator, compact: bool, fixture: Fixture, count: usize) !Command {
     var b = source.Builder.init(a);
     defer b.deinit();
     const input = switch (fixture) {
         .install => try source.examples.installations(&b, count),
+        .retained_loop => try @import("retained_loop_bench.zig").build(&b, count),
         .deep => try source.examples.deep(&b),
         .mixed => try @import("compact_fixtures").mixed(&b, count, 0, false),
         .irregular => try @import("compact_fixtures").variedMixed(&b, count, .{ .seed = 11 }),
@@ -130,6 +131,7 @@ fn expected(fixture: Fixture, count: usize) Oracle {
             if (fixture == .residual) result.event(request("benchmark/read", &comptime integers(&.{7}), 42));
         },
         .install => result.scalar(count * (count + 1) / 2),
+        .retained_loop => result.scalar(2 * (count + 1)),
         .deep => result.scalar(67),
         .mixed, .irregular => {
             for (0..count) |index| {
@@ -271,7 +273,7 @@ pub fn main(init: std.process.Init) !void {
     const format = args.next() orelse return error.ExpectedFormat;
     const fixture = std.meta.stringToEnum(Fixture, args.next() orelse return error.ExpectedFixture) orelse return error.InvalidFixture;
     const count = try std.fmt.parseInt(usize, args.next() orelse return error.ExpectedCount, 10);
-    const sized = fixture == .install or fixture == .mixed or fixture == .irregular;
+    const sized = fixture == .install or fixture == .retained_loop or fixture == .mixed or fixture == .irregular;
     if (count > 256 or (sized and count == 0) or (!sized and count != 0) or args.next() != null) return error.InvalidFixture;
     if (!std.mem.eql(u8, format, if (current) "bpi3" else "bpi2") and (current or !std.mem.eql(u8, format, "bpc1"))) return error.InvalidFormat;
     const start = std.Io.Clock.awake.now(init.io);

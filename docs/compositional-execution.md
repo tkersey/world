@@ -179,6 +179,35 @@ Reproduce with `build_value_bench.zig` using explicit source paths, then run
 and sequence; omitted fixture selects the original variant workload. The reported
 producer/input time includes fixture construction and encoding, not native build time.
 
+## Retained-loop comparison
+
+The `retained_loop` execution fixture captures a multi-shot continuation before
+updating recursive loop parameters, then resumes the retained template twice.
+Both activations must restart from x=1 and the original count, producing exactly
+2(n+1). The same authored fixture runs through each source pair. The existing
+direct-IR regression separately checks in-place slot rebinding; this benchmark
+measures the supported source-level construction, not an identical internal loop.
+
+Two rotating native windows (three processes per format/size, three warmups and
+nine samples per process) preserve that result at 1/8/64/128/256 iterations.
+Boundary 3b8a69f / World a068392 are compared with Boundary 42a09b9 / World d075169,
+using Zig 0.16.0 ReleaseSafe on the same M2 Pro/macOS 27.2 host.
+
+| Iterations | BPI2 µs | BPC1 µs | BPI3 µs | Working bytes BPC1 → BPI3 |
+|---|---:|---:|---:|---:|
+| 1 | 18.21 | 18.25 | 24.83 | 14,576 → 24,750 |
+| 8 | 33.50 | 32.79 | 40.50 | 14,614 → 28,668 |
+| 64 | 144.50 | 150.04 | 174.17 | 14,614 → 28,668 |
+| 128 | 279.79 | 282.25 | 328.04 | 14,626 → 28,681 |
+| 256 | 530.17 | 536.92 | 675.21 | 14,626 → 28,681 |
+
+These confirmation results show bounded peak memory as iterations grow, but a
+repeatable latency and peak-memory regression against BPC1. At 256 iterations,
+allocation calls fall from 3,131 to 1,615 while allocated bytes rise from 382,159
+to 502,256. No performance requirement is waived. Reproduce with
+`execution-bench FORMAT retained_loop COUNT`; the result oracle is arithmetic,
+not recorded candidate output.
+
 ## Unresolved acceptance
 
 Scalar, deep and 1/8/64 installations remain slower and use more working memory
@@ -188,7 +217,7 @@ latency is approximately unchanged, with lower working memory. Native Session
 inquiry/ReAct peaks remain above BPC1's 1,853,961 / 2,061,220 bytes, and ReAct guest
 latency remains open. No performance failure has been waived.
 
-The retained-loop benchmark, final Agent
+The retained-loop regressions, final Agent
 comparison, native build/client-edit decomposition,
 final coordinated qualification and serial reviews remain required.
 
