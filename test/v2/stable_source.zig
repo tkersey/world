@@ -2516,3 +2516,22 @@ test "suspension reclamation rolls back every allocation failure" {
     defer testing.allocator.free(before);
     for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, before, .none, with_checkpoint);
 }
+
+test "resident retained recursive tail frames preserve rollback at every allocation failure" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try @import("retained_loop_bench.zig").build(&builder, 3));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var session = try Session.start(testing.allocator, &prepared, &.{});
+    defer session.deinit();
+    const before = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(before);
+    const outcome = try session.run(null);
+    try testing.expect(outcome == .completed);
+    try testing.expectEqual(@as(u64, 8), std.mem.readInt(u64, outcome.completed.body.scalar[0..8], .little));
+    for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, before, .none, with_checkpoint);
+}

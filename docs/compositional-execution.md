@@ -10,7 +10,7 @@ Boundary source. Experimental evidence is excluded from the dependency package.
 
 ## Current validation
 
-The current evaluator passes 77 native source tests, 43 storage tests, 15 activation
+The current evaluator passes 78 native source tests, 43 storage tests, 15 activation
 storage tests, 6,755 source-oracle observations, 257 native/Node boundaries and 23
 transfers, 174 Wasmtime boundaries, real Chromium 153.0.8010.12 and Firefox 155.0
 Worker transfers, capacity/retry checks, and extracted runtime/CLI checks.
@@ -188,6 +188,8 @@ the entry position. Existing COW slot ownership protects retained continuation
 views. Other calls retain normal frame entry. No checkpoint format, transition
 count, disposal order or authority rule changes. Tests cover argument permutation,
 stale locals, old views and allocation failures in both slot representations.
+A retained recursive-loop Resident sweep also checks rollback after every
+allocation failure, with and without checkpoint publication.
 
 Against World 257fd00 with Boundary 3b8a69f, two isolated native windows (five pairs
 per case) improve the 256-iteration retained loop by about 14–16%; confirmation is
