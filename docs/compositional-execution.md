@@ -49,7 +49,7 @@ final acceptance against BPC1: inquiry/ReAct remain above its 1,853,961 / 2,061,
 byte peaks.
 
 Agent inquiry/ReAct working peaks and ReAct guest latency remain unresolved against
-BPC1. The remaining workload matrix, consumer retirement, final coordinated
+BPC1. The remaining workload matrix, final coordinated
 qualification and serial reviews are still required. Passing semantic checks do
 not establish full performance acceptance.
 
