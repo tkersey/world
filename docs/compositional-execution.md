@@ -9,10 +9,12 @@ Current contracts and checks are described in [kernel-abi.md](kernel-abi.md) and
 [verification.md](verification.md). The dependency manifest selects the current
 Boundary source. No experimental evidence directory belongs in the dependency package.
 
-The latest flow-storage candidate passes 74 source tests, 52 storage tests,
-257 native/Node boundaries, 23 transfers and extracted runtime/CLI checks. Prior
-qualification also covered 6,755 source-oracle observations, Wasmtime and real
-Chromium/Firefox transfer. Those broader host lanes still need final requalification.
+The current full check passes: 74 native source tests, 39 storage tests, 6,755
+source-oracle observations, 257 native/Node boundaries, 174 Wasmtime transfer
+boundaries, real Chromium 153.0.8010.12 and Firefox 155.0 Worker transfers, and
+extracted runtime/CLI checks. Agent's compiled tool also passes the real
+browser/server/browser witness on both engines. These are semantic/portability
+checks; they do not establish performance acceptance.
 
 ## Current results and unresolved work
 
