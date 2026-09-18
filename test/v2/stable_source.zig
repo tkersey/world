@@ -2424,3 +2424,95 @@ test "prepared contracts retain encoded bytes without canonicalization scratch" 
     try testing.expect(contract_storage <= 1024 + 4 * (contract.payload.len + contract.resume_value.len));
     try testing.checkAllAllocationFailures(testing.allocator, prepareContractFailure, .{image});
 }
+
+fn smallSurvivorExample(b: *source.Builder, keep_original: bool, request_boundary: bool) !source.Module {
+    const integer = try b.scalar(u64);
+    const unit = try b.scalar(void);
+    const sequence = try b.schema(.{ .seq = integer });
+    const pause = if (request_boundary) try b.effect(.{ .identity = "retention/pause", .payload = unit, .result = unit }) else 0;
+    const result_schema = if (keep_original) try b.schema(.{ .product = &.{ sequence, sequence } }) else sequence;
+    const entry = try b.declare(&.{sequence}, result_schema, if (request_boundary) &.{pause} else &.{}, &.{});
+    const input = try b.reference(b.parameter(entry, 0));
+    const kept = try b.variable(sequence);
+    const take = try b.primitive(sequence, .sequence_take, &.{ input, try b.constant(u64, 1) }, 0);
+    const small = try b.reference(kept);
+    const result = if (keep_original) try b.primitive(result_schema, .product, &.{ small, input }, 0) else small;
+    const returned = try b.pure(result);
+    const suspended = if (request_boundary)
+        try b.bind(try b.variable(unit), try b.term(.{ .perform = .{ .effect = pause, .payload = try b.constant(void, {}) } }), returned)
+    else
+        try b.term(.{ .yield_then = returned });
+    try b.define(entry, try b.bind(kept, try b.pure(take), suspended));
+    return b.module(entry, unit);
+}
+
+test "public suspension releases large dead input backing while preserving live aliases" {
+    const count = 131072;
+    const input = try testing.allocator.alloc(u8, count * 8 + 10);
+    defer testing.allocator.free(input);
+    var writer: boundary.data.wire.Writer = .{ .output = input };
+    try writer.natural(count);
+    for (0..count) |i| try writer.fixed(u64, i + 1);
+    const backing = try testing.allocator.alloc(u8, 32 << 20);
+    defer testing.allocator.free(backing);
+    for ([_]bool{ false, true }) |keep_original| for ([_]bool{ false, true }) |request_boundary| {
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        var compiled = try source.lower(testing.allocator, try smallSurvivorExample(&builder, keep_original, request_boundary));
+        defer compiled.deinit();
+        const image = try programBytes(compiled.program);
+        defer testing.allocator.free(image);
+        var workspace = @import("stable_runtime").Workspace.init(backing);
+        var session = try Session.initImage(workspace.allocator(), image, input[0..writer.position]);
+        defer session.deinit();
+        const observed = try session.run(null);
+        try testing.expect(if (request_boundary) observed == .requested else observed == .yielded);
+        const retained = workspace.live_payload;
+        if (keep_original) try testing.expect(retained >= writer.position) else try testing.expect(retained < writer.position / 4);
+        const checkpoint = try session.checkpoint(testing.allocator);
+        defer testing.allocator.free(checkpoint);
+        try testing.expectEqual(retained, workspace.live_payload);
+        const repeated = try session.checkpoint(testing.allocator);
+        defer testing.allocator.free(repeated);
+        try testing.expectEqualSlices(u8, checkpoint, repeated);
+        if (!keep_original) try testing.expect(checkpoint.len < 1024);
+        var restored = try Session.restoreImage(testing.allocator, image, checkpoint);
+        defer restored.deinit();
+        for ([_]*Session{ &session, &restored }) |subject| {
+            if (request_boundary) {
+                var pending = try subject.pendingRequest(testing.allocator);
+                defer pending.deinit();
+                const protocol = boundary.data.invocation;
+                const reply = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = pending.request.request_identity, .value = &.{} });
+                defer testing.allocator.free(reply);
+                try subject.answer(reply);
+            } else try subject.resumeYield();
+            const result = try subject.run(null);
+            try testing.expect(result == .completed);
+            const bytes = try subject.bytes(&result.completed);
+            const expected = [_]u8{ 1, 1, 0, 0, 0, 0, 0, 0, 0 };
+            try testing.expectEqualSlices(u8, &expected, bytes[0..expected.len]);
+            if (keep_original) try testing.expectEqualSlices(u8, input[0..writer.position], bytes[expected.len..]) else try testing.expectEqual(expected.len, bytes.len);
+        }
+    };
+}
+
+test "suspension reclamation rolls back every allocation failure" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try smallSurvivorExample(&builder, false, true));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var input: [65540]u8 = undefined;
+    var writer: boundary.data.wire.Writer = .{ .output = &input };
+    try writer.natural(8192);
+    for (0..8192) |i| try writer.fixed(u64, i + 1);
+    var session = try Session.start(testing.allocator, &prepared, input[0..writer.position]);
+    defer session.deinit();
+    const before = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(before);
+    for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, before, .none, with_checkpoint);
+}

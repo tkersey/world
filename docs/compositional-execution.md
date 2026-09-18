@@ -10,15 +10,37 @@ Boundary source. Experimental evidence is excluded from the dependency package.
 
 ## Current validation
 
-The current evaluator passes 75 native source tests, 42 storage tests, 14 activation
+The current evaluator passes 77 native source tests, 42 storage tests, 14 activation
 storage tests, 6,755 source-oracle observations, 257 native/Node boundaries and 23
 transfers, 174 Wasmtime boundaries, real Chromium 153.0.8010.12 and Firefox 155.0
 Worker transfers, capacity/retry checks, and extracted runtime/CLI checks.
 Agent must also qualify this kernel through its normal dependency lock.
 These checks establish their tested semantic/portability cases, not performance acceptance.
 
-The kernel is 460,161 bytes with SHA-256
-`dbb929681cb7675affaccefbfee9fd8fc5ee579e0d76276eedab882fd35642a8`.
+The kernel is 460,179 bytes with SHA-256
+`30f58a84f006bb9d4102d11aea340a81617becd8adb608bc5504b6e30d370240`.
+
+## Suspension reclamation
+
+A suspended Session can remain parked indefinitely, so reclamation now runs at
+yield/request publication as well as terminal and periodic internal boundaries.
+The existing collector traces actual live frames, preserves live aliases and
+custody, and detaches small survivors from oversized imported backing. Checkpoint
+export remains read-only. Allocation-failure sweeps verify Resident rollback and
+unchanged retry inputs during the new reclamation boundary.
+
+A one-element survivor from 128 / 8,192 / 131,072 u64 inputs previously retained
+8,774 / 73,286 / 1,056,327 working bytes after suspension and checkpoint export.
+It now retains 8,182 bytes in all three cases, with an unchanged 86-byte checkpoint.
+Tests also keep the original large alias live, verify every returned element after
+resume/restore, and cover both yields and external requests. Reserved host memory
+is separate from these live allocation capacities.
+
+This correction has a cost: two paired native windows show roughly 1–5% slower
+execution in several suspension-heavy controls versus World 275176e. Residual
+working peak rises 298 bytes; cleanup peak falls 845 bytes. These costs remain open
+for optimization. The matrix below records the preceding qualified measurements;
+it must be refreshed with the final candidate rather than treated as final acceptance.
 
 ## Frame storage and current results
 
@@ -48,7 +70,8 @@ The final native replay windows show no material latency regression.
 
 The all-target tagged compact layout slowed sampled fresh wasm32 inquiry/ReAct
 invocations by about 3% / 7%; that variant is rejected. wasm32 retains its prior
-untagged storage, producing the byte-identical 460,161-byte kernel above. No guest
+untagged storage, which previously produced the byte-identical 460,161-byte kernel. The current
+suspension-reclamation kernel adds 18 bytes. No guest
 latency or memory gain is claimed. The workspace still preserves first-fit
 allocation, and contract encoding releases scratch before retaining finished bytes.
 
@@ -165,7 +188,7 @@ latency is approximately unchanged, with lower working memory. Native Session
 inquiry/ReAct peaks remain above BPC1's 1,853,961 / 2,061,220 bytes, and ReAct guest
 latency remains open. No performance failure has been waived.
 
-The retained-loop benchmark, tiny-live-view retained-capacity witness, final Agent
+The retained-loop benchmark, final Agent
 comparison, native build/client-edit decomposition,
 final coordinated qualification and serial reviews remain required.
 

@@ -385,7 +385,9 @@ pub const Session = struct {
         }
         self.transitions +%= 1;
         if (self.statistics) |statistics| statistics.transitions +|= 1;
-        if (self.terminal != null or self.transitions % 256 == 0)
+        // A public suspension may last indefinitely. Reclaim its dead backing
+        // before publication; checkpoint itself remains a read-only projection.
+        if (self.terminal != null or self.status == .yielded or self.status == .parked or self.transitions % 256 == 0)
             try self.store.collectWith(self.roots, &self.frames);
     }
 
