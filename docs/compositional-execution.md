@@ -16,11 +16,14 @@ Chromium/Firefox transfer. Those broader host lanes still need final requalifica
 
 ## Current results and unresolved work
 
-The qualified kernel is 459,875 bytes with SHA-256
-`39320df71108e646a68183f4fd4394401c30933d238f01dee4abbaa52ae7adaa`.
+The qualified kernel is 459,815 bytes with SHA-256
+`c2dc18506ae8d13b2199a9eb5e3153af392ec25640a60384b5007c4e20ed6005`.
 Canonical set nodes now use 24 bytes instead of 32 without narrowing members or
 roots. Cardinality is derived from ranges, words and children. Compact predecessor
 storage remains specific to 64-bit hosts; smaller set nodes apply on both targets.
+Type validation reuses its existing schema exportability table for borrow checking.
+This removes one duplicate derivation; working peaks are unchanged and no speedup
+is claimed from the local reuse.
 
 Native control64 is about 360 microseconds and 214,595 working bytes, versus
 about 238 microseconds and 121,956 bytes for optimized BPC1. That gap remains open.
