@@ -107,6 +107,55 @@ comparators are 8,971 / 30,141 / 118,205 bytes. Compiler-execution time for
 installation256 is about 2.74 ms versus BPC1's 25.33 ms; this excludes native
 tool compilation and does not measure native cold-build costs.
 
+## Current native value matrix
+
+The value probe preserves its variant workload and adds product-field projection
+and consuming sequence traversal. Product/variant projections repeat 256 times;
+sequence removes every head and checks the sum against n(n+1)/2. Projection size
+is unrelated payload bytes; sequence size is the number of u64 elements. Every
+run checks an exact eight-byte result. Inputs and policies are identical across
+formats. The baseline/toolchain match the control matrix; the successor uses
+Boundary 3b8a69f / World 5c1e6f1 (unchanged production code from World 46811af).
+
+Two rotating windows use three processes per format/case, three warmups and nine
+full fresh-invocation samples per process. Both use a 128 MiB working buffer;
+working payload excludes the fixed host buffers. Allocation counters come from a
+separate replay. Confirmation-window results follow; these are not guest timings.
+
+| Fixture / size | BPI2 µs | BPC1 µs | BPI3 µs | Working bytes BPC1 → BPI3 |
+|---|---:|---:|---:|---:|
+| variant / unit | 143.63 | 141.67 | 219.75 | 7,232 → 18,932 |
+| variant / 0 | 161.17 | 154.17 | 218.00 | 7,232 → 18,934 |
+| variant / 1,024 | 194.00 | 192.04 | 218.33 | 8,105 → 20,985 |
+| variant / 65,536 | 2795.50 | 2775.92 | 235.75 | 137,131 → 150,012 |
+| variant / 1,048,576 | 37919.17 | 37906.54 | 374.88 | 2,103,211 → 2,116,092 |
+| product / 0 | 171.04 | 163.96 | 229.67 | 7,232 → 18,948 |
+| product / 1,024 | 205.67 | 203.75 | 239.54 | 8,202 → 20,999 |
+| product / 65,536 | 2815.67 | 2766.17 | 242.50 | 137,228 → 150,026 |
+| product / 1,048,576 | 37517.46 | 37542.00 | 390.75 | 2,103,308 → 2,116,106 |
+| sequence / 0 | 4.96 | 4.92 | 5.75 | 8,382 → 10,183 |
+| sequence / 16 | 35.38 | 34.79 | 27.46 | 8,382 → 26,171 |
+| sequence / 64 | 187.38 | 185.92 | 91.83 | 13,597 → 70,069 |
+| sequence / 256 | 1550.88 | 1582.04 | 340.92 | 27,813 → 73,143 |
+| sequence / 1,024 | 18760.38 | 19541.04 | 1382.42 | 84,645 → 85,431 |
+| sequence / 4,096 | 280718.54 | 290019.42 | 5269.75 | 311,973 → 144,799 |
+
+Both windows confirm about 100× / 96× gains for variant/product projection beside
+a 1 MiB unused payload, and about 55× for consuming 4,096 elements. Allocated bytes
+at those sizes fall from about 270 MB to 2.28 / 2.35 MB for projection, and from
+637,194,665 to 4,029,930 for sequence traversal. This corroborates the removal of
+repeated payload/tail materialization; it is not a universal complexity proof.
+
+Tiny projections and the empty sequence remain slower. Working peaks are higher
+for every listed projection and for sequences through 1,024 elements; sequence
+4,096 reduces peak working payload from 311,973 to 144,799 bytes. These small-case
+costs remain unresolved rather than being averaged into the large gains.
+
+Reproduce with `build_value_bench.zig` using explicit source paths, then run
+`value-bench FORMAT SIZE TAG [variant|product|sequence]`. TAG is zero for product
+and sequence; omitted fixture selects the original variant workload. The reported
+producer/input time includes fixture construction and encoding, not native build time.
+
 ## Unresolved acceptance
 
 Scalar, deep and 1/8/64 installations remain slower and use more working memory
@@ -116,8 +165,8 @@ latency is approximately unchanged, with lower working memory. Native Session
 inquiry/ReAct peaks remain above BPC1's 1,853,961 / 2,061,220 bytes, and ReAct guest
 latency remains open. No performance failure has been waived.
 
-The retained-loop benchmark, remaining value/projection/sequence and tiny-live-view
-measurements, final Agent comparison, native build/client-edit decomposition,
+The retained-loop benchmark, tiny-live-view retained-capacity witness, final Agent
+comparison, native build/client-edit decomposition,
 final coordinated qualification and serial reviews remain required.
 
 Standalone probes under `test/v2/` accept explicit source inputs:
