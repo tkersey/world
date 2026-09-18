@@ -62,8 +62,8 @@ pub const Prepared = struct {
         @memset(contracts, null);
         for (program.effects, contracts) |effect, *contract| if (effect.external) {
             contract.* = .{
-                .payload = try data.schema.encodeOwned(a, program.schemas, effect.payload),
-                .resume_value = try data.schema.encodeOwned(a, program.schemas, effect.result),
+                .payload = try encodeContract(allocator, a, program.schemas, effect.payload),
+                .resume_value = try encodeContract(allocator, a, program.schemas, effect.result),
             };
         };
         const core = try allocator.create(Storage);
@@ -89,3 +89,11 @@ pub const Prepared = struct {
         return core.storageBytes();
     }
 };
+
+fn encodeContract(scratch: std.mem.Allocator, retained: std.mem.Allocator, schemas: []const data.program.Schema, root: u64) Error![]const u8 {
+    // Canonicalization owns temporary graphs. Allocating those through the
+    // retained arena would keep their slabs after the encoder frees them.
+    const bytes = try data.schema.encodeOwned(scratch, schemas, root);
+    defer scratch.free(bytes);
+    return retained.dupe(u8, bytes);
+}

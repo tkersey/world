@@ -2390,3 +2390,37 @@ test "handler continuation transfers the active view after staging call operands
     }
     return error.TestUnexpectedResult;
 }
+
+fn prepareContractFailure(allocator: std.mem.Allocator, image: []const u8) !void {
+    var prepared = try @import("stable_runtime").Prepared.init(allocator, image);
+    defer prepared.deinit();
+}
+
+test "prepared contracts retain encoded bytes without canonicalization scratch" {
+    var b = source.Builder.init(testing.allocator);
+    defer b.deinit();
+    var fields: [64]source.Id = undefined;
+    for (&fields, 0..) |*field, i| field.* = try b.schema(.{ .bounded_text = i + 1 });
+    const payload = try b.schema(.{ .product = &fields });
+    const effect = try b.effect(.{ .identity = "large-contract", .payload = payload, .result = payload, .external = true });
+    const entry = try b.declare(&.{payload}, payload, &.{effect}, &.{});
+    try b.define(entry, try b.term(.{ .perform = .{ .effect = effect, .payload = try b.reference(b.parameter(entry, 0)) } }));
+    var compiled = try source.lower(testing.allocator, b.module(entry, try b.scalar(void)));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    const admitted = prepared.core.?.admitted();
+    const program = admitted.program();
+    const contract = try prepared.core.?.contract(0);
+    const expected = try boundary.data.schema.encodeOwned(testing.allocator, program.schemas, program.effects[0].payload);
+    defer testing.allocator.free(expected);
+    try testing.expectEqualSlices(u8, expected, contract.payload);
+    try testing.expectEqualSlices(u8, expected, contract.resume_value);
+    // Arena growth and the contract table are chargeable; temporary partition
+    // maps and schema graphs must not remain owned by preparation.
+    const contract_storage = (try prepared.storageBytes()) - admitted.storageBytes();
+    try testing.expect(contract_storage <= 1024 + 4 * (contract.payload.len + contract.resume_value.len));
+    try testing.checkAllAllocationFailures(testing.allocator, prepareContractFailure, .{image});
+}

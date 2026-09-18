@@ -9,17 +9,17 @@ Current contracts and checks are described in [kernel-abi.md](kernel-abi.md) and
 [verification.md](verification.md). The dependency manifest selects the current
 Boundary source. No experimental evidence directory belongs in the dependency package.
 
-The current full check passes: 74 native source tests, 39 storage tests, 6,755
+Current checks pass: 75 native source tests, 39 storage tests, 6,755
 source-oracle observations, 257 native/Node boundaries, 174 Wasmtime transfer
 boundaries, real Chromium 153.0.8010.12 and Firefox 155.0 Worker transfers, and
-extracted runtime/CLI checks. Agent's compiled tool also passes the real
-browser/server/browser witness on both engines. These are semantic/portability
+extracted runtime/CLI checks. Agent's compiled-tool transfer must be requalified
+after its normal dependency lock selects the new kernel. These are semantic/portability
 checks; they do not establish performance acceptance.
 
 ## Current results and unresolved work
 
-The qualified kernel is 459,815 bytes with SHA-256
-`c2dc18506ae8d13b2199a9eb5e3153af392ec25640a60384b5007c4e20ed6005`.
+The kernel is 459,873 bytes with SHA-256
+`c5f33c3b1328c9bf2f9d1f8c3597da29bd6f1d8fddfddbecda1b575f902ec330`.
 Canonical set nodes now use 24 bytes instead of 32 without narrowing members or
 roots. Cardinality is derived from ranges, words and children. Compact predecessor
 storage remains specific to 64-bit hosts; smaller set nodes apply on both targets.
@@ -33,10 +33,20 @@ Control128/256 peaks are 353,313 / 715,953 bytes, below both the preceding
 successor and BPC1's 435,558 / 1,324,938. The retained large variant-tag
 improvement has not been remeasured for this change.
 
-Across 13 unchanged Agent scenarios, native inquiry/ReAct peaks fall from
-2,847,222 / 4,239,618 to 2,367,460 / 3,656,504 bytes. Native/Node outcomes and work
-counts agree. Five paired guest windows show mixed medians within the observed variability;
-no general guest speedup is claimed. Working allocation is not RSS or reserved memory.
+Contract encoding now releases canonicalization scratch before retaining its
+finished bytes. Inquiry/repeated/ReAct preparation retains 1,265,868 / 1,275,378 /
+2,812,770 bytes instead of 1,583,444 / 1,692,696 / 3,057,524. Across 13 unchanged
+Agent scenarios and 128 paired native invocations, inquiry/ReAct working peaks
+fall from 2,367,460 / 3,656,504 to 2,049,764 / 3,534,020 bytes. Outcomes and
+transition/copy counters match the preceding native runtime and pinned Node/Wasmtime
+runtime. ReAct now peaks during admission rather than contract retention.
+
+Five rotating native timing windows and a second eight-window control comparison
+show overlapping timing variability; no latency improvement is claimed. Scalar,
+deep and 1/8/64/128/256 installation working peaks are unchanged. Working allocation
+is not RSS or reserved memory. This comparison isolates the current change, not
+final acceptance against BPC1: inquiry/ReAct remain above its 1,853,961 / 2,061,220
+byte peaks.
 
 Agent inquiry/ReAct working peaks and ReAct guest latency remain unresolved against
 BPC1. The remaining workload matrix, consumer retirement, final coordinated
