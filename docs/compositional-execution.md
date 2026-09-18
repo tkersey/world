@@ -8,9 +8,9 @@ authorized.
 
 The branch is `feat/compositional-execution`, based on World 5.0.2 at
 `d075169a4805d999ceba4c37b3e1c925b78c3bf9`. Its manifest now selects Boundary
-`571b297dce1d74a94e9c3f5cfbd9f3c0ed50ec51`. The catalogue-pruning candidate has
-passed the full World aggregate both through an immutable source override and
-through the normal dependency pin. Coordinated Agent qualification remains pending.
+`652a798e9f6646d2d3d71efe29b2bb7e07591a8a`. The analysis-index candidate passes
+the full World aggregate through both an immutable source override and the normal
+dependency pin. The linked drafts record coordinated Agent qualification.
 
 Linked drafts: [Boundary #152](https://github.com/tkersey/boundary/pull/152),
 [World #54](https://github.com/tkersey/world/pull/54), and
@@ -125,8 +125,8 @@ zig build check -Dboundary-source=/absolute/immutable/boundary \
 The result is 32/32 build steps, 74 source tests, 39 storage tests, 30 host tests,
 6,755 independent source-oracle observations, native/Node/Wasmtime agreement,
 Chromium/Firefox Worker transfer and extracted-package checks. Zig is 0.16.0 and
-Node is 26.8.2. The kernel remains 460,851 bytes with SHA-256
-`b0cee0db452b46d9cf8f3f3067c52693383d566b9670a38da778793e29de66ee`.
+Node is 26.8.2. The kernel is 460,967 bytes with SHA-256
+`2564f95ac3f3b8ba24242c21f80d651b7e8a339940336a357223c5393a7b20e0`.
 These results do not establish full performance acceptance or qualify future pins.
 
 Pruning exposed four fixtures that reused source catalogue IDs or unreferenced
@@ -156,6 +156,25 @@ Coverage includes:
   backing. An independent flat-array model checks mixed slot lifecycles.
 - Linked effectful components and recursive imports; actual Worker/native/Worker
   transfer with source-independent runtime packages.
+
+## Bounded analysis indexes
+
+The selected Boundary source uses checked 32-bit private set indexes while
+retaining 64-bit member IDs. This shrinks native tree records, interning keys and
+per-position facts. Existing roots remain reusable at index capacity; new-root
+exhaustion fails before publication. wasm32 index/node widths are unchanged.
+
+The [source-bound comparison](https://github.com/tkersey/boundary/blob/652a798e9f6646d2d3d71efe29b2bb7e07591a8a/docs/measurements/analysis-root-width.json)
+reports native control64 medians of 359/361 microseconds versus 374/376 before,
+and peak working allocation of 241,495 versus 282,999 bytes. Control128/256 peaks
+fall to 415,111/788,285 bytes. All measured value peaks fall; small higher value
+medians remain disclosed. These gains do not close the control64 BPC1 gap.
+
+Native paired inquiry Session peak falls from 3,107,532 to 2,847,222 bytes and
+ReAct from 5,201,096 to 4,239,618; both still exceed optimized BPC1. Every paired
+scenario preserves its semantic/work counts. These native changes do not establish
+WASM guest latency gains. The kernel grows by 116 bytes; authenticated guest
+remeasurement is pending.
 
 ## Measurements and open performance failures
 
