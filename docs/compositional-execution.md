@@ -2,7 +2,7 @@
 
 World 6.0.0-dev.0 executes Boundary's stable-activation Program through one evaluator,
 with fresh and prepared/resident operation, portable checkpoints and a browser-neutral
-embedding. The successor remains incomplete. Implementation is paused for archive
+embedding. The successor remains incomplete. Implementation has resumed after archive
 cleanup; all linked PRs remain drafts.
 
 Current contracts and checks are described in [kernel-abi.md](kernel-abi.md) and
