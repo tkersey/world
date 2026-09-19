@@ -2768,3 +2768,75 @@ test "sequence consumption reclaims intermediate cursors and preserves resident 
     for ([_]bool{ false, true }) |with_checkpoint|
         try residentFailureSweep(&prepared, initial, .none, with_checkpoint);
 }
+
+test "mutual tail entry reuses its active control and restores each changed frame" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.recursive(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var session = try Session.start(testing.allocator, &prepared, &.{ 8, 0, 0, 0, 0, 0, 0, 0 });
+    defer session.deinit();
+    const initial = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(initial);
+    const control = session.roots.current.?;
+    var function = (try session.frames.get(control.id)).function;
+    var changes: usize = 0;
+    var steps: usize = 0;
+    while (session.terminal == null) : (steps += 1) {
+        try testing.expect(steps < 256);
+        try session.step();
+        if (session.terminal != null) break;
+        try testing.expectEqual(control, session.roots.current.?);
+        const frame = try session.frames.get(control.id);
+        if (frame.function != function) {
+            changes += 1;
+            function = frame.function;
+            const checkpoint = try session.checkpoint(testing.allocator);
+            defer testing.allocator.free(checkpoint);
+            var restored = try Session.restore(testing.allocator, &prepared, checkpoint);
+            defer restored.deinit();
+            const result = try restored.run(null);
+            try testing.expect(result == .completed);
+            try testing.expectEqualSlices(u8, &.{1}, try restored.bytes(&result.completed));
+        }
+    }
+    try testing.expectEqual(@as(usize, 9), changes);
+    const result = try session.observe();
+    try testing.expect(result == .completed);
+    try testing.expectEqualSlices(u8, &.{1}, try session.bytes(&result.completed));
+    for ([_]bool{ false, true }) |with_checkpoint|
+        try residentFailureSweep(&prepared, initial, .none, with_checkpoint);
+}
+
+test "handler returns consume the original caller continuation without losing live results" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.installations(&builder, 8));
+    defer compiled.deinit();
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
+    defer session.deinit();
+    const caller = session.roots.current.?;
+    const function = (try session.frames.get(caller.id)).function;
+    var returns: usize = 0;
+    var was_caller = true;
+    while (session.terminal == null) {
+        try testing.expect(session.transitions < 256);
+        try session.step();
+        if (session.terminal != null) break;
+        const current = session.roots.current.?;
+        const is_caller = (try session.frames.get(current.id)).function == function;
+        if (is_caller) {
+            try testing.expectEqual(caller, current);
+            if (!was_caller) returns += 1;
+        }
+        was_caller = is_caller;
+    }
+    try testing.expectEqual(@as(usize, 8), returns);
+    const result = try session.observe();
+    try testing.expect(result == .completed);
+    try testing.expectEqual(@as(u64, 36), std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
+}

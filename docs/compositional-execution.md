@@ -24,14 +24,24 @@ execution with the same work accounting and logical boundaries.
 
 Tests distinguish eligible, non-adjacent, retained, edge-aliased, linear and
 state-aliased callables. Bounded and strict checkpoints agree; every allocation
-failure preserves retry state. The current candidate passes 82 native source
+failure preserves retry state. The current candidate passes 84 native source
 tests, 42 source/native/WASM cases (6,434 observations), 239 native/Node boundaries,
 23 transfers, 161 Wasmtime boundaries, Chromium/Firefox Worker transfers, capacity
 checks and extracted runtime/CLI checks. These prove the tested cases, not final
 performance acceptance.
 
-The generic kernel is 462,261 bytes, SHA-256
-`adec1764555d7ac3638a6f414c009d3062766bc0635422e291ad4aeaa409e6c5`.
+The generic kernel is 462,400 bytes, SHA-256
+`3beae29e2b4f74de5248c636319c3f31fbdd28fab632314b9b1dd7c83c066c49`.
+
+Consuming a saved continuation now changes its owned node back into a control;
+its activation keeps the same custody. Function entry replaces an exclusively
+active control only after the new frame is fully constructed. A caller that must
+survive is already a continuation and is preserved. Multi-shot captures are cloned
+before activation. No argument, handler, final sum, work unit or cleanup is omitted.
+The displaced frame-map move operation is removed. New regressions cover mutual
+tail entry, checkpoint restoration, retained caller results and resident failures.
+Baseline-native versus candidate-guest outputs also agree at all 239 checked
+boundaries and 23 transfers, including retained and reentrant cases.
 
 ## Current measurements and limits
 
@@ -49,7 +59,7 @@ images are 2,241/4,559/9,551 versus 2,805/5,574/12,102 bytes. Scheduler and
 sequence1024 peaks are below BPC1. Retained-loop64/128/256 timing ranges overlap
 BPC1, while their peaks remain higher.
 
-This commit adds native cursor reclamation after sequence-pop operations. Tracing
+Native cursor reclamation runs after sequence-pop operations. Tracing
 preserves live aliases; their count raises the next collection threshold. The
 existing 256-work-unit and suspension collections remain. Resident rollback also
 restores the threshold. A shared sequence fixture checks the complete sum, early
@@ -82,6 +92,34 @@ still have latency gaps versus BPC1. Installation64 has overlapping timing range
 but a clear memory gap. Shallow, queens, cleanup, mixed/irregular8, retained loops
 and short sequences retain higher peaks. Large projections remain about 3.5 KiB
 higher at peak. Favorable cases do not cancel these remaining failures.
+
+## Control-node reuse confirmation
+
+Two native windows compare this implementation with World 9922062, holding Boundary
+6c59436 and all 30 control fixtures fixed. Each side has three process observations
+per case per window, each with three warmups and nine samples. Input and independent
+trace/result digests agree. Installation64/128 time improves about 8–10%; unchanged
+or small mixed timing differences are not claimed as gains.
+
+| Installations | Native peak before | Native peak now | BPC1 peak |
+| ---: | ---: | ---: | ---: |
+| 1 | 12,315 | 10,995 | 8,700 |
+| 8 | 30,623 | 26,703 | 15,564 |
+| 64 | 179,228 | 141,786 | 121,956 |
+| 128 | 265,012 | 227,570 | 435,558 |
+| 256 | 391,624 | 388,069 | 1,324,938 |
+
+The 64-case total allocation falls from 499,932 to 432,129 bytes. Its preparation
+alone peaks at 121,438 bytes before invocation framing; the remaining complete-call
+memory gap is not declared closed. Queens BFS peak falls 244,736 → 213,208 bytes.
+
+Guest confirmation uses isolated Node processes after mixed-instance timing proved
+noisy: three observations per side/case/window, nine batches of 64 full fresh calls
+after 32 warmups. Ten initial-invocation fixtures retain identical canonical outputs.
+Installation128/256 full fresh-call time improves about 4–5% in both windows; smaller
+case ranges overlap. Installation64 guest peak falls 151,213 → 135,069 bytes and
+128 falls 236,125 → 225,759 bytes. The final kernel is byte-identical to this timed
+candidate. These results reduce existing gaps; they do not complete acceptance.
 
 ## Remaining acceptance work
 

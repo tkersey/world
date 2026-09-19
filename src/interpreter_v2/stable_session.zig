@@ -600,18 +600,28 @@ pub const Session = struct {
     fn enter(self: *Session, function: p.Id, args: []const g.Value, parent: ?g.NodeRef, evidence: ?g.NodeRef, region: ?g.NodeRef) Error!void {
         const target = self.program.functions[@intCast(function)];
         if (target.inputs.len != args.len) return error.InvalidState;
-        // Reserve the control record before its activation allocates storage.
-        // The current root is published only after both owners are complete.
-        const control = try self.store.add(.{ .control = .{
+        const record: g.Node = .{ .control = .{
             .block = target.entry,
             .parent = parent,
             .evidence = evidence,
             .region = region,
-        } });
+        } };
+        // A retained caller has already become a continuation. An active
+        // control has one custodian and can receive the completed new frame.
+        const reuse = if (self.roots.current) |current|
+            if (try self.store.get(current) == .control) current else null
+        else
+            null;
+        const control = reuse orelse try self.store.add(record);
         var frame = try self.frames.create(function);
         errdefer self.frames.releaseFrame(frame);
         try self.frames.apply(&frame, self.flow.facts.live[@intCast(target.entry)][0], target.inputs, args);
-        try self.frames.put(control.id, frame);
+        if (reuse != null) {
+            const previous = try self.frames.get(control.id);
+            try self.store.replace(control, record);
+            self.frames.update(control.id, frame);
+            self.frames.releaseFrame(previous);
+        } else try self.frames.put(control.id, frame);
         self.roots.current = control;
         self.roots.evidence = evidence;
     }
@@ -685,13 +695,16 @@ pub const Session = struct {
     pub fn resumeContinuation(self: *Session, reference: g.NodeRef, value: g.Value) Error!void {
         const saved = (try self.store.get(reference)).continuation;
         const next = nextEdge(self.program.blocks[@intCast(saved.source_block)].terminator).?;
-        const current = try self.store.add(.{ .control = .{
+        // Consume the existing continuation, keeping its frame custody.
+        // Multi-shot activation reaches this path only after cloning its capture.
+        const current = reference;
+        try self.store.replace(current, .{ .control = .{
             .block = next.block,
             .parent = saved.parent,
             .evidence = saved.evidence,
             .region = saved.region,
         } });
-        var frame = try self.frames.move(reference.id, current.id);
+        var frame = try self.frames.get(reference.id);
         try self.assignEdge(&frame, next, value);
         self.frames.update(current.id, frame);
         self.roots.current = current;

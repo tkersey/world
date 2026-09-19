@@ -143,13 +143,6 @@ pub const Frames = struct {
     pub fn update(self: *Frames, id: data.program.Id, frame: Frame) void {
         self.entries.getPtr(id).?.* = frame;
     }
-    pub fn move(self: *Frames, from: data.program.Id, to: data.program.Id) Error!Frame {
-        if (self.entries.contains(to)) return error.InvalidState;
-        try self.entries.ensureUnusedCapacity(self.allocator, 1);
-        const frame = (self.entries.fetchRemove(from) orelse return error.InvalidState).value;
-        self.entries.putAssumeCapacity(to, frame);
-        return frame;
-    }
     pub fn remove(self: *Frames, id: data.program.Id) void {
         if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
     }
