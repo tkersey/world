@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { Kernel, encodeInput, decodeRequest, encodeResult, decodeOutcome } from "../../src/embedding/index.mjs";
 
-const requiredExamples = ["lexical","deep","recursive","choices-all","choices-first","generator","state-local","state-shared","resource-scalar","resource-pair","answers","scoped-reader","writer-raise","scheduler","queens-dfs","queens-bfs","cell-order","nested","shallow","injection","indexed","abort-custody","unwind","reentrant","cloned","clause-abort","bounded-values","scalar-contracts","ownership","shallow-resumptions","shallow-injection","handle-operand-order","protect-operand-order","successor-state","clause-payload","yielding-cleanup","borrow-operands","cleanup-disposal","cleanup-disposal-running","cleanup-disposal-failure","cleanup-disposal-owned"];
+const requiredExamples = ["lexical","deep","recursive","choices-all","choices-first","generator","state-local","state-shared","resource-scalar","resource-pair","answers","scoped-reader","writer-raise","scheduler","queens-dfs","queens-bfs","cell-order","nested","shallow","injection","indexed","abort-custody","unwind","reentrant","cloned","clause-abort","bounded-values","scalar-contracts","ownership","shallow-resumptions","shallow-injection","handle-operand-order","protect-operand-order","successor-state","clause-payload","yielding-cleanup","borrow-operands","cleanup-disposal","cleanup-disposal-running","cleanup-disposal-failure","cleanup-disposal-owned","product-projection"];
 const visitedSources = new Set(), visitedImages = new Set();
 async function readFile(file, ...options) {
   const match = String(file).match(/\/source-([^/]+)\.(json|bpi3)$/);
@@ -150,7 +150,7 @@ const cleanup = JSON.parse(await readFile(new URL("./cleanup-expectations.json",
       assert.deepEqual(step.bytes, result.bytes);
     }
   }
-  for (const [name, initial] of [["lexical", [40, 0, 0, 0, 0, 0, 0, 0]], ["deep", []], ["recursive", [16, 39, 0, 0, 0, 0, 0, 0]], ["choices-all", []], ["choices-first", []], ["state-local", []], ["state-shared", []], ["answers", []], ["writer-raise", []], ["cell-order", []], ["nested", []], ["shallow", [0]], ["shallow", [1]], ["injection", [0]], ["injection", [1]], ["abort-custody", [1]], ["bounded-values", []], ["shallow-resumptions", []], ["shallow-injection", [0]], ["shallow-injection", [1]], ["handle-operand-order", []], ["protect-operand-order", []]]) {
+  for (const [name, initial] of [["lexical", [40, 0, 0, 0, 0, 0, 0, 0]], ["deep", []], ["recursive", [16, 39, 0, 0, 0, 0, 0, 0]], ["choices-all", []], ["choices-first", []], ["state-local", []], ["state-shared", []], ["answers", []], ["writer-raise", []], ["cell-order", []], ["nested", []], ["shallow", [0]], ["shallow", [1]], ["injection", [0]], ["injection", [1]], ["abort-custody", [1]], ["bounded-values", []], ["shallow-resumptions", []], ["shallow-injection", [0]], ["shallow-injection", [1]], ["handle-operand-order", []], ["protect-operand-order", []], ["product-projection", [0]], ["product-projection", [1]]]) {
     const source = JSON.parse(await readFile(join(fixtures, `source-${name}.json`), "utf8"));
     const image = new Uint8Array(await readFile(join(fixtures, `source-${name}.bpi3`)));
     const oracle = execute(source, initial);
@@ -332,4 +332,4 @@ const cleanup = JSON.parse(await readFile(new URL("./cleanup-expectations.json",
   }
 assert.deepEqual([...visitedSources].sort(), requiredExamples.toSorted());
 assert.deepEqual([...visitedImages].sort(), requiredExamples.toSorted());
-console.log(JSON.stringify({ check: "current source oracle/native/WASM agreement", fixtures: 41, observations }));
+console.log(JSON.stringify({ check: "current source oracle/native/WASM agreement", fixtures: 42, observations }));
