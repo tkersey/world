@@ -59,6 +59,16 @@ PST3. Both publish a session handle. Drive payloads are: control 0 none (empty),
 1 ERS3 reply, 2 resume_yield (empty), 3 UTF-8 cancellation text, 4 cancellation
 bytes. Quantum-present/checkpoint are exactly 0 or 1; absent quantum requires a
 zero quantum argument. Resident drive publishes PKO3 with optional checkpoints.
+
+Quanta count evaluator work units. On 64-bit native storage, a final reusable,
+capture-free callable construction and its immediate handler installation may
+execute together when
+both units fit the remaining quantum and the callable has no other use or
+retained edge alias. Explicit single-step keeps the intermediate boundary. Both
+units count toward collection cadence; argument/state evaluation, external
+operations and cleanup keep their source order. Published boundaries remain
+checkpointable and portable. WASM retains ordinary execution with the same work
+accounting and logical boundaries.
 Checkpoint publishes PST3, with transfer 1 relinquishing the resident only after
 successful output allocation. Close requires terminal state. Stale/wrong handles,
 wrong instance, malformed controls and reentry reject without advancing State.

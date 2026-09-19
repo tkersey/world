@@ -2573,3 +2573,148 @@ test "handler return functions distinguish body value from state and preserve ro
         try testing.expectEqual(0, session.frames.entries.count());
     }
 }
+
+test "immediate closed handler bodies elide allocation only when the value cannot escape" {
+    const ir = boundary.data.activation;
+    for (0..6) |mode| {
+        var b = source.Builder.init(testing.allocator);
+        defer b.deinit();
+        var compiled = try source.lower(testing.allocator, try source.examples.installations(&b, 2));
+        defer compiled.deinit();
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var program = compiled.program;
+        const blocks = try a.dupe(ir.Block, program.blocks);
+        program.blocks = blocks;
+        const entry = program.functions[@intCast(program.roots.entry)].entry;
+        try testing.expect(blocks[@intCast(entry)].terminator == .handle);
+        const first = &blocks[@intCast(entry)].terminator.handle;
+        const following = first.next.block;
+        try testing.expect(blocks[@intCast(following)].terminator == .handle);
+        const second = &blocks[@intCast(following)].terminator.handle;
+        if (mode == 1) {
+            for ([_]u64{ entry, following }) |id| {
+                const block = &blocks[@intCast(id)];
+                const instructions = try a.alloc(ir.Instruction, block.instructions.len + 1);
+                @memcpy(instructions[0..block.instructions.len], block.instructions);
+                const body = block.terminator.handle.body;
+                instructions[instructions.len - 1] = .{ .destination = body, .opcode = .move, .operands = try a.dupe(u64, &.{body}) };
+                block.instructions = instructions;
+            }
+        } else if (mode == 2) {
+            second.body = first.body; // The callable must survive the first handler.
+        } else if (mode == 3 or mode == 5) {
+            const functions = try a.dupe(ir.Function, program.functions);
+            program.functions = functions;
+            const function = &functions[@intCast(program.roots.entry)];
+            const old = function.layout.slots;
+            const layout = try a.alloc(u64, old.len + 1);
+            @memcpy(layout[0..old.len], old);
+            layout[old.len] = old[@intCast(first.body)];
+            function.layout.slots = layout;
+            const assignments = try a.alloc(ir.Assignment, first.next.assignments.len + 1);
+            @memcpy(assignments[0..first.next.assignments.len], first.next.assignments);
+            assignments[assignments.len - 1] = .{ .destination = old.len, .source = .{ .slot = first.body } };
+            first.next.assignments = assignments;
+            // Capture still needs the source if the copied destination is dead.
+            if (mode == 3) second.body = old.len;
+        } else if (mode == 4) {
+            const body_schema = program.functions[@intCast(program.roots.entry)].layout.slots[@intCast(first.body)];
+            const schemas = try a.dupe(boundary.data.program.Schema, program.schemas);
+            schemas[@intCast(body_schema)].internal.computation.use = .linear;
+            program.schemas = schemas;
+            const captures = try a.dupe(boundary.data.program.Capture, program.scopes.captures);
+            for (program.constructors) |constructor| if (constructor.schema == body_schema) {
+                captures[@intCast(constructor.capture)].use = .linear;
+            };
+            program.scopes.captures = captures;
+        }
+        const image = try programBytes(program);
+        defer testing.allocator.free(image);
+        var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+        defer prepared.deinit();
+        var session = try Session.start(testing.allocator, &prepared, &.{});
+        defer session.deinit();
+        const initial = try session.checkpoint(testing.allocator);
+        defer testing.allocator.free(initial);
+        for ([_]bool{ false, true }) |with_checkpoint|
+            try residentFailureSweep(&prepared, initial, .none, with_checkpoint);
+        var strict_stats: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+        session.statistics = &strict_stats;
+        session.store.statistics = &strict_stats.storage;
+        var saw_callable = false;
+        while (session.terminal == null) {
+            try session.step();
+            for (session.store.nodes.items, session.store.alive.items) |node, alive|
+                if (alive and node == .computation) {
+                    saw_callable = true;
+                };
+            const checkpoint = try session.checkpoint(testing.allocator);
+            defer testing.allocator.free(checkpoint);
+            var restored = try Session.restoreImage(testing.allocator, image, checkpoint);
+            defer restored.deinit();
+            const again = try restored.checkpoint(testing.allocator);
+            defer testing.allocator.free(again);
+            try testing.expectEqualSlices(u8, checkpoint, again);
+        }
+        const result = try session.observe();
+        try testing.expect(result == .completed);
+        try testing.expectEqual(@as(u64, 3), std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
+        try testing.expect(saw_callable); // Explicit single-step retains this boundary.
+        var fast = try Session.start(testing.allocator, &prepared, &.{});
+        defer fast.deinit();
+        var fast_stats: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+        fast.statistics = &fast_stats;
+        fast.store.statistics = &fast_stats.storage;
+        const fast_result = try fast.run(null);
+        try testing.expect(fast_result == .completed);
+        try testing.expectEqual(@as(u64, 3), std.mem.readInt(u64, fast_result.completed.body.scalar[0..8], .little));
+        try testing.expectEqual(strict_stats.transitions, fast_stats.transitions);
+        try testing.expectEqual(@as(u64, if (mode == 0) 4 else if (mode == 5) 2 else 0), strict_stats.storage.added_nodes - fast_stats.storage.added_nodes);
+
+        var bounded = try Session.start(testing.allocator, &prepared, &.{});
+        defer bounded.deinit();
+        var stepped = try Session.start(testing.allocator, &prepared, &.{});
+        defer stepped.deinit();
+        _ = try bounded.run(3);
+        for (0..3) |_| try stepped.step();
+        const bounded_state = try bounded.checkpoint(testing.allocator);
+        defer testing.allocator.free(bounded_state);
+        const stepped_state = try stepped.checkpoint(testing.allocator);
+        defer testing.allocator.free(stepped_state);
+        try testing.expectEqualSlices(u8, stepped_state, bounded_state);
+    }
+}
+
+test "a callable also used as handler state is materialized" {
+    var b = source.Builder.init(testing.allocator);
+    defer b.deinit();
+    const integer = try b.scalar(u64);
+    const unit = try b.scalar(void);
+    const callable = try b.schema(.{ .internal = .{ .computation = .{ .parameters = &.{}, .result = integer } } });
+    const body = try b.declare(&.{}, integer, &.{}, &.{});
+    try b.define(body, try b.pure(try b.constant(u64, 42)));
+    const returns = try b.declare(&.{ callable, integer }, integer, &.{}, &.{});
+    try b.define(returns, try b.pure(try b.reference(b.parameter(returns, 1))));
+    const handler = try b.handler(.{ .mode = .deep, .input = integer, .answer = integer, .state = &.{callable}, .return_function = returns, .clauses = &.{} });
+    const entry = try b.declare(&.{}, integer, &.{}, &.{});
+    const value = try b.lambda(body, callable);
+    try b.define(entry, try b.term(.{ .handle = .{ .handler = handler, .body = value, .state = &.{value} } }));
+    var compiled = try source.lower(testing.allocator, b.module(entry, unit));
+    defer compiled.deinit();
+    var session = try initFromImage(testing.allocator, compiled.program, &.{});
+    defer session.deinit();
+    var saw_callable = false;
+    while (session.terminal == null) {
+        _ = try session.run(2);
+        for (session.store.nodes.items, session.store.alive.items) |node, alive|
+            if (alive and node == .computation) {
+                saw_callable = true;
+            };
+    }
+    const result = try session.observe();
+    try testing.expect(result == .completed);
+    try testing.expectEqual(@as(u64, 42), std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
+    try testing.expect(saw_callable);
+}

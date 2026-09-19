@@ -302,7 +302,10 @@ pub const Session = struct {
     pub fn run(self: *Session, quantum: ?u64) Error!Observation {
         var steps: u64 = 0;
         while (self.terminal == null and (self.status == .active or self.status == .unwinding) and
-            (quantum == null or steps < quantum.?)) : (steps +|= 1) try self.step();
+            (quantum == null or steps < quantum.?))
+        {
+            steps +|= try self.stepInternal(quantum == null or quantum.? - steps >= 2);
+        }
         return self.observe();
     }
 
@@ -366,8 +369,13 @@ pub const Session = struct {
     }
 
     pub fn step(self: *Session) Error!void {
+        _ = try self.stepInternal(false);
+    }
+
+    fn stepInternal(self: *Session, allow_fusion: bool) Error!u8 {
         if (self.poisoned or self.terminal != null or (self.status != .active and self.status != .unwinding)) return error.InvalidState;
         errdefer self.poisoned = true;
+        var work: u8 = 1;
         const current = self.roots.current orelse return error.InvalidState;
         if (self.status == .unwinding) {
             _ = try @import("unwind.zig").step(self);
@@ -376,7 +384,22 @@ pub const Session = struct {
             const code = self.program.blocks[@intCast(control.block)];
             const frame = try self.frames.getMutable(current.id);
             if (frame.position < code.instructions.len) {
-                if (code.instructions[frame.position].opcode == .clone_resumption) {
+                const instruction = code.instructions[frame.position];
+                // Qualified on 64-bit native storage. wasm32 keeps ordinary
+                // execution after a measured regression; work units agree.
+                const known_body = if (@sizeOf(usize) > 4 and allow_fusion and instruction.opcode == .computation and
+                    code.terminator == .handle and frame.position + 1 == code.instructions.len)
+                    self.knownHandlerBody(code)
+                else
+                    null;
+                if (known_body) |constructor| {
+                    // No intermediate callable is published. Installation may
+                    // grow the frame map, so end the borrow before entering it.
+                    var saved_frame = frame.*;
+                    saved_frame.position += 1;
+                    try self.executeControl(current, control, code, &saved_frame, constructor);
+                    work = 2;
+                } else if (instruction.opcode == .clone_resumption) {
                     // takeCapture can instantiate frames and grow the map.
                     var saved_frame = frame.*;
                     try self.executeInstruction(current, code, &saved_frame);
@@ -390,19 +413,20 @@ pub const Session = struct {
             } else {
                 // Control may insert/remove frames or grow the map.
                 var saved_frame = frame.*;
-                try self.executeControl(current, control, code, &saved_frame);
+                try self.executeControl(current, control, code, &saved_frame, null);
             }
         }
         if (self.roots.current == null or self.roots.current.?.id != current.id) {
             // A saved continuation keeps custody at the old control-node ID.
             if (try self.store.get(current) == .control) self.frames.remove(current.id);
         }
-        self.transitions +%= 1;
-        if (self.statistics) |statistics| statistics.transitions +|= 1;
+        self.transitions +%= work;
+        if (self.statistics) |statistics| statistics.transitions +|= work;
         // A public suspension may last indefinitely. Reclaim its dead backing
         // before publication; checkpoint itself remains a read-only projection.
-        if (self.terminal != null or self.status == .yielded or self.status == .parked or self.transitions % 256 == 0)
+        if (self.terminal != null or self.status == .yielded or self.status == .parked or self.transitions % 256 < work)
             try self.store.collectWith(self.roots, &self.frames);
+        return work;
     }
 
     fn executeInstruction(self: *Session, current: g.NodeRef, code: ir.Block, frame: *bindings.Frame) Error!void {
@@ -431,7 +455,7 @@ pub const Session = struct {
         }
     }
 
-    fn executeControl(self: *Session, current: g.NodeRef, saved: g.Control, code: ir.Block, frame: *bindings.Frame) Error!void {
+    fn executeControl(self: *Session, current: g.NodeRef, saved: g.Control, code: ir.Block, frame: *bindings.Frame, body_constructor: ?p.Id) Error!void {
         const reader = try self.frames.slots.reader(frame.view);
         var temporary = std.heap.ArenaAllocator.init(self.allocator);
         defer temporary.deinit();
@@ -470,7 +494,7 @@ pub const Session = struct {
             },
             .protect => |protection| try @import("unwind.zig").protect(self, protection, reader, saved),
             .dispose => |disposal| try @import("unwind.zig").dispose(self, disposal, reader, saved),
-            .handle => |handle| try self.install(current, saved, frame.*, handle, reader, scratch),
+            .handle => |handle| try self.install(current, saved, frame.*, handle, reader, scratch, body_constructor),
             .perform => |perform| try self.performEffect(current, saved, frame.*, perform, reader, scratch),
             .resume_value, .resume_with, .resume_computation => try self.resumeControl(current, saved, frame.*, code.terminator, reader, scratch),
             .switch_variant, .unpack_product => try self.aggregateControl(current, saved, frame, code.terminator, reader, scratch),
@@ -684,13 +708,35 @@ pub const Session = struct {
         try self.finishTerminal(.{ .reason = .{ .normal = value } });
     }
 
-    fn install(self: *Session, current: g.NodeRef, control: g.Control, frame: bindings.Frame, operation: anytype, reader: anytype, scratch: std.mem.Allocator) Error!void {
+    fn knownHandlerBody(self: *const Session, code: ir.Block) ?p.Id {
+        const instruction = code.instructions[code.instructions.len - 1];
+        const operation = code.terminator.handle;
+        if (instruction.opcode != .computation or instruction.operands.len != 0 or
+            instruction.destination != operation.body) return null;
+        const definition = self.program.constructors[@intCast(instruction.immediate)];
+        if (self.program.schemas[@intCast(definition.schema)].internal.computation.use != .reusable) return null;
+        if (std.mem.indexOfScalar(p.Id, operation.arguments, instruction.destination) != null or
+            std.mem.indexOfScalar(p.Id, operation.state, instruction.destination) != null) return null;
+        const live = self.flow.facts.live[@intCast(operation.next.block)][0];
+        var overwritten = false;
+        for (operation.next.assignments) |assignment| {
+            overwritten = overwritten or assignment.destination == instruction.destination;
+            // Continuation capture retains every declared edge source, even
+            // when its destination will later be pruned.
+            if (assignment.source == .slot and assignment.source.slot == instruction.destination) return null;
+        }
+        if (!overwritten and self.flow.facts.pool.contains(live, instruction.destination)) return null;
+        return instruction.immediate;
+    }
+
+    fn install(self: *Session, current: g.NodeRef, control: g.Control, frame: bindings.Frame, operation: anytype, reader: anytype, scratch: std.mem.Allocator, body_constructor: ?p.Id) Error!void {
         const definition = self.program.handlers[@intCast(operation.handler)];
         // Handler, attachment and callee control; capture reuses the current node.
         try self.store.reserveNodes(3);
         const state = try self.collectArguments(scratch, reader, operation.state);
-        const body = try read(reader, operation.body);
-        const signature = self.program.schemas[@intCast(body.schema)].internal.computation;
+        const known = if (body_constructor) |id| self.program.constructors[@intCast(id)] else null;
+        const body: ?g.Value = if (known == null) try read(reader, operation.body) else null;
+        const signature = self.program.schemas[@intCast(if (known) |constructor| constructor.schema else body.?.schema)].internal.computation;
         const args = try scratch.alloc(g.Value, definition.clauses.len + operation.arguments.len);
         for (args[definition.clauses.len..], operation.arguments) |*value, slot| value.* = try read(reader, slot);
         const handler = try self.store.add(.{ .handler = .{
@@ -708,7 +754,9 @@ pub const Session = struct {
         } });
         for (definition.clauses, 0..) |_, index|
             args[index] = .{ .schema = signature.parameters[index], .body = .{ .reference = attachment } };
-        try self.applyComputation(body, args, attachment, attachment, control.region);
+        if (known) |constructor| {
+            try self.enter(constructor.function, args, attachment, attachment, control.region);
+        } else try self.applyComputation(body.?, args, attachment, attachment, control.region);
     }
 
     fn performEffect(self: *Session, current: g.NodeRef, control: g.Control, frame: bindings.Frame, operation: ir.Perform, reader: anytype, scratch: std.mem.Allocator) Error!void {
