@@ -10,15 +10,15 @@ Boundary source. Experimental evidence is excluded from the dependency package.
 
 ## Current validation
 
-The current evaluator passes 78 native source tests, 43 storage tests, 15 activation
+The current evaluator passes 78 native source tests, 44 storage tests, 16 activation
 storage tests, 6,755 source-oracle observations, 257 native/Node boundaries and 23
 transfers, 174 Wasmtime boundaries, real Chromium 153.0.8010.12 and Firefox 155.0
 Worker transfers, capacity/retry checks, and extracted runtime/CLI checks.
 Agent must also qualify this kernel through its normal dependency lock.
 These checks establish their tested semantic/portability cases, not performance acceptance.
 
-The kernel is 460,854 bytes with SHA-256
-`5788520b6a11c9f59b602ec6cbebdb976116d176a7e417afc2258c08ee25968c`.
+The kernel is 460,732 bytes with SHA-256
+`61ac21c775cdf08fe9425bf21de9966ed1cd169c156911401ff1e19913d4a44f`.
 
 ## Suspension reclamation
 
@@ -178,6 +178,23 @@ Reproduce with `build_value_bench.zig` using explicit source paths, then run
 `value-bench FORMAT SIZE TAG [variant|product|sequence]`. TAG is zero for product
 and sequence; omitted fixture selects the original variant workload. The reported
 producer/input time includes fixture construction and encoding, not native build time.
+
+## Slot-view retirement storage
+
+Retired slot views now hold their next reusable index in the word that stores the
+slot limit while active. Handle lookup rejects inactive views before reading that
+limit; reuse restores the new active limit and increments the existing generation.
+Exhausted generations never reenter the free list. This removes the separate
+free-index array while keeping release allocation-free. Tests recycle a full
+32-view chain with allocation disabled and reject all stale handles throughout.
+
+Against World 8fb2ff8 with Boundary 3b8a69f, two five-pair native windows remove two
+allocations and 272 peak working bytes from scalar/deep/installation controls.
+Scalar peak falls 4,662 → 4,390 bytes; retained-loop256 falls 22,701 → 22,429.
+Mixed64 and queens DFS peaks are unchanged. Timing changes are small and mixed,
+including roughly 1–2% slower retained-loop256; no general speedup is claimed.
+The kernel shrinks by 122 bytes. Earlier matrices below remain attributed to their
+recorded source pairs and require final qualification on the eventual candidate.
 
 ## Tail-frame reuse
 

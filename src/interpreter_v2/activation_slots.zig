@@ -22,6 +22,8 @@ pub fn Slots(comptime Value: type) type {
             revision: u64 = 0,
             active: bool = true,
             root: Node = .empty,
+            // Active views carry a slot limit; retired views use the same word
+            // for an intrusive free-list link. lookupView rejects retired views.
             limit: usize,
             depth: u8,
         };
@@ -48,7 +50,7 @@ pub fn Slots(comptime Value: type) type {
         allocator: std.mem.Allocator,
         instance: u64,
         views: std.ArrayList(View) = .empty,
-        free_views: std.ArrayList(usize) = .empty,
+        free_view: usize = std.math.maxInt(usize),
         statistics: Statistics = .{},
         var next_instance = std.atomic.Value(usize).init(1);
 
@@ -65,7 +67,6 @@ pub fn Slots(comptime Value: type) type {
         pub fn deinit(self: *Self) void {
             for (self.views.items) |view| if (view.active) self.drop(view.root);
             self.views.deinit(self.allocator);
-            self.free_views.deinit(self.allocator);
             self.* = undefined;
         }
 
@@ -74,8 +75,7 @@ pub fn Slots(comptime Value: type) type {
         pub fn retainedBytes(self: *const Self) usize {
             return self.statistics.live_pages * @sizeOf(Page) +
                 self.statistics.live_directories * @sizeOf(Branch) +
-                self.views.capacity * @sizeOf(View) +
-                self.free_views.capacity * @sizeOf(usize);
+                self.views.capacity * @sizeOf(View);
         }
 
         pub fn create(self: *Self, limit: usize) Error!Handle {
@@ -87,14 +87,15 @@ pub fn Slots(comptime Value: type) type {
 
         fn addView(self: *Self, view: View) Error!Handle {
             var result = view;
-            const index = if (self.free_views.pop()) |free| blk: {
+            const index = if (self.free_view != std.math.maxInt(usize)) blk: {
+                const free = self.free_view;
+                std.debug.assert(!self.views.items[free].active);
+                self.free_view = self.views.items[free].limit;
                 result.generation = self.views.items[free].generation;
                 self.views.items[free] = result;
                 break :blk free;
             } else blk: {
                 try self.views.ensureUnusedCapacity(self.allocator, 1);
-                // Release must be allocation-free, even when all views retire.
-                try self.free_views.ensureTotalCapacity(self.allocator, self.views.items.len + 1);
                 const id = self.views.items.len;
                 self.views.appendAssumeCapacity(result);
                 break :blk id;
@@ -129,7 +130,9 @@ pub fn Slots(comptime Value: type) type {
             entry.root = .empty;
             if (entry.generation != std.math.maxInt(u64)) {
                 entry.generation += 1;
-                self.free_views.appendAssumeCapacity(index);
+                // No allocation or extra array capacity is needed to retire.
+                entry.limit = self.free_view;
+                self.free_view = index;
             }
             self.drop(root);
         }

@@ -489,3 +489,25 @@ fn restartFrame(allocator: std.mem.Allocator, count: usize) !void {
     try testing.expectEqual(20, (try frames.slots.get(original.view, 1)).body.scalar[0]);
     try testing.expectEqual(99, (try frames.slots.get(original.view, count - 1)).body.scalar[0]);
 }
+
+test "retired views recycle without allocation and never revive stale handles" {
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    var store = try Slots.init(failing.allocator());
+    defer store.deinit();
+    var old: [32]Slots.Handle = undefined;
+    for (&old, 0..) |*handle, i| handle.* = try store.create(i + 1);
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    for (old) |handle| try store.release(handle);
+    var reused: [32]Slots.Handle = undefined;
+    for (old, 0..) |handle, i| {
+        const next = try store.create(100 + i);
+        reused[i] = next;
+        try testing.expectEqual(old[old.len - i - 1].index, next.index);
+        try testing.expectEqual(100 + i, try store.lookupLimit(next));
+        for (old) |stale| try testing.expectError(error.InvalidHandle, store.lookupLimit(stale));
+        try testing.expectError(error.InvalidHandle, store.release(handle));
+    }
+    for (reused) |handle| try store.release(handle);
+    try testing.expect(!failing.has_induced_failure);
+}
