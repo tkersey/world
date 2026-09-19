@@ -11,9 +11,11 @@ Boundary source. Experimental evidence is excluded from the dependency package.
 ## Current validation
 
 The current evaluator passes 78 native source tests, 44 storage tests, 16 activation
-storage tests, 6,755 source-oracle observations, 257 native/Node boundaries and 23
-transfers, 174 Wasmtime boundaries, real Chromium 153.0.8010.12 and Firefox 155.0
+storage tests, 6,414 source-oracle observations, 239 native/Node boundaries and 23
+transfers, 161 Wasmtime boundaries, real Chromium 153.0.8010.12 and Firefox 155.0
 Worker transfers, capacity/retry checks, and extracted runtime/CLI checks.
+Boundary 2cf8d55 threads empty same-custody jumps, so administrative step and
+boundary counts decrease; the source oracle and complete transfer assertions remain.
 Agent must also qualify this kernel through its normal dependency lock.
 These checks establish their tested semantic/portability cases, not performance acceptance.
 
