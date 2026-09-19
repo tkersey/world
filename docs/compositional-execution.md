@@ -24,54 +24,70 @@ execution with the same work accounting and logical boundaries.
 
 Tests distinguish eligible, non-adjacent, retained, edge-aliased, linear and
 state-aliased callables. Bounded and strict checkpoints agree; every allocation
-failure preserves retry state. The current candidate passes 81 native source
+failure preserves retry state. The current candidate passes 82 native source
 tests, 42 source/native/WASM cases (6,434 observations), 239 native/Node boundaries,
 23 transfers, 161 Wasmtime boundaries, Chromium/Firefox Worker transfers, capacity
 checks and extracted runtime/CLI checks. These prove the tested cases, not final
 performance acceptance.
 
-The generic kernel is 462,270 bytes, SHA-256
-`03fe2d95e8a3ebb91115639f406ffcf72bbe3ec98be9a922a2af3ceae90a6307`.
+The generic kernel is 462,261 bytes, SHA-256
+`adec1764555d7ac3638a6f414c009d3062766bc0635422e291ad4aeaa409e6c5`.
 
 ## Current measurements and limits
 
-The native comparison uses Boundary b3d3e76 / World fbc11c9 as its prior-successor
-control, three warmups and nine samples per process, and two alternating windows.
-These are complete fresh invocations on M2 Pro/macOS 27.2, Zig 0.16.0 ReleaseSafe.
+The 45-case native refresh compares Boundary 6c59436 / World dc7e81d with the fixed
+Boundary 42a09b9 / World d075169 anchors. Identical standalone probes and independent
+result/trace oracles ran for BPI2, compact BPC1 and BPI3 on Zig 0.16.0 ReleaseSafe,
+Node 26.9.0 and M2 Pro/macOS 27.2. Two windows rotated format order; each process
+used three warmups and nine fresh-invocation samples. Most cases had six processes
+per format; mixed/irregular128/256 and sequence1024/4096 had two. These are medians,
+not service p99 estimates. Control clocks exclude fixture replies and oracle work.
 
-| Installations | Before → candidate µs, confirmation range | Peak bytes before → candidate |
-| --- | --- | --- |
-| 8 | 31–33 → 29–30 | 40,222 → 30,623 |
-| 64 | 272–291 → 252–266 | 179,719 → 179,228 |
-| 128 | 556–577 → 509–512 | 274,031 → 265,012 |
-| 256 | 1,126–1,136 → 1,034–1,065 | 400,643 → 391,624 |
+The refresh confirms large-case gains over BPC1: mixed256 is about 8× faster,
+sequence4096 about 67×, and 1 MiB projections over 100×. Installation64/128/256
+images are 2,241/4,559/9,551 versus 2,805/5,574/12,102 bytes. Scheduler and
+sequence1024 peaks are below BPC1. Retained-loop64/128/256 timing ranges overlap
+BPC1, while their peaks remain higher.
 
-Retained-loop peak falls 21,584 → 20,746 bytes, with a small observed timing cost.
-All 128 Agent invocation outputs remain byte-identical. Agent timing differences
-are small and mixed; consumer working peaks are unchanged. The kernel grows
-237 bytes. WASM allocation fusion is excluded after a repeatable installation128
-regression; the retained ordinary path removes that regression in the targeted
-check. Final matched BPC1 acceptance remains open.
+This commit adds native cursor reclamation after sequence-pop operations. Tracing
+preserves live aliases; their count raises the next collection threshold. The
+existing 256-work-unit and suspension collections remain. Resident rollback also
+restores the threshold. A shared sequence fixture checks the complete sum, early
+reclamation and every failing resident allocation, with and without checkpoints.
 
-Boundary's dense accumulation slots remain in place. Full installation64/128/256
-images stay below the compact BPC1 limits, and real handler results remain live
-until the final checked sum. The maintained execution probe's --emit-input option
-supports comparisons through a fixed runtime binary.
+Two rotating native confirmation windows compare this policy with dc7e81d using
+the same full-consumption fixtures. Each process has three warmups and nine
+samples; six processes per side, except sizes1024/4096 with two. Size64 is about
+9% faster and size256 about 8% faster. Some projection cases cost about 1–5% more;
+that tradeoff remains part of the unresolved final acceptance.
+
+| Sequence elements | Native peak before | Native peak now | BPC1 peak |
+| ---: | ---: | ---: | ---: |
+| 0 | 9,927 | 9,927 | 8,382 |
+| 16 | 20,475 | 16,311 | 8,382 |
+| 64 | 50,899 | 17,003 | 13,597 |
+| 256 | 53,973 | 20,845 | 27,813 |
+| 1024 | 66,261 | 37,636 | 84,645 |
+| 4096 | 132,860 | 105,221 | 311,973 |
+
+WASM retains the existing schedule: earlier cursor collection reduced memory but
+slowed long sequence consumption by 3–5%. Final native-only confirmation preserves
+guest peaks and removes that repeatable slowdown across two rotating windows.
+A fixed 32-step interval and general
+node-growth trigger were also rejected for control-workload slowdowns. No rejected
+implementation or raw experiment archive is maintained.
+
+Scalar, deep, installation1/8, retained-loop1/8, tiny projections and empty sequence
+still have latency gaps versus BPC1. Installation64 has overlapping timing ranges
+but a clear memory gap. Shallow, queens, cleanup, mixed/irregular8, retained loops
+and short sequences retain higher peaks. Large projections remain about 3.5 KiB
+higher at peak. Favorable cases do not cancel these remaining failures.
 
 ## Remaining acceptance work
 
-The final matrix must recheck scalar, deep, small installations and retained-loop
-costs against Boundary 42a09b9 / World d075169, including their working-memory gaps.
-Earlier matched runs also exposed higher peaks for shallow, scheduler, queens,
-cleanup, short sequences and small aggregate projections. These are unresolved
-until final measurements establish their disposition; no failure is waived.
-
-The implemented value representation retains the earlier large-value gains:
-1 MiB product/variant projection avoided repeated payload materialization, and
-consuming a 4,096-element sequence avoided repeated tail copies. The preceding
-matched matrix measured roughly 96–100× / 55× improvements respectively; tiny
-projections and the empty sequence were slower. Those timings are attributed to
-the preceding candidate, not promoted to final acceptance.
+The gaps identified above, final guest/Agent/build confirmation and serial reviews
+remain required. These measurements supersede older native summaries; they do not establish full
+performance acceptance.
 
 Suspension reclamation retains the independent live-alias checks and its recorded
 one-element-survivor result: 8,182 native working bytes with an 86-byte checkpoint,

@@ -470,12 +470,14 @@ fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, che
         var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
         resident.session.?.statistics = &statistics;
         resident.session.?.store.statistics = &statistics.storage;
+        const collection_cursors = resident.session.?.collection_cursors;
         failing.fail_index = failing.alloc_index + failures;
         failing.resize_fail_index = failing.resize_index;
         var output = resident.drive(failing.allocator(), control, .{ .checkpoint = checkpoint_mode }) catch |err| {
             failing.fail_index = std.math.maxInt(usize);
             failing.resize_fail_index = std.math.maxInt(usize);
             try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(collection_cursors, resident.session.?.collection_cursors);
             failed_after_mutation = failed_after_mutation or statistics.transitions != 0 or statistics.storage.added_nodes != 0 or statistics.storage.journal_nodes != 0;
             const unchanged = try resident.checkpoint(testing.allocator);
             defer testing.allocator.free(unchanged);
@@ -2717,4 +2719,52 @@ test "a callable also used as handler state is materialized" {
     try testing.expect(result == .completed);
     try testing.expectEqual(@as(u64, 42), std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
     try testing.expect(saw_callable);
+}
+
+test "sequence consumption reclaims intermediate cursors and preserves resident retry" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try @import("sequence_fixture.zig").build(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var input: [1024]u8 = undefined;
+    var writer: boundary.data.wire.Writer = .{ .output = &input };
+    try writer.natural(64);
+    for (1..65) |value| try writer.fixed(u64, value);
+    try writer.fixed(u64, 0);
+    var session = try Session.start(testing.allocator, &prepared, input[0..writer.position]);
+    defer session.deinit();
+    const initial = try session.checkpoint(testing.allocator);
+    defer testing.allocator.free(initial);
+    var previous: usize = 0;
+    var reclaimed = false;
+    var steps: usize = 0;
+    while (session.terminal == null) : (steps += 1) {
+        try testing.expect(steps < 400);
+        try session.step();
+        const live = session.store.nodes.items.len - session.store.free_nodes.items.len;
+        if (steps < 255 and live < previous) reclaimed = true;
+        try testing.expect(live < 40);
+        previous = live;
+    }
+    try testing.expect(reclaimed);
+    const result = try session.observe();
+    try testing.expect(result == .completed);
+    try testing.expectEqual(@as(u64, 2080), std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
+    var rollback = try Session.restore(testing.allocator, &prepared, initial);
+    defer rollback.deinit();
+    rollback.collection_cursors = 24;
+    var transaction = try rollback.begin();
+    _ = try rollback.run(null);
+    try testing.expect(rollback.collection_cursors != 24);
+    transaction.rollback(&rollback);
+    try testing.expectEqual(@as(usize, 24), rollback.collection_cursors);
+    const unchanged = try rollback.checkpoint(testing.allocator);
+    defer testing.allocator.free(unchanged);
+    try testing.expectEqualSlices(u8, initial, unchanged);
+    for ([_]bool{ false, true }) |with_checkpoint|
+        try residentFailureSweep(&prepared, initial, .none, with_checkpoint);
 }

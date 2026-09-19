@@ -57,6 +57,8 @@ pub const Session = struct {
     terminal: ?g.NodeRef = null,
     poisoned: bool = false,
     transitions: usize = 0,
+    // Live cursor counts set a geometric threshold for early reclamation.
+    collection_cursors: usize = 8,
     statistics: ?*@import("runtime_types.zig").Statistics = null,
 
     pub const Transaction = struct {
@@ -66,6 +68,7 @@ pub const Session = struct {
         terminal: ?g.NodeRef,
         poisoned: bool,
         transitions: usize,
+        collection_cursors: usize,
 
         pub fn commit(self: *Transaction, session: *Session) void {
             session.store.commit();
@@ -80,6 +83,7 @@ pub const Session = struct {
             session.terminal = self.terminal;
             session.poisoned = self.poisoned;
             session.transitions = self.transitions;
+            session.collection_cursors = self.collection_cursors;
             self.* = undefined;
         }
     };
@@ -95,6 +99,7 @@ pub const Session = struct {
             .terminal = self.terminal,
             .poisoned = self.poisoned,
             .transitions = self.transitions,
+            .collection_cursors = self.collection_cursors,
         };
     }
 
@@ -376,6 +381,7 @@ pub const Session = struct {
         if (self.poisoned or self.terminal != null or (self.status != .active and self.status != .unwinding)) return error.InvalidState;
         errdefer self.poisoned = true;
         var work: u8 = 1;
+        var collect_cursors = false;
         const current = self.roots.current orelse return error.InvalidState;
         if (self.status == .unwinding) {
             _ = try @import("unwind.zig").step(self);
@@ -409,6 +415,10 @@ pub const Session = struct {
                     // frame writes. A failure starts unwinding with no further
                     // use of this borrow.
                     try self.executeInstruction(current, code, frame);
+                    // Inspect cursor growth only at operations that produce consumed tails.
+                    if (@sizeOf(usize) > 4 and
+                        (instruction.opcode == .sequence_pop or instruction.opcode == .sequence_pop_last))
+                        collect_cursors = self.store.encoded_sequences.count() >= self.collection_cursors;
                 }
             } else {
                 // Control may insert/remove frames or grow the map.
@@ -424,8 +434,16 @@ pub const Session = struct {
         if (self.statistics) |statistics| statistics.transitions +|= work;
         // A public suspension may last indefinitely. Reclaim its dead backing
         // before publication; checkpoint itself remains a read-only projection.
-        if (self.terminal != null or self.status == .yielded or self.status == .parked or self.transitions % 256 < work)
+        if (self.terminal != null or self.status == .yielded or self.status == .parked or self.transitions % 256 < work or
+            collect_cursors)
+        {
             try self.store.collectWith(self.roots, &self.frames);
+            // Live aliases survive tracing and raise the next threshold.
+            if (@sizeOf(usize) > 4) {
+                const live = self.store.encoded_sequences.count();
+                self.collection_cursors = @max(8, @as(usize, live) *| 2);
+            }
+        }
         return work;
     }
 
