@@ -2540,3 +2540,36 @@ test "resident retained recursive tail frames preserve rollback at every allocat
     try testing.expectEqual(@as(u64, 8), std.mem.readInt(u64, outcome.completed.body.scalar[0..8], .little));
     for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, before, .none, with_checkpoint);
 }
+
+test "handler return functions distinguish body value from state and preserve rollback" {
+    for (0..3) |mode| {
+        var b = source.Builder.init(testing.allocator);
+        defer b.deinit();
+        const module = try source.examples.installations(&b, 1);
+        const handler = b.handlers.items[0];
+        const clause_body = b.functions.items[@intCast(handler.clauses[0].function)].body.?;
+        b.terms.items[@intCast(clause_body)].resume_value.argument = try b.constant(u64, 7);
+        const returned = handler.return_function;
+        if (mode == 1) {
+            b.functions.items[@intCast(returned)].body = try b.pure(try b.constant(u64, 99));
+        } else if (mode == 2) {
+            b.functions.items[@intCast(returned)].body = try b.pure(try b.reference(b.parameter(returned, 0)));
+        }
+        var compiled = try source.lower(testing.allocator, b.module(module.entry, module.failure));
+        defer compiled.deinit();
+        const image = try programBytes(compiled.program);
+        defer testing.allocator.free(image);
+        var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+        defer prepared.deinit();
+        var session = try Session.start(testing.allocator, &prepared, &.{});
+        defer session.deinit();
+        const initial = try session.checkpoint(testing.allocator);
+        defer testing.allocator.free(initial);
+        for ([_]bool{ false, true }) |with_checkpoint|
+            try residentFailureSweep(&prepared, initial, .none, with_checkpoint);
+        const result = try session.run(null);
+        try testing.expect(result == .completed);
+        try testing.expectEqual(([_]u64{ 7, 99, 1 })[mode], std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
+        try testing.expectEqual(0, session.frames.entries.count());
+    }
+}

@@ -10,7 +10,7 @@ Boundary source. Experimental evidence is excluded from the dependency package.
 
 ## Current validation
 
-The current evaluator passes 78 native source tests, 44 storage tests, 16 activation
+The current evaluator passes 79 native source tests, 44 storage tests, 16 activation
 storage tests, 6,434 source-oracle observations, 239 native/Node boundaries and 23
 transfers, 161 Wasmtime boundaries, real Chromium 153.0.8010.12 and Firefox 155.0
 Worker transfers, capacity/retry checks, and extracted runtime/CLI checks.
@@ -23,6 +23,16 @@ These checks establish their tested semantic/portability cases, not performance 
 
 The kernel is 462,033 bytes with SHA-256
 `070d13c899f1e084fc6b5e25223b0b938818204617e07c1ad13af9a396ebf4ad`.
+
+The added return-function regression distinguishes the body result, a constant
+answer and handler state, and verifies Resident retry after allocation failures.
+
+A native installation64 phase probe attributes roughly 130 µs to preparation and
+176 µs to execution. A trial that skipped empty identity-return frames reduced
+allocations (825 → 697), but raised installation64/128 peak memory by 4,605 bytes
+and did not close the remaining small-control performance gap. The shortcut is removed;
+its semantic return-value and rollback regression remains. This rejects that
+realization, not every possible optimization of handler returns.
 
 ## Suspension reclamation
 
