@@ -17,8 +17,8 @@ Worker transfers, capacity/retry checks, and extracted runtime/CLI checks.
 Agent must also qualify this kernel through its normal dependency lock.
 These checks establish their tested semantic/portability cases, not performance acceptance.
 
-The kernel is 461,647 bytes with SHA-256
-`01895dd4c2ea74def03c7dc794248058e62087ecec49f6c54314f0f876f05256`.
+The kernel is 462,033 bytes with SHA-256
+`070d13c899f1e084fc6b5e25223b0b938818204617e07c1ad13af9a396ebf4ad`.
 
 ## Suspension reclamation
 
@@ -179,7 +179,24 @@ Reproduce with `build_value_bench.zig` using explicit source paths, then run
 and sequence; omitted fixture selects the original variant workload. The reported
 producer/input time includes fixture construction and encoding, not native build time.
 
-## Decoded block-catalog ownership
+## Instruction-local frame access
+
+Ordinary value instructions now borrow the frame-map entry until their final
+frame write, avoiding a full Frame copy and a second lookup. Control operations
+retain their copied frame because they can alter the map. Resumption conversion
+also retains a copy, keeping its helper's possible frame instantiation outside
+the borrow's lifetime. Failure begins unwinding without further use of the
+borrow. Resident rollback restores the existing retained entry. The allocation
+failure sweep now includes the cloned-resumption path from its initial checkpoint.
+
+Against World fcb7e45 with Boundary 810ba69, two five-pair native windows improve
+retained-loop256 about 4% and control64 about 1–3%, with unchanged working peaks.
+Other sampled controls have small mixed timing changes. Two fresh Node/WASM
+windows, including module setup, improve retained-loop256 about 15–16%; guest
+control64 is inconclusive. The kernel grows 386 bytes. This is a bounded local
+improvement, not final performance acceptance against BPC1 or an Agent speed claim.
+
+## Decoded block-catalog ownership (preceding measurements)
 
 Boundary now owns large outer block catalogs in exact allocations, while keeping
 nested records in the existing arena. The reader, admission budget and canonical

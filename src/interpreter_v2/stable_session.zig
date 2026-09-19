@@ -374,10 +374,24 @@ pub const Session = struct {
         } else {
             const control = (try self.store.get(current)).control;
             const code = self.program.blocks[@intCast(control.block)];
-            var frame = try self.frames.get(current.id);
+            const frame = try self.frames.getMutable(current.id);
             if (frame.position < code.instructions.len) {
-                try self.executeInstruction(current, code, &frame);
-            } else try self.executeControl(current, control, code, &frame);
+                if (code.instructions[frame.position].opcode == .clone_resumption) {
+                    // takeCapture can instantiate frames and grow the map.
+                    var saved_frame = frame.*;
+                    try self.executeInstruction(current, code, &saved_frame);
+                    self.frames.update(current.id, saved_frame);
+                } else {
+                    // Other value paths do not change the map before their
+                    // frame writes. A failure starts unwinding with no further
+                    // use of this borrow.
+                    try self.executeInstruction(current, code, frame);
+                }
+            } else {
+                // Control may insert/remove frames or grow the map.
+                var saved_frame = frame.*;
+                try self.executeControl(current, control, code, &saved_frame);
+            }
         }
         if (self.roots.current == null or self.roots.current.?.id != current.id) {
             // A saved continuation keeps custody at the old control-node ID.
@@ -413,7 +427,6 @@ pub const Session = struct {
                 };
                 frame.position += 1;
                 try self.frames.apply(frame, self.flow.facts.live[@intCast((try self.store.get(current)).control.block)][frame.position], @as([]const p.Id, &.{source.destination}), &.{value});
-                self.frames.update(current.id, frame.*);
             },
         }
     }

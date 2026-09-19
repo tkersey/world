@@ -112,6 +112,10 @@ pub const Frames = struct {
     pub fn get(self: *Frames, id: data.program.Id) Error!Frame {
         return self.entries.get(id) orelse error.InvalidState;
     }
+    /// The borrow ends before any operation that changes the frame map.
+    pub fn getMutable(self: *Frames, id: data.program.Id) Error!*Frame {
+        return self.entries.getPtr(id) orelse error.InvalidState;
+    }
     pub fn project(self: *Frames, id: data.program.Id, allocator: std.mem.Allocator) Error!?data.process_state.Activation {
         const frame = self.entries.get(id) orelse return null;
         var bindings: std.ArrayList(data.process_state.Binding) = .empty;

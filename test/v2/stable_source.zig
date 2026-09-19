@@ -496,7 +496,7 @@ fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, che
 
 test "resident rollback preserves acquired replies, cleanup custody, and reentrant captures at every allocation failure" {
     const protocol = boundary.data.invocation;
-    inline for (.{ retainedInputExample, source.examples.unwind, source.examples.reentrant }, 0..) |example, index| {
+    inline for (.{ retainedInputExample, source.examples.unwind, source.examples.reentrant, source.examples.cloned }, 0..) |example, index| {
         var builder = source.Builder.init(testing.allocator);
         defer builder.deinit();
         var compiled = try source.lower(testing.allocator, try example(&builder));
@@ -512,10 +512,15 @@ test "resident rollback preserves acquired replies, cleanup custody, and reentra
         };
         var session = try Session.start(testing.allocator, &prepared, arguments);
         defer session.deinit();
+        if (index == 3) {
+            const initial = try session.checkpoint(testing.allocator);
+            defer testing.allocator.free(initial);
+            for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, initial, .none, with_checkpoint);
+        }
         const observation = try session.run(null);
         const checkpoint = try session.checkpoint(testing.allocator);
         defer testing.allocator.free(checkpoint);
-        if (index == 2) {
+        if (index >= 2) {
             try testing.expect(observation == .yielded);
             for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, checkpoint, .resume_yield, with_checkpoint);
         } else {
