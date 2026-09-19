@@ -69,7 +69,7 @@ fn addition(
 fn arithmetic(
     b: *source.Builder,
     integer: u64,
-    opcode: boundary.data_v2.program.Opcode,
+    opcode: boundary.data.program.Opcode,
     left: u64,
     right: u64,
 ) !u64 {
@@ -145,7 +145,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         var compiled = try boundary.program.compile(allocator, module);
         defer compiled.deinit();
-        const length = try boundary.image_v2.encodedLength(compiled.program);
+        const length = try boundary.data.program_image.encodedLength(compiled.program);
         const bytes = try allocator.alloc(u8, length);
         defer allocator.free(bytes);
         _ = try compiled.encode(allocator, bytes);

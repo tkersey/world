@@ -6,7 +6,7 @@ kernel whose dependency binding records landed commit
 682,943 bytes, has SHA-256
 `4da38268f12e8a2749a266480748da5460b5030dadfc10804f79ba3a3bb8013e`,
 declares ABI 1, 2,457 initial memory pages, a 4,096-page maximum, and no imports.
-The lock in `conformance/boundary.lock.json` remains the historical published
+The [historical lock](https://github.com/tkersey/world/blob/d075169a4805d999ceba4c37b3e1c925b78c3bf9/conformance/boundary.lock.json) records the published
 Boundary 1.7.0 conformance tuple; it does not identify the embedded runtime
 kernel. Boundary owns program meaning; World owns only artifact admission,
 WebAssembly instantiation, host-facing record framing, and byte transport.
