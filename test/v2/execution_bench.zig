@@ -4,6 +4,7 @@
 //! nine samples; allocation counters use a separate replay. Host reply encoding
 //! and oracle checks are outside invocation clocks. Requests receive fixture
 //! replies; no external operation is dispatched.
+//! Add --emit-input to write the initial canonical invocation for runtime-only replay.
 const std = @import("std");
 const boundary = @import("boundary");
 const world = @import("world");
@@ -273,14 +274,24 @@ pub fn main(init: std.process.Init) !void {
     const format = args.next() orelse return error.ExpectedFormat;
     const fixture = std.meta.stringToEnum(Fixture, args.next() orelse return error.ExpectedFixture) orelse return error.InvalidFixture;
     const count = try std.fmt.parseInt(usize, args.next() orelse return error.ExpectedCount, 10);
+    const option = args.next();
+    const emit_input = if (option) |value| std.mem.eql(u8, value, "--emit-input") else false;
     const sized = fixture == .install or fixture == .retained_loop or fixture == .mixed or fixture == .irregular;
-    if (count > 256 or (sized and count == 0) or (!sized and count != 0) or args.next() != null) return error.InvalidFixture;
+    if (count > 256 or (sized and count == 0) or (!sized and count != 0) or
+        (option != null and !emit_input) or args.next() != null) return error.InvalidFixture;
     if (!std.mem.eql(u8, format, if (current) "bpi3" else "bpi2") and (current or !std.mem.eql(u8, format, "bpc1"))) return error.InvalidFormat;
     const start = std.Io.Clock.awake.now(init.io);
     const produced = try command(init.gpa, std.mem.eql(u8, format, "bpc1"), fixture, count);
     const producer_ns: u64 = @intCast(start.durationTo(std.Io.Clock.awake.now(init.io)).nanoseconds);
     defer init.gpa.free(produced.bytes);
     defer init.gpa.free(produced.image);
+    if (emit_input) {
+        var buffer: [4096]u8 = undefined;
+        var stdout = std.Io.File.stdout().writer(init.io, &buffer);
+        try stdout.interface.writeAll(produced.bytes);
+        try stdout.interface.flush();
+        return;
+    }
     const oracle = expected(fixture, count);
     const storage = try init.gpa.alloc(u8, 128 << 20);
     defer init.gpa.free(storage);

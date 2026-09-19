@@ -34,6 +34,13 @@ and did not close the remaining small-control performance gap. The shortcut is r
 its semantic return-value and rollback regression remains. This rejects that
 realization, not every possible optimization of handler returns.
 
+Boundary b3d3e76 renumbers slots only for linear accumulation across multiple
+words. All 42 source/native/WASM cases pass with the same 6,434 observations;
+the kernel is unchanged. The control benchmark now supports --emit-input for
+replay through one fixed runtime binary. Installation64/128/256 working peaks
+fall to 179,719 / 274,031 / 400,643 bytes, with higher allocation-call counts but
+lower total allocated bytes. Small-control acceptance against BPC1 remains open.
+
 ## Suspension reclamation
 
 A suspended Session can remain parked indefinitely, so reclamation now runs at
