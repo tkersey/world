@@ -228,6 +228,38 @@ to 502,256. No performance requirement is waived. Reproduce with
 `execution-bench FORMAT retained_loop COUNT`; the result oracle is arithmetic,
 not recorded candidate output.
 
+## Matched native build costs
+
+Two reversed-order windows built the same installation emitter and the same full
+execution probe against frozen Boundary 42a09b9 / World d075169 and Boundary
+3b8a69f / World d21450c. Every cold observation used empty local and global Zig
+caches. Zig 0.16.0 ReleaseSafe, Node 26.9.0 timing driver, Apple M2 Pro and macOS
+27.2 were held fixed. Filesystem/OS caches were not flushed. These are two build
+observations per side, not a universal or tail-latency claim.
+
+| Build surface | Predecessor cold | Successor cold | Warm no-change |
+|---|---:|---:|---:|
+| Source-only installation emitter | 16.50–16.56 s | 15.45–15.50 s | 153–161 ms |
+| Full compiler/evaluator execution probe | 23.07–23.21 s | 23.21–23.30 s | 157–163 ms |
+
+The source-only emitter shows a roughly 6% reduction in these observations. The
+full probe has no clear cold-build gain. Once built, emitting the unchanged
+256-installation image takes a median 29.91 ms for BPC1 versus 4.85 ms for BPI3
+(nine rotating process observations after three warmups, including startup and
+output I/O). The original execution probe's internal producer clock separately
+reports 25.36–26.47 ms versus 2.61–2.87 ms; neither includes native compilation.
+The first post-build emission process costs 51.49–52.87 ms versus 20.11–23.48 ms,
+showing why warm tool execution must not substitute for native build cost.
+
+The retained producer emits exactly the measured 12,102-byte BPC1 and 11,339-byte
+BPI3 images. It imports only Boundary. Reproduce by building
+`test/v2/build_execution_bench.zig` with `-Dproducer-only=true`, an explicit
+`-Dboundary-source=...`, isolated local/global caches and prefix, plus
+`-Dlegacy-names=true` for the predecessor; run `producer-bench 256`.
+The normal execution-probe build retains its explicit World source dependency.
+Agent's separate component/client-edit measurements remain in its status document;
+they do not imply that all application native builds are faster.
+
 ## Unresolved acceptance
 
 Scalar, deep and 1/8/64 installations remain slower and use more working memory
@@ -238,7 +270,7 @@ inquiry/ReAct peaks remain above BPC1's 1,853,961 / 2,061,220 bytes, and ReAct g
 latency remains open. No performance failure has been waived.
 
 The retained-loop regressions, final Agent
-comparison, native build/client-edit decomposition,
+comparison, broader application build qualification,
 final coordinated qualification and serial reviews remain required.
 
 Standalone probes under `test/v2/` accept explicit source inputs:
