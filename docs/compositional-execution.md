@@ -17,8 +17,8 @@ Worker transfers, capacity/retry checks, and extracted runtime/CLI checks.
 Agent must also qualify this kernel through its normal dependency lock.
 These checks establish their tested semantic/portability cases, not performance acceptance.
 
-The kernel is 460,732 bytes with SHA-256
-`61ac21c775cdf08fe9425bf21de9966ed1cd169c156911401ff1e19913d4a44f`.
+The kernel is 461,647 bytes with SHA-256
+`01895dd4c2ea74def03c7dc794248058e62087ecec49f6c54314f0f876f05256`.
 
 ## Suspension reclamation
 
@@ -179,7 +179,21 @@ Reproduce with `build_value_bench.zig` using explicit source paths, then run
 and sequence; omitted fixture selects the original variant workload. The reported
 producer/input time includes fixture construction and encoding, not native build time.
 
-## Slot-view retirement storage
+## Decoded block-catalog ownership
+
+Boundary now owns large outer block catalogs in exact allocations, while keeping
+nested records in the existing arena. The reader, admission budget and canonical
+identity are unchanged. Partial decode failures and caller mutation retain explicit
+ownership coverage. World’s normal pin selects this Boundary source.
+
+Across 128 fixed native invocations in 13 Agent scenarios, outcomes and work/copy
+counters match. Inquiry/ReAct Session peaks fall 1,952,780 / 3,084,054 →
+1,866,916 / 2,739,154 bytes. Control64/128/256 peaks become 193,195 / 303,637 /
+575,249 bytes. Tiny cases add 16 bytes of ownership metadata. Two native and two
+guest comparison windows show small mixed timing changes; no speedup is claimed.
+The kernel grows 915 bytes. The BPC1 Agent memory gaps remain unresolved.
+
+## Slot-view retirement storage (preceding measurements)
 
 Retired slot views now hold their next reusable index in the word that stores the
 slot limit while active. Handle lookup rejects inactive views before reading that
