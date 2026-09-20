@@ -43,7 +43,7 @@ candidate-guest canonical outputs also agree at the checked boundaries.
 The generic kernel is 462,524 bytes, SHA-256
 `8f7b6359ddf4d63b513d8d5c17400487fde357cb487831bb2b555a449f39ee0b`.
 
-## Cumulative native comparison
+## Cumulative native and guest comparison
 
 The current measured pair is Boundary 1b00c8c / World a20a285, taken from Agent's
 authenticated inputs, against the fixed Boundary 42a09b9 / World d075169 anchors.
@@ -60,53 +60,72 @@ benchmarks. Clocks cover complete fresh invocations; control-fixture reply encod
 and oracle checks are outside the clock. Projections repeat 256 times; sequences
 consume every element. Projection sizes are bytes, sequence sizes element counts.
 
-| Workload | BPI2 µs | BPC1 µs | BPI3 µs | Peak bytes BPC1 → BPI3 |
-| --- | ---: | ---: | ---: | ---: |
-| scalar | 1.85 | 1.77 | 2.42 | 3,594 → 4,406 |
-| deep | 9.79 | 9.83 | 11.25 | 10,784 → 13,889 |
-| residual | 14.88 | 14.54 | 12.77 | 12,726 → 11,481 |
-| reentrant | 155.27 | 154.58 | 93.63 | 127,125 → 102,931 |
-| shallow | 319.81 | 320.48 | 208.10 | 145,914 → 149,898 |
-| generator | 240.90 | 240.48 | 145.98 | 58,859 → 53,163 |
-| scheduler | 417.31 | 422.73 | 221.06 | 88,240 → 87,857 |
-| queens_dfs | 8206.79 | 8189.81 | 3072.63 | 142,727 → 161,300 |
-| queens_bfs | 10953.75 | 11077.67 | 3146.94 | 153,579 → 213,208 |
-| cleanup | 295.46 | 300.92 | 170.60 | 43,221 → 44,827 |
-| install / 1 | 8.00 | 7.96 | 8.65 | 8,700 → 10,995 |
-| install / 8 | 23.00 | 23.10 | 28.58 | 15,564 → 24,199 |
-| install / 64 | 252.60 | 241.60 | 226.50 | 121,956 → 135,051 |
-| install / 128 | 739.00 | 703.94 | 476.10 | 435,558 → 227,570 |
-| install / 256 | 2526.75 | 2339.19 | 985.94 | 1,324,938 → 365,015 |
-| mixed / 1 | 18.23 | 18.15 | 17.48 | 13,900 → 13,038 |
-| mixed / 8 | 204.06 | 203.71 | 151.21 | 18,104 → 20,663 |
-| mixed / 64 | 16122.46 | 15414.02 | 5038.83 | 157,992 → 75,234 |
-| mixed / 128 | 104424.73 | 98535.05 | 20599.85 | 550,276 → 171,155 |
-| mixed / 256 | 775457.90 | 728132.97 | 89877.17 | 1,951,618 → 320,644 |
-| irregular / 1 | 18.27 | 18.25 | 17.65 | 13,898 → 13,026 |
-| irregular / 8 | 204.67 | 203.04 | 150.79 | 18,104 → 20,663 |
-| irregular / 64 | 16047.73 | 15471.44 | 5019.00 | 157,992 → 74,982 |
-| irregular / 128 | 104261.08 | 98356.79 | 20380.15 | 550,276 → 170,697 |
-| irregular / 256 | 777783.90 | 729663.00 | 90127.17 | 1,951,618 → 319,681 |
-| retained_loop / 1 | 17.52 | 18.10 | 21.50 | 14,576 → 20,589 |
-| retained_loop / 8 | 31.85 | 31.79 | 35.79 | 14,614 → 20,625 |
-| retained_loop / 64 | 140.02 | 141.98 | 144.31 | 14,614 → 20,713 |
-| retained_loop / 128 | 264.69 | 266.54 | 269.23 | 14,626 → 20,720 |
-| retained_loop / 256 | 513.15 | 529.06 | 523.23 | 14,626 → 20,720 |
-| variant / unit | 141.29 | 141.06 | 191.87 | 7,232 → 9,678 |
-| variant / 0 | 153.04 | 152.73 | 189.25 | 7,232 → 9,680 |
-| variant / 1024 | 191.56 | 193.81 | 187.35 | 8,105 → 11,731 |
-| variant / 65536 | 2779.81 | 2761.29 | 206.88 | 137,131 → 140,758 |
-| variant / 1048576 | 38790.06 | 38253.90 | 341.02 | 2,103,211 → 2,106,838 |
-| product / 0 | 163.79 | 161.90 | 197.71 | 7,232 → 9,698 |
-| product / 1024 | 205.46 | 204.10 | 196.62 | 8,202 → 11,749 |
-| product / 65536 | 2759.63 | 2741.73 | 209.48 | 137,228 → 140,776 |
-| product / 1048576 | 37390.90 | 37351.52 | 356.60 | 2,103,308 → 2,106,856 |
-| sequence / 0 | 4.92 | 4.88 | 5.71 | 8,382 → 9,927 |
-| sequence / 16 | 35.37 | 35.00 | 23.88 | 8,382 → 16,311 |
-| sequence / 64 | 188.35 | 185.13 | 73.19 | 13,597 → 17,003 |
-| sequence / 256 | 1541.29 | 1593.54 | 270.10 | 27,813 → 20,845 |
-| sequence / 1024 | 19211.92 | 20170.29 | 1079.21 | 84,645 → 37,636 |
-| sequence / 4096 | 286336.33 | 302179.58 | 4281.71 | 311,973 → 105,221 |
+| Workload | Native BPI2 µs | Native BPC1 µs | Native BPI3 µs | Native peak bytes BPC1 → BPI3 | Guest BPI2 / BPC1 / BPI3 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| scalar | 1.85 | 1.77 | 2.42 | 3,594 → 4,406 | 1.282 / 1.262 / 0.447 |
+| deep | 9.79 | 9.83 | 11.25 | 10,784 → 13,889 | 1.379 / 1.366 / 0.495 |
+| residual | 14.88 | 14.54 | 12.77 | 12,726 → 11,481 | 2.758 / 2.849 / 0.798 |
+| reentrant | 155.27 | 154.58 | 93.63 | 127,125 → 102,931 | 3.843 / 3.706 / 1.266 |
+| shallow | 319.81 | 320.48 | 208.10 | 145,914 → 149,898 | 2.083 / 2.183 / 0.989 |
+| generator | 240.90 | 240.48 | 145.98 | 58,859 → 53,163 | 4.331 / 4.311 / 1.577 |
+| scheduler | 417.31 | 422.73 | 221.06 | 88,240 → 87,857 | 3.287 / 3.339 / 1.317 |
+| queens_dfs | 8206.79 | 8189.81 | 3072.63 | 142,727 → 161,300 | 23.152 / 23.411 / 9.905 |
+| queens_bfs | 10953.75 | 11077.67 | 3146.94 | 153,579 → 213,208 | 27.379 / 27.349 / 9.463 |
+| cleanup | 295.46 | 300.92 | 170.60 | 43,221 → 44,827 | 6.932 / 6.479 / 2.100 |
+| install / 1 | 8.00 | 7.96 | 8.65 | 8,700 → 10,995 | 1.220 / 1.170 / 0.327 |
+| install / 8 | 23.00 | 23.10 | 28.58 | 15,564 → 24,199 | 1.247 / 1.197 / 0.416 |
+| install / 64 | 252.60 | 241.60 | 226.50 | 121,956 → 135,051 | 1.743 / 1.683 / 0.953 |
+| install / 128 | 739.00 | 703.94 | 476.10 | 435,558 → 227,570 | 2.857 / 2.564 / 1.482 |
+| install / 256 | 2526.75 | 2339.19 | 985.94 | 1,324,938 → 365,015 | 6.707 / 5.910 / 2.686 |
+| mixed / 1 | 18.23 | 18.15 | 17.48 | 13,900 → 13,038 | 2.512 / 2.352 / 0.700 |
+| mixed / 8 | 204.06 | 203.71 | 151.21 | 18,104 → 20,663 | 11.699 / 11.382 / 3.282 |
+| mixed / 64 | 16122.46 | 15414.02 | 5038.83 | 157,992 → 75,234 | 114.974 / 112.513 / 33.674 |
+| mixed / 128 | 104424.73 | 98535.05 | 20599.85 | 550,276 → 171,155 | 402.003 / 380.822 / 95.485 |
+| mixed / 256 | 775457.90 | 728132.97 | 89877.17 | 1,951,618 → 320,644 | 2191.478 / 2111.399 / 340.323 |
+| irregular / 1 | 18.27 | 18.25 | 17.65 | 13,898 → 13,026 | 2.290 / 2.357 / 0.738 |
+| irregular / 8 | 204.67 | 203.04 | 150.79 | 18,104 → 20,663 | 10.528 / 11.049 / 3.203 |
+| irregular / 64 | 16047.73 | 15471.44 | 5019.00 | 157,992 → 74,982 | 119.856 / 111.593 / 33.112 |
+| irregular / 128 | 104261.08 | 98356.79 | 20380.15 | 550,276 → 170,697 | 397.132 / 380.676 / 94.739 |
+| irregular / 256 | 777783.90 | 729663.00 | 90127.17 | 1,951,618 → 319,681 | 2187.653 / 2012.172 / 335.885 |
+| retained_loop / 1 | 17.52 | 18.10 | 21.50 | 14,576 → 20,589 | 1.197 / 1.196 / 0.372 |
+| retained_loop / 8 | 31.85 | 31.79 | 35.79 | 14,614 → 20,625 | 1.195 / 1.196 / 0.400 |
+| retained_loop / 64 | 140.02 | 141.98 | 144.31 | 14,614 → 20,713 | 1.386 / 1.386 / 0.692 |
+| retained_loop / 128 | 264.69 | 266.54 | 269.23 | 14,626 → 20,720 | 1.677 / 1.631 / 0.933 |
+| retained_loop / 256 | 513.15 | 529.06 | 523.23 | 14,626 → 20,720 | 2.118 / 2.073 / 1.483 |
+| variant / unit | 141.29 | 141.06 | 191.87 | 7,232 → 9,678 | 1.415 / 1.349 / 0.724 |
+| variant / 0 | 153.04 | 152.73 | 189.25 | 7,232 → 9,680 | 1.468 / 1.430 / 0.706 |
+| variant / 1024 | 191.56 | 193.81 | 187.35 | 8,105 → 11,731 | 1.623 / 1.587 / 0.762 |
+| variant / 65536 | 2779.81 | 2761.29 | 206.88 | 137,131 → 140,758 | 11.382 / 11.141 / 0.816 |
+| variant / 1048576 | 38790.06 | 38253.90 | 341.02 | 2,103,211 → 2,106,838 | 155.811 / 153.921 / 1.825 |
+| product / 0 | 163.79 | 161.90 | 197.71 | 7,232 → 9,698 | 1.508 / 1.454 / 0.731 |
+| product / 1024 | 205.46 | 204.10 | 196.62 | 8,202 → 11,749 | 1.652 / 1.671 / 0.785 |
+| product / 65536 | 2759.63 | 2741.73 | 209.48 | 137,228 → 140,776 | 11.414 / 11.282 / 0.832 |
+| product / 1048576 | 37390.90 | 37351.52 | 356.60 | 2,103,308 → 2,106,856 | 155.670 / 153.920 / 1.709 |
+| sequence / 0 | 4.92 | 4.88 | 5.71 | 8,382 → 9,927 | 1.182 / 1.178 / 0.334 |
+| sequence / 16 | 35.37 | 35.00 | 23.88 | 8,382 → 16,311 | 1.254 / 1.232 / 0.372 |
+| sequence / 64 | 188.35 | 185.13 | 73.19 | 13,597 → 17,003 | 1.504 / 1.486 / 0.550 |
+| sequence / 256 | 1541.29 | 1593.54 | 270.10 | 27,813 → 20,845 | 4.003 / 3.890 / 0.936 |
+| sequence / 1024 | 19211.92 | 20170.29 | 1079.21 | 84,645 → 37,636 | 34.278 / 33.815 / 2.698 |
+| sequence / 4096 | 286336.33 | 302179.58 | 4281.71 | 311,973 → 105,221 | 483.311 / 476.262 / 9.564 |
+
+The guest confirmation uses the same 45 authored workloads and all 982 captured
+fresh invocations per format/window, with three warmups and nine timed calls per
+input in two rotating, isolated-process windows. Every captured control trace and
+value result first passes the maintained independent native oracle; every guest
+output must then equal that capture. All 982 BPI2/BPC1 outcomes also agree byte for
+byte. Guest columns show second-window sums of per-input medians in milliseconds,
+not whole-scenario or tail timing. Timers include kernel authentication/admission,
+setup, input encoding, fresh execution and outcome decoding; file loading and input
+reconstruction are outside them. The same authenticated release/current kernels
+and their 256 MiB maximum-memory profiles are used. This is fresh execution, not
+prepared/resident execution with a weaker checkpoint obligation.
+
+All 45 guest workload totals are lower than compact BPC1 in both windows. Selected
+BPI3/BPC1 ratios are installation64 0.566–0.576, installation256 0.454–0.469,
+queens BFS about 0.346, mixed256 0.161–0.168, sequence4096 about 0.020, and 1 MiB
+product projection 0.0111–0.0116. Small guest totals include substantial host/setup
+cost; these observations are not inferred from the accepted native regressions.
+They do not measure browser timing or guest peak memory.
 
 Installation64 latency is now below BPC1 in both windows, with separated observed
 process ranges; its peak-memory gap remains. Installation128/256 retain large
@@ -159,7 +178,7 @@ WASM regressions, or material Agent-consumer regressions. Indeterminate observat
 remain indeterminate. No native benchmark rerun is needed for this documentation
 change. The unamended performance gate is not claimed to have passed.
 
-### Memory decisions still pending
+### Accepted memory tradeoffs
 
 The following complete-fresh-invocation peaks use the same native source tuple and
 fixed optimized BPC1 predecessor as the cumulative table. They are working-allocation
@@ -264,17 +283,22 @@ measurements. It attributes current peaks by phase and release lifetime; it does
 not claim a byte-for-byte decomposition of the predecessor-to-successor difference.
 No instrumentation or generated trace is retained in the repository.
 
-These are recommendations, not user acceptance. Agent-specific peak/checkpoint
+The user explicitly accepted these named memory tradeoffs on September 19 after
+reviewing this disposition, including installation64 and both queens/search peaks.
+The recommendations above preserve the supporting reasoning and limits; they are
+now accepted milestone costs, not improvements or a general allowance.
+Agent-specific peak/checkpoint
 costs and its larger ReAct image are separately reported in
 [Agent's results](https://github.com/tkersey/agent/blob/feat/compositional-execution/docs/compositional-execution.md).
 
 ## Remaining acceptance work
 
-Cumulative guest/Agent confirmation on the selected production tuple, the
-requirement audit and serial reviews remain open. The targeted memory lifetime
-observations above now support concrete economic recommendations. The named native latency tradeoffs are accepted for this milestone;
-installation64 memory and the other economic recommendations still require explicit
-disposition. Optional representation/allocator/cache/compiler redesign is not a
+Standalone guest and inquiry/ReAct confirmation on the selected production tuple
+are complete; Agent's document records its clarification confirmation separately.
+The named native latency and memory tradeoffs are accepted for this milestone.
+The requirement audit identified a narrow State-inspector gap; Agent now provides
+and tests the required read-only Program/State inspection. Serial-review closeout
+remains. Optional representation/allocator/cache/compiler redesign is not a
 closeout requirement. No such experiment is retained.
 
 The [current build confirmation](https://github.com/tkersey/agent/blob/b277743aa2a8f0609428accd267b8719b64285ed/docs/compositional-execution.md#component-build-costs)
