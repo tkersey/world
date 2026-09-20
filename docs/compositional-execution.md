@@ -133,11 +133,118 @@ rejected after raising installation256 peak to 420,861 bytes. The selected remap
 path retains the arena-slab policy. No rejected implementation, raw samples or
 experiment archives are maintained.
 
+## Milestone performance disposition
+
+The September 19 task amendment accepts these measured native latency tradeoffs
+for this milestone on Boundary 1b00c8c / World a20a285. They are regressions accepted
+by the user, not improvements, noise, or general percentage allowances. Projection
+rows measure the complete workload of 256 operations.
+
+| Workload | BPC1 → BPI3 µs |
+| --- | ---: |
+| scalar | 1.77 → 2.42 |
+| deep | 9.83 → 11.25 |
+| install / 1 | 7.96 → 8.65 |
+| install / 8 | 23.10 → 28.58 |
+| retained_loop / 1 | 18.10 → 21.50 |
+| retained_loop / 8 | 31.79 → 35.79 |
+| variant / unit | 141.06 → 191.87 |
+| variant / 0 | 152.73 → 189.25 |
+| product / 0 | 161.90 → 197.71 |
+| sequence / 0 | 4.88 → 5.71 |
+
+The amendment does not accept new or materially worsened regressions, memory or
+capacity failures, unbounded growth, missing structural behavior, semantic failures,
+WASM regressions, or material Agent-consumer regressions. Indeterminate observations
+remain indeterminate. No native benchmark rerun is needed for this documentation
+change. The unamended performance gate is not claimed to have passed.
+
+### Memory decisions still pending
+
+The following complete-fresh-invocation peaks use the same native source tuple and
+fixed optimized BPC1 predecessor as the cumulative table. They are working-allocation
+peaks, not RSS, reserved capacity, checkpoint bytes, or post-completion retention.
+The table preserves every higher peak; percentages use BPC1 as denominator.
+
+| Workload | BPC1 → BPI3 bytes | Increase | Increase % |
+| --- | ---: | ---: | ---: |
+| scalar | 3,594 → 4,406 | +812 | +22.59% |
+| deep | 10,784 → 13,889 | +3,105 | +28.79% |
+| shallow | 145,914 → 149,898 | +3,984 | +2.73% |
+| queens_dfs | 142,727 → 161,300 | +18,573 | +13.01% |
+| queens_bfs | 153,579 → 213,208 | +59,629 | +38.83% |
+| cleanup | 43,221 → 44,827 | +1,606 | +3.72% |
+| install / 1 | 8,700 → 10,995 | +2,295 | +26.38% |
+| install / 8 | 15,564 → 24,199 | +8,635 | +55.48% |
+| install / 64 | 121,956 → 135,051 | +13,095 | +10.74% |
+| mixed / 8 | 18,104 → 20,663 | +2,559 | +14.13% |
+| irregular / 8 | 18,104 → 20,663 | +2,559 | +14.13% |
+| retained_loop / 1 | 14,576 → 20,589 | +6,013 | +41.25% |
+| retained_loop / 8 | 14,614 → 20,625 | +6,011 | +41.13% |
+| retained_loop / 64 | 14,614 → 20,713 | +6,099 | +41.73% |
+| retained_loop / 128 | 14,626 → 20,720 | +6,094 | +41.67% |
+| retained_loop / 256 | 14,626 → 20,720 | +6,094 | +41.67% |
+| variant / unit | 7,232 → 9,678 | +2,446 | +33.82% |
+| variant / 0 | 7,232 → 9,680 | +2,448 | +33.85% |
+| variant / 1024 | 8,105 → 11,731 | +3,626 | +44.74% |
+| variant / 65536 | 137,131 → 140,758 | +3,627 | +2.64% |
+| variant / 1048576 | 2,103,211 → 2,106,838 | +3,627 | +0.17% |
+| product / 0 | 7,232 → 9,698 | +2,466 | +34.10% |
+| product / 1024 | 8,202 → 11,749 | +3,547 | +43.25% |
+| product / 65536 | 137,228 → 140,776 | +3,548 | +2.59% |
+| product / 1048576 | 2,103,308 → 2,106,856 | +3,548 | +0.17% |
+| sequence / 0 | 8,382 → 9,927 | +1,545 | +18.43% |
+| sequence / 16 | 8,382 → 16,311 | +7,929 | +94.60% |
+| sequence / 64 | 13,597 → 17,003 | +3,406 | +25.05% |
+
+- **Installation64: +13,095 bytes (+10.74%).** A read-only admission probe on
+  this production pair found 22,572 bytes of unused arena tail capacity (16,028
+  decoded-record bytes and 6,544 analysis bytes). Total admitted live storage was
+  100,170 bytes. This establishes retained allocation slack, not a proof that all
+  of the comparative peak comes from slack. No completely unused slabs remained.
+  The 1/8/64/128/256 peak curve is reported above; 128 and 256 use substantially
+  less memory than BPC1, and the stable-slot structural checks retain the final
+  sum and all genuinely live results without triangular boundary lists.
+  **Recommendation: accept the named installation-family storage tradeoff** on
+  this tuple, subject to the final requirement audit; no allocator redesign is
+  proposed. The 1/8 costs are reported separately above, not inferred to be fixed.
+- **Queens/search: DFS +18,573 bytes (+13.01%); BFS +59,629 (+38.83%).** Faster
+  search alone does not justify these costs. Their precise allocation/retention
+  cause is unresolved in the current report. **Recommendation: resolve that
+  evidence gap before asking for acceptance**, using the unchanged search fixtures
+  and a targeted lifetime observation, not another optimization campaign.
+- **Retained loops: about 6 KB additional peak.** The candidate peak reaches
+  20,720 bytes at 128 iterations and remains there at 256; checkpoints and retained
+  old-view regressions exercise isolation and reclamation separately. This is
+  evidence of bounded cost over the tested range, not a universal constant bound.
+  **Recommendation: accept this named tested-range storage tradeoff.**
+- **Variant/product projections:** the payload-bearing 1,024/65,536/1,048,576-byte
+  cases have nearly constant additional peaks (variant 3,626–3,627 bytes;
+  product 3,547–3,548). Tiny cases have smaller absolute increases. Large-payload
+  selective access and live-alias/small-survivor tests remain required and passed
+  in the recorded qualification. **Recommendation: accept the reported projection
+  storage costs**, without generalizing the offset to unmeasured schemas.
+- **Short sequences:** peaks are higher at 0/16/64 elements and lower than BPC1
+  at 256/1,024/4,096. The existing cursor reclamation and rollback tests protect
+  consuming traversal; the long cases do not reintroduce repeated tail copying.
+  **Recommendation: accept the named short-sequence tradeoff**, retaining those
+  scaling and reclamation limits.
+- **Deep, shallow, cleanup and mixed/irregular8:** the comparative peaks remain
+  explicit, but this report does not yet isolate their additional storage by
+  lifetime. **Recommendation: finish the focused attribution before disposition.**
+
+These are recommendations, not user acceptance. Agent-specific peak/checkpoint
+costs and its larger ReAct image are separately reported in
+[Agent's results](https://github.com/tkersey/agent/blob/feat/compositional-execution/docs/compositional-execution.md).
+
 ## Remaining acceptance work
 
-The measured residuals above, cumulative guest/Agent confirmation, serial reviews
-and the final requirement audit remain open. Native installation64 latency is no
-longer an open regression; its memory cost still is.
+Cumulative guest/Agent confirmation on the selected production tuple, the targeted
+memory-attribution gaps above, the requirement audit and serial reviews remain
+open. The named native latency tradeoffs are accepted for this milestone;
+installation64 memory and the other economic recommendations still require explicit
+disposition. Optional representation/allocator/cache/compiler redesign is not a
+closeout requirement. No such experiment is retained.
 
 The [current build confirmation](https://github.com/tkersey/agent/blob/b277743aa2a8f0609428accd267b8719b64285ed/docs/compositional-execution.md#component-build-costs)
 separates native build, warm no-change, client edit, emission and component reuse.
