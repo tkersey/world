@@ -1,7 +1,7 @@
 # Current execution verification
 
 Boundary's source oracle evaluates the staged AST independently of its compiler
-and World. `zig build check-source` emits all 41 current source/BPI3 examples,
+and World. `zig build check-source` emits all 42 current source/BPI3 examples,
 compares source-visible results, failures, payloads, yields and cleanup order,
 and compares exact PKI3/PKO3 observations between native and WASM execution.
 Fresh invocations alternate the actual producer of the next portable State.
@@ -16,6 +16,10 @@ retain the independent historical oracle correction, including finalizer order
 exception or frozen BPI2 image is needed. PKI3 explicitly resumes an already
 observed cleanup yield after cancellation records the first reason. Test horizons
 count current instructions, not predecessor block transitions.
+
+Unsupported forwarding constructors are absent from the current records.
+Forwarding uses older-capability dispatch; the runtime control switch handles
+every admitted terminator explicitly.
 
 `check-native` exercises stable slots, retention, source execution, lifecycle,
 allocation failure, rollback and PST3 admission. Capture bounds have valid and

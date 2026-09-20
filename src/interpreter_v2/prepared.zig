@@ -2,7 +2,7 @@
 //! Reusable immutable Program ownership. Sessions retain their own strong lease.
 const std = @import("std");
 const data = @import("boundary_data");
-pub const Error = data.program_image.Error || error{ InvalidState, UnsupportedTransition };
+pub const Error = data.program_image.Error || error{InvalidState};
 pub const Contract = struct { payload: []const u8, resume_value: []const u8 };
 
 const Storage = struct {
@@ -54,7 +54,6 @@ pub const Prepared = struct {
         const admitted = try data.program_image.Admitted.decode(allocator, image);
         errdefer admitted.deinit();
         const program = admitted.program();
-        for (program.blocks) |block| if (block.terminator == .forward) return error.UnsupportedTransition;
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const a = arena.allocator();

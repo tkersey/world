@@ -8,6 +8,11 @@ Contracts and commands are in [kernel-abi.md](kernel-abi.md) and
 
 ## Current construction and validation
 
+Unsupported forwarding constructors and handler fields are retired upstream.
+World no longer carries an unreachable forwarding rejection; its control switch
+is exhaustive over current terminators. Older-capability dispatch remains covered
+by the scoped-reader forwarding witness. All 42 emitted images retain their bytes.
+
 Slot pages determine initialization. Conservative pruning bounds grant no read or
 ownership authority; retained views remain copy-on-write. Consuming continuations
 and replacing exclusively active controls reuse their owned nodes. Captured callers
@@ -35,8 +40,8 @@ failed growth, earlier holes, noncontiguous segments and 10,000 mixed operations
 with independent content/accounting/partition checks. Baseline-native versus
 candidate-guest canonical outputs also agree at the checked boundaries.
 
-The generic kernel is 463,045 bytes, SHA-256
-`54d39b7cf8b881701bb58f590cc2cd2a6baf461d7f0cad01e647c888e379ccad`.
+The generic kernel is 462,524 bytes, SHA-256
+`8f7b6359ddf4d63b513d8d5c17400487fde357cb487831bb2b555a449f39ee0b`.
 
 ## Current measurements and limits
 

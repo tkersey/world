@@ -535,7 +535,6 @@ pub const Session = struct {
                 } });
                 try self.applyComputation(body, args, wrapper, saved.evidence, descriptor);
             },
-            else => return error.UnsupportedTransition,
         }
     }
 
