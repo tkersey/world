@@ -88,13 +88,16 @@ Small scalar/deep, installation1/8, retained-loop1/8, tiny projection and empty
 sequence latency gaps remain subject to final comparison. Installation64,
 shallow, queens, cleanup, mixed/irregular8, retained loops and short sequences retain
 peak-memory gaps; large projections were about 3.5 KiB higher at peak. Favorable
-cases do not cancel those residuals. Final guest/Agent/build confirmation, serial
+cases do not cancel those residuals. Final guest/Agent confirmation, serial
 reviews and the requirement audit remain open.
 
-Cold build, warm no-change, client edit and component reuse remain separate from
-runtime timings. The earlier source-only emitter comparison was 16.50–16.56 s
-predecessor versus 15.45–15.50 s successor; the full compiler/evaluator probe had
-no clear cold-build gain. These are not final all-application build results.
+The [current build confirmation](https://github.com/tkersey/agent/blob/b277743aa2a8f0609428accd267b8719b64285ed/docs/compositional-execution.md#component-build-costs)
+separates native build, warm no-change, client edit, emission and component reuse.
+The matched source-only build plus first emission is 16.45–17.38 s for BPC1 and
+16.62–16.89 s for BPI3: overlapping ranges, with no consistent cold-build gain.
+Already-built installation256 emission is about 29.4 ms versus 4.4 ms. Native
+component tools still take 22.56–23.26 s to build and 15.01–15.02 s after a client
+edit; unchanged components remain reusable. No all-application build gain is claimed.
 
 Small standalone probes under `test/v2/` accept explicit source inputs:
 `build_execution_bench.zig`, `build_value_bench.zig`, and `build_replay_bench.zig`.
