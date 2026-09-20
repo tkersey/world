@@ -10,7 +10,7 @@ export function encodeInput({ image, initialArgs, state, control = "none", value
   const instance = state === undefined ? concat(natural(0), field(copyBytes(initialArgs))) : concat(natural(1), field(copyBytes(state)));
   if (state !== undefined) body("ABL_PST3", state);
   const tags = { none: 0, reply: 1, resume_yield: 2, cancel_text: 3, cancel_bytes: 3 };
-  if (!(control in tags)) throw new TypeError("unknown control");
+  if (typeof control !== "string" || !Object.hasOwn(tags, control)) throw new TypeError("unknown control");
   if (state === undefined && (control === "reply" || control === "resume_yield")) throw new Error("InvalidControl");
   value = typeof value === "string" ? encoder.encode(value) : copyBytes(value);
   if ((control === "none" || control === "resume_yield") && value.length !== 0) throw new Error("InvalidControl");

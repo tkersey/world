@@ -7,7 +7,7 @@ pub const Contract = struct { payload: []const u8, resume_value: []const u8 };
 
 const Storage = struct {
     allocator: std.mem.Allocator,
-    references: usize = 1,
+    references: std.atomic.Value(usize) = .init(1),
     admitted: *data.program_image.Admitted,
     arena: std.heap.ArenaAllocator,
     contracts: []const ?Contract,
@@ -19,13 +19,22 @@ pub const Core = opaque {
     }
     pub fn retain(self: *Core) Error!void {
         const owner = self.storage();
-        owner.references = std.math.add(usize, owner.references, 1) catch return error.InvalidState;
+        // The caller holds a live lease and synchronizes its transfer. Retain
+        // changes only the count; checked CAS cannot transiently wrap it to zero.
+        var current = owner.references.load(.monotonic);
+        while (true) {
+            std.debug.assert(current != 0);
+            const next = std.math.add(usize, current, 1) catch return error.InvalidState;
+            current = owner.references.cmpxchgWeak(current, next, .monotonic, .monotonic) orelse return;
+        }
     }
     pub fn release(self: *Core) void {
         const owner = self.storage();
-        std.debug.assert(owner.references != 0);
-        owner.references -= 1;
-        if (owner.references != 0) return;
+        // Distinct Sessions release through distinct gates. The final RMW is
+        // the sole destruction winner and acquires all preceding releases.
+        const previous = owner.references.fetchSub(1, .acq_rel);
+        std.debug.assert(previous != 0);
+        if (previous != 1) return;
         const allocator = owner.allocator;
         owner.arena.deinit();
         owner.admitted.deinit();
@@ -46,7 +55,8 @@ pub const Core = opaque {
 };
 
 /// An owning handle: clone explicitly to acquire another reference. Operations
-/// on the handle are sequential; its immutable data may serve independent Sessions.
+/// on each handle are sequential. Independent Sessions may use separate threads
+/// when their allocators, including this preparation's allocator, support it.
 pub const Prepared = struct {
     core: ?*Core,
 

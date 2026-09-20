@@ -119,6 +119,15 @@ assert.equal(terminal.find(x => x.name === "componentsRecursive").value, "01");
 // Physical failures cannot consume the parked response or transfer custody.
 const k = await kernel(), program = image("resource"), p = k.prepare(program), s = k.start(p);
 k.releasePrepared(p);
+const initial = k.checkpoint(s);
+let controlCoercions = 0;
+const coercedControl = { toString() { controlCoercions++; return "none"; } };
+for (const control of ["toString", "constructor", "__proto__", "hasOwnProperty", "unknown", null, 0, coercedControl]) {
+  assert.throws(() => k.drive(s, { control, quantum: 1 }), TypeError);
+  assert.deepEqual(k.checkpoint(s), initial, "invalid controls must not advance the session");
+  assert.throws(() => encodeInput({ image: program, initialArgs: new Uint8Array(), control }), TypeError);
+}
+assert.equal(controlCoercions, 0, "control admission must not invoke caller coercion hooks");
 assert.throws(() => k.close(s), error => error.details?.diagnostic === "UnfinishedSession");
 const pending = decodeOutcome(k.drive(s, { checkpoint: true }));
 const response = await leaf(pending.request);

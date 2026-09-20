@@ -32,7 +32,7 @@ repairs the free-list hint after splitting/coalescing. Failed requests preserve
 allocation contents and metadata; the required-capacity observation may increase.
 Nonmoving resize remains unsupported, preserving arena-slab growth behavior.
 
-The current candidate passes 84 native source tests, 65 storage tests, 42
+The repaired candidate passes 86 native source tests, 65 storage tests, 42
 source/native/WASM fixtures (6,434 observations), 239 native/Node boundaries,
 23 transfers, 161 Wasmtime boundaries, Chromium/Firefox Worker transfers, capacity
 checks and extracted runtime/CLI checks. Allocator regressions cover alignment,
@@ -40,8 +40,56 @@ failed growth, earlier holes, noncontiguous segments and 10,000 mixed operations
 with independent content/accounting/partition checks. Baseline-native versus
 candidate-guest canonical outputs also agree at the checked boundaries.
 
-The generic kernel is 462,524 bytes, SHA-256
-`8f7b6359ddf4d63b513d8d5c17400487fde357cb487831bb2b555a449f39ee0b`.
+The repaired generic kernel is 462,629 bytes, SHA-256
+`7a27d64295431c960046439353a158e378f14d4686fac47b61b1406cf1753663`.
+
+## Review repairs
+
+The initial World review identified three correctness defects. Shallow resumption
+rewrote lexical evidence links outside the Store journal; a failed resident
+publication could change a 188-byte checkpoint to 187 bytes. Rewrites now modify
+a local record and publish it through the existing journal-aware replacement
+operation. A regression forces failure at every instruction boundary through
+buffer, encoded and record publication, checks complete checkpoint equality, and
+then retries successfully. Allocation-failure sweeps also start with a retained
+shallow token, with and without checkpoint publication. The independent final
+answers remain four 99s followed by four 42s.
+
+The JavaScript drive wrapper accepted inherited property names such as toString
+as controls, allowing coercion to numeric control zero. Both command encoding and
+drive admission now require an own, declared string control before guest work.
+The real-kernel regression checks inherited names, unknown names, non-string
+controls, unchanged State and absence of caller coercion; the guest's separate
+numeric-control guard remains. Both the rollback and malformed-control regressions
+failed on the preceding implementation and pass after repair.
+
+Independent native Sessions also shared a non-atomic preparation lease count.
+Retain now uses checked atomic compare-exchange; final release uses a single
+acquire/release decrement so exactly one owner destroys preparation. Individual
+handle operations remain sequential, and cross-thread native use requires
+thread-safe allocators. Eight rounds of eight threads exercise 2,112 independent
+resident lifecycles, releasing the outer preparation before worker execution;
+leak-checked Debug, ReleaseSafe and ReleaseFast runs pass. The original race was
+established by a source trace, not an executed pre-fix concurrency reproduction.
+
+The complete 86-test native suite, 65 storage tests, codec checks, all 42 independent
+source fixtures / 6,434 observations, 239 native/Node boundaries / 23 transfers,
+161 Wasmtime boundaries, capacity/retry and extracted runtime/CLI checks pass.
+Real Worker transfers pass on Chromium 153.0.8010.12 and Firefox 155.0. The kernel
+remains import-free wasm32 with unshared memory and the same 256 MiB maximum.
+
+A targeted native comparison against World a20a285 holds Boundary 1b00c8c, source
+fixtures, expected results, capacities and ReleaseSafe build mode fixed. Two
+rotating windows use three processes per side/case, each with three warmups and
+nine samples. Scalar, deep, shallow, reentrant, retained-loop256 and
+installation64/128/256 preserve exact image sizes, allocation totals and peaks.
+Shallow medians are 206.29/206.46 → 207.13/207.13 microseconds across the windows
+(about 0.3–0.4% higher); the other changes are small and mixed. No speedup is
+claimed for these correctness repairs. The cumulative BPC1 and guest tables below
+retain their original production tuple; they are not silently rebound to the repair.
+Agent dependency repinning, affected integration confirmation and fresh World
+reviews remain required before coordinated closeout. The user requested another
+Boundary standard review plus all five auxiliary lenses after World is finished.
 
 ## Cumulative native and guest comparison
 

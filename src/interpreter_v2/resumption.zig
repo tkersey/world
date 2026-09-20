@@ -25,9 +25,10 @@ pub fn prepare(machine: anytype, token: g.Capture, after: g.NodeRef) @TypeOf(mac
     // successor. Copy that view before publishing the replacement node.
     try machine.frames.copyFrame(after.id, token.delimiter.id);
     try machine.store.replace(token.delimiter, try machine.store.get(after));
-    for (machine.store.nodes.items, machine.store.alive.items) |*record, alive| {
+    for (machine.store.nodes.items, machine.store.alive.items, 0..) |stored, alive, id| {
         if (!alive) continue;
-        const evidence: ?*?g.NodeRef = switch (record.*) {
+        var record = stored;
+        const evidence: ?*?g.NodeRef = switch (record) {
             .control => |*v| &v.evidence,
             .continuation => |*v| &v.evidence,
             .handler => |*v| &v.evidence,
@@ -39,7 +40,12 @@ pub fn prepare(machine: anytype, token: g.Capture, after: g.NodeRef) @TypeOf(mac
         // These are lexical context links. Explicit capability values keep
         // their original identities and are never silently redirected.
         if (evidence) |link| if (link.*) |reference| {
-            if (reference.id == token.delimiter.id) link.* = outer;
+            if (reference.id == token.delimiter.id) {
+                link.* = outer;
+                // Mutate a local record first. Store owns both the old journal
+                // entry and replacement slices until publication or rollback.
+                try machine.store.replace(.{ .id = @intCast(id) }, record);
+            }
         };
     }
     return if (token.evidence != null and token.evidence.?.id == token.delimiter.id)

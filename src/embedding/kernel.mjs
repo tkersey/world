@@ -87,7 +87,7 @@ export class Kernel {
   drive(token, { control = "none", value = empty, quantum = null, checkpoint = false } = {}) {
     const entry = this.#handle(token, "session");
     const tags = { none: 0, reply: 1, resume_yield: 2, cancel_text: 3, cancel_bytes: 4 };
-    if (!(control in tags) || typeof checkpoint !== "boolean") throw new TypeError("invalid drive options");
+    if (typeof control !== "string" || !Object.hasOwn(tags, control) || typeof checkpoint !== "boolean") throw new TypeError("invalid drive options");
     const bytes = typeof value === "string" ? new TextEncoder().encode(value) : copyBytes(value);
     if ((control === "none" || control === "resume_yield") && bytes.length) throw new TypeError("control takes no payload");
     const limit = quantum === null ? 0n : u64(quantum);

@@ -589,6 +589,144 @@ test "resident output capacity and checkpoint transfer preserve custody on failu
     try testing.expectError(error.InvalidState, restored.drive(testing.allocator, .none, .{ .quantum = 0 }));
 }
 
+test "shallow resumption preserves every resident boundary after failed publication" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.shallowResumptions(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var resident = try Resident.start(testing.allocator, &prepared, &.{});
+    defer releaseResident(&resident);
+    var swept = false;
+    for (0..4096) |_| {
+        const before = try resident.checkpoint(testing.allocator);
+        defer testing.allocator.free(before);
+        if (!swept) {
+            const session = &resident.session.?;
+            for (session.store.nodes.items, session.store.alive.items) |node, alive| {
+                if (!alive or node != .one_shot) continue;
+                const signature = session.program.schemas[@intCast(node.one_shot.schema)].internal.resumption;
+                if (signature.mode != .shallow) continue;
+                // The token already belongs to the entry State. Exercise every
+                // subsequent allocation failure, not only the output buffer.
+                for ([_]bool{ false, true }) |checkpoint_mode|
+                    try residentFailureSweep(&prepared, before, .none, checkpoint_mode);
+                swept = true;
+                break;
+            }
+        }
+        var tiny = [_]u8{0xa5};
+        try testing.expectError(error.Capacity, resident.driveInto(.none, .{ .quantum = 1, .checkpoint = true }, &tiny));
+        try testing.expectEqual(0xa5, tiny[0]);
+        try expectResidentCheckpoint(&resident, before);
+        var empty: [0]u8 = .{};
+        var output = std.heap.FixedBufferAllocator.init(&empty);
+        try testing.expectError(error.OutOfMemory, resident.driveEncoded(output.allocator(), .none, .{ .quantum = 1, .checkpoint = true }));
+        try expectResidentCheckpoint(&resident, before);
+        try testing.expectError(error.OutOfMemory, resident.drive(output.allocator(), .none, .{ .quantum = 1, .checkpoint = true }));
+        try expectResidentCheckpoint(&resident, before);
+        var succeeded = try resident.drive(testing.allocator, .none, .{ .quantum = 1, .checkpoint = true });
+        defer succeeded.deinit();
+        if (succeeded.record == .completed) {
+            try testing.expect(swept);
+            // Independent source expectation: four shallow value answers and
+            // four shallow computation answers retain their distinct results.
+            var expected: [64]u8 = undefined;
+            for ([_]u64{ 99, 99, 99, 99, 42, 42, 42, 42 }, 0..) |value, i|
+                std.mem.writeInt(u64, expected[i * 8 ..][0..8], value, .little);
+            try testing.expectEqualSlices(u8, &expected, succeeded.record.completed);
+            return;
+        }
+        try testing.expect(succeeded.record == .progressed);
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn expectResidentCheckpoint(resident: *Resident, expected: []const u8) !void {
+    const actual = try resident.checkpoint(testing.allocator);
+    defer testing.allocator.free(actual);
+    try testing.expectEqualSlices(u8, expected, actual);
+}
+
+test "independent native residents release shared preparation exactly once" {
+    if (@import("builtin").single_threaded) return error.SkipZigTest;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.installations(&builder, 1));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var memory: std.heap.DebugAllocator(.{ .thread_safe = true }) = .init;
+    defer if (memory.deinit() != .ok) @panic("shared preparation leaked");
+    const allocator = memory.allocator();
+    const Job = struct {
+        prepared: @import("stable_runtime").Prepared,
+        allocator: std.mem.Allocator,
+        ready: *std.atomic.Value(usize),
+        start: *std.atomic.Value(bool),
+        failure: ?anyerror = null,
+
+        fn run(self: *@This()) void {
+            _ = self.ready.fetchAdd(1, .release);
+            while (!self.start.load(.acquire)) std.atomic.spinLoopHint();
+            self.work() catch |err| {
+                self.failure = err;
+            };
+        }
+        fn work(self: *@This()) !void {
+            defer self.prepared.deinit();
+            for (0..32) |_| {
+                var resident = try Resident.start(self.allocator, &self.prepared, &.{});
+                defer releaseResident(&resident);
+                var result = try resident.drive(self.allocator, .none, .{});
+                defer result.deinit();
+                if (result.record != .completed or !std.mem.eql(u8, result.record.completed, &.{ 1, 0, 0, 0, 0, 0, 0, 0 }))
+                    return error.UnexpectedResult;
+                try resident.close();
+            }
+            var terminal = try Resident.start(self.allocator, &self.prepared, &.{});
+            defer releaseResident(&terminal);
+            var result = try terminal.drive(self.allocator, .none, .{});
+            defer result.deinit();
+            if (result.record != .completed) return error.UnexpectedResult;
+            self.prepared.deinit();
+            try terminal.close();
+        }
+    };
+    for (0..8) |_| {
+        var prepared = try @import("stable_runtime").Prepared.init(allocator, image);
+        defer prepared.deinit();
+        var ready: std.atomic.Value(usize) = .init(0);
+        var start: std.atomic.Value(bool) = .init(false);
+        var jobs: [8]Job = undefined;
+        var initialized: usize = 0;
+        defer for (jobs[0..initialized]) |*job| job.prepared.deinit();
+        for (&jobs) |*job| {
+            job.* = .{ .prepared = try prepared.clone(), .allocator = allocator, .ready = &ready, .start = &start };
+            initialized += 1;
+        }
+        prepared.deinit();
+        var threads: [8]std.Thread = undefined;
+        var started: usize = 0;
+        defer {
+            start.store(true, .release);
+            for (threads[0..started]) |thread| thread.join();
+        }
+        for (&jobs) |*job| {
+            threads[started] = try std.Thread.spawn(.{}, Job.run, .{job});
+            started += 1;
+        }
+        while (ready.load(.acquire) != jobs.len) std.atomic.spinLoopHint();
+        start.store(true, .release);
+        for (threads) |thread| thread.join();
+        started = 0;
+        for (jobs) |job| if (job.failure) |err| return err;
+    }
+}
+
 test "resident progress defers checkpoint publication until explicitly requested" {
     var builder = source.Builder.init(testing.allocator);
     defer builder.deinit();
