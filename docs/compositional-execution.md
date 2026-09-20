@@ -208,11 +208,21 @@ The table preserves every higher peak; percentages use BPC1 as denominator.
   **Recommendation: accept the named installation-family storage tradeoff** on
   this tuple, subject to the final requirement audit; no allocator redesign is
   proposed. The 1/8 costs are reported separately above, not inferred to be fixed.
-- **Queens/search: DFS +18,573 bytes (+13.01%); BFS +59,629 (+38.83%).** Faster
-  search alone does not justify these costs. Their precise allocation/retention
-  cause is unresolved in the current report. **Recommendation: resolve that
-  evidence gap before asking for acceptance**, using the unchanged search fixtures
-  and a targeted lifetime observation, not another optimization campaign.
+- **Queens/search: DFS +18,573 bytes (+13.01%); BFS +59,629 (+38.83%).** An
+  untimed current-tuple lifetime probe, using the unchanged full trace oracle,
+  reproduces both peaks exactly. DFS first reaches 161,300 during checkpoint/request
+  production, from 103,304 live bytes before that phase to 111,874 afterward. BFS
+  reaches 213,208 in the same phase, from 120,256 live bytes to 130,108 afterward.
+  Thus 49,426 / 83,100 bytes at those peaks are no longer retained when the phase
+  returns. The immutable preparation owner accounts for 59,652 bytes in either
+  search. The request boundaries retain at most 53 / 65 live nodes and 7 / 8
+  activation pages; each final computation has one result node and no activation
+  pages. Every fresh invocation returns to zero workspace allocations after its
+  owners release. The required complete checkpoint temporarily coexists with
+  session data and projection/admission scratch; this is not evidence of a leak.
+  **Recommendation: accept these named transient checkpoint peaks** for the fixed
+  qualified searches. This does not establish bounded memory for arbitrary larger
+  searches or credit latency gains as memory evidence.
 - **Retained loops: about 6 KB additional peak.** The candidate peak reaches
   20,720 bytes at 128 iterations and remains there at 256; checkpoints and retained
   old-view regressions exercise isolation and reclamation separately. This is
@@ -229,9 +239,30 @@ The table preserves every higher peak; percentages use BPC1 as denominator.
   consuming traversal; the long cases do not reintroduce repeated tail copying.
   **Recommendation: accept the named short-sequence tradeoff**, retaining those
   scaling and reclamation limits.
-- **Deep, shallow, cleanup and mixed/irregular8:** the comparative peaks remain
-  explicit, but this report does not yet isolate their additional storage by
-  lifetime. **Recommendation: finish the focused attribution before disposition.**
+- **Scalar/deep:** the lifetime probe reaches the 4,406 / 13,889 peaks during
+  execution. Preparation owns 2,080 / 8,802 bytes; terminal sessions retain one
+  result node and no activation pages. Full release returns to zero allocations.
+  **Recommendation: accept these named fixed-fixture working peaks**, not an
+  inference that arbitrary small Programs have constant overhead.
+- **Shallow:** the 149,898-byte peak occurs during preparation; live allocation
+  falls to 49,461 after preparation/start, including a 45,592-byte prepared owner.
+  The final computation has one result node and no activation pages, and full
+  invocation release returns to zero. **Recommendation: accept this named transient
+  preparation cost**; its +3,984 bytes (+2.73%) is not retained session growth.
+- **Cleanup and mixed/irregular8:** peaks of 44,827 / 20,663 occur during output
+  and checkpoint production, while preserving suspending cleanup and the original
+  trace. They remain live until the exported outcome is encoded and released;
+  every complete invocation then returns to zero allocations. Mixed/irregular
+  64/128/256 have lower peaks than BPC1 in the existing scaling table.
+  **Recommendation: accept these named output-production tradeoffs.**
+
+The lifetime probe adds observations only to an isolated copy of the current
+runtime and uses the maintained execution benchmark's independent expectations.
+It does not change inputs, transitions, allocation calls, collection, or physical
+capacities. All nine observed peaks exactly match the uninstrumented cumulative
+measurements. It attributes current peaks by phase and release lifetime; it does
+not claim a byte-for-byte decomposition of the predecessor-to-successor difference.
+No instrumentation or generated trace is retained in the repository.
 
 These are recommendations, not user acceptance. Agent-specific peak/checkpoint
 costs and its larger ReAct image are separately reported in
@@ -239,9 +270,9 @@ costs and its larger ReAct image are separately reported in
 
 ## Remaining acceptance work
 
-Cumulative guest/Agent confirmation on the selected production tuple, the targeted
-memory-attribution gaps above, the requirement audit and serial reviews remain
-open. The named native latency tradeoffs are accepted for this milestone;
+Cumulative guest/Agent confirmation on the selected production tuple, the
+requirement audit and serial reviews remain open. The targeted memory lifetime
+observations above now support concrete economic recommendations. The named native latency tradeoffs are accepted for this milestone;
 installation64 memory and the other economic recommendations still require explicit
 disposition. Optional representation/allocator/cache/compiler redesign is not a
 closeout requirement. No such experiment is retained.

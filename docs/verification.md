@@ -48,9 +48,11 @@ allocator observations as lower bounds and final output demand as exact.
 The old ABI 2 guest/host, v1 replay corpus, archive/release tools and old-format
 drivers are removed. Current dependency archive authentication and safe extraction
 are exercised by Agent's `test/agent4/setup.test.mjs` and
-`test/agent4/consumer_build.test.mjs`; final successor repinning and qualification
-remain required. Historical performance samples remain available without creating
-an old-format production dependency.
+`test/agent4/consumer_build.test.mjs`. Agent's normal authenticated lock now selects
+Boundary 1b00c8c and World a20a285; its recorded functional qualification includes
+these paths. Remaining selected-tuple performance confirmation and serial reviews
+are tracked in [current results](compositional-execution.md). Historical performance
+samples remain in Git history, not in a maintained old-format production dependency.
 
 The old ABI 1 Boundary locks, frozen vector bytes and repository-repair transcript
 bundle are also removed from the source package. Their current counterparts are
