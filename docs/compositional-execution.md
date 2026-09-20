@@ -87,8 +87,13 @@ Shallow medians are 206.29/206.46 → 207.13/207.13 microseconds across the wind
 (about 0.3–0.4% higher); the other changes are small and mixed. No speedup is
 claimed for these correctness repairs. The cumulative BPC1 and guest tables below
 retain their original production tuple; they are not silently rebound to the repair.
-Agent dependency repinning, affected integration confirmation and fresh World
-reviews remain required before coordinated closeout. The user requested another
+Agent's normal repin to this repair and its 229-step / 176-test check, all six
+integration groups, extracted consumers and compiled-tool browser transfer pass.
+Its targeted three-path before/after timing confirmation preserves exact native
+peaks and allocation totals, with small mixed timing differences; all 180 captured
+inputs and outputs agree byte for byte. Details remain in
+[Agent's results](https://github.com/tkersey/agent/blob/feat/compositional-execution/docs/compositional-execution.md#world-review-repair-qualification).
+Fresh World review status is recorded in the linked draft PRs. The user requested another
 Boundary standard review plus all five auxiliary lenses after World is finished.
 
 ## Cumulative native and guest comparison
