@@ -43,58 +43,101 @@ candidate-guest canonical outputs also agree at the checked boundaries.
 The generic kernel is 462,524 bytes, SHA-256
 `8f7b6359ddf4d63b513d8d5c17400487fde357cb487831bb2b555a449f39ee0b`.
 
-## Current measurements and limits
+## Cumulative native comparison
 
-The fixed predecessor is Boundary 42a09b9 / World d075169, including compact BPC1.
-The complete 45-case native refresh at Boundary 6c59436 / World dc7e81d established
-large control/value gains: mixed256 about 8× faster, sequence4096 about 67×, and
-1 MiB projections over 100×. Subsequent control-node and allocator comparisons
-use the same Boundary images and independent trace/result oracles. They do not
-replace final cumulative acceptance against BPC1.
+The current measured pair is Boundary 1b00c8c / World a20a285, taken from Agent's
+authenticated inputs, against the fixed Boundary 42a09b9 / World d075169 anchors.
+The same 45 standalone control/value fixtures and independent trace/result
+oracles run under normal BPI2, compact BPC1 and BPI3. Source policy, handlers,
+input/reply values, checked sums and physical capacities are unchanged.
 
-Two native remap windows compare this implementation with World 58f2533 over all
-30 control fixtures. Each side has three process observations per case per window,
-with three warmups and nine samples. Clocks cover complete fresh invocations;
-fixture replies and oracle checks are outside them. Latency changes are small and
-mixed, so no broad speedup is claimed. These are not request-tail measurements.
+Two windows rotate format order. Each process has three warmups and nine samples;
+most cases have three processes per format/window. Mixed/irregular128/256 and
+sequence1024/4096 have one per format/window. Tables report medians of process
+medians across both windows, not request-tail statistics. Zig 0.16.0 ReleaseSafe,
+Node 26.9.0 and M2 Pro/macOS 27.2 were held fixed, with no overlapping builds or
+benchmarks. Clocks cover complete fresh invocations; control-fixture reply encoding
+and oracle checks are outside the clock. Projections repeat 256 times; sequences
+consume every element. Projection sizes are bytes, sequence sizes element counts.
 
-| Installations | Native peak before remap | Native peak now | BPC1 peak |
-| ---: | ---: | ---: | ---: |
-| 1 | 10,995 | 10,995 | 8,700 |
-| 8 | 26,703 | 24,199 | 15,564 |
-| 64 | 141,786 | 135,051 | 121,956 |
-| 128 | 227,570 | 227,570 | 435,558 |
-| 256 | 388,069 | 365,015 | 1,324,938 |
+| Workload | BPI2 µs | BPC1 µs | BPI3 µs | Peak bytes BPC1 → BPI3 |
+| --- | ---: | ---: | ---: | ---: |
+| scalar | 1.85 | 1.77 | 2.42 | 3,594 → 4,406 |
+| deep | 9.79 | 9.83 | 11.25 | 10,784 → 13,889 |
+| residual | 14.88 | 14.54 | 12.77 | 12,726 → 11,481 |
+| reentrant | 155.27 | 154.58 | 93.63 | 127,125 → 102,931 |
+| shallow | 319.81 | 320.48 | 208.10 | 145,914 → 149,898 |
+| generator | 240.90 | 240.48 | 145.98 | 58,859 → 53,163 |
+| scheduler | 417.31 | 422.73 | 221.06 | 88,240 → 87,857 |
+| queens_dfs | 8206.79 | 8189.81 | 3072.63 | 142,727 → 161,300 |
+| queens_bfs | 10953.75 | 11077.67 | 3146.94 | 153,579 → 213,208 |
+| cleanup | 295.46 | 300.92 | 170.60 | 43,221 → 44,827 |
+| install / 1 | 8.00 | 7.96 | 8.65 | 8,700 → 10,995 |
+| install / 8 | 23.00 | 23.10 | 28.58 | 15,564 → 24,199 |
+| install / 64 | 252.60 | 241.60 | 226.50 | 121,956 → 135,051 |
+| install / 128 | 739.00 | 703.94 | 476.10 | 435,558 → 227,570 |
+| install / 256 | 2526.75 | 2339.19 | 985.94 | 1,324,938 → 365,015 |
+| mixed / 1 | 18.23 | 18.15 | 17.48 | 13,900 → 13,038 |
+| mixed / 8 | 204.06 | 203.71 | 151.21 | 18,104 → 20,663 |
+| mixed / 64 | 16122.46 | 15414.02 | 5038.83 | 157,992 → 75,234 |
+| mixed / 128 | 104424.73 | 98535.05 | 20599.85 | 550,276 → 171,155 |
+| mixed / 256 | 775457.90 | 728132.97 | 89877.17 | 1,951,618 → 320,644 |
+| irregular / 1 | 18.27 | 18.25 | 17.65 | 13,898 → 13,026 |
+| irregular / 8 | 204.67 | 203.04 | 150.79 | 18,104 → 20,663 |
+| irregular / 64 | 16047.73 | 15471.44 | 5019.00 | 157,992 → 74,982 |
+| irregular / 128 | 104261.08 | 98356.79 | 20380.15 | 550,276 → 170,697 |
+| irregular / 256 | 777783.90 | 729663.00 | 90127.17 | 1,951,618 → 319,681 |
+| retained_loop / 1 | 17.52 | 18.10 | 21.50 | 14,576 → 20,589 |
+| retained_loop / 8 | 31.85 | 31.79 | 35.79 | 14,614 → 20,625 |
+| retained_loop / 64 | 140.02 | 141.98 | 144.31 | 14,614 → 20,713 |
+| retained_loop / 128 | 264.69 | 266.54 | 269.23 | 14,626 → 20,720 |
+| retained_loop / 256 | 513.15 | 529.06 | 523.23 | 14,626 → 20,720 |
+| variant / unit | 141.29 | 141.06 | 191.87 | 7,232 → 9,678 |
+| variant / 0 | 153.04 | 152.73 | 189.25 | 7,232 → 9,680 |
+| variant / 1024 | 191.56 | 193.81 | 187.35 | 8,105 → 11,731 |
+| variant / 65536 | 2779.81 | 2761.29 | 206.88 | 137,131 → 140,758 |
+| variant / 1048576 | 38790.06 | 38253.90 | 341.02 | 2,103,211 → 2,106,838 |
+| product / 0 | 163.79 | 161.90 | 197.71 | 7,232 → 9,698 |
+| product / 1024 | 205.46 | 204.10 | 196.62 | 8,202 → 11,749 |
+| product / 65536 | 2759.63 | 2741.73 | 209.48 | 137,228 → 140,776 |
+| product / 1048576 | 37390.90 | 37351.52 | 356.60 | 2,103,308 → 2,106,856 |
+| sequence / 0 | 4.92 | 4.88 | 5.71 | 8,382 → 9,927 |
+| sequence / 16 | 35.37 | 35.00 | 23.88 | 8,382 → 16,311 |
+| sequence / 64 | 188.35 | 185.13 | 73.19 | 13,597 → 17,003 |
+| sequence / 256 | 1541.29 | 1593.54 | 270.10 | 27,813 → 20,845 |
+| sequence / 1024 | 19211.92 | 20170.29 | 1079.21 | 84,645 → 37,636 |
+| sequence / 4096 | 286336.33 | 302179.58 | 4281.71 | 311,973 → 105,221 |
 
-Total allocation at 64 falls 432,129 → 374,049 bytes, and at 256 falls
-1,459,837 → 1,310,861. Default images remain 2,241/4,559/9,551 bytes at 64/128/256,
-below BPC1's 2,805/5,574/12,102. The 64-case peak gap remains unresolved.
+Installation64 latency is now below BPC1 in both windows, with separated observed
+process ranges; its peak-memory gap remains. Installation128/256 retain large
+improvements, and their complete default images remain 2,241/4,559/9,551 bytes
+at 64/128/256 versus BPC1's 2,805/5,574/12,102. Mixed/irregular256 are about 8×
+faster, sequence4096 about 70×, and large product/variant projections about 100×.
+These are workload-specific results, not a uniform speedup claim.
 
-Guest confirmation uses isolated Node processes: two windows, three observations
-per side/case, nine batches of 64 full fresh calls after 32 warmups. Seven selected
-initial-invocation fixtures preserve canonical outputs. Guest peaks are unchanged
-and timing changes are mixed; no guest speedup is claimed. The final kernel is
-byte-identical to the timed candidate.
+Unfavorable observations remain: scalar, deep, installation1/8, retained-loop1/8,
+tiny projections and empty sequence are slower than BPC1. Retained-loop64/256
+ranges overlap; retained-loop128 is about 1% slower in this run. Variant1024 ranges
+also overlap. Installation1/8/64, shallow, queens, cleanup, mixed/irregular8,
+retained loops, short sequences and projections retain higher peaks. Favorable
+cases do not cancel those residuals or establish full performance acceptance.
 
-Unrestricted in-place resize was rejected: it let standard arenas retain larger
-slabs and raised installation256 peak to 420,861 bytes. The selected remap path
-avoids that change. No rejected implementation or experiment archive is maintained.
+The existing suspension-reclamation witness remains separate: a tiny survivor of
+large dead backing retains 8,182 native working bytes and an 86-byte checkpoint,
+with independent live-alias checks. This cumulative run does not repeat that
+unchanged witness or the host-transfer matrix.
 
-Native cursor reclamation retains its 17,003-byte sequence64 peak and 20,845-byte
-sequence256 peak; corresponding BPC1 peaks are 13,597 and 27,813 bytes. Some
-projection timings incurred a 1–5% cost. Suspension reclamation retains the
-independent live-alias checks and one-element-survivor result: 8,182 native working
-bytes and an 86-byte checkpoint, independent of discarded backing size. Its earlier
-1–5% control-time cost remains part of the cumulative comparison.
+Guest remap confirmation remains bound to its earlier exact candidate: peaks were
+unchanged and timing differences were mixed. Unrestricted in-place resize was
+rejected after raising installation256 peak to 420,861 bytes. The selected remap
+path retains the arena-slab policy. No rejected implementation, raw samples or
+experiment archives are maintained.
 
 ## Remaining acceptance work
 
-Small scalar/deep, installation1/8, retained-loop1/8, tiny projection and empty
-sequence latency gaps remain subject to final comparison. Installation64,
-shallow, queens, cleanup, mixed/irregular8, retained loops and short sequences retain
-peak-memory gaps; large projections were about 3.5 KiB higher at peak. Favorable
-cases do not cancel those residuals. Final guest/Agent confirmation, serial
-reviews and the requirement audit remain open.
+The measured residuals above, cumulative guest/Agent confirmation, serial reviews
+and the final requirement audit remain open. Native installation64 latency is no
+longer an open regression; its memory cost still is.
 
 The [current build confirmation](https://github.com/tkersey/agent/blob/b277743aa2a8f0609428accd267b8719b64285ed/docs/compositional-execution.md#component-build-costs)
 separates native build, warm no-change, client edit, emission and component reuse.
