@@ -1,115 +1,88 @@
-# World 5
+# World 6
 
-World executes complete Boundary 2 programs through one Zig interpreter,
-compiled natively and to an import-free WASM kernel. Computations, handlers,
-search and scheduling policies are program data. Environmental effects are
-returned as typed requests for the caller to resolve.
+World executes complete Boundary programs through one Zig interpreter, built
+natively and as an import-free wasm32 kernel. Computations, handlers, policies,
+retained control and cleanup are program data. The environment supplies typed
+external results.
 
-World `5.0.2` uses Zig `0.16.0` and pins the released Boundary `2.0.2` source.
+World `6.0.0-dev.0` uses Zig `0.16.0`. This successor branch is completing the
+coordinated Boundary 3 / Agent migration. See [current status](docs/compositional-execution.md)
+and the [ABI 3 contract](docs/kernel-abi.md).
 
-## Run a program
+## JavaScript and browser Workers
 
-The runtime archive includes `world-process-kernel-v2.wasm`, a minimal
-JavaScript adapter/CLI, strict codecs and an identity manifest. Node 26.8.1 or
-newer is required for this embedding.
-
-```sh
-node bin/world.mjs process run \
-  --image example.bpi2 --initial initial.bin --output outcome.pko2
-```
-
-Use `process step` for one bounded internal transition. Resume from `--state`
-and optionally `--result`; cancel saved State with `--cancel TEXT` or
-`--cancel-bytes FILE`. `--kernel FILE --kernel-sha256 HEX` selects a custom
-kernel with an explicit expected digest. Unknown, repeated and incompatible
-options reject. Invocation failures leave an existing output unchanged.
-
-Input paths must resolve to regular files. Symlinks to regular files are allowed;
-reads stay within the opened file's initial size and reject observed changes.
-
-JavaScript consumers import `@tkersey/world/process-v2`:
+The package root is an environment-neutral byte API:
 
 ```js
-import { run, decodeRequest, encodeResult } from "@tkersey/world/process-v2";
-const outcome = await run({ image, initialArgs });
-// Requested includes detached State and an ERQ2, not a host effect callback.
+import { Kernel, encodeInput, decodeOutcome, decodeRequest, encodeResult } from "@tkersey/world";
+const kernel = await Kernel.create({ bytes: kernelBytes, expectedSha256 });
+const outcome = decodeOutcome(kernel.invoke(encodeInput({ image, initialArgs })));
+if (outcome.kind === "requested") {
+  const request = await decodeRequest(outcome.request);
+  // Resolve the declared operation using the environment's permitted adapter.
+  const value = await encodeResult(outcome.request, typedReplyBytes);
+  const next = decodeOutcome(kernel.invoke(encodeInput({ image, state: outcome.state, control: "reply", value })));
+}
 ```
 
-`loadProcessKernel()` authenticates the bundled kernel through the identity
-manifest. `admitProcessKernel(bytes, { expectedSha256 })` admits caller-selected
-bytes. The admitted object provides `advance` and `run`; strict codecs include
-`encodeInput`, `decodeOutcome`, `decodeRequest`, `encodeResult`, and
-`validateValue`. Root `advance` and `run` load the bundled runtime.
+Supply expected kernel identity from the consuming application's trusted binding.
+The same entry point loads directly in a real browser Worker without Node imports
+or a bundler. Inputs and returned buffers have explicit ownership; old image,
+checkpoint and envelope families reject.
 
-Native consumers import the Zig module `world` and use `world.process_v2` with
-logical Program/State records or serialized BPI2/PST2. The production Zig
-dependency contains only Boundary's pure `boundary_data_v2` module.
+`prepare`, `start`/`restore`, `drive`, `checkpoint`, `close`, and
+`releasePrepared` expose prepared/resident execution through the same evaluator.
+Resident checkpoints are explicit; `checkpoint(session, { transfer: true })`
+exports and releases only after successful output publication. `close` requires
+terminal control. Cancellation and cleanup are executable operations, not physical
+handle destruction. Use `setLimits` to select input, working and output budgets.
 
-## Build and verify
+Native consumers import `world.Session`, `world.Prepared`, `world.Resident`, and
+`world.invocation`. Production builds import only Boundary's pure data module.
 
-The production build fetches the exact public Boundary source and package hash
-in `build.zig.zon`, requesting only its pure data module:
+## Build, package and command line
 
 ```sh
-zig build build-v2-kernel
+zig build build-kernel build-runtime
+node zig-out/runtime/bin/world.mjs --help
+node zig-out/runtime/bin/world.mjs invoke --kernel zig-out/runtime/world-kernel.wasm --sha256 EXPECTED_SHA256 --input command.pki3 > outcome.pko3
 ```
 
-For development or conformance checks, select exact independent inputs:
+The CLI reads regular files, rejects observed changes, and writes canonical PKO3
+bytes to stdout. The input is a complete PKI3 command, including image, initial
+arguments or checkpoint, reply/cancellation/yield control, and optional quantum.
+`build-runtime` creates a standalone package under `zig-out/runtime` without
+constructing Boundary's authoring compiler. It does not publish a package.
 
 ```sh
-zig build build-v2-kernel -Dboundary-v2-source=/absolute/boundary-source
-zig build check-v2-portability \
-  -Dboundary-v2-source=/absolute/boundary-source \
-  -Dboundary-v2-fixtures=/absolute/boundary-fixtures
-zig build check-v2-economy \
-  -Dboundary-v2-source=/absolute/boundary-source \
-  -Dboundary-v2-fixtures=/absolute/boundary-fixtures
+zig build check
 ```
 
-`check-v2` also runs native/source agreement and frozen BPI1 comparisons; supply
-`-Dlegacy-v1-kernel=/absolute/frozen-kernel` and
-`-Dbpi1-lift=/absolute/bpi1-lift`. Source agreement has its own separate test
-build. The production build never constructs Boundary authoring modules.
-Portability checks use Node and independently implemented Wasmtime 48.0.0
-embedding calls, with Python dependencies pinned by `test/v2/wasmtime/uv.lock`
-and run through `uv`. Requested external checks execute unconditionally.
-
-Emit the runtime with the matching Boundary release assets already available.
-Release emission and source authentication require actual clean Git checkouts;
-ordinary kernel builds and runtime consumers do not require Git:
-
-```sh
-zig build emit-world-v2-release \
-  -Dboundary-v2-source=/absolute/boundary-source \
-  -Dboundary-v2-release=/absolute/boundary-assets/release \
-  --prefix zig-out/v2
-node scripts/v2/check_release.mjs \
-  /absolute/boundary-assets/release zig-out/v2/release \
-  /absolute/boundary-source .cache/v2/package-check
-```
-
-Emission writes the kernel, runtime archive, conformance JSON/binary, receipt,
-and checksums under `zig-out/v2/release`. It never publishes, merges or tags.
-The verifier checks outer checksums and source bindings before executing the
-compiler example or bundled runtime. Optional final arguments select the exact
-expected Boundary and World public commits and require clean source receipts.
-See [the ABI and API](docs/process_v2-abi.md). The source checkout also contains
-measured economy in `docs/economy-v2.md` and the semantic and ownership witness
-index in `docs/verification-v2.md`.
+During coordinated development, `-Dboundary-source=/absolute/boundary-source`
+selects the matching source explicitly. `check-native` runs current source and
+Session regressions in a separate compiler-dependent build. `check-storage`
+checks shared private storage, allocation, cloning and collection independently.
+`check-source` compares all 41 emitted BPI3 examples with the independent source
+oracle and fresh native/WASM execution. `check-capacity` checks arena exhaustion,
+fixed physical memory, and unchanged retries. Both are included in `check`.
+Wasmtime uses the locked Python environment through uv; browser checks run
+real Chromium and Firefox Workers.
 
 ## State and effects
 
-Each invocation owns its candidate storage and publishes only after admission
-and output encoding succeed. State transfers across fresh native/WASM engines;
-there is no originating-interpreter binding. Capacity requirements are physical
-observations, and retries use the unchanged authoritative input. `run` has no
-semantic fuel and may continue indefinitely for an internally divergent program.
+BPI3 contains the closed executable Program; PST3 contains complete portable
+execution. Fresh and resident operations publish only after admission and output
+encoding succeed. Physical failures leave the prior authoritative input reusable.
+Quanta bound internal transitions without changing authored results or effect order.
+An unbounded invocation may diverge if the authored program diverges.
 
-Cleanup is explicit portable control. Cancellation of saved State preserves
-already-running cleanup and rebinds its request when State changes. An environment
-can encode its already-obtained typed result against that successor request.
-The runtime does not provide external rollback or global exactly-once effects.
+A cancelled pending cleanup retains its control and receives a newly bound request.
+The environment may re-encode an already acquired typed result against that request;
+World does not provide external rollback or global exactly-once effects.
 
-The v1 public adapter and bundled v1 kernel have been removed. The frozen adapter
-under `test/v2/legacy/` is isolated comparison tooling. Historical conformance
-records remain unchanged, including their original Boundary version identities.
+Complete Agent migration, selective/value performance acceptance, remaining legacy
+retirement and final package qualification are still in progress. No merge or
+release is implied by this development package.
+
+See [verification](docs/verification.md) for the current coverage and the
+remaining migration boundaries.

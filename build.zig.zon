@@ -1,14 +1,14 @@
 .{
     .name = .world,
-    .version = "5.0.2",
+    .version = "6.0.0-dev.0",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0x3a771143074dc2bd,
     .dependencies = .{
-        .boundary_v2 = .{
-            .url = "https://github.com/tkersey/boundary/archive/42a09b92c2870ab3eab923fe68ca2645eb710000.tar.gz",
-            .hash = "boundary-2.0.2-flclaCKdMgCw2_TeuCpz6p3r3BAlrrmKKoX4Bx_Pr6Sy",
+        .boundary = .{
+            .url = "https://github.com/tkersey/boundary/archive/1b00c8c159f0cb490a1223fac8d3d208cef41cb1.tar.gz",
+            .hash = "boundary-3.0.0-dev.0-flclaCJBFQCNUnFJK019OyLBDLZdg6_eTW1rzBpwImGA",
             .lazy = true,
         },
     },
-    .paths = .{ "LICENSE", "README.md", "build.zig", "build.zig.zon", "package.json", "bin", "scripts", "src", "test", "docs", "conformance" },
+    .paths = .{ "LICENSE", "README.md", "build.zig", "build.zig.zon", "package.json", "bin", "src", "test", "docs/kernel-abi.md", "docs/verification.md", "docs/compositional-execution.md" },
 }

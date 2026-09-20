@@ -1,0 +1,158 @@
+{
+  "provenance": {
+    "boundary": "c914de195a6003076629e650ba0b6496d5fcdb75",
+    "oracleSha256": "4110f2e1a3e2702ddd474c44bdd99e1c520730ac8349cf640682d52f1829461f",
+    "note": "Public-builder cleanup fixtures and corrected independent source expectations; owned result log independently established as [3,7,99] by the authored finalizers and W0."
+  },
+  "entries": [
+    {
+      "name": "cleanup-disposal",
+      "expected": {
+        "trace": [],
+        "kind": "Completed",
+        "value": [
+          1,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          4,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          99,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          99,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "cleanup-disposal-running",
+      "expected": {
+        "trace": [],
+        "kind": "Completed",
+        "value": [
+          1,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          99,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "cleanup-disposal-failure",
+      "expected": {
+        "trace": [
+          {
+            "kind": "Yielded"
+          }
+        ],
+        "kind": "Failed",
+        "value": [],
+        "cleanupFailures": []
+      }
+    },
+    {
+      "name": "cleanup-disposal-owned",
+      "expected": {
+        "trace": [],
+        "kind": "Completed",
+        "value": [
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          3,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          99,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  ]
+}

@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         var compiled = try boundary.program.compile(init.gpa, module);
         defer compiled.deinit();
-        const data = boundary.data_v2;
+        const data = boundary.data;
         const length_bytes = if (options.compact)
             try data.compact_image.encodedLength(init.gpa, compiled.program)
         else
