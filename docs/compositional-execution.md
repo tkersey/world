@@ -9,134 +9,92 @@ Contracts and commands are in [kernel-abi.md](kernel-abi.md) and
 ## Current construction and validation
 
 Slot pages determine initialization. Conservative pruning bounds grant no read or
-ownership authority; retained views remain copy-on-write. Same-function tail calls
-can reuse an activation only under the existing custody checks. Suspensions and
-terminal outcomes reclaim dead backing; checkpoint export remains read-only.
-Resident failure sweeps preserve unchanged retry input and cleanup custody.
+ownership authority; retained views remain copy-on-write. Consuming continuations
+and replacing exclusively active controls reuse their owned nodes. Captured callers
+remain continuations, and multi-shot captures are cloned before activation.
+Resident failure sweeps preserve retry input, frame custody and cleanup.
 
-On 64-bit native storage, a final reusable, capture-free callable can enter its
-immediate handler without allocating an environment or callable object. State and
-argument aliases, later uses and every declared edge source preserve ordinary
-construction. The existing handler-entry owner receives the genuine arguments.
-Fusion charges both work units and requires enough remaining quantum. Explicit
-single-step execution retains the intermediate boundary. WASM uses ordinary
-execution with the same work accounting and logical boundaries.
+Qualified 64-bit native execution elides an immediately consumed, reusable,
+capture-free handler callable only when arguments, state and all declared edge
+sources cannot retain it. Both work units remain charged; strict stepping keeps
+the intermediate boundary. Native sequence consumption also reclaims dead cursors
+early, preserving live aliases. WASM retains ordinary callable construction and
+its existing collection schedule after those shortcuts regressed guest timing.
 
-Tests distinguish eligible, non-adjacent, retained, edge-aliased, linear and
-state-aliased callables. Bounded and strict checkpoints agree; every allocation
-failure preserves retry state. The current candidate passes 84 native source
-tests, 42 source/native/WASM cases (6,434 observations), 239 native/Node boundaries,
+The workspace now supports in-place remap for growable arrays. It preserves the
+pointer and retained prefix, consumes only physically adjacent free blocks, and
+repairs the free-list hint after splitting/coalescing. Failed requests preserve
+allocation contents and metadata; the required-capacity observation may increase.
+Nonmoving resize remains unsupported, preserving arena-slab growth behavior.
+
+The current candidate passes 84 native source tests, 65 storage tests, 42
+source/native/WASM fixtures (6,434 observations), 239 native/Node boundaries,
 23 transfers, 161 Wasmtime boundaries, Chromium/Firefox Worker transfers, capacity
-checks and extracted runtime/CLI checks. These prove the tested cases, not final
-performance acceptance.
+checks and extracted runtime/CLI checks. Allocator regressions cover alignment,
+failed growth, earlier holes, noncontiguous segments and 10,000 mixed operations
+with independent content/accounting/partition checks. Baseline-native versus
+candidate-guest canonical outputs also agree at the checked boundaries.
 
-The generic kernel is 462,400 bytes, SHA-256
-`3beae29e2b4f74de5248c636319c3f31fbdd28fab632314b9b1dd7c83c066c49`.
-
-Consuming a saved continuation now changes its owned node back into a control;
-its activation keeps the same custody. Function entry replaces an exclusively
-active control only after the new frame is fully constructed. A caller that must
-survive is already a continuation and is preserved. Multi-shot captures are cloned
-before activation. No argument, handler, final sum, work unit or cleanup is omitted.
-The displaced frame-map move operation is removed. New regressions cover mutual
-tail entry, checkpoint restoration, retained caller results and resident failures.
-Baseline-native versus candidate-guest outputs also agree at all 239 checked
-boundaries and 23 transfers, including retained and reentrant cases.
+The generic kernel is 463,045 bytes, SHA-256
+`54d39b7cf8b881701bb58f590cc2cd2a6baf461d7f0cad01e647c888e379ccad`.
 
 ## Current measurements and limits
 
-The 45-case native refresh compares Boundary 6c59436 / World dc7e81d with the fixed
-Boundary 42a09b9 / World d075169 anchors. Identical standalone probes and independent
-result/trace oracles ran for BPI2, compact BPC1 and BPI3 on Zig 0.16.0 ReleaseSafe,
-Node 26.9.0 and M2 Pro/macOS 27.2. Two windows rotated format order; each process
-used three warmups and nine fresh-invocation samples. Most cases had six processes
-per format; mixed/irregular128/256 and sequence1024/4096 had two. These are medians,
-not service p99 estimates. Control clocks exclude fixture replies and oracle work.
+The fixed predecessor is Boundary 42a09b9 / World d075169, including compact BPC1.
+The complete 45-case native refresh at Boundary 6c59436 / World dc7e81d established
+large control/value gains: mixed256 about 8× faster, sequence4096 about 67×, and
+1 MiB projections over 100×. Subsequent control-node and allocator comparisons
+use the same Boundary images and independent trace/result oracles. They do not
+replace final cumulative acceptance against BPC1.
 
-The refresh confirms large-case gains over BPC1: mixed256 is about 8× faster,
-sequence4096 about 67×, and 1 MiB projections over 100×. Installation64/128/256
-images are 2,241/4,559/9,551 versus 2,805/5,574/12,102 bytes. Scheduler and
-sequence1024 peaks are below BPC1. Retained-loop64/128/256 timing ranges overlap
-BPC1, while their peaks remain higher.
+Two native remap windows compare this implementation with World 58f2533 over all
+30 control fixtures. Each side has three process observations per case per window,
+with three warmups and nine samples. Clocks cover complete fresh invocations;
+fixture replies and oracle checks are outside them. Latency changes are small and
+mixed, so no broad speedup is claimed. These are not request-tail measurements.
 
-Native cursor reclamation runs after sequence-pop operations. Tracing
-preserves live aliases; their count raises the next collection threshold. The
-existing 256-work-unit and suspension collections remain. Resident rollback also
-restores the threshold. A shared sequence fixture checks the complete sum, early
-reclamation and every failing resident allocation, with and without checkpoints.
-
-Two rotating native confirmation windows compare this policy with dc7e81d using
-the same full-consumption fixtures. Each process has three warmups and nine
-samples; six processes per side, except sizes1024/4096 with two. Size64 is about
-9% faster and size256 about 8% faster. Some projection cases cost about 1–5% more;
-that tradeoff remains part of the unresolved final acceptance.
-
-| Sequence elements | Native peak before | Native peak now | BPC1 peak |
+| Installations | Native peak before remap | Native peak now | BPC1 peak |
 | ---: | ---: | ---: | ---: |
-| 0 | 9,927 | 9,927 | 8,382 |
-| 16 | 20,475 | 16,311 | 8,382 |
-| 64 | 50,899 | 17,003 | 13,597 |
-| 256 | 53,973 | 20,845 | 27,813 |
-| 1024 | 66,261 | 37,636 | 84,645 |
-| 4096 | 132,860 | 105,221 | 311,973 |
+| 1 | 10,995 | 10,995 | 8,700 |
+| 8 | 26,703 | 24,199 | 15,564 |
+| 64 | 141,786 | 135,051 | 121,956 |
+| 128 | 227,570 | 227,570 | 435,558 |
+| 256 | 388,069 | 365,015 | 1,324,938 |
 
-WASM retains the existing schedule: earlier cursor collection reduced memory but
-slowed long sequence consumption by 3–5%. Final native-only confirmation preserves
-guest peaks and removes that repeatable slowdown across two rotating windows.
-A fixed 32-step interval and general
-node-growth trigger were also rejected for control-workload slowdowns. No rejected
-implementation or raw experiment archive is maintained.
+Total allocation at 64 falls 432,129 → 374,049 bytes, and at 256 falls
+1,459,837 → 1,310,861. Default images remain 2,241/4,559/9,551 bytes at 64/128/256,
+below BPC1's 2,805/5,574/12,102. The 64-case peak gap remains unresolved.
 
-Scalar, deep, installation1/8, retained-loop1/8, tiny projections and empty sequence
-still have latency gaps versus BPC1. Installation64 has overlapping timing ranges
-but a clear memory gap. Shallow, queens, cleanup, mixed/irregular8, retained loops
-and short sequences retain higher peaks. Large projections remain about 3.5 KiB
-higher at peak. Favorable cases do not cancel these remaining failures.
+Guest confirmation uses isolated Node processes: two windows, three observations
+per side/case, nine batches of 64 full fresh calls after 32 warmups. Seven selected
+initial-invocation fixtures preserve canonical outputs. Guest peaks are unchanged
+and timing changes are mixed; no guest speedup is claimed. The final kernel is
+byte-identical to the timed candidate.
 
-## Control-node reuse confirmation
+Unrestricted in-place resize was rejected: it let standard arenas retain larger
+slabs and raised installation256 peak to 420,861 bytes. The selected remap path
+avoids that change. No rejected implementation or experiment archive is maintained.
 
-Two native windows compare this implementation with World 9922062, holding Boundary
-6c59436 and all 30 control fixtures fixed. Each side has three process observations
-per case per window, each with three warmups and nine samples. Input and independent
-trace/result digests agree. Installation64/128 time improves about 8–10%; unchanged
-or small mixed timing differences are not claimed as gains.
-
-| Installations | Native peak before | Native peak now | BPC1 peak |
-| ---: | ---: | ---: | ---: |
-| 1 | 12,315 | 10,995 | 8,700 |
-| 8 | 30,623 | 26,703 | 15,564 |
-| 64 | 179,228 | 141,786 | 121,956 |
-| 128 | 265,012 | 227,570 | 435,558 |
-| 256 | 391,624 | 388,069 | 1,324,938 |
-
-The 64-case total allocation falls from 499,932 to 432,129 bytes. Its preparation
-alone peaks at 121,438 bytes before invocation framing; the remaining complete-call
-memory gap is not declared closed. Queens BFS peak falls 244,736 → 213,208 bytes.
-
-Guest confirmation uses isolated Node processes after mixed-instance timing proved
-noisy: three observations per side/case/window, nine batches of 64 full fresh calls
-after 32 warmups. Ten initial-invocation fixtures retain identical canonical outputs.
-Installation128/256 full fresh-call time improves about 4–5% in both windows; smaller
-case ranges overlap. Installation64 guest peak falls 151,213 → 135,069 bytes and
-128 falls 236,125 → 225,759 bytes. The final kernel is byte-identical to this timed
-candidate. These results reduce existing gaps; they do not complete acceptance.
+Native cursor reclamation retains its 17,003-byte sequence64 peak and 20,845-byte
+sequence256 peak; corresponding BPC1 peaks are 13,597 and 27,813 bytes. Some
+projection timings incurred a 1–5% cost. Suspension reclamation retains the
+independent live-alias checks and one-element-survivor result: 8,182 native working
+bytes and an 86-byte checkpoint, independent of discarded backing size. Its earlier
+1–5% control-time cost remains part of the cumulative comparison.
 
 ## Remaining acceptance work
 
-The gaps identified above, final guest/Agent/build confirmation and serial reviews
-remain required. These measurements supersede older native summaries; they do not establish full
-performance acceptance.
+Small scalar/deep, installation1/8, retained-loop1/8, tiny projection and empty
+sequence latency gaps remain subject to final comparison. Installation64,
+shallow, queens, cleanup, mixed/irregular8, retained loops and short sequences retain
+peak-memory gaps; large projections were about 3.5 KiB higher at peak. Favorable
+cases do not cancel those residuals. Final guest/Agent/build confirmation, serial
+reviews and the requirement audit remain open.
 
-Suspension reclamation retains the independent live-alias checks and its recorded
-one-element-survivor result: 8,182 native working bytes with an 86-byte checkpoint,
-independent of the discarded backing size. Its earlier 1–5% control-time cost must
-remain accounted for in the final cumulative comparison.
-
-Cold native build, warm no-change, client-edit and component-reuse observations
-remain separate from runtime timings. The earlier source-only emitter comparison
-was 16.50–16.56 s predecessor versus 15.45–15.50 s successor; the full compiler/
-evaluator probe had no clear cold-build gain. Final build qualification,
-coordinated consumer/package qualification and serial reviews remain required.
+Cold build, warm no-change, client edit and component reuse remain separate from
+runtime timings. The earlier source-only emitter comparison was 16.50–16.56 s
+predecessor versus 15.45–15.50 s successor; the full compiler/evaluator probe had
+no clear cold-build gain. These are not final all-application build results.
 
 Small standalone probes under `test/v2/` accept explicit source inputs:
 `build_execution_bench.zig`, `build_value_bench.zig`, and `build_replay_bench.zig`.
