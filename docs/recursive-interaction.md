@@ -45,3 +45,23 @@ package remains 1b00c8c159f0cb490a1223fac8d3d208cef41cb1. The new higher-order w
 is compiled by Boundary's recursive-interaction branch using the unchanged BPI3
 contract. Broader Agent integration, browser/Wasmtime transfer, matched economic
 measurements, exact final dependency integration and serial reviews remain open.
+
+Additional checks on the same executable inputs pass: check-transfer covers 159
+Node/Wasmtime/native boundaries; check-browser covers actual Chromium 153.0.8010.12
+and Firefox 155.0 Workers; check-capacity and check-package pass. Candidate kernel
+size is 462,730 bytes versus 462,629 baseline (+101 bytes).
+
+Agent a134f624b430d05cc73a6cedd2406dea851a7e01 was exercised with this explicitly
+supplied runtime and native peer. Its local-abandonment/cleanup/sibling case agrees
+across Chromium/native/Wasmtime/Node, and its separate global-cancellation case
+agrees with Firefox. Each uses six actual State transfers and seven destroyed
+Workers. Complete parser repair, independent acceptance, exact approval and
+conditional fixture application also pass: 539 candidate executions plus two
+qualification executions, two synthetic model calls, one approval and one write,
+twenty transfers and twenty-one Chromium Workers. No paid inference or real user
+target was used. Agent's normal dependency lock has not yet been updated; these
+executions establish compatibility, not completed final package integration.
+
+The report-only update reuses code/tests and the exact kernel hash from the first
+World commit. Remaining work includes normal dependency integration, matched
+latency/setup and unchanged-consumer economic comparisons, and serial reviews.
