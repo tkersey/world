@@ -2,7 +2,7 @@
 
 World 6.0.0-dev.0 executes stable-activation Programs through one evaluator, with
 fresh and prepared/resident operation, portable checkpoints and a browser-neutral
-embedding. The successor remains incomplete; all linked PRs remain drafts.
+embedding. All linked PRs remain drafts; their live review/readiness status is authoritative.
 Contracts and commands are in [kernel-abi.md](kernel-abi.md) and
 [verification.md](verification.md).
 
@@ -297,8 +297,7 @@ Standalone guest and inquiry/ReAct confirmation on the selected production tuple
 are complete; Agent's document records its clarification confirmation separately.
 The named native latency and memory tradeoffs are accepted for this milestone.
 The requirement audit identified a narrow State-inspector gap; Agent now provides
-and tests the required read-only Program/State inspection. Serial-review closeout
-remains. Optional representation/allocator/cache/compiler redesign is not a
+and tests the required read-only Program/State inspection. Serial-review status is recorded in the linked PRs. Optional representation/allocator/cache/compiler redesign is not a
 closeout requirement. No such experiment is retained.
 
 The [current build confirmation](https://github.com/tkersey/agent/blob/b277743aa2a8f0609428accd267b8719b64285ed/docs/compositional-execution.md#component-build-costs)
