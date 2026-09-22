@@ -65,3 +65,22 @@ executions establish compatibility, not completed final package integration.
 The report-only update reuses code/tests and the exact kernel hash from the first
 World commit. Remaining work includes normal dependency integration, matched
 latency/setup and unchanged-consumer economic comparisons, and serial reviews.
+
+## Matched timing follow-on
+
+Boundary's `docs/recursive-interaction-timings.csv` now records 73 native/WASM
+cells against the immutable foundation World 374ed712 and this runtime's unchanged
+executable code. Identical BPI3/PKI3 inputs and independent numerical/event oracles
+are checked before accepting measurements. Native tail-hyper count 512 improves
+from 9.970 to 4.542 ms initial and 9.974 to 4.490 ms initial-State recovery; the
+direct control remains about 0.270 ms. Six unchanged foundation controls range
+from 0.968x to 1.013x, without a supported material regression from these samples.
+
+WASM measurements include generic-kernel setup and matched per-quantum checkpoint
+obligations for resident/fresh modes. Tail-hyper 512 resident/fresh medians improve
+from 191.85/612.32 to 17.65/104.25 ms; the candidate direct loop remains much faster.
+Wide overlapping setup/direct-control ranges are inconclusive. This report does
+not assign their apparent improvements to the interpreter change. All cells,
+ranges, exact input identities, commands and limitations are in Boundary's report.
+No runtime code or default capacity was changed for these measurements. Native
+emitter build and compiler attribution remain separate from execution timing.
