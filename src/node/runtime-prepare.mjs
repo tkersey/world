@@ -47,6 +47,7 @@ async function checked(source, evidence, checks, name, command, args) {
 }
 export async function prepareBundle(source, output) {
   source = await realpath(source); output = resolve(output);
+  const originalSource = source;
   const identity = await sourceIdentity(source);
   await mkdir(dirname(output), { recursive: true });
   for (const path of [output, `${output}.tar.gz`, `${output}.delivery.json`]) await absent(path);
@@ -62,9 +63,13 @@ export async function prepareBundle(source, output) {
   const cache = join(lock, "zig-global");
   const build = steps => ["build", ...steps, "-Doptimize=ReleaseSafe", "--prefix", prefix, "--global-cache-dir", cache];
   try {
-    // A fresh Zig cache authenticates the normal package, independent of consumer trees.
+    // Export only committed source: ignored zig-pkg/build state cannot influence qualification.
+    source = join(lock, "source");
+    await mkdir(source);
+    const sourceArchive = execFileSync("git", ["archive", identity.commit], { cwd: originalSource, maxBuffer: 64 << 20 });
+    execFileSync("tar", ["-xf", "-", "-C", source], { input: sourceArchive, timeout: 120000 });
     await run("build", "zig", build(["build-runtime", "check-kernel"]));
-    const dependency = join(cache, "p", dependencyPackage);
+    const dependency = join(source, "zig-pkg", dependencyPackage);
     await lstat(join(dependency, "build.zig.zon"));
     await cp(join(prefix, "runtime"), join(bundle, "runtime"), { recursive: true, errorOnExist: true });
     await run("browser-tools", "npm", ["ci", "--ignore-scripts", "--prefix", "test/current/browser-tools"]);
@@ -99,7 +104,7 @@ export async function prepareBundle(source, output) {
     await writeFile(join(bundle, "manifest.json"), json(manifest));
     const manifestSha256 = sha256(await readBounded(join(bundle, "manifest.json")));
     await verifyBundle(bundle, manifestSha256, true);
-    if (JSON.stringify(await sourceIdentity(source)) !== JSON.stringify(identity))
+    if (JSON.stringify(await sourceIdentity(originalSource)) !== JSON.stringify(identity))
       reject("WORLD_BUNDLE_SOURCE_DIRTY", "source changed during qualification");
     const archive = join(lock, "bundle.tar.gz");
     execFileSync("tar", ["--format=ustar", "-czf", archive, "-C", bundle, "."], { timeout: 120000 });
