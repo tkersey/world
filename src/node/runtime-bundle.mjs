@@ -16,14 +16,15 @@ export async function readBounded(path, limit = 64 << 20) {
     if (size > BigInt(limit)) reject("WORLD_BUNDLE_INVALID", `file exceeds ${limit} bytes: ${path}`);
   });
 }
-export async function inventory(root, prefix = "", entries = []) {
+export async function inventory(root, prefix = "", entries = [], count = { value: 0 }) {
   if (entries.length > 512) reject("WORLD_BUNDLE_INVALID", "bundle exceeds 512 files");
   for (const name of (await readdir(join(root, prefix))).sort()) {
+    if (++count.value > 1024 || prefix.split("/").length > 16) reject("WORLD_BUNDLE_INVALID", "bundle structure limit exceeded");
     const path = prefix ? `${prefix}/${name}` : name;
     if (!/^[A-Za-z0-9_.\/-]+$/.test(path)) reject("WORLD_BUNDLE_INVALID", `unsafe path: ${path}`);
     const stat = await lstat(join(root, path));
     if (stat.isSymbolicLink()) reject("WORLD_BUNDLE_INVALID", `symlink: ${path}`);
-    if (stat.isDirectory()) await inventory(root, path, entries);
+    if (stat.isDirectory()) await inventory(root, path, entries, count);
     else if (stat.isFile()) {
       const bytes = await readBounded(join(root, path));
       entries.push({ path, bytes: bytes.length, sha256: sha256(bytes) });
@@ -75,7 +76,8 @@ export async function verifyBundle(root, expected, smoke = false) {
   const qualification = JSON.parse(await readBounded(join(root, "qualification.json"), 1 << 20));
   if (JSON.stringify(manifest.requiredChecks) !== JSON.stringify(requiredChecks) ||
       !Array.isArray(qualification.checks) || requiredChecks.some(name =>
-        qualification.checks.filter(check => check.name === name && check.status === "passed").length !== 1))
+        qualification.checks.filter(check => check.name === name).length !== 1 ||
+        qualification.checks.find(check => check.name === name)?.status !== "passed"))
     reject("WORLD_BUNDLE_INCOMPLETE", "required qualification has not passed");
   const bytes = await readBounded(join(root, manifest.kernel.path));
   if (bytes.length !== manifest.kernel.bytes || sha256(bytes) !== manifest.kernel.sha256)
