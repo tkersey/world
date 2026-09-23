@@ -43,7 +43,7 @@ async function stage(root, digest, mode, state, response) {
 export async function runSmoke(root, digest) {
   const k = await instance(root, digest);
   const input = encodeInput({ image: await readBounded(join(root, "smoke/pure.bpi3")), initialArgs: new Uint8Array() });
-  assert.deepEqual(await readBounded(join(root, "smoke/pure.pki3")), input);
+  assert.deepEqual(new Uint8Array(await readBounded(join(root, "smoke/pure.pki3"))), input);
   const pure = decodeOutcome(k.invoke(input));
   assert.equal(pure.kind, "completed");
   assert.deepEqual(pure.value, integer(2080));
