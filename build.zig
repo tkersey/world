@@ -82,9 +82,10 @@ pub fn build(b: *std.Build) void {
     const runtime_package = b.step("build-runtime", "Build the standalone current JavaScript/kernel package");
     runtime_package.dependOn(&b.addInstallFileWithDir(current_kernel.getEmittedBin(), .prefix, "runtime/world-kernel.wasm").step);
     for ([_][]const u8{
-        "LICENSE",                 "README.md",                "package.json",            "bin/world.mjs",            "docs/kernel-abi.md",
-        "src/embedding/index.mjs", "src/embedding/kernel.mjs", "src/embedding/codec.mjs", "src/embedding/values.mjs", "src/embedding/wasm.mjs",
-        "src/embedding/wire.mjs",  "src/embedding/errors.mjs", "src/node/file-input.mjs",
+        "LICENSE",                      "README.md",                  "package.json",                 "bin/world.mjs",               "docs/kernel-abi.md",
+        "src/embedding/index.mjs",      "src/embedding/kernel.mjs",   "src/embedding/codec.mjs",      "src/embedding/values.mjs",    "src/embedding/wasm.mjs",
+        "src/embedding/wire.mjs",       "src/embedding/errors.mjs",   "src/node/file-input.mjs",      "src/node/runtime-bundle.mjs", "src/node/runtime-command.mjs",
+        "src/node/runtime-prepare.mjs", "src/node/runtime-smoke.mjs", "src/node/runtime-acquire.mjs", "docs/runtime-bundles.md",     "src/node/runtime-output.mjs",
     }) |path| runtime_package.dependOn(&b.addInstallFileWithDir(b.path(path), .prefix, b.fmt("runtime/{s}", .{path})).step);
     const current_fixtures = b.addSystemCommand(&.{ "zig", "build", "--build-file" });
     current_fixtures.addFileArg(b.path("test/v2/build_source.zig"));
@@ -150,6 +151,7 @@ pub fn build(b: *std.Build) void {
     current_codecs.addFileArg(b.path("test/current/byte_contracts.test.mjs"));
     current_codecs.addFileArg(b.path("test/current/wasm.test.mjs"));
     current_codecs.addFileArg(b.path("test/current/file_input.test.mjs"));
+    current_codecs.addFileArg(b.path("test/current/runtime_bundle.test.mjs"));
     current_codecs.has_side_effects = true;
     b.step("check-codecs", "Check current browser-neutral byte ownership and value contracts").dependOn(&current_codecs.step);
     const activation_wasm_store = b.createModule(.{

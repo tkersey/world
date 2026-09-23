@@ -1,0 +1,38 @@
+name: Qualified runtime bundle
+on:
+  push:
+    branches: ['codex/qualified-runtime-delivery-20260923']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '26.9.0'
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: '0.16.0'
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+      - name: Install browser system dependencies
+        run: |
+          npm ci --ignore-scripts --prefix test/current/browser-tools
+          node test/current/browser-tools/node_modules/playwright-core/cli.js install-deps chromium firefox
+      - name: Prepare through the public producer
+        run: node bin/world.mjs runtime prepare --source "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/world-runtime-bundle"
+      - name: Upload the qualified transport and external binding
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: world-runtime-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/world-runtime-bundle.tar.gz
+            ${{ runner.temp }}/world-runtime-bundle.delivery.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

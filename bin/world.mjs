@@ -4,8 +4,14 @@ import { Kernel, packageVersion } from "../src/embedding/index.mjs";
 import { assertKernelByteLength } from "../src/embedding/wasm.mjs";
 
 async function main(args) {
+  if (args[0] === "runtime") {
+    const { runtimeCommand } = await import("../src/node/runtime-command.mjs");
+    console.log(JSON.stringify(await runtimeCommand(args.slice(1)), null, 2));
+    return;
+  }
   if (args.length === 1 && args[0] === "--version") { console.log(packageVersion); return; }
   if (args.length === 1 && args[0] === "--help") {
+    console.log("world runtime prepare --source ABSOLUTE_CLEAN_WORLD --output ABSOLUTE_NEW_BUNDLE\nworld runtime acquire --archive FILE --archive-sha256 HEX --manifest-sha256 HEX --output NEW_BUNDLE\nworld runtime verify --root BUNDLE --manifest-sha256 HEX [--smoke]");
     console.log("Usage: world invoke --kernel FILE --sha256 HEX --input PKI3 [--input-budget N --working-budget N --output-budget N]\nWrites canonical PKO3 bytes to stdout. Budgets are bytes; defaults are 65536/1048576/65536.");
     return;
   }

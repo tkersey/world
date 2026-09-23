@@ -86,3 +86,6 @@ release is implied by this development package.
 
 See [verification](docs/verification.md) for the current coverage and the
 remaining migration boundaries.
+
+Qualified standalone runtime preparation, authenticated acquisition, and offline
+verification are documented in [runtime bundles](docs/runtime-bundles.md).
