@@ -2,15 +2,18 @@
 // Node-only package custody. The browser-neutral embedding does not import this module.
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cp, link, lstat, mkdir, mkdtemp, open, readFile, readlink, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { cp, link, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { Kernel, inspectKernelWasm, packageVersion } from "../embedding/index.mjs";
 import { readRegularFile } from "./file-input.mjs";
 
 const FORMAT = "world-runtime-bundle/v1";
 const CHECK_STEPS = ["check", "check-kernel", "check-package", "check-source", "check-capacity", "check-transfer", "check-browser", "check-codecs"];
-const REQUIRED = [...CHECK_STEPS, "bundle-smoke"];
+const REQUIRED = ["browser-tools", ...CHECK_STEPS, "bundle-smoke"];
 const MAX_JSON = 4 * 1024 * 1024;
+const MAX_FILE = 64 * 1024 * 1024;
+const MAX_BUNDLE = 128 * 1024 * 1024;
 const SHA = /^[0-9a-f]{64}$/;
 const profile = Object.freeze({ target: "wasm32-freestanding", kernelOptimize: "ReleaseSmall", hostOptimize: "ReleaseSafe", inputCapacity: 65536, workingCapacity: 1048576, outputCapacity: 65536, stackBytes: 65536, maximumMemoryBytes: 268435456 });
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -31,12 +34,6 @@ function readJsonBytes(bytes, path) {
   if (bytes.length > MAX_JSON) throw failure("WORLD_MANIFEST_INVALID", `${path} exceeds JSON limit`);
   try { return JSON.parse(bytes.toString("utf8")); }
   catch { throw failure("WORLD_MANIFEST_INVALID", `invalid JSON in ${path}`); }
-}
-async function readJson(path) {
-  await regular(path);
-  return readJsonBytes(await readRegularFile(path, length => {
-    if (length > BigInt(MAX_JSON)) throw failure("WORLD_MANIFEST_INVALID", `${path} exceeds JSON limit`);
-  }), path);
 }
 async function regular(path) {
   const stat = await lstat(path);
@@ -95,17 +92,31 @@ export async function verifyRuntime(root, expectedManifest, smoke = false) {
   const actualPaths = await files(root);
   if (JSON.stringify(actualPaths) !== JSON.stringify([...paths, "manifest.json"].sort()))
     throw failure("WORLD_INVENTORY_INVALID", "bundle files differ from manifest inventory");
+  const verifiedBytes = new Map();
+  let totalLength = 0;
   for (const item of manifest.files) {
-    if (!Number.isSafeInteger(item.length) || item.length < 0 || !SHA.test(item.sha256 ?? "")) throw failure("WORLD_MANIFEST_INVALID", `invalid inventory entry ${item.path}`);
+    if (!Number.isSafeInteger(item.length) || item.length < 0 || item.length > MAX_FILE || !SHA.test(item.sha256 ?? ""))
+      throw failure("WORLD_MANIFEST_INVALID", `invalid inventory entry ${item.path}`);
+    totalLength += item.length;
+    if (totalLength > MAX_BUNDLE) throw failure("WORLD_MANIFEST_INVALID", "bundle exceeds verified byte limit");
     const path = join(root, item.path);
-    const stat = await regular(path);
-    if (stat.size !== item.length || digest(await readFile(path)) !== item.sha256) throw failure("WORLD_FILE_IDENTITY_INVALID", `file differs from manifest: ${item.path}`);
+    await regular(path);
+    const bytes = await readRegularFile(path, length => {
+      if (length !== BigInt(item.length)) throw failure("WORLD_FILE_IDENTITY_INVALID", `file length differs from manifest: ${item.path}`);
+    });
+    if (digest(bytes) !== item.sha256) throw failure("WORLD_FILE_IDENTITY_INVALID", `file differs from manifest: ${item.path}`);
+    verifiedBytes.set(item.path, bytes);
   }
-  const qualification = await readJson(join(root, "qualification.json"));
+  const verified = path => {
+    const bytes = verifiedBytes.get(path);
+    if (!bytes) throw failure("WORLD_FILE_MISSING", `required bundle file missing: ${path}`);
+    return bytes;
+  };
+  const qualification = readJsonBytes(verified("qualification.json"), "qualification.json");
   if (qualification.format !== "world-runtime-qualification/v1" ||
       REQUIRED.some(name => qualification.checks?.[name]?.status !== "passed"))
     throw failure("WORLD_QUALIFICATION_INCOMPLETE", "required qualification check is absent or not passed");
-  const kernelBytes = await readFile(join(root, manifest.kernel.path));
+  const kernelBytes = verified(manifest.kernel.path);
   if (kernelBytes.length !== manifest.kernel.length || digest(kernelBytes) !== manifest.kernel.sha256)
     throw failure("WORLD_KERNEL_IDENTITY_INVALID", "kernel differs from manifest");
   const wasm = inspectKernelWasm(kernelBytes);
@@ -113,12 +124,21 @@ export async function verifyRuntime(root, expectedManifest, smoke = false) {
       JSON.stringify(manifest.kernel.wasm) !== JSON.stringify(wasm))
     throw failure("WORLD_KERNEL_PROFILE_INVALID", "kernel physical profile differs from selected build");
   await Kernel.create({ bytes: kernelBytes, expectedSha256: manifest.kernel.sha256 });
-  const packageInfo = await readJson(join(root, "runtime/package.json"));
+  const packageInfo = readJsonBytes(verified("runtime/package.json"), "runtime/package.json");
   if (packageInfo.name !== "@tkersey/world" || packageInfo.version !== packageVersion || packageInfo.exports?.["."] !== "./src/embedding/index.mjs")
     throw failure("WORLD_PACKAGE_INCOMPATIBLE", "runtime package identity differs from manifest");
   if (smoke) {
-    const run = spawnSync(process.execPath, [join(root, "runtime/src/node/runtime-smoke.mjs"), root, manifest.kernel.sha256], { cwd: root, encoding: "utf8", timeout: 30000, env: { PATH: process.env.PATH } });
-    if (run.status !== 0) throw failure("WORLD_SMOKE_FAILED", `runtime smoke failed: ${run.stderr || run.error || run.status}`);
+    const executionRoot = await mkdtemp(join(tmpdir(), "world-verified-smoke-"));
+    try {
+      for (const [path, bytes] of verifiedBytes) {
+        const destination = join(executionRoot, path);
+        await mkdir(dirname(destination), { recursive: true });
+        await writeFile(destination, bytes, { flag: "wx", mode: 0o400 });
+      }
+      const run = spawnSync(process.execPath, [join(executionRoot, "runtime/src/node/runtime-smoke.mjs"), executionRoot, manifest.kernel.sha256],
+        { cwd: executionRoot, encoding: "utf8", timeout: 30000, maxBuffer: 1 << 20, env: { PATH: process.env.PATH } });
+      if (run.status !== 0) throw failure("WORLD_SMOKE_FAILED", `runtime smoke failed: ${run.stderr || run.error || run.status}`);
+    } finally { await rm(executionRoot, { recursive: true, force: true }); }
   }
   return { manifestSha256: expectedManifest, kernelSha256: manifest.kernel.sha256, files: manifest.files.length, smoke: !!smoke };
 }
@@ -157,24 +177,21 @@ async function cleanSource(source, expectedCommit = null) {
 const exists = async path => lstat(path).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; });
 async function prepareRuntime(source, output) {
   if (!isAbsolute(source) || !isAbsolute(output)) throw failure("WORLD_OPTION_INVALID", "source and output must be absolute paths");
-  source = resolve(source); output = resolve(output);
+  source = await realpath(source);
+  const requestedOutput = resolve(output);
+  let outputParent;
+  try { outputParent = await realpath(dirname(requestedOutput)); }
+  catch (error) { if (error.code === "ENOENT") throw failure("WORLD_OUTPUT_PARENT_MISSING", "create the output parent directory before preparing a runtime"); throw error; }
+  output = join(outputParent, basename(requestedOutput));
   const archive = `${output}.tar.gz`, descriptor = `${output}.runtime-delivery.json`;
   for (const path of [output, archive, descriptor]) if (await exists(path))
     throw failure("WORLD_OUTPUT_EXISTS", `delivery path exists: ${path}; verify it or choose a new output`);
   const { commit, tree } = await cleanSource(source);
-  const zonBytes = await readFile(join(source, "build.zig.zon"));
-  const zon = zonBytes.toString("utf8");
-  const dependencyCommit = zon.match(/boundary\/archive\/([0-9a-f]{40})\.tar\.gz/)?.[1];
-  const dependencyPackage = zon.match(/\.hash\s*=\s*"(boundary-[^"]+)"/)?.[1];
-  if (dependencyCommit !== "1b00c8c159f0cb490a1223fac8d3d208cef41cb1" || !dependencyPackage)
-    throw failure("WORLD_DEPENDENCY_INVALID", "normal locked Boundary data dependency changed");
   const zig = run("zig", ["version"], source).stdout.trim();
   if (zig !== "0.16.0") throw failure("WORLD_TOOLCHAIN_INVALID", `Zig 0.16.0 required; found ${zig}`);
-  const dependencyUrl = `https://github.com/tkersey/boundary/archive/${dependencyCommit}.tar.gz`;
-  const resolvedPackage = run("zig", ["fetch", dependencyUrl], source).stdout.trim();
-  if (resolvedPackage !== dependencyPackage) throw failure("WORLD_DEPENDENCY_INVALID", `resolved Boundary package ${resolvedPackage} differs from lock ${dependencyPackage}`);
   const sourceLocal = output.startsWith(`${source}${sep}`);
-  const parent = sourceLocal ? dirname(source) : dirname(output);
+  const parent = sourceLocal ? join(source, ".cache") : dirname(output);
+  if (sourceLocal) await mkdir(parent, { recursive: true });
   const lockPath = sourceLocal ? join(parent, `.${basename(output)}-${digest(Buffer.from(output)).slice(0, 16)}.lock`) : `${output}.lock`;
   let lock;
   try { lock = await open(lockPath, "wx"); }
@@ -186,30 +203,48 @@ async function prepareRuntime(source, output) {
   try {
     await lock.writeFile(json({ pid: process.pid, source, output, startedAt: new Date().toISOString() }));
     staging = await mkdtemp(join(parent, `.${basename(output)}-stage-`));
+    const buildSource = join(staging, "source");
+    await mkdir(buildSource);
+    const sourceArchive = join(staging, "source.tar");
+    git(["archive", "--format=tar", "--output", sourceArchive, "HEAD"], source);
+    run("tar", ["-xf", sourceArchive, "-C", buildSource], staging);
+    const zonBytes = await readFile(join(buildSource, "build.zig.zon"));
+    const zon = zonBytes.toString("utf8");
+    const dependencyCommit = zon.match(/boundary\/archive\/([0-9a-f]{40})\.tar\.gz/)?.[1];
+    const dependencyPackage = zon.match(/\.hash\s*=\s*"(boundary-[^"]+)"/)?.[1];
+    if (dependencyCommit !== "1b00c8c159f0cb490a1223fac8d3d208cef41cb1" || !dependencyPackage)
+      throw failure("WORLD_DEPENDENCY_INVALID", "normal locked Boundary data dependency changed");
+    const dependencyUrl = `https://github.com/tkersey/boundary/archive/${dependencyCommit}.tar.gz`;
+    const resolvedPackage = run("zig", ["fetch", dependencyUrl], buildSource).stdout.trim();
+    if (resolvedPackage !== dependencyPackage) throw failure("WORLD_DEPENDENCY_INVALID", `resolved Boundary package ${resolvedPackage} differs from lock ${dependencyPackage}`);
+    const browserTools = join(buildSource, "test/current/browser-tools");
+    const npm = run("npm", ["ci", "--no-audit", "--no-fund"], browserTools, 120000);
     const prefix = join(staging, "build");
     const checkCommand = ["build", "build-runtime", ...CHECK_STEPS, "-Doptimize=ReleaseSafe", "--summary", "all", "--prefix", prefix];
-    const result = run("zig", checkCommand, source, 1800000);
+    const result = run("zig", checkCommand, buildSource, 1800000);
     const bundle = join(staging, "bundle");
     await mkdir(bundle);
     await cp(join(prefix, "runtime"), join(bundle, "runtime"), { recursive: true, force: false, errorOnExist: true });
     await mkdir(join(bundle, "smoke"));
     const fixture = join(prefix, "current/bin/current-fixtures");
-    const fixtureBytes = execFileSync(fixture, ["image", "resource"], { cwd: source });
+    const fixtureBytes = execFileSync(fixture, ["image", "resource"], { cwd: buildSource });
     await writeFile(join(bundle, "smoke/resource.bpi3"), fixtureBytes);
     const kernelBytes = await readFile(join(bundle, "runtime/world-kernel.wasm"));
     const kernelSha256 = digest(kernelBytes);
     const smokeRun = run(process.execPath, [join(bundle, "runtime/src/node/runtime-smoke.mjs"), bundle, kernelSha256], bundle);
     const checks = Object.fromEntries(CHECK_STEPS.map(name => [name, { status: "passed", command: `zig build ${name} -Doptimize=ReleaseSafe`, input: { sourceCommit: commit, kernelSha256 }, zig, node: process.version }]));
+    checks["browser-tools"] = { status: "passed", command: "npm ci --no-audit --no-fund", input: { lockSha256: digest(await readFile(join(browserTools, "package-lock.json"))) }, node: process.version };
     checks["bundle-smoke"] = { status: "passed", command: "node runtime/src/node/runtime-smoke.mjs BUNDLE KERNEL_SHA256", input: { kernelSha256, image: "smoke/resource.bpi3" }, node: process.version };
     await writeFile(join(bundle, "qualification.json"), json({ format: "world-runtime-qualification/v1", checks, limits: { input: 65536, working: 1048576, output: 65536 }, source: { commit, tree } }));
     await mkdir(join(bundle, "evidence"));
     await writeFile(join(bundle, "evidence/check.log"), result.stdout + result.stderr);
+    await writeFile(join(bundle, "evidence/browser-tools.log"), npm.stdout + npm.stderr);
     await writeFile(join(bundle, "evidence/smoke.log"), smokeRun.stdout + smokeRun.stderr);
     const manifest = { format: FORMAT, source: { repository: "tkersey/world", commit, tree, clean: true }, dependency: { repository: "tkersey/boundary", commit: dependencyCommit, package: dependencyPackage, lockSha256: digest(zonBytes) }, zig, profile, abi: 3, package: { name: "@tkersey/world", version: packageVersion }, kernel: { path: "runtime/world-kernel.wasm", length: kernelBytes.length, sha256: kernelSha256, wasm: inspectKernelWasm(kernelBytes) }, requiredChecks: REQUIRED, files: await inventory(bundle) };
     const manifestBytes = json(manifest), manifestSha256 = digest(manifestBytes);
     await writeFile(join(bundle, "manifest.json"), manifestBytes);
     await verifyRuntime(bundle, manifestSha256, true);
-    const tests = run(process.execPath, [join(source, "test/current/runtime_delivery.test.mjs"), bundle, manifestSha256, source], source);
+    const tests = run(process.execPath, [join(buildSource, "test/current/runtime_delivery.test.mjs"), bundle, manifestSha256, source, buildSource], buildSource);
     await writeFile(join(bundle, "evidence/verification-tests.log"), tests.stdout + tests.stderr);
     manifest.files = await inventory(bundle);
     const finalManifestBytes = json(manifest), finalManifestSha256 = digest(finalManifestBytes);
@@ -217,15 +252,22 @@ async function prepareRuntime(source, output) {
     await verifyRuntime(bundle, finalManifestSha256, true);
     try { await cleanSource(source, commit); }
     catch (error) { if (error.code === "WORLD_SOURCE_DIRTY") throw failure("WORLD_SOURCE_CHANGED", error.message); throw error; }
-    const prepared = join(staging, basename(output));
+    const publication = join(staging, "publication");
+    await mkdir(publication);
+    const prepared = join(publication, basename(output));
     await rename(bundle, prepared);
     const stagedArchive = join(staging, "runtime-bundle.tar.gz");
-    run("tar", ["-czf", stagedArchive, "-C", staging, basename(output)], staging);
+    run("tar", ["-czf", stagedArchive, "-C", publication, basename(output)], staging);
     const archiveBytes = await readFile(stagedArchive);
     for (const path of [output, archive, descriptor]) if (await exists(path))
       throw failure("WORLD_OUTPUT_EXISTS", `delivery path appeared during qualification: ${path}`);
-    await rename(prepared, output);
+    await mkdir(output);
     publishedBundle = true;
+    const incomplete = join(output, ".incomplete");
+    await writeFile(incomplete, "Runtime publication in progress\n", { flag: "wx" });
+    const entries = await readdir(prepared);
+    for (const name of [...entries.filter(name => name !== "manifest.json"), "manifest.json"])
+      await rename(join(prepared, name), join(output, name));
     await link(stagedArchive, archive);
     publishedArchive = true;
     const delivery = { format: "world-runtime-delivery/v1", source: manifest.source, dependency: manifest.dependency, bundle: output, archive, archiveLength: archiveBytes.length, archiveSha256: digest(archiveBytes), manifestSha256: finalManifestSha256, kernelSha256, provider: null };
@@ -233,6 +275,7 @@ async function prepareRuntime(source, output) {
     publishedDescriptor = true;
     try { await receipt.writeFile(json(delivery)); }
     finally { await receipt.close(); }
+    await unlink(incomplete);
     return delivery;
   } catch (error) {
     if (publishedDescriptor) await rm(descriptor, { force: true });

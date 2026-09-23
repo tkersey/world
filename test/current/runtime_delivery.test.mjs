@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { verifyRuntime } from "../../src/node/runtime-delivery.mjs";
 
-const [bundle, expected, source] = process.argv.slice(2);
+const [bundle, expected, source, cliRoot = source] = process.argv.slice(2);
 if (!bundle || !expected) throw new Error("bundle and expected manifest SHA-256 are required");
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 async function writable(path) {
@@ -20,6 +20,9 @@ try {
   await cp(bundle, target, { recursive: true });
   await writable(target);
   assert.equal((await verifyRuntime(target, expected, true)).smoke, true);
+  await writeFile(join(target, ".incomplete"), "publication pending\n");
+  await assert.rejects(verifyRuntime(target, expected), { code: "WORLD_INVENTORY_INVALID" });
+  await unlink(join(target, ".incomplete"));
   await assert.rejects(verifyRuntime(target, "0".repeat(64)), { code: "WORLD_MANIFEST_IDENTITY_INVALID" });
   for (const relative of ["runtime/world-kernel.wasm", "runtime/src/embedding/kernel.mjs", "runtime/src/node/runtime-delivery.mjs"]) {
     const path = join(target, relative), original = await readFile(path);
@@ -51,9 +54,9 @@ try {
   const changedManifest = Buffer.from(JSON.stringify(manifest));
   await writeFile(manifestPath, changedManifest);
   await assert.rejects(verifyRuntime(target, sha(changedManifest)), { code: "WORLD_QUALIFICATION_INCOMPLETE" });
-  let cases = 10;
+  let cases = 11;
   if (source) {
-    const cli = join(source, "bin/world.mjs");
+    const cli = join(cliRoot, "bin/world.mjs");
     for (const sidecar of [".tar.gz", ".runtime-delivery.json"]) {
       const output = join(testRoot, `reserved-${cases}`), path = output + sidecar;
       const original = Buffer.from(`retained ${sidecar}`);
