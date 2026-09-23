@@ -43,11 +43,14 @@ async function stage(root, digest, mode, state, response) {
 export async function runSmoke(root, digest) {
   const k = await instance(root, digest);
   const input = encodeInput({ image: await readBounded(join(root, "smoke/pure.bpi3")), initialArgs: new Uint8Array() });
+  assert.deepEqual(await readBounded(join(root, "smoke/pure.pki3")), input);
   const pure = decodeOutcome(k.invoke(input));
   assert.equal(pure.kind, "completed");
   assert.deepEqual(pure.value, integer(2080));
   const cli = join(root, "runtime/bin/world.mjs");
   assert.match(execFileSync(process.execPath, [cli, "--version"], { encoding: "utf8", timeout: 30000 }), /^6\.0\.0-dev\.0\s*$/);
+  const cliResult = execFileSync(process.execPath, [cli, "invoke", "--kernel", join(root, "runtime/world-kernel.wasm"), "--sha256", digest, "--input", join(root, "smoke/pure.pki3")], { timeout: 30000 });
+  assert.deepEqual(decodeOutcome(cliResult).value, integer(2080));
   const worker = join(root, "runtime/src/node/runtime-smoke.mjs");
   const call = args => JSON.parse(execFileSync(process.execPath, [worker, root, digest, ...args], {
     encoding: "utf8", timeout: 30000, maxBuffer: 2 << 20,

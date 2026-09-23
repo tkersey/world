@@ -73,6 +73,20 @@ export async function verifyBundle(root, expected, smoke = false) {
       manifest.kernel.path !== "runtime/world-kernel.wasm" ||
       manifest.build?.target !== "wasm32-freestanding" || manifest.build.kernelMode !== "ReleaseSmall")
     reject("WORLD_BUNDLE_INCOMPATIBLE", "unsupported ABI, package or build profile");
+  if (!/^[a-f0-9]{40}$/.test(manifest.source?.commit ?? "") ||
+      !/^[a-f0-9]{40}$/.test(manifest.source?.tree ?? "") || manifest.source.clean !== true ||
+      manifest.source.repository !== "https://github.com/tkersey/world" ||
+      manifest.source.dependency?.commit !== "1b00c8c159f0cb490a1223fac8d3d208cef41cb1" ||
+      manifest.source.dependency?.package !== "boundary-3.0.0-dev.0-flclaCJBFQCNUnFJK019OyLBDLZdg6_eTW1rzBpwImGA" ||
+      !/^[a-f0-9]{64}$/.test(manifest.source.dependency?.lockSha256 ?? "") ||
+      manifest.build.zig !== "0.16.0" || manifest.build.hostMode !== "ReleaseSafe" ||
+      manifest.build.stackBytes !== 65536 || manifest.build.maximumMemoryBytes !== 268435456 ||
+      manifest.build.defaults?.input !== 65536 || manifest.build.defaults?.working !== 1048576 || manifest.build.defaults?.output !== 65536)
+    reject("WORLD_BUNDLE_INCOMPATIBLE", "missing or incompatible source/build profile");
+  const pkg = JSON.parse(await readBounded(join(root, "runtime/package.json"), 65536));
+  if (pkg.name !== "@tkersey/world" || pkg.version !== packageVersion || pkg.type !== "module" ||
+      pkg.exports?.["."] !== "./src/embedding/index.mjs" || pkg.bin?.world !== "./bin/world.mjs")
+    reject("WORLD_BUNDLE_INCOMPATIBLE", "package metadata differs from its embedding");
   const qualification = JSON.parse(await readBounded(join(root, "qualification.json"), 1 << 20));
   if (JSON.stringify(manifest.requiredChecks) !== JSON.stringify(requiredChecks) ||
       !Array.isArray(qualification.checks) || requiredChecks.some(name =>
@@ -83,7 +97,8 @@ export async function verifyBundle(root, expected, smoke = false) {
   if (bytes.length !== manifest.kernel.bytes || sha256(bytes) !== manifest.kernel.sha256)
     reject("WORLD_BUNDLE_IDENTITY_INVALID", "kernel identity mismatch");
   const profile = inspectKernelWasm(bytes);
-  if (profile.importCount !== 0 || profile.memory.maximumPages !== 4096 || profile.memory.shared)
+  if (profile.importCount !== 0 || profile.memory.maximumPages !== 4096 || profile.memory.shared ||
+      JSON.stringify(profile) !== JSON.stringify(manifest.build.wasm))
     reject("WORLD_BUNDLE_INCOMPATIBLE", "unsupported memory/import profile");
   await Kernel.create({ bytes, expectedSha256: manifest.kernel.sha256 });
   if (smoke) {

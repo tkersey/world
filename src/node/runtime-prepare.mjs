@@ -5,7 +5,7 @@ import { platform, arch } from "node:os";
 import { fileURLToPath } from "node:url";
 import { inventory, sha256, readBounded, reject, requiredChecks, verifyBundle } from "./runtime-bundle.mjs";
 import { inspectKernelWasm } from "../embedding/wasm.mjs";
-import { packageVersion } from "../embedding/index.mjs";
+import { packageVersion, encodeInput } from "../embedding/index.mjs";
 import { runSmoke } from "./runtime-smoke.mjs";
 
 const dependencyCommit = "1b00c8c159f0cb490a1223fac8d3d208cef41cb1";
@@ -89,6 +89,7 @@ export async function prepareBundle(source, output) {
     await mkdir(join(bundle, "smoke"));
     for (const [file, fixture] of [["pure", "install"], ["effect", "resource"]])
       await writeFile(join(bundle, "smoke", `${file}.bpi3`), execFileSync(fixtures, ["image", fixture], { maxBuffer: 2 << 20 }));
+    await writeFile(join(bundle, "smoke/pure.pki3"), encodeInput({ image: await readBounded(join(bundle, "smoke/pure.bpi3")), initialArgs: new Uint8Array() }));
     const smoke = await runSmoke(bundle, before);
     checks.push({ name: "portable-smoke", command: "installed runtime smoke", status: "passed", result: smoke, limits });
     const bytes = await readBounded(kernel), profile = inspectKernelWasm(bytes);
