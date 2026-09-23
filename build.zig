@@ -85,7 +85,7 @@ pub fn build(b: *std.Build) void {
         "LICENSE",                      "README.md",                  "package.json",                 "bin/world.mjs",               "docs/kernel-abi.md",
         "src/embedding/index.mjs",      "src/embedding/kernel.mjs",   "src/embedding/codec.mjs",      "src/embedding/values.mjs",    "src/embedding/wasm.mjs",
         "src/embedding/wire.mjs",       "src/embedding/errors.mjs",   "src/node/file-input.mjs",      "src/node/runtime-bundle.mjs", "src/node/runtime-command.mjs",
-        "src/node/runtime-prepare.mjs", "src/node/runtime-smoke.mjs", "src/node/runtime-acquire.mjs", "docs/runtime-bundles.md",
+        "src/node/runtime-prepare.mjs", "src/node/runtime-smoke.mjs", "src/node/runtime-acquire.mjs", "docs/runtime-bundles.md",     "src/node/runtime-output.mjs",
     }) |path| runtime_package.dependOn(&b.addInstallFileWithDir(b.path(path), .prefix, b.fmt("runtime/{s}", .{path})).step);
     const current_fixtures = b.addSystemCommand(&.{ "zig", "build", "--build-file" });
     current_fixtures.addFileArg(b.path("test/v2/build_source.zig"));

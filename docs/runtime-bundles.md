@@ -14,7 +14,8 @@ node bin/world.mjs runtime prepare --source "$PWD" --output /absolute/new/bundle
 This builds through the normal Boundary-data lock in a fresh Zig package cache,
 runs the existing aggregate and delivered-byte checks, and publishes `bundle`,
 `bundle.tar.gz`, and `bundle.delivery.json`. Existing destinations fail without
-overlay. An interrupted preparation keeps its `.preparing` directory and check
+overlay. Preparation and acquisition share one destination reservation, so neither
+can publish into a destination owned by the other. An interrupted preparation keeps its `.preparing` directory and check
 logs; choose a new destination after resolving the reported failure. No incomplete
 directory is a qualified artifact. Preparation can take several minutes.
 

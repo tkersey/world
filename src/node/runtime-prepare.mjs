@@ -7,6 +7,7 @@ import { inventory, sha256, readBounded, reject, requiredChecks, verifyBundle } 
 import { inspectKernelWasm } from "../embedding/wasm.mjs";
 import { packageVersion, encodeInput } from "../embedding/index.mjs";
 import { runSmoke } from "./runtime-smoke.mjs";
+import { reserveOutput } from "./runtime-output.mjs";
 
 const dependencyCommit = "1b00c8c159f0cb490a1223fac8d3d208cef41cb1";
 const dependencyPackage = "boundary-3.0.0-dev.0-flclaCJBFQCNUnFJK019OyLBDLZdg6_eTW1rzBpwImGA";
@@ -14,10 +15,6 @@ const dependencyUrl = `https://github.com/tkersey/boundary/archive/${dependencyC
 const limits = { input: 65536, working: 1048576, output: 65536 };
 const json = value => JSON.stringify(value, null, 2) + "\n";
 const text = (command, args, cwd) => execFileSync(command, args, { cwd, encoding: "utf8", timeout: 120000, maxBuffer: 2 << 20 }).trim();
-async function absent(path) {
-  try { await lstat(path); } catch (error) { if (error.code === "ENOENT") return; throw error; }
-  reject("WORLD_BUNDLE_COLLISION", `destination exists; choose a new output or verify it: ${path}`);
-}
 export async function sourceIdentity(source) {
   source = await realpath(source);
   if (await realpath(fileURLToPath(new URL("../..", import.meta.url))) !== source)
@@ -56,19 +53,7 @@ export async function prepareBundle(source, output) {
   source = await realpath(source); output = resolve(output);
   const originalSource = source;
   const identity = await sourceIdentity(source);
-  await mkdir(dirname(output), { recursive: true });
-  const lock = `${output}.preparing`;
-  try { await mkdir(lock); } catch (error) {
-    if (error.code === "EEXIST") reject("WORLD_BUNDLE_COLLISION", `preparation already active/interrupted: ${lock}`);
-    throw error;
-  }
-  // Absence is a precondition owned by this exclusive preparation, not a stale hint.
-  try {
-    for (const path of [output, `${output}.tar.gz`, `${output}.delivery.json`]) await absent(path);
-  } catch (error) {
-    await rm(lock, { recursive: true });
-    throw error;
-  }
+  const lock = await reserveOutput(output, [`${output}.tar.gz`, `${output}.delivery.json`]);
   const bundle = join(lock, "bundle"), evidence = join(bundle, "evidence"), checks = [];
   await mkdir(evidence, { recursive: true });
   const run = (name, command, args) => checked(source, evidence, checks, name, command, args);

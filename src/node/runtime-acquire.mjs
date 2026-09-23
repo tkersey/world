@@ -1,6 +1,7 @@
 import { gunzipSync } from "node:zlib";
-import { mkdir, writeFile, rename, rm, lstat, chmod } from "node:fs/promises";
+import { mkdir, writeFile, rename, rm, chmod } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
+import { reserveOutput } from "./runtime-output.mjs";
 import { readBounded, sha256, reject, verifyInventory } from "./runtime-bundle.mjs";
 
 // Deliberately accepts only the regular-file/directory USTAR profile produced here.
@@ -55,11 +56,7 @@ export async function acquireBundle(archive, expectedArchive, expectedManifest, 
   if (sha256(bytes) !== expectedArchive) reject("WORLD_BUNDLE_IDENTITY_INVALID", "downloaded archive digest mismatch");
   const files = unpackArchive(bytes); // Validate all entries before creating anything.
   output = resolve(output);
-  try { await lstat(output); reject("WORLD_BUNDLE_COLLISION", `output exists: ${output}`); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  await mkdir(dirname(output), { recursive: true });
-  const stage = `${output}.acquiring`;
-  await mkdir(stage);
+  const stage = await reserveOutput(output);
   try {
     for (const file of files) {
       await mkdir(dirname(join(stage, file.path)), { recursive: true });

@@ -118,13 +118,20 @@ test("failed preparation never publishes and concurrent preparation cannot mix o
     child.stderr.on("data",b=>stderr+=b); child.on("error",reject);
     child.on("close",code=>resolve({code,stderr}));
   });
+  const acquisition=await fixture(t),transport=join(root,"acquire.tar.gz");
+  execFileSync("tar",["--format=ustar","-czf",transport,"-C",acquisition.root,"."]);
+  const transportBytes=await (await import("node:fs/promises")).readFile(transport);
+  const {acquireBundle}=await import("../../src/node/runtime-acquire.mjs");
   const first=launch();
   for(let i=0;;i++){
     try{await access(output+".preparing");break;}catch{assert.ok(i<100);await new Promise(r=>setTimeout(r,20));}
   }
   const second=await launch();
   assert.notEqual(second.code,0);assert.match(second.stderr,/WORLD_BUNDLE_COLLISION/);
+  let acquisitionError;
+  try{await acquireBundle(transport,sha256(transportBytes),acquisition.hash,output);}catch(error){acquisitionError=error;}
   const failed=await first;assert.notEqual(failed.code,0);assert.match(failed.stderr,/WORLD_BUNDLE_QUALIFICATION_FAILED/);
+  assert.equal(acquisitionError?.code,"WORLD_BUNDLE_COLLISION","acquisition must share the producer reservation");
   await assert.rejects(access(output),{code:"ENOENT"});
   await assert.rejects(access(output+".delivery.json"),{code:"ENOENT"});
   // Deterministically model A publishing just before delayed B acquires the lock.
