@@ -104,6 +104,10 @@ with an offline fresh-process restore smoke. It writes a bundle, adjacent
 delivery record contains the archive and manifest digests. A failed preparation
 leaves no ready bundle at the requested destination. Use a new destination for a
 new source; an existing bundle is verified explicitly, never overwritten.
+Preparation reserves its destination with a lock. If a process was interrupted
+and `WORLD_PREPARE_BUSY` persists, confirm that no producer is running before
+removing the named stale lock, or choose another new destination. Existing
+archives and delivery records are never replaced by a new preparation.
 
 Before unpacking a downloaded archive, compare its SHA-256 with a digest obtained
 from the trusted delivery record. Inspect or safely extract the archive into a new

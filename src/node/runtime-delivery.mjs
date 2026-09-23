@@ -2,9 +2,10 @@
 // Node-only package custody. The browser-neutral embedding does not import this module.
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { cp, link, lstat, mkdir, mkdtemp, open, readFile, readlink, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { Kernel, inspectKernelWasm, packageVersion } from "../embedding/index.mjs";
+import { readRegularFile } from "./file-input.mjs";
 
 const FORMAT = "world-runtime-bundle/v1";
 const CHECK_STEPS = ["check", "check-kernel", "check-package", "check-source", "check-capacity", "check-transfer", "check-browser", "check-codecs"];
@@ -26,25 +27,33 @@ function exactOptions(args, allowed, flags = []) {
   }
   return options;
 }
-async function readJson(path) {
-  const bytes = await readFile(path);
+function readJsonBytes(bytes, path) {
   if (bytes.length > MAX_JSON) throw failure("WORLD_MANIFEST_INVALID", `${path} exceeds JSON limit`);
   try { return JSON.parse(bytes.toString("utf8")); }
   catch { throw failure("WORLD_MANIFEST_INVALID", `invalid JSON in ${path}`); }
+}
+async function readJson(path) {
+  await regular(path);
+  return readJsonBytes(await readRegularFile(path, length => {
+    if (length > BigInt(MAX_JSON)) throw failure("WORLD_MANIFEST_INVALID", `${path} exceeds JSON limit`);
+  }), path);
 }
 async function regular(path) {
   const stat = await lstat(path);
   if (!stat.isFile()) throw failure("WORLD_FILE_INVALID", `expected regular file: ${path}`);
   return stat;
 }
-async function files(root, prefix = "") {
+async function files(root, prefix = "", state = { count: 0 }, depth = 0) {
+  if (depth > 16) throw failure("WORLD_INVENTORY_INVALID", "bundle directory nesting exceeds limit");
   const names = await readdir(join(root, prefix));
+  if (names.length > 256) throw failure("WORLD_INVENTORY_INVALID", "bundle directory has too many entries");
   const result = [];
   for (const name of names.sort()) {
+    if (++state.count > 256) throw failure("WORLD_INVENTORY_INVALID", "bundle has too many entries");
     const relative = prefix ? `${prefix}/${name}` : name;
     const stat = await lstat(join(root, relative));
     if (stat.isSymbolicLink()) throw failure("WORLD_FILE_INVALID", `symlink in bundle: ${relative}`);
-    if (stat.isDirectory()) result.push(...await files(root, relative));
+    if (stat.isDirectory()) result.push(...await files(root, relative, state, depth + 1));
     else if (stat.isFile()) result.push(relative);
     else throw failure("WORLD_FILE_INVALID", `special file in bundle: ${relative}`);
   }
@@ -69,9 +78,11 @@ export async function verifyRuntime(root, expectedManifest, smoke = false) {
   root = resolve(root);
   const manifestPath = join(root, "manifest.json");
   await regular(manifestPath);
-  const manifestBytes = await readFile(manifestPath);
+  const manifestBytes = await readRegularFile(manifestPath, length => {
+    if (length > BigInt(MAX_JSON)) throw failure("WORLD_MANIFEST_INVALID", "manifest exceeds JSON limit");
+  });
   if (digest(manifestBytes) !== expectedManifest) throw failure("WORLD_MANIFEST_IDENTITY_INVALID", "manifest differs from caller-supplied SHA-256");
-  const manifest = await readJson(manifestPath);
+  const manifest = readJsonBytes(manifestBytes, manifestPath);
   if (manifest.format !== FORMAT || manifest.abi !== 3 || manifest.package?.version !== packageVersion ||
       JSON.stringify(manifest.profile) !== JSON.stringify(profile) ||
       !Array.isArray(manifest.requiredChecks) || JSON.stringify(manifest.requiredChecks) !== JSON.stringify(REQUIRED) ||
@@ -116,15 +127,41 @@ function run(file, args, cwd, timeout = 600000) {
   if (child.error || child.status !== 0) throw failure("WORLD_QUALIFICATION_FAILED", `${file} ${args.join(" ")} failed: ${child.stderr || child.error || child.status}`);
   return { stdout: child.stdout, stderr: child.stderr };
 }
+const git = (args, cwd) => {
+  const child = spawnSync("git", args, { cwd, maxBuffer: 8 << 20, env: { ...process.env, GIT_NO_REPLACE_OBJECTS: "1" } });
+  if (child.error || child.status !== 0) throw failure("WORLD_SOURCE_INVALID", `git ${args[0]} failed: ${child.stderr || child.error || child.status}`);
+  return child.stdout;
+};
+async function cleanSource(source, expectedCommit = null) {
+  const root = git(["rev-parse", "--show-toplevel"], source).toString().trim();
+  const commit = git(["rev-parse", "HEAD"], source).toString().trim();
+  const tree = git(["rev-parse", "HEAD^{tree}"], source).toString().trim();
+  if (root !== source || (expectedCommit && commit !== expectedCommit) ||
+      git(["rev-parse", "--show-object-format"], source).toString().trim() !== "sha1" ||
+      git(["status", "--porcelain=v1", "--untracked-files=all"], source).length)
+    throw failure("WORLD_SOURCE_DIRTY", "source must be the exact clean World repository root");
+  const rows = git(["ls-tree", "-r", "-z", "HEAD"], source).toString().split("\0").filter(Boolean);
+  for (const row of rows) {
+    const match = /^(100644|100755|120000) blob ([0-9a-f]{40})\t(.+)$/s.exec(row);
+    if (!match) throw failure("WORLD_SOURCE_INVALID", "unsupported tracked source entry");
+    const [, mode, expected, path] = match;
+    const name = join(source, path), stat = await lstat(name);
+    if (mode === "120000" ? !stat.isSymbolicLink() : !stat.isFile() || !!(stat.mode & 0o111) !== (mode === "100755"))
+      throw failure("WORLD_SOURCE_DIRTY", `tracked source mode changed: ${path}`);
+    const bytes = mode === "120000" ? Buffer.from(await readlink(name)) : await readFile(name);
+    const actual = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+    if (actual !== expected) throw failure("WORLD_SOURCE_DIRTY", `tracked source bytes differ from HEAD: ${path}`);
+  }
+  return { commit, tree };
+}
+const exists = async path => lstat(path).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; });
 async function prepareRuntime(source, output) {
   if (!isAbsolute(source) || !isAbsolute(output)) throw failure("WORLD_OPTION_INVALID", "source and output must be absolute paths");
   source = resolve(source); output = resolve(output);
-  if (await lstat(output).then(() => true, () => false)) throw failure("WORLD_OUTPUT_EXISTS", "destination exists; verify it explicitly or choose a new output");
-  const sourceRoot = run("git", ["rev-parse", "--show-toplevel"], source).stdout.trim();
-  if (sourceRoot !== source || run("git", ["status", "--porcelain=v1", "--untracked-files=all"], source).stdout.trim())
-    throw failure("WORLD_SOURCE_DIRTY", "source must be the clean World repository root");
-  const commit = run("git", ["rev-parse", "HEAD"], source).stdout.trim();
-  const tree = run("git", ["rev-parse", "HEAD^{tree}"], source).stdout.trim();
+  const archive = `${output}.tar.gz`, descriptor = `${output}.runtime-delivery.json`;
+  for (const path of [output, archive, descriptor]) if (await exists(path))
+    throw failure("WORLD_OUTPUT_EXISTS", `delivery path exists: ${path}; verify it or choose a new output`);
+  const { commit, tree } = await cleanSource(source);
   const zonBytes = await readFile(join(source, "build.zig.zon"));
   const zon = zonBytes.toString("utf8");
   const dependencyCommit = zon.match(/boundary\/archive\/([0-9a-f]{40})\.tar\.gz/)?.[1];
@@ -136,9 +173,18 @@ async function prepareRuntime(source, output) {
   const dependencyUrl = `https://github.com/tkersey/boundary/archive/${dependencyCommit}.tar.gz`;
   const resolvedPackage = run("zig", ["fetch", dependencyUrl], source).stdout.trim();
   if (resolvedPackage !== dependencyPackage) throw failure("WORLD_DEPENDENCY_INVALID", `resolved Boundary package ${resolvedPackage} differs from lock ${dependencyPackage}`);
-  const parent = dirname(output), lock = await open(`${output}.lock`, "wx");
-  let staging, published = false;
+  const sourceLocal = output.startsWith(`${source}${sep}`);
+  const parent = sourceLocal ? dirname(source) : dirname(output);
+  const lockPath = sourceLocal ? join(parent, `.${basename(output)}-${digest(Buffer.from(output)).slice(0, 16)}.lock`) : `${output}.lock`;
+  let lock;
+  try { lock = await open(lockPath, "wx"); }
+  catch (error) {
+    if (error.code === "EEXIST") throw failure("WORLD_PREPARE_BUSY", `preparation lock exists: ${lockPath}; confirm no producer is running before removing a stale lock, or choose a new output`);
+    throw error;
+  }
+  let staging, publishedBundle = false, publishedArchive = false, publishedDescriptor = false;
   try {
+    await lock.writeFile(json({ pid: process.pid, source, output, startedAt: new Date().toISOString() }));
     staging = await mkdtemp(join(parent, `.${basename(output)}-stage-`));
     const prefix = join(staging, "build");
     const checkCommand = ["build", "build-runtime", ...CHECK_STEPS, "-Doptimize=ReleaseSafe", "--summary", "all", "--prefix", prefix];
@@ -163,38 +209,40 @@ async function prepareRuntime(source, output) {
     const manifestBytes = json(manifest), manifestSha256 = digest(manifestBytes);
     await writeFile(join(bundle, "manifest.json"), manifestBytes);
     await verifyRuntime(bundle, manifestSha256, true);
-    const tests = run(process.execPath, [join(source, "test/current/runtime_delivery.test.mjs"), bundle, manifestSha256], source);
+    const tests = run(process.execPath, [join(source, "test/current/runtime_delivery.test.mjs"), bundle, manifestSha256, source], source);
     await writeFile(join(bundle, "evidence/verification-tests.log"), tests.stdout + tests.stderr);
     manifest.files = await inventory(bundle);
     const finalManifestBytes = json(manifest), finalManifestSha256 = digest(finalManifestBytes);
     await writeFile(join(bundle, "manifest.json"), finalManifestBytes);
     await verifyRuntime(bundle, finalManifestSha256, true);
-    if (run("git", ["rev-parse", "HEAD"], source).stdout.trim() !== commit ||
-        run("git", ["status", "--porcelain=v1", "--untracked-files=all"], source).stdout.trim())
-      throw failure("WORLD_SOURCE_CHANGED", "source changed during qualification");
-    const archive = `${output}.tar.gz`;
+    try { await cleanSource(source, commit); }
+    catch (error) { if (error.code === "WORLD_SOURCE_DIRTY") throw failure("WORLD_SOURCE_CHANGED", error.message); throw error; }
     const prepared = join(staging, basename(output));
     await rename(bundle, prepared);
     const stagedArchive = join(staging, "runtime-bundle.tar.gz");
     run("tar", ["-czf", stagedArchive, "-C", staging, basename(output)], staging);
     const archiveBytes = await readFile(stagedArchive);
-    if (await lstat(output).then(() => true, () => false)) throw failure("WORLD_OUTPUT_EXISTS", "destination appeared during qualification");
+    for (const path of [output, archive, descriptor]) if (await exists(path))
+      throw failure("WORLD_OUTPUT_EXISTS", `delivery path appeared during qualification: ${path}`);
     await rename(prepared, output);
-    published = true;
-    await rename(stagedArchive, archive);
+    publishedBundle = true;
+    await link(stagedArchive, archive);
+    publishedArchive = true;
     const delivery = { format: "world-runtime-delivery/v1", source: manifest.source, dependency: manifest.dependency, bundle: output, archive, archiveLength: archiveBytes.length, archiveSha256: digest(archiveBytes), manifestSha256: finalManifestSha256, kernelSha256, provider: null };
-    await writeFile(`${output}.runtime-delivery.json`, json(delivery));
+    const receipt = await open(descriptor, "wx");
+    publishedDescriptor = true;
+    try { await receipt.writeFile(json(delivery)); }
+    finally { await receipt.close(); }
     return delivery;
   } catch (error) {
-    if (published) {
-      await rm(output, { recursive: true, force: true });
-      await rm(`${output}.tar.gz`, { force: true });
-    }
+    if (publishedDescriptor) await rm(descriptor, { force: true });
+    if (publishedArchive) await rm(archive, { force: true });
+    if (publishedBundle) await rm(output, { recursive: true, force: true });
     throw error;
   } finally {
     if (staging) await rm(staging, { recursive: true, force: true });
     await lock.close();
-    await rm(`${output}.lock`, { force: true });
+    await rm(lockPath, { force: true });
   }
 }
 export async function runtimeCommand(args) {
