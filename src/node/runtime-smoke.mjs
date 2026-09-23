@@ -51,6 +51,11 @@ export async function runSmoke(root, digest) {
   assert.match(execFileSync(process.execPath, [cli, "--version"], { encoding: "utf8", timeout: 30000 }), /^6\.0\.0-dev\.0\s*$/);
   const cliResult = execFileSync(process.execPath, [cli, "invoke", "--kernel", join(root, "runtime/world-kernel.wasm"), "--sha256", digest, "--input", join(root, "smoke/pure.pki3")], { timeout: 30000 });
   assert.deepEqual(decodeOutcome(cliResult).value, integer(2080));
+  if (process.platform !== "win32") {
+    const direct = execFileSync(cli, ["invoke", "--kernel", join(root, "runtime/world-kernel.wasm"),
+      "--sha256", digest, "--input", join(root, "smoke/pure.pki3")], { timeout: 30000 });
+    assert.deepEqual(direct, cliResult);
+  }
   const worker = join(root, "runtime/src/node/runtime-smoke.mjs");
   const call = args => JSON.parse(execFileSync(process.execPath, [worker, root, digest, ...args], {
     encoding: "utf8", timeout: 30000, maxBuffer: 2 << 20,

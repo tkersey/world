@@ -57,11 +57,21 @@ test("safe acquisition binds archive before extraction and refuses destination c
   const scratch = await mkdtemp(join(tmpdir(), "world acquisition "));
   t.after(() => rm(scratch, { recursive: true, force: true }));
   const archive = join(scratch, "bundle.tar.gz"), output = join(scratch, "relocated bundle");
+  const {chmod,stat} = await import("node:fs/promises");
+  await writeFile(join(f.root,"runtime/bin/world.mjs"),'#!/usr/bin/env node\nconsole.log("acquired CLI");\n');
+  await writeFile(join(f.root,"runtime/package.json"),'{"type":"module"}');
+  await chmod(join(f.root,"runtime/bin/world.mjs"),0o755);
+  f.manifest.files=(await inventory(f.root)).filter(file=>file.path!=="manifest.json");
+  f.hash=await f.seal();
   execFileSync("tar", ["--format=ustar", "-czf", archive, "-C", f.root, "."]);
   const bytes = await readFile(archive), digest = sha256(bytes);
   await assert.rejects(acquireBundle(archive, "0".repeat(64), f.hash, output), { code: "WORLD_BUNDLE_IDENTITY_INVALID" });
   await acquireBundle(archive, digest, f.hash, output);
   await verifyInventory(output, f.hash);
+  if(process.platform!=="win32"){
+    assert.ok((await stat(join(output,"runtime/bin/world.mjs"))).mode & 0o100);
+    assert.equal(execFileSync(join(output,"runtime/bin/world.mjs"),[],{encoding:"utf8"}).trim(),"acquired CLI");
+  }
   await assert.rejects(acquireBundle(archive, digest, f.hash, output), { code: "WORLD_BUNDLE_COLLISION" });
   await symlink("/tmp", join(f.root, "escape"));
   execFileSync("tar", ["--format=ustar", "-czf", archive, "-C", f.root, "."]);
@@ -103,8 +113,8 @@ test("failed preparation never publishes and concurrent preparation cannot mix o
   await writeFile(join(tools,"zig"),'#!/bin/sh\nif [ "$1" = version ]; then echo 0.16.0; exit 0; fi\nsleep 2\nexit 42\n',{mode:0o755});
   const args = [join(source,"bin/world.mjs"),"runtime","prepare","--source",source,"--output",output];
   const options = {cwd:root,env:{...process.env,PATH:tools+":"+process.env.PATH}};
-  const launch = () => new Promise((resolve,reject)=>{
-    const child=spawn(process.execPath,args,options); let stderr="";
+  const launch = (extra = []) => new Promise((resolve,reject)=>{
+    const child=spawn(process.execPath,[...extra,...args],options); let stderr="";
     child.stderr.on("data",b=>stderr+=b); child.on("error",reject);
     child.on("close",code=>resolve({code,stderr}));
   });
@@ -117,6 +127,25 @@ test("failed preparation never publishes and concurrent preparation cannot mix o
   const failed=await first;assert.notEqual(failed.code,0);assert.match(failed.stderr,/WORLD_BUNDLE_QUALIFICATION_FAILED/);
   await assert.rejects(access(output),{code:"ENOENT"});
   await assert.rejects(access(output+".delivery.json"),{code:"ENOENT"});
+  // Deterministically model A publishing just before delayed B acquires the lock.
+  const turnover=join(root,"turnover"),preload=join(root,"publish-before-lock.mjs");
+  await writeFile(preload,`import fs from "node:fs"; import {syncBuiltinESMExports} from "node:module";
+const original=fs.promises.mkdir; const output=${JSON.stringify(turnover)};
+fs.promises.mkdir=async(path,...args)=>{
+ if(path===output+".preparing"){
+  await original(output); await fs.promises.writeFile(output+"/previous","bundle A");
+  await fs.promises.writeFile(output+".tar.gz","archive A");
+  await fs.promises.writeFile(output+".delivery.json","descriptor A");
+ }
+ return original(path,...args);
+}; syncBuiltinESMExports();`);
+  args[args.length-1]=turnover;
+  const stale=await launch(["--import",preload]);
+  assert.match(stale.stderr,/WORLD_BUNDLE_COLLISION/);
+  const read=await import("node:fs/promises");
+  assert.equal(await read.readFile(turnover+".tar.gz","utf8"),"archive A");
+  assert.equal(await read.readFile(turnover+".delivery.json","utf8"),"descriptor A");
+  assert.equal(await read.readFile(turnover+"/previous","utf8"),"bundle A");
   await writeFile(join(source,"uncommitted"),"dirty");
   const dirty=await launch();assert.match(dirty.stderr,/WORLD_BUNDLE_SOURCE_DIRTY/);
   await rm(join(source,"uncommitted"));

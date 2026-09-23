@@ -50,10 +50,16 @@ export async function prepareBundle(source, output) {
   const originalSource = source;
   const identity = await sourceIdentity(source);
   await mkdir(dirname(output), { recursive: true });
-  for (const path of [output, `${output}.tar.gz`, `${output}.delivery.json`]) await absent(path);
   const lock = `${output}.preparing`;
   try { await mkdir(lock); } catch (error) {
     if (error.code === "EEXIST") reject("WORLD_BUNDLE_COLLISION", `preparation already active/interrupted: ${lock}`);
+    throw error;
+  }
+  // Absence is a precondition owned by this exclusive preparation, not a stale hint.
+  try {
+    for (const path of [output, `${output}.tar.gz`, `${output}.delivery.json`]) await absent(path);
+  } catch (error) {
+    await rm(lock, { recursive: true });
     throw error;
   }
   const bundle = join(lock, "bundle"), evidence = join(bundle, "evidence"), checks = [];

@@ -1,5 +1,5 @@
 import { gunzipSync } from "node:zlib";
-import { mkdir, writeFile, rename, rm, lstat } from "node:fs/promises";
+import { mkdir, writeFile, rename, rm, lstat, chmod } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { readBounded, sha256, reject, verifyInventory } from "./runtime-bundle.mjs";
 
@@ -39,7 +39,11 @@ export function unpackArchive(bytes) {
       names.add(path);
       if (type === 53) {
         if (size !== 0) reject("WORLD_BUNDLE_ARCHIVE_INVALID", "nonempty tar directory");
-      } else files.push({ path, bytes: tar.subarray(offset, offset + size) });
+      } else {
+        // Preserve executable intent without admitting setuid, setgid or writable shared files.
+        const mode = octal(header.subarray(100, 108)) & 0o111 ? 0o755 : 0o644;
+        files.push({ path, bytes: tar.subarray(offset, offset + size), mode });
+      }
     }
     offset += Math.ceil(size / 512) * 512;
   }
@@ -60,6 +64,7 @@ export async function acquireBundle(archive, expectedArchive, expectedManifest, 
     for (const file of files) {
       await mkdir(dirname(join(stage, file.path)), { recursive: true });
       await writeFile(join(stage, file.path), file.bytes, { flag: "wx" });
+      await chmod(join(stage, file.path), file.mode);
     }
     await verifyInventory(stage, expectedManifest);
     await rename(stage, output);
