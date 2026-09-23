@@ -2,7 +2,7 @@
 // Node-only package custody. The browser-neutral embedding does not import this module.
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { Kernel, inspectKernelWasm, packageVersion } from "../embedding/index.mjs";
 
@@ -132,8 +132,13 @@ async function prepareRuntime(source, output) {
     throw failure("WORLD_DEPENDENCY_INVALID", "normal locked Boundary data dependency changed");
   const zig = run("zig", ["version"], source).stdout.trim();
   if (zig !== "0.16.0") throw failure("WORLD_TOOLCHAIN_INVALID", `Zig 0.16.0 required; found ${zig}`);
-  const parent = dirname(output), staging = await mkdtemp(join(parent, `.${basename(output)}-stage-`));
+  const dependencyUrl = `https://github.com/tkersey/boundary/archive/${dependencyCommit}.tar.gz`;
+  const resolvedPackage = run("zig", ["fetch", dependencyUrl], source).stdout.trim();
+  if (resolvedPackage !== dependencyPackage) throw failure("WORLD_DEPENDENCY_INVALID", `resolved Boundary package ${resolvedPackage} differs from lock ${dependencyPackage}`);
+  const parent = dirname(output), lock = await open(`${output}.lock`, "wx");
+  let staging, published = false;
   try {
+    staging = await mkdtemp(join(parent, `.${basename(output)}-stage-`));
     const prefix = join(staging, "build");
     const result = run("zig", ["build", "build-runtime", "check", "-Doptimize=ReleaseSafe", "--prefix", prefix], source, 1800000);
     const bundle = join(staging, "bundle");
@@ -155,14 +160,39 @@ async function prepareRuntime(source, output) {
     const manifestBytes = json(manifest), manifestSha256 = digest(manifestBytes);
     await writeFile(join(bundle, "manifest.json"), manifestBytes);
     await verifyRuntime(bundle, manifestSha256, true);
-    await rename(bundle, output);
+    const tests = run(process.execPath, [join(source, "test/current/runtime_delivery.test.mjs"), bundle, manifestSha256], source);
+    await writeFile(join(bundle, "evidence/verification-tests.log"), tests.stdout + tests.stderr);
+    manifest.files = await inventory(bundle);
+    const finalManifestBytes = json(manifest), finalManifestSha256 = digest(finalManifestBytes);
+    await writeFile(join(bundle, "manifest.json"), finalManifestBytes);
+    await verifyRuntime(bundle, finalManifestSha256, true);
+    if (run("git", ["rev-parse", "HEAD"], source).stdout.trim() !== commit ||
+        run("git", ["status", "--porcelain=v1", "--untracked-files=all"], source).stdout.trim())
+      throw failure("WORLD_SOURCE_CHANGED", "source changed during qualification");
     const archive = `${output}.tar.gz`;
-    run("tar", ["-czf", archive, "-C", dirname(output), basename(output)], dirname(output));
-    const archiveBytes = await readFile(archive);
-    const delivery = { format: "world-runtime-delivery/v1", source: manifest.source, dependency: manifest.dependency, bundle: output, archive, archiveLength: archiveBytes.length, archiveSha256: digest(archiveBytes), manifestSha256, kernelSha256, provider: null };
+    const prepared = join(staging, basename(output));
+    await rename(bundle, prepared);
+    const stagedArchive = join(staging, "runtime-bundle.tar.gz");
+    run("tar", ["-czf", stagedArchive, "-C", staging, basename(output)], staging);
+    const archiveBytes = await readFile(stagedArchive);
+    if (await lstat(output).then(() => true, () => false)) throw failure("WORLD_OUTPUT_EXISTS", "destination appeared during qualification");
+    await rename(prepared, output);
+    published = true;
+    await rename(stagedArchive, archive);
+    const delivery = { format: "world-runtime-delivery/v1", source: manifest.source, dependency: manifest.dependency, bundle: output, archive, archiveLength: archiveBytes.length, archiveSha256: digest(archiveBytes), manifestSha256: finalManifestSha256, kernelSha256, provider: null };
     await writeFile(`${output}.runtime-delivery.json`, json(delivery));
     return delivery;
-  } finally { await rm(staging, { recursive: true, force: true }); }
+  } catch (error) {
+    if (published) {
+      await rm(output, { recursive: true, force: true });
+      await rm(`${output}.tar.gz`, { force: true });
+    }
+    throw error;
+  } finally {
+    if (staging) await rm(staging, { recursive: true, force: true });
+    await lock.close();
+    await rm(`${output}.lock`, { force: true });
+  }
 }
 export async function runtimeCommand(args) {
   const operation = args.shift();

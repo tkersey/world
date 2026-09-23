@@ -86,3 +86,39 @@ release is implied by this development package.
 
 See [verification](docs/verification.md) for the current coverage and the
 remaining migration boundaries.
+
+### Qualified runtime delivery
+
+With Zig 0.16.0, Node 26.9.0, the locked Boundary data dependency, `uv`, and the
+repository browser test tools installed, a clean committed World source can produce
+a standalone runtime bundle:
+
+```sh
+node bin/world.mjs runtime prepare --source "$PWD" --output /absolute/new/runtime-bundle
+```
+
+Preparation runs the repository `check` aggregate in ReleaseSafe, including the
+package, browser, native and transfer lanes, then exercises the delivered bytes
+with an offline fresh-process restore smoke. It writes a bundle, adjacent
+`runtime-bundle.tar.gz`, and adjacent `runtime-bundle.runtime-delivery.json`. The
+delivery record contains the archive and manifest digests. A failed preparation
+leaves no ready bundle at the requested destination. Use a new destination for a
+new source; an existing bundle is verified explicitly, never overwritten.
+
+Before unpacking a downloaded archive, compare its SHA-256 with a digest obtained
+from the trusted delivery record. Inspect or safely extract the archive into a new
+directory, then compare `manifest.json` with the trusted manifest digest before
+executing any code from the archive. With the verified package in place:
+
+```sh
+node /absolute/runtime-bundle/runtime/bin/world.mjs runtime verify \
+  --root /absolute/runtime-bundle --manifest-sha256 EXPECTED_MANIFEST_SHA256 --smoke
+```
+
+Verification checks the complete file inventory, package and ABI identity, the
+kernel's physical profile and admission, and the required qualification statuses.
+`--smoke` also runs a request and restores its State in a new Node process without
+Zig, source checkout, caches or network. The GitHub Actions workflow uploads the
+archive and delivery record as a non-release artifact on this branch; artifacts
+expire according to their run's retention setting, so retain a verified local copy
+for any pinned consumer.
