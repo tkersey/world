@@ -7,7 +7,8 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { Kernel, inspectKernelWasm, packageVersion } from "../embedding/index.mjs";
 
 const FORMAT = "world-runtime-bundle/v1";
-const REQUIRED = ["check", "bundle-smoke"];
+const CHECK_STEPS = ["check", "check-kernel", "check-package", "check-source", "check-capacity", "check-transfer", "check-browser", "check-codecs"];
+const REQUIRED = [...CHECK_STEPS, "bundle-smoke"];
 const MAX_JSON = 4 * 1024 * 1024;
 const SHA = /^[0-9a-f]{64}$/;
 const profile = Object.freeze({ target: "wasm32-freestanding", kernelOptimize: "ReleaseSmall", hostOptimize: "ReleaseSafe", inputCapacity: 65536, workingCapacity: 1048576, outputCapacity: 65536, stackBytes: 65536, maximumMemoryBytes: 268435456 });
@@ -140,7 +141,8 @@ async function prepareRuntime(source, output) {
   try {
     staging = await mkdtemp(join(parent, `.${basename(output)}-stage-`));
     const prefix = join(staging, "build");
-    const result = run("zig", ["build", "build-runtime", "check", "-Doptimize=ReleaseSafe", "--prefix", prefix], source, 1800000);
+    const checkCommand = ["build", "build-runtime", ...CHECK_STEPS, "-Doptimize=ReleaseSafe", "--summary", "all", "--prefix", prefix];
+    const result = run("zig", checkCommand, source, 1800000);
     const bundle = join(staging, "bundle");
     await mkdir(bundle);
     await cp(join(prefix, "runtime"), join(bundle, "runtime"), { recursive: true, force: false, errorOnExist: true });
@@ -151,7 +153,8 @@ async function prepareRuntime(source, output) {
     const kernelBytes = await readFile(join(bundle, "runtime/world-kernel.wasm"));
     const kernelSha256 = digest(kernelBytes);
     const smokeRun = run(process.execPath, [join(bundle, "runtime/src/node/runtime-smoke.mjs"), bundle, kernelSha256], bundle);
-    const checks = { check: { status: "passed", command: "zig build build-runtime check -Doptimize=ReleaseSafe", zig, node: process.version }, "bundle-smoke": { status: "passed", command: "node runtime/src/node/runtime-smoke.mjs BUNDLE KERNEL_SHA256", node: process.version } };
+    const checks = Object.fromEntries(CHECK_STEPS.map(name => [name, { status: "passed", command: `zig build ${name} -Doptimize=ReleaseSafe`, input: { sourceCommit: commit, kernelSha256 }, zig, node: process.version }]));
+    checks["bundle-smoke"] = { status: "passed", command: "node runtime/src/node/runtime-smoke.mjs BUNDLE KERNEL_SHA256", input: { kernelSha256, image: "smoke/resource.bpi3" }, node: process.version };
     await writeFile(join(bundle, "qualification.json"), json({ format: "world-runtime-qualification/v1", checks, limits: { input: 65536, working: 1048576, output: 65536 }, source: { commit, tree } }));
     await mkdir(join(bundle, "evidence"));
     await writeFile(join(bundle, "evidence/check.log"), result.stdout + result.stderr);
