@@ -25,14 +25,21 @@ export async function sourceIdentity(source) {
   if (text("git", ["rev-parse", "--show-toplevel"], source) !== source ||
       text("git", ["status", "--porcelain", "--untracked-files=all"], source))
     reject("WORLD_BUNDLE_SOURCE_DIRTY", "qualified preparation requires a clean source checkout");
-  const lock = await readBounded(join(source, "build.zig.zon"));
+  const commit = text("git", ["rev-parse", "HEAD"], source);
+  const tree = text("git", ["rev-parse", `${commit}^{tree}`], source);
+  const lock = execFileSync("git", ["show", `${commit}:build.zig.zon`], {
+    cwd: source, timeout: 120000, maxBuffer: 1 << 20,
+  });
   const zon = new TextDecoder().decode(lock);
   if (!zon.includes(`.url = "${dependencyUrl}"`) || !zon.includes(`.hash = "${dependencyPackage}"`))
     reject("WORLD_BUNDLE_DEPENDENCY_INVALID", "normal locked Boundary-data dependency differs");
   if (text("zig", ["version"], source) !== "0.16.0")
     reject("WORLD_BUNDLE_TOOL_UNAVAILABLE", "Zig 0.16.0 is required");
-  return { repository: "https://github.com/tkersey/world", commit: text("git", ["rev-parse", "HEAD"], source),
-    tree: text("git", ["rev-parse", "HEAD^{tree}"], source), clean: true,
+  if (text("git", ["rev-parse", "HEAD"], source) !== commit ||
+      text("git", ["status", "--porcelain", "--untracked-files=all"], source))
+    reject("WORLD_BUNDLE_SOURCE_CHANGED", "source changed during snapshot selection; retry from a clean checkout");
+  return { repository: "https://github.com/tkersey/world", commit, tree, clean: true,
+    cleanScope: "snapshot-selection",
     dependency: { commit: dependencyCommit, package: dependencyPackage, url: dependencyUrl, lockSha256: sha256(lock) } };
 }
 async function checked(source, evidence, checks, name, command, args) {
@@ -111,8 +118,8 @@ export async function prepareBundle(source, output) {
     await writeFile(join(bundle, "manifest.json"), json(manifest));
     const manifestSha256 = sha256(await readBounded(join(bundle, "manifest.json")));
     await verifyBundle(bundle, manifestSha256, true);
-    if (JSON.stringify(await sourceIdentity(originalSource)) !== JSON.stringify(identity))
-      reject("WORLD_BUNDLE_SOURCE_DIRTY", "source changed during qualification");
+    // All build and qualification inputs came from git archive(identity.commit).
+    // Later live-checkout changes, including this producer's output, are not inputs.
     const archive = join(lock, "bundle.tar.gz");
     execFileSync("tar", ["--format=ustar", "-czf", archive, "-C", bundle, "."], { timeout: 120000 });
     const transport = await readBounded(archive);

@@ -18,6 +18,12 @@ overlay. An interrupted preparation keeps its `.preparing` directory and check
 logs; choose a new destination after resolving the reported failure. No incomplete
 directory is a qualified artifact. Preparation can take several minutes.
 
+Source cleanliness is checked when selecting the snapshot. Commit, tree and lock
+are bound to that one immutable Git commit, and all build/check inputs come from
+its export. Later checkout changes do not retarget the build. Output may be inside
+the checkout; unignored published output will then appear in `git status`. Prefer
+an outside or ignored output location when keeping the checkout clean matters.
+
 Obtain the archive and **expected** archive/manifest hashes from the selected
 producer's external delivery record. From an already trusted source checkout:
 

@@ -146,6 +146,23 @@ fs.promises.mkdir=async(path,...args)=>{
   assert.equal(await read.readFile(turnover+".tar.gz","utf8"),"archive A");
   assert.equal(await read.readFile(turnover+".delivery.json","utf8"),"descriptor A");
   assert.equal(await read.readFile(turnover+"/previous","utf8"),"bundle A");
+  const realGit=execFileSync("which",["git"],{encoding:"utf8"}).trim();
+  const marker=join(root,"selection-switched");
+  await writeFile(join(tools,"git"),`#!/usr/bin/env node
+import fs from "node:fs";import {spawnSync} from "node:child_process";
+const git=${JSON.stringify(realGit)},args=process.argv.slice(2),marker=${JSON.stringify(marker)};
+const result=spawnSync(git,args);
+if(args.join(" ")==="rev-parse HEAD"&&!fs.existsSync(marker)){
+ fs.writeFileSync(marker,"");fs.writeFileSync("selection-change","new commit");
+ for(const command of [["add","selection-change"],["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","-m","selection changed"]]){
+  const changed=spawnSync(git,command);if(changed.status!==0)throw Error("fixture commit failed");
+ }
+}
+process.stdout.write(result.stdout??"");process.stderr.write(result.stderr??"");process.exit(result.status??1);
+`,{mode:0o755});
+  args[args.length-1]=join(root,"selection-output");
+  const selected=await launch();assert.match(selected.stderr,/WORLD_BUNDLE_SOURCE_CHANGED/);
+  await rm(join(tools,"git"));
   await writeFile(join(source,"uncommitted"),"dirty");
   const dirty=await launch();assert.match(dirty.stderr,/WORLD_BUNDLE_SOURCE_DIRTY/);
   await rm(join(source,"uncommitted"));
