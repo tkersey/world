@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join } from "node:path";
 import { Kernel, encodeInput, decodeOutcome, decodeRequest, encodeResult } from "../embedding/index.mjs";
 import { readBounded } from "./runtime-bundle.mjs";
 
@@ -66,7 +65,7 @@ export async function runSmoke(root, digest) {
   for (const result of results) assert.deepEqual(result.trace, ["example/resource-acquire", "example/resource-use", "example/resource-release"]);
   return { pure: 2080, replies: [41, 52], results: [42, 53], freshProcessRestoration: true };
 }
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (import.meta.main) {
   const [root, digest, mode, state, response] = process.argv.slice(2);
   console.log(JSON.stringify(await stage(root, digest, mode, state, response)));
 }

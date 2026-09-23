@@ -155,3 +155,21 @@ fs.promises.mkdir=async(path,...args)=>{
   git(["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","-m","wrong dependency"]);
   const wrong=await launch();assert.match(wrong.stderr,/WORLD_BUNDLE_DEPENDENCY_INVALID/);
 });
+
+test("worker entry detection survives ancestor aliases and importing stays inert", async t => {
+  const { spawnSync } = await import("node:child_process");
+  const { resolve } = await import("node:path");
+  const { pathToFileURL } = await import("node:url");
+  const root = await mkdtemp(join(tmpdir(), "world worker alias "));
+  t.after(() => rm(root, {recursive:true,force:true}));
+  const repo = resolve(import.meta.dirname,"../..");
+  await symlink(repo,join(root,"source alias"),"dir");
+  for(const source of [repo,join(root,"source alias")]){
+    const worker=join(source,"src/node/runtime-smoke.mjs");
+    const result=spawnSync(process.execPath,[worker,join(root,"missing bundle"),"0".repeat(64),"start"],{encoding:"utf8",timeout:30000});
+    assert.notEqual(result.status,0,"a direct worker must execute and reject the missing kernel, never silently skip");
+    assert.match(result.stderr,/ENOENT/);
+    const imported=spawnSync(process.execPath,["--input-type=module","-e",`await import(${JSON.stringify(pathToFileURL(worker).href)})`],{encoding:"utf8",timeout:30000});
+    assert.equal(imported.status,0,imported.stderr);assert.equal(imported.stdout,"");
+  }
+});
