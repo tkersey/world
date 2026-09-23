@@ -976,3 +976,68 @@ fn phaseReturnExample(b: *boundary.source.Builder) !boundary.source.Module {
     ));
     return b.module(main, unit);
 }
+
+test "tail indirect application retains its environment without accumulating return controls" {
+    const source = boundary.source;
+    for ([_]bool{ false, true }) |non_tail| {
+        var b = source.Builder.init(allocator);
+        defer b.deinit();
+        const integer = try b.scalar(u64);
+        const unit = try b.scalar(void);
+        const signature = try b.reserveSchema();
+        try b.defineSchema(signature, .{ .internal = .{ .computation = .{ .parameters = &.{ signature, integer }, .result = integer, .capture_bound = &.{integer} } } });
+        const entry = try b.declare(&.{ integer, integer }, integer, &.{}, &.{});
+        const loop = try b.declare(&.{ signature, integer }, integer, &.{}, &.{});
+        const count = try b.reference(b.parameter(loop, 1));
+        const decremented = try b.value(.{ .schema = integer, .expression = .{ .primitive = .{ .opcode = .integer_sub, .operands = &.{ count, try b.constant(u64, 1) }, .failures = &.{.{ .kind = .arithmetic_overflow, .value = try b.failureLiteral(try b.constant(void, {})) }} } } });
+        var next = try b.term(.{ .apply = .{ .computation = try b.reference(b.parameter(loop, 0)), .arguments = &.{ try b.reference(b.parameter(loop, 0)), decremented } } });
+        if (non_tail) {
+            const returned = try b.variable(integer);
+            const plus = try b.value(.{ .schema = integer, .expression = .{ .primitive = .{ .opcode = .integer_add, .operands = &.{ try b.reference(returned), try b.constant(u64, 1) }, .failures = &.{.{ .kind = .arithmetic_overflow, .value = try b.failureLiteral(try b.constant(void, {})) }} } } });
+            next = try b.bind(returned, next, try b.pure(plus));
+        }
+        try b.define(loop, try b.term(.{ .conditional = .{
+            .condition = try b.primitive(try b.scalar(bool), .equal, &.{ count, try b.constant(u64, 0) }, 0),
+            .when_true = try b.pure(try b.reference(b.parameter(entry, 1))),
+            .when_false = next,
+        } }));
+        const function = try b.lambda(loop, signature);
+        try b.define(entry, try b.term(.{ .apply = .{ .computation = function, .arguments = &.{ function, try b.reference(b.parameter(entry, 0)) } } }));
+        var compiled = try boundary.program.compile(allocator, b.module(entry, unit));
+        defer compiled.deinit();
+        const image = try programBytes(compiled.program);
+        defer allocator.free(image);
+        for ([_]u64{ 7, 127, 1024 }) |count_input| {
+            var input: [16]u8 = undefined;
+            std.mem.writeInt(u64, input[0..8], count_input, .little);
+            std.mem.writeInt(u64, input[8..16], 37, .little);
+            var session = try Session.initImage(allocator, image, &input);
+            defer session.deinit();
+            var rounds: usize = 0;
+            while (true) {
+                rounds += 1;
+                try testing.expect(rounds < 4096);
+                const outcome = try session.run(13);
+                if (outcome == .completed) {
+                    const result = try session.bytes(&outcome.completed);
+                    try testing.expectEqual(@as(u64, 37) + if (non_tail) count_input else 0, std.mem.readInt(u64, result[0..8], .little));
+                    break;
+                }
+                try testing.expect(outcome == .progressed);
+                const state = try session.checkpoint(allocator);
+                defer allocator.free(state);
+                if (!non_tail) {
+                    var decoded = try data.state_image.decodeGraph(allocator, state);
+                    defer decoded.deinit();
+                    try testing.expect(decoded.state.nodes.len <= 16);
+                }
+                // Use the restored state, including the closure's captured seed.
+                if (rounds % 7 == 0) {
+                    const restored = try Session.restoreImage(allocator, image, state);
+                    session.deinit();
+                    session = restored;
+                }
+            }
+        }
+    }
+}

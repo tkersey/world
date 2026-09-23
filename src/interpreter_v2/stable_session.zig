@@ -507,7 +507,7 @@ pub const Session = struct {
             .apply => |apply| {
                 const computation = try read(reader, apply.computation);
                 const arguments = try self.collectArguments(scratch, reader, apply.arguments);
-                const parent = try self.captureContinuation(current, saved, frame.*, apply.next);
+                const parent = if (self.isTail(apply.next)) saved.parent else try self.captureContinuation(current, saved, frame.*, apply.next);
                 try self.applyComputation(computation, arguments, parent, saved.evidence, saved.region);
             },
             .protect => |protection| try @import("unwind.zig").protect(self, protection, reader, saved),
