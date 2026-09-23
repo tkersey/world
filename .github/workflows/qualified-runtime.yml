@@ -23,7 +23,7 @@ jobs:
       - name: Install browser test tools
         run: |
           npm ci --no-audit --no-fund --prefix test/current/browser-tools
-          test/current/browser-tools/node_modules/.bin/playwright install chromium firefox
+          node test/current/browser-tools/node_modules/playwright-core/cli.js install chromium firefox
       - name: Prepare and verify the source-bound runtime
         run: |
           node bin/world.mjs runtime prepare --source "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/world-runtime-bundle"
