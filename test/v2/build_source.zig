@@ -6,12 +6,12 @@ pub fn build(b: *std.Build) void {
     const world_source = b.option([]const u8, "world-source", "Exact World checkout") orelse @panic("missing World source");
     const boundary_source = b.option([]const u8, "boundary-source", "Exact Boundary checkout") orelse @panic("missing Boundary source");
     const data = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ boundary_source, "src/v2/data/root.zig" }) },
+        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ boundary_source, "src/data/root.zig" }) },
         .target = b.graph.host,
         .optimize = optimize,
     });
     const boundary = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ boundary_source, "src/v2/root.zig" }) },
+        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ boundary_source, "src/root.zig" }) },
         .target = b.graph.host,
         .optimize = optimize,
         .imports = &.{.{ .name = "boundary_data", .module = data }},
