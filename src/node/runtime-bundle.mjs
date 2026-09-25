@@ -76,8 +76,8 @@ export async function verifyBundle(root, expected, smoke = false) {
   if (!/^[a-f0-9]{40}$/.test(manifest.source?.commit ?? "") ||
       !/^[a-f0-9]{40}$/.test(manifest.source?.tree ?? "") || manifest.source.clean !== true ||
       manifest.source.repository !== "https://github.com/tkersey/world" ||
-      manifest.source.dependency?.commit !== "1b00c8c159f0cb490a1223fac8d3d208cef41cb1" ||
-      manifest.source.dependency?.package !== "boundary-3.0.0-dev.0-flclaCJBFQCNUnFJK019OyLBDLZdg6_eTW1rzBpwImGA" ||
+      manifest.source.dependency?.commit !== "f512dbbfb14ab61ed5e1d875518c2b683ff5d215" ||
+      manifest.source.dependency?.package !== "boundary-3.0.0-dev.0-flclaCUnGwAErKpf2Ql6uEt80nLBXe3T0tcjbd4SoXgS" ||
       !/^[a-f0-9]{64}$/.test(manifest.source.dependency?.lockSha256 ?? "") ||
       manifest.build.zig !== "0.16.0" || manifest.build.hostMode !== "ReleaseSafe" ||
       manifest.build.stackBytes !== 65536 || manifest.build.maximumMemoryBytes !== 268435456 ||

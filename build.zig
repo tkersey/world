@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
     };
     if (!std.Io.Dir.path.isAbsolute(source)) std.process.fatal("Boundary source path must be absolute", .{});
     const data = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ source, "src/v2/data/root.zig" }) },
+        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ source, "src/data/root.zig" }) },
         .target = target,
         .optimize = optimize,
     });
@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
         .dependOn(&stable_source.step);
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
     const wasm_data = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ source, "src/v2/data/root.zig" }) },
+        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ source, "src/data/root.zig" }) },
         .target = wasm_target,
         .optimize = .ReleaseSmall,
     });

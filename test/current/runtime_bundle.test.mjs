@@ -86,7 +86,7 @@ test("unsupported profile and unexecuted qualification cannot pass", async t => 
   f.manifest.kernel = { abi: 3, path: "runtime/world-kernel.wasm" };
   f.manifest.packageVersion = "6.0.0-dev.0";
   f.manifest.build = { target: "wasm32-freestanding", kernelMode: "ReleaseSmall", zig: "0.16.0", hostMode: "ReleaseSafe", stackBytes: 65536, maximumMemoryBytes: 268435456, defaults: {input:65536,working:1048576,output:65536} };
-  f.manifest.source = {repository:"https://github.com/tkersey/world",commit:"a".repeat(40),tree:"b".repeat(40),clean:true,dependency:{commit:"1b00c8c159f0cb490a1223fac8d3d208cef41cb1",package:"boundary-3.0.0-dev.0-flclaCJBFQCNUnFJK019OyLBDLZdg6_eTW1rzBpwImGA",lockSha256:"c".repeat(64)}};
+  f.manifest.source = {repository:"https://github.com/tkersey/world",commit:"a".repeat(40),tree:"b".repeat(40),clean:true,dependency:{commit:"f512dbbfb14ab61ed5e1d875518c2b683ff5d215",package:"boundary-3.0.0-dev.0-flclaCUnGwAErKpf2Ql6uEt80nLBXe3T0tcjbd4SoXgS",lockSha256:"c".repeat(64)}};
   await writeFile(join(f.root,"runtime/package.json"), JSON.stringify({name:"@tkersey/world",version:"6.0.0-dev.0",type:"module",exports:{".":"./src/embedding/index.mjs"},bin:{world:"./bin/world.mjs"}}));
   f.manifest.requiredChecks = requiredChecks;
   await writeFile(join(f.root, "qualification.json"), JSON.stringify({ checks: requiredChecks.map(name => ({ name, status: "skipped" })) }));
@@ -174,7 +174,7 @@ process.stdout.write(result.stdout??"");process.stderr.write(result.stderr??"");
   const dirty=await launch();assert.match(dirty.stderr,/WORLD_BUNDLE_SOURCE_DIRTY/);
   await rm(join(source,"uncommitted"));
   const zon=await (await import("node:fs/promises")).readFile(join(source,"build.zig.zon"),"utf8");
-  await writeFile(join(source,"build.zig.zon"),zon.replace("1b00c8c159f0cb490a1223fac8d3d208cef41cb1","0".repeat(40)));
+  await writeFile(join(source,"build.zig.zon"),zon.replace("f512dbbfb14ab61ed5e1d875518c2b683ff5d215","0".repeat(40)));
   git(["add","build.zig.zon"]);
   git(["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","-m","wrong dependency"]);
   const wrong=await launch();assert.match(wrong.stderr,/WORLD_BUNDLE_DEPENDENCY_INVALID/);
