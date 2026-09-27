@@ -4,7 +4,7 @@ const boundary = @import("boundary");
 const options = @import("options");
 
 pub fn main(init: std.process.Init) !void {
-    var b = boundary.computation.Builder.init(init.gpa);
+    var b = boundary.source.Builder.init(init.gpa);
     defer b.deinit();
     const blob = try b.schema(.bytes);
     const integer = try b.scalar(u64);

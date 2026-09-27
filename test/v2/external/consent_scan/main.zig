@@ -1,7 +1,7 @@
 const std = @import("std");
 const boundary = @import("boundary");
 const options = @import("options");
-const source = boundary.computation;
+const source = boundary.source;
 
 fn program(b: *source.Builder) !source.Module {
     const unit = try b.scalar(void);
