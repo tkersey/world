@@ -102,7 +102,7 @@ const cleanup = JSON.parse(await readFile(new URL("./cleanup-expectations.json",
   {
     const source = JSON.parse(await readFile(join(fixtures, "source-borrow-operands.json"), "utf8"));
     const image = new Uint8Array(await readFile(join(fixtures, "source-borrow-operands.bpi3")));
-    for (let index = 0; index < 42; index++) {
+    for (let index = 0; index < 53; index++) {
       const oracle = execute(source, [index], index >= 32 ? [[], []] : []);
       const populated = index % 2 === 1, owned = index >= 12;
       const kind = owned || !populated ? "Failed" : "Completed";
@@ -126,9 +126,15 @@ const cleanup = JSON.parse(await readFile(new URL("./cleanup-expectations.json",
         }
         assert.equal(step.kind, kind);
         assert.deepEqual(step.value, value);
-        const expectedTrace = kind === "Failed" ? [{ kind: "Yielded" }] : [];
+        const expectedTrace = kind === "Failed" && index < 42 ? [{ kind: "Yielded" }] : [];
         if (index >= 32) {
-          for (const label of index === 33 || index === 35 || index >= 36 ? [2, 1] : [1, 2]) {
+          const operandFailureOrder = [
+            [1, 2], [2, 1], [1, 2], [1, 2], [2, 1], [1, 2],
+            [1, 2], [2, 1], [2, 1], [2, 1], [1, 2],
+          ];
+          const order = index >= 42 ? operandFailureOrder[index - 42]
+            : index === 33 || index === 35 || index >= 36 ? [2, 1] : [1, 2];
+          for (const label of order) {
             expectedTrace.push({ kind: "Requested", identity: "custody/release", payload: [label, 0, 0, 0, 0, 0, 0, 0] });
           }
         }
