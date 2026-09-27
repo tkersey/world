@@ -274,11 +274,13 @@ test("preparation binds raw commit contents despite Git replacement refs", async
       WORLD_TEST_CAPTURE: captured},
   });
   await writeFile(join(source, "archive-marker"), "replacement");
+  git(["add", "archive-marker"]);
+  assert.equal(git(["status", "--porcelain"]), "", "fixture must be clean only in the replaced view");
   const substituted = run();
   assert.notEqual(substituted.status, 0);
   assert.match(substituted.stderr, /WORLD_BUNDLE_SOURCE_DIRTY/);
   await assert.rejects(access(captured), {code: "ENOENT"});
-  await writeFile(join(source, "archive-marker"), "original");
+  git(["--no-replace-objects", "reset", "--hard", original]);
   const selected = run();
   assert.match(selected.stderr, /WORLD_BUNDLE_QUALIFICATION_FAILED/);
   assert.equal(await readFile(captured, "utf8"), "original");
