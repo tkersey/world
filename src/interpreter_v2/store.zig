@@ -16,6 +16,10 @@ pub const Statistics = struct {
     journal_blobs: u64 = 0,
     aggregate_field_copies: u64 = 0,
     owned_blob_bytes: u64 = 0,
+    collection_index_checks: u64 = 0,
+    collection_range_checks: u64 = 0,
+    retirement_table_entries: u64 = 0,
+    blob_retirements: u64 = 0,
 };
 
 const SharedFields = struct { values: []g.Value, references: usize = 1 };
@@ -579,14 +583,29 @@ pub const Store = struct {
             self.alive.items[id] = false;
             self.free_nodes.appendAssumeCapacity(id);
         };
-        for (blob_marks, 0..) |marked, id| if (!marked and self.blob_alive.items[id]) {
-            const held = try self.holdBlob(id);
-            _ = self.interned.remove(self.blobs.items[id]);
-            self.retireBlob(id, self.blobs.items[id], held);
-            self.blobs.items[id] = .{ .schema = 0, .bytes = &.{} };
-            self.blob_alive.items[id] = false;
-            self.free_blobs.appendAssumeCapacity(id);
-        };
+        {
+            const free_start = self.free_blobs.items.len;
+            // Preserve the ordinary ascending retirement order without hashing
+            // payload bytes a second time. Removing the current table entry
+            // neither relocates other entries nor invalidates the iterator.
+            defer {
+                const retired = self.free_blobs.items[free_start..];
+                if (retired.len > 1) std.sort.heap(usize, retired, {}, std.sort.asc(usize));
+            }
+            var entries = self.interned.iterator();
+            while (entries.next()) |entry| {
+                if (self.statistics) |s| s.retirement_table_entries +|= 1;
+                const id: usize = @intCast(entry.value_ptr.*);
+                if (blob_marks[id]) continue;
+                const held = try self.holdBlob(id);
+                self.interned.removeByPtr(entry.key_ptr);
+                self.retireBlob(id, self.blobs.items[id], held);
+                self.blobs.items[id] = .{ .schema = 0, .bytes = &.{} };
+                self.blob_alive.items[id] = false;
+                self.free_blobs.appendAssumeCapacity(id);
+                if (self.statistics) |s| s.blob_retirements +|= 1;
+            }
+        }
         try self.compactImported();
     }
 };

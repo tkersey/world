@@ -8,6 +8,13 @@ pub const Error = data.program_image.Error || data.state_admission.Error ||
 /// Work counters are observations, never serialized state or execution limits.
 pub const Statistics = struct {
     transitions: u64 = 0,
+    dispatches: u64 = 0,
+    batched_scalar_operations: u64 = 0,
+    tail_frame_reuses: u64 = 0,
+    tail_frame_reuse_fallbacks: u64 = 0,
+    stack_argument_calls: u64 = 0,
+    heap_argument_calls: u64 = 0,
+    early_blob_collections: u64 = 0,
     direct_clauses: u64 = 0,
     one_shot_captures: u64 = 0,
     multi_templates: u64 = 0,

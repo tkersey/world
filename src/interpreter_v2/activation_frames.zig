@@ -189,11 +189,19 @@ pub const Frames = struct {
         try self.custody.remove(&frame.custody, @intCast(slot));
         try self.slots.clear(frame.view, @intCast(slot));
     }
-    /// Restart the same function after its caller has gathered simultaneous
-    /// arguments. Retained views remain isolated by Slots' existing COW owner.
-    pub fn restart(self: *Frames, frame: *Frame, live: sets.Root, values: []const data.graph.Value) Error!void {
-        if (frame.custody.initialized) return error.InvalidState;
-        const function = self.program.functions[@intCast(frame.function)];
+    pub fn canRestart(self: *const Frames, frame: Frame, target: data.program.Id) bool {
+        if (frame.custody.initialized or target >= self.program.functions.len or frame.function >= self.program.functions.len) return false;
+        if (target == frame.function) return true;
+        const old = self.program.functions[@intCast(frame.function)];
+        const next = self.program.functions[@intCast(target)];
+        return old.custody.len == next.custody.len and std.mem.eql(data.program.Id, old.layout.slots, next.layout.slots);
+    }
+    /// Consume a compatible frame after gathering simultaneous arguments.
+    /// Exact schemas and custody capacity preserve its physical layout; retained
+    /// views remain isolated by Slots' existing COW owner.
+    pub fn restart(self: *Frames, frame: *Frame, target: data.program.Id, live: sets.Root, values: []const data.graph.Value) Error!void {
+        if (!self.canRestart(frame.*, target)) return error.InvalidState;
+        const function = self.program.functions[@intCast(target)];
         if (function.inputs.len != values.len) return error.InvalidState;
         var old = frame.live_bound.iterator(self.pool);
         while (old.next()) |slot| {
@@ -201,6 +209,7 @@ pub const Frames = struct {
             if (std.mem.indexOfScalar(data.program.Id, function.inputs, slot) == null)
                 try self.clear(frame, slot);
         }
+        frame.function = target;
         frame.custody.scope = 0;
         try self.apply(frame, live, function.inputs, values);
         frame.position = 0;
