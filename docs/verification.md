@@ -65,3 +65,12 @@ These checks do not prove host truthfulness, global exactly-once effects,
 historical reachability of arbitrary State, full performance acceptance, or a
 refinement theorem for the shipping implementation. Boundary's formal model is a
 separately authored semantic model with its own independently runnable checks.
+
+## Coordinated optimization qualification
+
+The [coordinated acceptance report](https://github.com/tkersey/boundary/blob/codex/canonical-durable-3183/docs/optimization-acceptance.md) retains exact P22/P25/P26
+source/kernel identities, local and cumulative measurements, accepted costs and
+remaining review status. World has no redundant generated delivery reports in
+this change set. Its distinct native/WASM, retained-view, quantum, alias, failure
+and source-agreement harnesses remain substantive qualification inputs. Cleanup
+of documentation does not rebuild or relabel the authenticated cb52f4f kernel.
