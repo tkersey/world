@@ -8,4 +8,7 @@ test {
     _ = @import("compact_collection_tests.zig");
     _ = @import("clone.zig");
     _ = @import("economy_tests.zig");
+    _ = @import("scalar_batch_tests.zig");
+    _ = @import("frame_reuse_tests.zig");
+    _ = @import("blob_retention_tests.zig");
 }

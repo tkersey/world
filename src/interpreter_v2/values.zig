@@ -22,57 +22,78 @@ const Collection = struct {
     byte_offset: usize = 0,
     storage: union(enum) { encoded: []const u8, fields: []const g.Value },
 
+    // A range owns the immutable collection view it was checked against. It
+    // cannot accidentally certify a later, different collection or index.
+    const CheckedRange = struct {
+        collection: Collection,
+        start: u64,
+        count: u64,
+        fn materialize(self: @This(), values: *Values) Error!Collection {
+            const collection = self.collection;
+            const start = self.start;
+            const count = self.count;
+            if (start == 0 and count == collection.count) return collection;
+            var byte_offset = collection.byte_offset;
+            const storage: @FieldType(Collection, "storage") = switch (collection.storage) {
+                .fields => |fields| .{ .fields = fields[@intCast(start)..][0..@intCast(count)] },
+                .encoded => |encoded| blk: {
+                    const facts = try values.schemaFacts();
+                    // A zero minimum denotes one empty encoding only for public
+                    // data. Internal schemas can also have a zero minimum.
+                    const element: usize = @intCast(collection.element);
+                    if (facts.exportable[element] and facts.minimum[element] == 0)
+                        break :blk .{ .encoded = &.{} };
+                    var reader: data.wire.Reader = .{ .input = encoded };
+                    var remaining = start;
+                    while (remaining != 0) : (remaining -= 1)
+                        _ = try data.admission.readValue(
+                            values.allocator,
+                            values.schemas,
+                            facts,
+                            collection.element,
+                            &reader,
+                        );
+                    const offset = reader.position;
+                    byte_offset += offset;
+                    if (start + count == collection.count)
+                        break :blk .{ .encoded = encoded[offset..] };
+                    remaining = count;
+                    while (remaining != 0) : (remaining -= 1)
+                        _ = try data.admission.readValue(
+                            values.allocator,
+                            values.schemas,
+                            facts,
+                            collection.element,
+                            &reader,
+                        );
+                    break :blk .{ .encoded = encoded[offset..reader.position] };
+                },
+            };
+            return .{ .element = collection.element, .count = count, .storage = storage, .origin = collection.origin, .encoded_origin = collection.encoded_origin, .byte_offset = byte_offset, .offset = if (collection.origin != null) collection.offset + @as(usize, @intCast(start)) else 0 };
+        }
+    };
     fn slice(self: Collection, values: *Values, start: u64, count: u64) Error!Collection {
+        if (values.store.statistics) |statistics| statistics.collection_range_checks +|= 1;
         if (start > self.count or count > self.count - start) return error.InvalidLength;
-        if (start == 0 and count == self.count) return self;
-        var byte_offset = self.byte_offset;
-        const storage: @FieldType(Collection, "storage") = switch (self.storage) {
-            .fields => |fields| .{ .fields = fields[@intCast(start)..][0..@intCast(count)] },
-            .encoded => |encoded| blk: {
-                const facts = try values.schemaFacts();
-                // A zero minimum denotes one empty encoding only for public
-                // data. Internal schemas can also have a zero minimum.
-                const element: usize = @intCast(self.element);
-                if (facts.exportable[element] and facts.minimum[element] == 0)
-                    break :blk .{ .encoded = &.{} };
-                var reader: data.wire.Reader = .{ .input = encoded };
-                var remaining = start;
-                while (remaining != 0) : (remaining -= 1)
-                    _ = try data.admission.readValue(
-                        values.allocator,
-                        values.schemas,
-                        facts,
-                        self.element,
-                        &reader,
-                    );
-                const offset = reader.position;
-                byte_offset += offset;
-                if (start + count == self.count)
-                    break :blk .{ .encoded = encoded[offset..] };
-                remaining = count;
-                while (remaining != 0) : (remaining -= 1)
-                    _ = try data.admission.readValue(
-                        values.allocator,
-                        values.schemas,
-                        facts,
-                        self.element,
-                        &reader,
-                    );
-                break :blk .{ .encoded = encoded[offset..reader.position] };
-            },
+        return (CheckedRange{ .collection = self, .start = start, .count = count }).materialize(values);
+    }
+    fn find(self: Collection, values: *Values, index: u64) Error!?g.Value {
+        if (values.store.statistics) |statistics| statistics.collection_index_checks +|= 1;
+        if (index >= self.count) return null;
+        // index < count proves that [index, index+1) is in this exact view,
+        // including the maximum-u64 and zero-width element cases.
+        const item = try (CheckedRange{ .collection = self, .start = index, .count = 1 }).materialize(values);
+        return try decodeItem(item, values);
+    }
+    fn decodeItem(item: Collection, values: *Values) Error!g.Value {
+        return switch (item.storage) {
+            .fields => |fields| fields[0],
+            .encoded => |encoded| values.store.literal(values.schemas, .{ .schema = item.element, .bytes = encoded }),
         };
-        return .{ .element = self.element, .count = count, .storage = storage, .origin = self.origin, .encoded_origin = self.encoded_origin, .byte_offset = byte_offset, .offset = if (self.origin != null) self.offset + @as(usize, @intCast(start)) else 0 };
     }
 
     fn get(self: Collection, values: *Values, index: u64) Error!g.Value {
-        const item = try self.slice(values, index, 1);
-        return switch (item.storage) {
-            .fields => |fields| fields[0],
-            .encoded => |encoded| values.store.literal(values.schemas, .{
-                .schema = self.element,
-                .bytes = encoded,
-            }),
-        };
+        return decodeItem(try self.slice(values, index, 1), values);
     }
 
     fn write(self: Collection, values: *Values, writer: *data.wire.Writer) Error!void {
@@ -374,8 +395,9 @@ pub const Values = struct {
                 const index_value = (try read(slots, instruction.operands[1]));
                 const index = std.mem.readInt(u64, index_value.body.scalar[0..8], .little);
                 const shape = self.schemas[@intCast(result)].sum;
-                const found = index < items.count;
-                const payload = if (found) try items.get(self, index) else natural(shape[0], 0);
+                const item = try items.find(self, index);
+                const found = item != null;
+                const payload = item orelse natural(shape[0], 0);
                 return self.aggregate(result, .{
                     .tag = @intFromBool(found),
                     .fields = &.{payload},

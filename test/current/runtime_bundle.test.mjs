@@ -3,7 +3,8 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inventory, sha256, verifyInventory } from "../../src/node/runtime-bundle.mjs";
+import { inventory, sha256, verifyInventory, readVerifiedFile,
+  withVerifiedInventory } from "../../src/node/runtime-bundle.mjs";
 
 const required = ["runtime/world-kernel.wasm", "runtime/package.json", "runtime/bin/world.mjs",
   "runtime/src/node/runtime-bundle.mjs", "runtime/src/embedding/index.mjs", "qualification.json",
@@ -37,6 +38,45 @@ test("missing and additional modules reject", async t => {
   await rm(join(f.root, "runtime/extra.mjs"));
   await rm(join(f.root, "runtime/world-kernel.wasm"));
   await assert.rejects(verifyInventory(f.root, f.hash), { code: "WORLD_BUNDLE_CORRUPT" });
+});
+
+test("metadata reads bind the parsed generation to its inventory record", async t => {
+  const f = await fixture(t);
+  for (const path of ["qualification.json", "runtime/package.json"]) {
+    await writeFile(join(f.root, path), '{"status":"skipped"}');
+    f.manifest.files = (await inventory(f.root)).filter(file => file.path !== "manifest.json");
+    const manifest = await verifyInventory(f.root, await f.seal());
+    assert.equal(JSON.parse(await readVerifiedFile(f.root, manifest, path)).status, "skipped");
+    // Same-length replacement after the inventory scan must not become evidence.
+    await writeFile(join(f.root, path), '{"status":"passed!"}');
+    await assert.rejects(readVerifiedFile(f.root, manifest, path), {code: "WORLD_BUNDLE_CORRUPT"});
+  }
+});
+
+test("verified copy executes captured code and retains metadata after source replacement", async t => {
+  const { execFileSync } = await import("node:child_process");
+  const { readFile, chmod, access } = await import("node:fs/promises");
+  const f = await fixture(t);
+  const cli = join(f.root, "runtime/bin/world.mjs");
+  await writeFile(cli, '#!/usr/bin/env node\nconsole.log("original generation");\n');
+  await chmod(cli, 0o755);
+  await writeFile(join(f.root, "runtime/package.json"), '{"type":"module"}');
+  await writeFile(join(f.root, "qualification.json"), '{"status":"original"}');
+  f.manifest.files = (await inventory(f.root)).filter(file => file.path !== "manifest.json");
+  let copiedRoot;
+  await withVerifiedInventory(f.root, await f.seal(), async copy => {
+    copiedRoot = copy;
+    assert.notEqual(copy, f.root);
+    await writeFile(cli, '#!/usr/bin/env node\nconsole.log("replacement generation");\n');
+    await writeFile(join(f.root, "qualification.json"), '{"status":"replacement"}');
+    const copiedCli = join(copy, "runtime/bin/world.mjs");
+    assert.equal(execFileSync(process.execPath, [copiedCli], {encoding: "utf8"}).trim(),
+      "original generation");
+    if (process.platform !== "win32")
+      assert.equal(execFileSync(copiedCli, [], {encoding: "utf8"}).trim(), "original generation");
+    assert.equal(JSON.parse(await readFile(join(copy, "qualification.json"))).status, "original");
+  });
+  await assert.rejects(access(copiedRoot), {code: "ENOENT"});
 });
 test("traversal, duplicate entries, and links reject", async t => {
   const f = await fixture(t);
@@ -86,7 +126,7 @@ test("unsupported profile and unexecuted qualification cannot pass", async t => 
   f.manifest.kernel = { abi: 3, path: "runtime/world-kernel.wasm" };
   f.manifest.packageVersion = "6.0.0-dev.0";
   f.manifest.build = { target: "wasm32-freestanding", kernelMode: "ReleaseSmall", zig: "0.16.0", hostMode: "ReleaseSafe", stackBytes: 65536, maximumMemoryBytes: 268435456, defaults: {input:65536,working:1048576,output:65536} };
-  f.manifest.source = {repository:"https://github.com/tkersey/world",commit:"a".repeat(40),tree:"b".repeat(40),clean:true,dependency:{commit:"f512dbbfb14ab61ed5e1d875518c2b683ff5d215",package:"boundary-3.0.0-dev.0-flclaCUnGwAErKpf2Ql6uEt80nLBXe3T0tcjbd4SoXgS",lockSha256:"c".repeat(64)}};
+  f.manifest.source = {repository:"https://github.com/tkersey/world",commit:"a".repeat(40),tree:"b".repeat(40),clean:true,dependency:{commit:"511fe388587b36ae37307d277e04c22b0bb6f6d9",package:"boundary-3.0.0-dev.0-flclaGcPXAB8lBsvhVLPJFZmROkee3fHGfsloqpgeZSE",lockSha256:"c".repeat(64)}};
   await writeFile(join(f.root,"runtime/package.json"), JSON.stringify({name:"@tkersey/world",version:"6.0.0-dev.0",type:"module",exports:{".":"./src/embedding/index.mjs"},bin:{world:"./bin/world.mjs"}}));
   f.manifest.requiredChecks = requiredChecks;
   await writeFile(join(f.root, "qualification.json"), JSON.stringify({ checks: requiredChecks.map(name => ({ name, status: "skipped" })) }));
@@ -174,7 +214,7 @@ process.stdout.write(result.stdout??"");process.stderr.write(result.stderr??"");
   const dirty=await launch();assert.match(dirty.stderr,/WORLD_BUNDLE_SOURCE_DIRTY/);
   await rm(join(source,"uncommitted"));
   const zon=await (await import("node:fs/promises")).readFile(join(source,"build.zig.zon"),"utf8");
-  await writeFile(join(source,"build.zig.zon"),zon.replace("f512dbbfb14ab61ed5e1d875518c2b683ff5d215","0".repeat(40)));
+  await writeFile(join(source,"build.zig.zon"),zon.replace("511fe388587b36ae37307d277e04c22b0bb6f6d9","0".repeat(40)));
   git(["add","build.zig.zon"]);
   git(["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","-m","wrong dependency"]);
   const wrong=await launch();assert.match(wrong.stderr,/WORLD_BUNDLE_DEPENDENCY_INVALID/);
@@ -196,4 +236,52 @@ test("worker entry detection survives ancestor aliases and importing stays inert
     const imported=spawnSync(process.execPath,["--input-type=module","-e",`await import(${JSON.stringify(pathToFileURL(worker).href)})`],{encoding:"utf8",timeout:30000});
     assert.equal(imported.status,0,imported.stderr);assert.equal(imported.stdout,"");
   }
+});
+
+test("preparation binds raw commit contents despite Git replacement refs", async t => {
+  const { cp, readFile, access } = await import("node:fs/promises");
+  const { execFileSync, spawnSync } = await import("node:child_process");
+  const { dirname, resolve } = await import("node:path");
+  const root = await mkdtemp(join(tmpdir(), "world raw commit "));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const source = join(root, "source"), tools = join(root, "tools");
+  await mkdir(source); await mkdir(tools);
+  const repo = resolve(import.meta.dirname, "../..");
+  for (const path of ["bin", "src/node", "src/embedding", "package.json", "build.zig.zon"]) {
+    await mkdir(dirname(join(source, path)), {recursive: true});
+    await cp(join(repo, path), join(source, path), {recursive: true});
+  }
+  const git = args => execFileSync("git", args, {cwd: source, encoding: "utf8"}).trim();
+  const commit = () => git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+    "-c", "commit.gpgsign=false", "commit", "-m", "fixture"]);
+  git(["init", "-q"]);
+  await writeFile(join(source, "archive-marker"), "original");
+  git(["add", "."]); commit();
+  const original = git(["rev-parse", "HEAD"]);
+  await writeFile(join(source, "archive-marker"), "replacement");
+  git(["add", "."]); commit();
+  const replacement = git(["rev-parse", "HEAD"]);
+  git(["reset", "--hard", original]);
+  git(["replace", original, replacement]);
+  const captured = join(root, "captured");
+  await writeFile(join(tools, "zig"), '#!/usr/bin/env node\n' +
+    'const fs=require("node:fs");if(process.argv[2]==="version"){console.log("0.16.0");process.exit(0)}' +
+    'fs.writeFileSync(process.env.WORLD_TEST_CAPTURE,fs.readFileSync("archive-marker"));process.exit(42);\n',
+    {mode: 0o755});
+  const run = () => spawnSync(process.execPath, [join(source, "bin/world.mjs"), "runtime", "prepare",
+    "--source", source, "--output", join(root, "bundle")], {
+    encoding: "utf8", env: {...process.env, PATH: tools + ":" + process.env.PATH,
+      WORLD_TEST_CAPTURE: captured},
+  });
+  await writeFile(join(source, "archive-marker"), "replacement");
+  git(["add", "archive-marker"]);
+  assert.equal(git(["status", "--porcelain"]), "", "fixture must be clean only in the replaced view");
+  const substituted = run();
+  assert.notEqual(substituted.status, 0);
+  assert.match(substituted.stderr, /WORLD_BUNDLE_SOURCE_DIRTY/);
+  await assert.rejects(access(captured), {code: "ENOENT"});
+  git(["--no-replace-objects", "reset", "--hard", original]);
+  const selected = run();
+  assert.match(selected.stderr, /WORLD_BUNDLE_QUALIFICATION_FAILED/);
+  assert.equal(await readFile(captured, "utf8"), "original");
 });

@@ -306,3 +306,75 @@ test "encoded collection slices preserve variable-width elements and their order
     const back = try evaluate(&v, .sequence_pop_last, 7, &.{items});
     try std.testing.expectEqualSlices(u8, &.{ 2, 1, 'a', 0, 1, 2, 'b', 'c' }, try v.bytes(&back));
 }
+
+test "sequence get consumes one exact-view bounds proof without rechecking its slice" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const schemas = [_]p.Schema{ .unit, .{ .vector = .{ .element = 2, .maximum = 16 } }, .u64, .{ .sum = &.{ 0, 2 } } };
+    var statistics: @import("store.zig").Statistics = .{};
+    var store: Store = .{ .allocator = allocator, .statistics = &statistics };
+    defer store.deinit();
+    var values: Values = .{ .allocator = arena.allocator(), .schemas = &schemas, .store = &store };
+    const items = try store.literal(&schemas, .{ .schema = 1, .bytes = &.{ 2, 7, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0 } });
+    for ([_]u64{ 0, 1, 2, 15, maximum }) |index| {
+        const before_index = statistics.collection_index_checks;
+        const before_range = statistics.collection_range_checks;
+        const result = try evaluate(&values, .sequence_get, 3, &.{ items, Values.natural(2, index) });
+        const bytes = try values.bytes(&result);
+        try std.testing.expectEqual(@as(u8, if (index < 2) 1 else 0), bytes[0]);
+        if (index < 2) try std.testing.expectEqual(@as(u64, if (index == 0) 7 else 9), std.mem.readInt(u64, bytes[1..9], .little));
+        try std.testing.expectEqual(before_index + 1, statistics.collection_index_checks);
+        try std.testing.expectEqual(before_range, statistics.collection_range_checks);
+    }
+}
+
+test "checked element proof handles maximum zero-width cardinality and actual length" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const schemas = [_]p.Schema{ .unit, .{ .seq = 0 }, .u64, .{ .sum = &.{ 0, 0 } } };
+    var statistics: @import("store.zig").Statistics = .{};
+    var store: Store = .{ .allocator = allocator, .statistics = &statistics };
+    defer store.deinit();
+    var values: Values = .{ .allocator = arena.allocator(), .schemas = &schemas, .store = &store };
+    var encoded: [10]u8 = undefined;
+    var writer: data.wire.Writer = .{ .output = &encoded };
+    try writer.natural(maximum);
+    const items = try store.literal(&schemas, .{ .schema = 1, .bytes = encoded[0..writer.position] });
+    const found = try evaluate(&values, .sequence_get, 3, &.{ items, Values.natural(2, maximum - 1) });
+    try std.testing.expectEqualSlices(u8, &.{1}, try values.bytes(&found));
+    const absent = try evaluate(&values, .sequence_get, 3, &.{ items, Values.natural(2, maximum) });
+    try std.testing.expectEqualSlices(u8, &.{0}, try values.bytes(&absent));
+    try std.testing.expectEqual(@as(u64, 2), statistics.collection_index_checks);
+    try std.testing.expectEqual(@as(u64, 0), statistics.collection_range_checks);
+}
+
+test "a shorter vector written through a cell alias invalidates the previous access bound" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const schemas = [_]p.Schema{ .unit, .{ .vector = .{ .element = 0, .maximum = 16 } }, .u64, .{ .sum = &.{ 0, 0 } } };
+    var statistics: @import("store.zig").Statistics = .{};
+    var store: Store = .{ .allocator = std.testing.allocator, .statistics = &statistics };
+    defer store.deinit();
+    var values: Values = .{ .allocator = arena.allocator(), .schemas = &schemas, .store = &store };
+    const longer = try store.literal(&schemas, .{ .schema = 1, .bytes = &.{2} });
+    const shorter = try store.literal(&schemas, .{ .schema = 1, .bytes = &.{1} });
+    const region = try store.add(.{ .region = .{ .descriptor = 0, .outer = null, .obligations = &.{} } });
+    const cell = try store.add(.{ .cell = .{ .schema = 1, .region = region, .value = longer } });
+    const alias = cell;
+    const snapshot = (try store.get(cell)).cell.value.?;
+    const index = Values.natural(2, 1);
+    const before = try evaluate(&values, .sequence_get, 3, &.{ snapshot, index });
+    try std.testing.expectEqualSlices(u8, &.{1}, try values.bytes(&before));
+    var changed = (try store.get(alias)).cell;
+    changed.value = shorter;
+    try store.replace(alias, .{ .cell = changed });
+    const current = (try store.get(cell)).cell.value.?;
+    const after = try evaluate(&values, .sequence_get, 3, &.{ current, index });
+    try std.testing.expectEqualSlices(u8, &.{0}, try values.bytes(&after));
+    const retained = try evaluate(&values, .sequence_get, 3, &.{ snapshot, index });
+    try std.testing.expectEqualSlices(u8, &.{1}, try values.bytes(&retained));
+    try std.testing.expectEqual(@as(u64, 3), statistics.collection_index_checks);
+    try std.testing.expectEqual(@as(u64, 0), statistics.collection_range_checks);
+}

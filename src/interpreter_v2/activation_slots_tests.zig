@@ -26,7 +26,9 @@ fn pruneFrame(count: usize) !void {
         .blocks = &.{},
         .functions = &.{.{ .entry = 0, .inputs = &.{ 0, last }, .layout = .{ .slots = layout }, .result = 0 }},
     };
-    var frames = try Frames.init(testing.allocator, &pool, program);
+    var frame_layouts = try @import("frame_layouts.zig").Layouts.init(testing.allocator, program.functions);
+    defer frame_layouts.deinit();
+    var frames = try Frames.init(testing.allocator, &pool, &frame_layouts);
     defer frames.deinit();
     var original = try frames.create(0);
     defer frames.releaseFrame(original);
@@ -417,7 +419,9 @@ fn batchFrame(allocator: std.mem.Allocator, count: usize) !void {
         .blocks = &.{},
         .functions = &.{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = layout }, .result = 0 }},
     };
-    var frames = try Frames.init(allocator, &pool, program);
+    var frame_layouts = try @import("frame_layouts.zig").Layouts.init(allocator, program.functions);
+    defer frame_layouts.deinit();
+    var frames = try Frames.init(allocator, &pool, &frame_layouts);
     defer frames.deinit();
     var original = try frames.create(0);
     defer frames.releaseFrame(original);
@@ -442,13 +446,13 @@ fn batchFrame(allocator: std.mem.Allocator, count: usize) !void {
 }
 
 test "tail restart clears old locals and preserves retained input permutations on allocation failure" {
-    for ([_]usize{ 4, 65, 256 }) |count| {
-        try restartFrame(testing.allocator, count);
-        try testing.checkAllAllocationFailures(testing.allocator, restartFrame, .{count});
-    }
+    for ([_]usize{ 4, 65, 256 }) |count| for ([_]u64{ 0, 1 }) |target| {
+        try restartFrame(testing.allocator, count, target);
+        try testing.checkAllAllocationFailures(testing.allocator, restartFrame, .{ count, target });
+    };
 }
 
-fn restartFrame(allocator: std.mem.Allocator, count: usize) !void {
+fn restartFrame(allocator: std.mem.Allocator, count: usize, target: u64) !void {
     const data = @import("boundary_data");
     const Frames = @import("activation_frames.zig").Frames;
     const Values = @import("values.zig").Values;
@@ -463,9 +467,14 @@ fn restartFrame(allocator: std.mem.Allocator, count: usize) !void {
         .constants = &.{},
         .effects = &.{},
         .blocks = &.{},
-        .functions = &.{.{ .entry = 0, .inputs = &.{ 0, 1 }, .layout = .{ .slots = layout }, .result = 0 }},
+        .functions = &.{
+            .{ .entry = 0, .inputs = &.{ 0, 1 }, .layout = .{ .slots = layout }, .result = 0 },
+            .{ .entry = 0, .inputs = &.{ 0, 1 }, .layout = .{ .slots = layout }, .result = 0 },
+        },
     };
-    var frames = try Frames.init(allocator, &pool, program);
+    var frame_layouts = try @import("frame_layouts.zig").Layouts.init(allocator, program.functions);
+    defer frame_layouts.deinit();
+    var frames = try Frames.init(allocator, &pool, &frame_layouts);
     defer frames.deinit();
     var original = try frames.create(0);
     defer frames.releaseFrame(original);
@@ -476,18 +485,58 @@ fn restartFrame(allocator: std.mem.Allocator, count: usize) !void {
     defer frames.releaseFrame(next);
     next.position = 3;
     const arguments = [_]data.graph.Value{ try frames.slots.get(next.view, 1), try frames.slots.get(next.view, 0) };
-    frames.restart(&next, try pool.run(0, 2), &arguments) catch |err| {
+    frames.restart(&next, target, try pool.run(0, 2), &arguments) catch |err| {
         try testing.expectEqual(10, (try frames.slots.get(original.view, 0)).body.scalar[0]);
         try testing.expectEqual(99, (try frames.slots.get(original.view, count - 1)).body.scalar[0]);
         return err;
     };
     try testing.expectEqual(0, next.position);
+    try testing.expectEqual(target, next.function);
     try testing.expectEqual(20, (try frames.slots.get(next.view, 0)).body.scalar[0]);
     try testing.expectEqual(10, (try frames.slots.get(next.view, 1)).body.scalar[0]);
     try testing.expectError(error.UninitializedSlot, frames.slots.get(next.view, count - 1));
     try testing.expectEqual(10, (try frames.slots.get(original.view, 0)).body.scalar[0]);
     try testing.expectEqual(20, (try frames.slots.get(original.view, 1)).body.scalar[0]);
     try testing.expectEqual(99, (try frames.slots.get(original.view, count - 1)).body.scalar[0]);
+}
+
+test "cross-function restart rejects incompatible schemas capacity and active custody" {
+    const data = @import("boundary_data");
+    const Frames = @import("activation_frames.zig").Frames;
+    var pool: data.analysis_sets.Pool = .{ .allocator = testing.allocator, .limit = 3 };
+    defer pool.deinit();
+    const program: data.activation.Program = .{
+        .roots = .{ .entry = 0, .result = 0, .failure = 0 },
+        .schemas = &.{ .u64, .u8 },
+        .constants = &.{},
+        .effects = &.{},
+        .blocks = &.{},
+        .functions = &.{
+            .{ .entry = 0, .inputs = &.{0}, .layout = .{ .slots = &.{ 0, 0 } }, .result = 0 },
+            .{ .entry = 0, .inputs = &.{0}, .layout = .{ .slots = &.{ 0, 0 } }, .result = 0 },
+            .{ .entry = 0, .inputs = &.{0}, .layout = .{ .slots = &.{ 0, 1 } }, .result = 0 },
+            .{ .entry = 0, .inputs = &.{0}, .layout = .{ .slots = &.{ 0, 0, 0 } }, .result = 0 },
+            .{ .entry = 0, .inputs = &.{0}, .layout = .{ .slots = &.{ 0, 0 } }, .result = 0, .custody = &.{ .{}, .{ .parent = 0 } } },
+        },
+    };
+    var frame_layouts = try @import("frame_layouts.zig").Layouts.init(testing.allocator, program.functions);
+    defer frame_layouts.deinit();
+    var frames = try Frames.init(testing.allocator, &pool, &frame_layouts);
+    defer frames.deinit();
+    var frame = try frames.create(0);
+    defer frames.releaseFrame(frame);
+    try testing.expect(frames.canRestart(frame, 1));
+    for ([_]u64{ 2, 3, 4, 99 }) |target| {
+        try testing.expect(!frames.canRestart(frame, target));
+        try testing.expectError(error.InvalidState, frames.restart(&frame, target, data.analysis_sets.empty, &.{}));
+        try testing.expectEqual(0, frame.function);
+    }
+    // The gate is deliberately independent of the number of current owners.
+    // Once custody has been initialized this shortcut cannot reset its history.
+    frame.custody.initialized = true;
+    try testing.expect(!frames.canRestart(frame, 0));
+    try testing.expect(!frames.canRestart(frame, 1));
+    frame.custody.initialized = false;
 }
 
 test "retired views recycle without allocation and never revive stale handles" {

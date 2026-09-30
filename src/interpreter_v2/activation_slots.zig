@@ -14,8 +14,46 @@ pub fn Slots(comptime Value: type) type {
         const Page = struct {
             references: usize = 1,
             initialized: u16 = 0,
-            values: [width]Value = undefined,
+            capacity: u8,
         };
+        const page_alignment = std.mem.Alignment.fromByteUnits(@max(@alignOf(Page), @alignOf(Value)));
+        const value_offset = std.mem.alignForward(usize, @sizeOf(Page), @alignOf(Value));
+        fn pageBytes(capacity: usize) usize {
+            return value_offset + capacity * @sizeOf(Value);
+        }
+        const DensePage = struct {
+            bytes: [pageBytes(width)]u8 align(page_alignment.toByteUnits()),
+        };
+        comptime {
+            std.debug.assert(@sizeOf(DensePage) == pageBytes(width));
+        }
+        fn values(page: *Page) []Value {
+            const bytes: [*]u8 = @ptrCast(page);
+            const items: [*]Value = @ptrCast(@alignCast(bytes + value_offset));
+            return items[0..page.capacity];
+        }
+        fn rank(initialized: u16, slot: usize) usize {
+            if (slot & (width - 1) == 0) return 0;
+            return @popCount(initialized & (mask(slot) - 1));
+        }
+        fn physicalIndex(page: *const Page, initialized: u16, slot: usize) usize {
+            return if (page.capacity == width) slot & (width - 1) else rank(initialized, slot);
+        }
+        fn createPage(self: *Self, count: usize) Error!*Page {
+            const capacity = std.math.ceilPowerOfTwoAssert(usize, @max(1, count));
+            const page: *Page = if (capacity == width)
+                @ptrCast(try self.allocator.create(DensePage))
+            else blk: {
+                const bytes = try self.allocator.alignedAlloc(u8, page_alignment, pageBytes(capacity));
+                break :blk @ptrCast(bytes.ptr);
+            };
+            page.* = .{ .capacity = @intCast(capacity) };
+            self.statistics.live_pages += 1;
+            self.statistics.peak_pages = @max(self.statistics.peak_pages, self.statistics.live_pages);
+            self.statistics.live_page_bytes += pageBytes(capacity);
+            self.statistics.peak_page_bytes = @max(self.statistics.peak_page_bytes, self.statistics.live_page_bytes);
+            return page;
+        }
         const Branch = struct { references: usize = 1, children: [width]Node = @splat(.empty) };
         const View = struct {
             generation: u64 = 1,
@@ -45,6 +83,9 @@ pub fn Slots(comptime Value: type) type {
             value_copies: u64 = 0,
             directory_copies: u64 = 0,
             writes: u64 = 0,
+            live_page_bytes: usize = 0,
+            peak_page_bytes: usize = 0,
+            packed_moves: u64 = 0,
         };
 
         allocator: std.mem.Allocator,
@@ -73,7 +114,7 @@ pub fn Slots(comptime Value: type) type {
         /// Allocated node bytes and reserved handle-table capacity, excluding
         /// allocator overhead and the separately owned payload graph.
         pub fn retainedBytes(self: *const Self) usize {
-            return self.statistics.live_pages * @sizeOf(Page) +
+            return self.statistics.live_page_bytes +
                 self.statistics.live_directories * @sizeOf(Branch) +
                 self.views.capacity * @sizeOf(View);
         }
@@ -159,7 +200,7 @@ pub fn Slots(comptime Value: type) type {
             if (slot >= entry.limit) return error.InvalidSlot;
             const page = locate(entry.root, entry.depth, slot) orelse return error.UninitializedSlot;
             if (page.initialized & mask(slot) == 0) return error.UninitializedSlot;
-            return page.values[slot & (width - 1)];
+            return values(page)[physicalIndex(page, page.initialized, slot)];
         }
 
         pub fn lookupLimit(self: *Self, handle: Handle) error{InvalidHandle}!usize {
@@ -245,21 +286,36 @@ pub fn Slots(comptime Value: type) type {
         fn changedPage(self: *Self, node: Node, slot: usize, value: ?Value) Error!Node {
             if (value == null and (node == .empty or node.page.initialized == mask(slot)))
                 return .empty;
-            const page = try self.allocator.create(Page);
-            page.* = .{};
+            const before: u16 = if (node == .page) node.page.initialized else 0;
+            const after = if (value != null) before | mask(slot) else before & ~mask(slot);
+            // Preserve ordinary unique growth without copying prior values.
+            // Sparse allocation is earned at a COW boundary, where copying is
+            // already required to isolate a retained activation version.
+            const capacity = if (node == .empty or node.page.references == 1) width else @popCount(after);
+            const page = try self.createPage(capacity);
             if (node == .page) {
-                page.initialized = node.page.initialized;
-                var live = page.initialized;
+                // Copy only the resulting live values; a removed slot need not
+                // fit into the smaller successor's storage.
+                const destination = values(page);
+                const source = values(node.page);
+                const dense_destination = page.capacity == width;
+                const dense_source = node.page.capacity == width;
+                var packed_index: usize = 0;
+                var live = after;
                 while (live != 0) {
                     const index = @ctz(live);
-                    page.values[index] = node.page.values[index];
-                    self.statistics.value_copies +|= 1;
+                    const destination_index = if (dense_destination) index else packed_index;
+                    if (index == (slot & (width - 1)) and value != null) {
+                        destination[destination_index] = value.?;
+                    } else {
+                        destination[destination_index] = source[if (dense_source) index else rank(before, index)];
+                        self.statistics.value_copies +|= 1;
+                    }
+                    packed_index += 1;
                     live &= live - 1;
                 }
-            }
-            assign(page, slot, value);
-            self.statistics.live_pages += 1;
-            self.statistics.peak_pages = @max(self.statistics.peak_pages, self.statistics.live_pages);
+            } else values(page)[physicalIndex(page, after, slot)] = value.?;
+            page.initialized = after;
             return .{ .page = page };
         }
 
@@ -279,7 +335,13 @@ pub fn Slots(comptime Value: type) type {
                 return;
             }
             if (depth == 0) {
-                assign(node.page, slot, value);
+                if (node.page.capacity != width and value != null and node.page.initialized & mask(slot) == 0 and @popCount(node.page.initialized) == node.page.capacity) {
+                    const successor = try self.changedPage(node.*, slot, value);
+                    self.drop(node.*);
+                    node.* = successor;
+                    return;
+                }
+                self.assign(node.page, slot, value);
                 if (node.page.initialized == 0) {
                     self.drop(node.*);
                     node.* = .empty;
@@ -293,13 +355,36 @@ pub fn Slots(comptime Value: type) type {
             node.* = .empty;
         }
 
-        fn assign(page: *Page, slot: usize, value: ?Value) void {
+        fn assign(self: *Self, page: *Page, slot: usize, value: ?Value) void {
+            if (page.capacity == width) {
+                const index = slot & (width - 1);
+                if (value) |present| {
+                    values(page)[index] = present;
+                    page.initialized |= mask(slot);
+                } else {
+                    page.initialized &= ~mask(slot);
+                    values(page)[index] = undefined;
+                }
+                return;
+            }
+            const index = rank(page.initialized, slot);
+            const items = values(page);
             if (value) |present| {
-                page.values[slot & (width - 1)] = present;
+                if (page.initialized & mask(slot) != 0) {
+                    items[index] = present;
+                    return;
+                }
+                const count: usize = @popCount(page.initialized);
+                std.mem.copyBackwards(Value, items[index + 1 .. count + 1], items[index..count]);
+                self.statistics.packed_moves +|= count - index;
+                items[index] = present;
                 page.initialized |= mask(slot);
             } else {
+                const count: usize = @popCount(page.initialized);
+                std.mem.copyForwards(Value, items[index .. count - 1], items[index + 1 .. count]);
+                self.statistics.packed_moves +|= count - index - 1;
                 page.initialized &= ~mask(slot);
-                page.values[slot & (width - 1)] = undefined;
+                items[count - 1] = undefined;
             }
         }
 
@@ -346,7 +431,15 @@ pub fn Slots(comptime Value: type) type {
                     page.references -= 1;
                     if (page.references != 0) return;
                     self.statistics.live_pages -= 1;
-                    self.allocator.destroy(page);
+                    const size = pageBytes(page.capacity);
+                    self.statistics.live_page_bytes -= size;
+                    if (page.capacity == width) {
+                        const dense: *DensePage = @ptrCast(@alignCast(page));
+                        self.allocator.destroy(dense);
+                    } else {
+                        const bytes: [*]align(page_alignment.toByteUnits()) u8 = @ptrCast(@alignCast(page));
+                        self.allocator.free(bytes[0..size]);
+                    }
                 },
                 .branch => |branch| {
                     std.debug.assert(branch.references != 0);
@@ -413,10 +506,147 @@ pub fn Slots(comptime Value: type) type {
                 }
                 const index = @ctz(self.live);
                 self.live &= self.live - 1;
-                return .{ .slot = self.base + index, .value = self.page.?.values[index] };
+                return .{ .slot = self.base + index, .value = values(self.page.?)[physicalIndex(self.page.?, self.page.?.initialized, index)] };
             }
         };
     };
 }
 
 pub const ActivationSlots = Slots(@import("boundary_data").graph.Value);
+
+test "retained bytes match allocator storage across dense and packed page lifetimes" {
+    var counter = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var store = try Slots(u64).init(counter.allocator());
+    defer store.deinit();
+    const original = try store.create(32);
+    try store.set(original, 0, 1);
+    try store.set(original, 31, 2);
+    try std.testing.expectEqual(counter.allocated_bytes - counter.freed_bytes, store.retainedBytes());
+    const branch = try store.fork(original);
+    try store.set(branch, 0, 3);
+    try std.testing.expectEqual(counter.allocated_bytes - counter.freed_bytes, store.retainedBytes());
+    try store.clear(branch, 31);
+    try store.release(original);
+    try std.testing.expectEqual(counter.allocated_bytes - counter.freed_bytes, store.retainedBytes());
+    try store.release(branch);
+    try std.testing.expectEqual(counter.allocated_bytes - counter.freed_bytes, store.retainedBytes());
+}
+
+test "sparse retained pages pack distinct logical slots and preserve predecessor views" {
+    const S = Slots(u64);
+    var store = try S.init(std.testing.allocator);
+    defer store.deinit();
+    const original = try store.create(16);
+    defer store.release(original) catch unreachable;
+    try store.set(original, 0, 10);
+    try store.set(original, 15, 20);
+    const before = store.statistics.live_page_bytes;
+    const active = try store.fork(original);
+    defer store.release(active) catch unreachable;
+    try store.set(active, 0, 11);
+    const page = S.locate((try store.lookupView(active)).root, 0, 0).?;
+    try std.testing.expectEqual(@as(u8, 2), page.capacity);
+    try std.testing.expectEqual(S.pageBytes(2), store.statistics.live_page_bytes - before);
+    try std.testing.expect(S.pageBytes(2) < before);
+    try std.testing.expectEqual(@as(u64, 10), try store.get(original, 0));
+    try std.testing.expectEqual(@as(u64, 20), try store.get(original, 15));
+    const reusable_address = &S.values(page)[0];
+    try store.clear(active, 0);
+    try std.testing.expectError(error.UninitializedSlot, store.get(active, 0));
+    try std.testing.expectEqual(@as(u64, 20), try store.get(active, 15));
+    try std.testing.expectEqual(reusable_address, &S.values(page)[S.physicalIndex(page, page.initialized, 15)]);
+    var iterator = try store.iterator(active);
+    try std.testing.expectEqual(@as(usize, 15), (try iterator.next()).?.slot);
+    try std.testing.expect(try iterator.next() == null);
+    try store.set(active, 7, 99);
+    try std.testing.expectEqual(@as(u64, 99), try store.get(active, 7));
+    try std.testing.expectEqual(@as(u64, 20), try store.get(active, 15));
+    try store.set(active, 8, 88); // Growth returns to ordinary dense storage.
+    try std.testing.expectEqual(@as(u64, 99), try store.get(active, 7));
+    try std.testing.expectEqual(@as(u64, 88), try store.get(active, 8));
+    try std.testing.expectEqual(@as(u64, 20), try store.get(active, 15));
+    try std.testing.expectError(error.UninitializedSlot, store.get(original, 7));
+}
+
+test "packed page lookup and iteration match every eight-position occupancy subset" {
+    const S = Slots(u64);
+    for (0..256) |subset| {
+        var store = try S.init(std.testing.allocator);
+        defer store.deinit();
+        const original = try store.create(16);
+        defer store.release(original) catch unreachable;
+        // Noncontiguous logical positions include both ends of the page.
+        const positions = [_]usize{ 0, 2, 4, 6, 9, 11, 13, 15 };
+        for (positions, 0..) |slot, bit| if (subset & (@as(usize, 1) << @intCast(bit)) != 0) try store.set(original, slot, slot + 100);
+        for (0..16) |changed| for ([_]bool{ false, true }) |insert| {
+            const active = try store.fork(original);
+            defer store.release(active) catch unreachable;
+            if (insert) try store.set(active, changed, 999) else try store.clear(active, changed);
+            var iterator = try store.iterator(active);
+            for (0..16) |slot| {
+                const bit = std.mem.indexOfScalar(usize, &positions, slot);
+                const present = if (bit) |i| subset & (@as(usize, 1) << @intCast(i)) != 0 else false;
+                if (present) try std.testing.expectEqual(@as(u64, slot + 100), try store.get(original, slot)) else try std.testing.expectError(error.UninitializedSlot, store.get(original, slot));
+                const current = if (slot == changed) insert else present;
+                if (current) {
+                    const expected: u64 = if (slot == changed) 999 else slot + 100;
+                    try std.testing.expectEqual(expected, try store.get(active, slot));
+                    const binding = (try iterator.next()).?;
+                    try std.testing.expectEqual(slot, binding.slot);
+                    try std.testing.expectEqual(expected, binding.value);
+                } else try std.testing.expectError(error.UninitializedSlot, store.get(active, slot));
+            }
+            try std.testing.expect(try iterator.next() == null);
+        };
+    }
+}
+
+test "trailing packed payload preserves over-aligned and zero-sized values" {
+    const Wide = struct { number: u64 align(32) };
+    inline for (.{ Wide, void }) |Value| {
+        const S = Slots(Value);
+        var store = try S.init(std.testing.allocator);
+        defer store.deinit();
+        const original = try store.create(16);
+        defer store.release(original) catch unreachable;
+        const first: Value = if (Value == void) {} else .{ .number = 42 };
+        const second: Value = if (Value == void) {} else .{ .number = 99 };
+        try store.set(original, 15, first);
+        const active = try store.fork(original);
+        defer store.release(active) catch unreachable;
+        try store.set(active, 0, second);
+        try std.testing.expectEqualDeep(first, try store.get(original, 15));
+        try std.testing.expectEqualDeep(first, try store.get(active, 15));
+        try std.testing.expectEqualDeep(second, try store.get(active, 0));
+        const page = S.locate((try store.lookupView(active)).root, 0, 0).?;
+        try std.testing.expectEqual(@as(usize, 0), @intFromPtr(S.values(page).ptr) % @alignOf(Value));
+    }
+}
+
+fn packedGrowthFailure(allocator: std.mem.Allocator) !void {
+    const S = Slots(u64);
+    var store = try S.init(allocator);
+    defer store.deinit();
+    const original = try store.create(16);
+    defer store.release(original) catch unreachable;
+    try store.set(original, 15, 42);
+    const active = try store.fork(original);
+    defer store.release(active) catch unreachable;
+    try store.set(active, 15, 99);
+    const page = S.locate((try store.lookupView(active)).root, 0, 15).?;
+    try std.testing.expectEqual(@as(u8, 1), page.capacity);
+    store.set(active, 0, 7) catch |err| {
+        try std.testing.expectEqual(@as(u64, 42), try store.get(original, 15));
+        try std.testing.expectEqual(@as(u64, 99), try store.get(active, 15));
+        try std.testing.expectError(error.UninitializedSlot, store.get(active, 0));
+        try std.testing.expectEqual(page, S.locate((try store.lookupView(active)).root, 0, 15).?);
+        return err;
+    };
+    try std.testing.expectEqual(@as(u64, 42), try store.get(original, 15));
+    try std.testing.expectEqual(@as(u64, 99), try store.get(active, 15));
+    try std.testing.expectEqual(@as(u64, 7), try store.get(active, 0));
+}
+
+test "sparse-to-dense allocation failure leaves both activation versions intact" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, packedGrowthFailure, .{});
+}

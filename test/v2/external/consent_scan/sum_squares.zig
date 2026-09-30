@@ -1,7 +1,7 @@
 const std = @import("std");
 const boundary = @import("boundary");
 const options = @import("options");
-const source = boundary.computation;
+const source = boundary.source;
 
 fn arithmetic(b: *source.Builder, opcode: boundary.data.program.Opcode, left: u64, right: u64, fault: u64) !u64 {
     return b.value(.{ .schema = try b.scalar(u64), .expression = .{ .primitive = .{

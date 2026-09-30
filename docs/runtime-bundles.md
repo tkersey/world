@@ -1,5 +1,18 @@
 # Qualified runtime bundles
 
+Verification parses package metadata and qualification from the same bounded
+buffers checked against the manifest inventory. Execution smoke uses a private
+temporary copy of verified bytes, including the CLI and worker module closure.
+Replacing files in the original bundle cannot substitute code after the copy is
+made; changes before copying reject when they differ from the inventory. The
+copy preserves executable intent, uses the existing file/count bounds, and is
+removed after smoke completes or fails. It needs temporary disk space for one
+bundle and does not claim protection against a hostile same-user process.
+
+Preparation resolves and archives raw Git commit objects with replacement refs
+disabled consistently. Its source identity describes the committed object, not
+a locally substituted Git view.
+
 Use Node 26.9.0, Zig 0.16.0, npm, uv, Git and tar on the producer. Browser
 qualification needs Chromium and Firefox and their OS dependencies. The producer
 installs the repository-locked browser tooling; on Linux first run its Playwright

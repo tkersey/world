@@ -5,6 +5,7 @@ const data = @import("boundary_data");
 const Slots = @import("activation_slots.zig").ActivationSlots;
 const sets = data.analysis_sets;
 const custody = @import("custody.zig");
+pub const Layouts = @import("frame_layouts.zig").Layouts;
 pub const Error = Slots.Error || data.graph_order.Error;
 // A pruning bound may include uninitialized slots. Small bounds stay inline.
 pub const Bound = union(enum) {
@@ -64,7 +65,7 @@ pub const Frames = struct {
     allocator: std.mem.Allocator,
     slots: Slots,
     pool: *sets.Pool,
-    program: data.activation.Program,
+    layouts: *const Layouts,
     custody: custody.Custody,
     entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
 
@@ -98,10 +99,11 @@ pub const Frames = struct {
         return saved;
     }
 
-    pub fn init(allocator: std.mem.Allocator, pool: *sets.Pool, program: data.activation.Program) Error!Frames {
+    /// The layout index and its immutable functions outlive these frame views.
+    pub fn init(allocator: std.mem.Allocator, pool: *sets.Pool, layouts: *const Layouts) Error!Frames {
         var slots = try Slots.init(allocator);
         errdefer slots.deinit();
-        return .{ .allocator = allocator, .slots = slots, .pool = pool, .program = program, .custody = try custody.Custody.init(allocator) };
+        return .{ .allocator = allocator, .slots = slots, .pool = pool, .layouts = layouts, .custody = try custody.Custody.init(allocator) };
     }
     pub fn deinit(self: *Frames) void {
         self.entries.deinit(self.allocator);
@@ -132,7 +134,7 @@ pub const Frames = struct {
         var frame = try self.create(function);
         errdefer self.releaseFrame(frame);
         for (activation.bindings) |binding| try self.rewriteValue(&frame, binding.slot, binding.value);
-        try self.custody.restore(&frame.custody, self.program.functions[@intCast(function)].custody, @intCast(activation.scope), activation.owners);
+        try self.custody.restore(&frame.custody, self.layouts.functions[@intCast(function)].custody, @intCast(activation.scope), activation.owners);
         frame.position = @intCast(activation.position);
         try self.put(id, frame);
     }
@@ -147,7 +149,7 @@ pub const Frames = struct {
         if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
     }
     pub fn create(self: *Frames, function: data.program.Id) Error!Frame {
-        const definition = self.program.functions[@intCast(function)];
+        const definition = self.layouts.functions[@intCast(function)];
         const view = try self.slots.create(definition.layout.slots.len);
         errdefer self.slots.release(view) catch unreachable;
         return .{ .view = view, .function = function, .live_bound = if (definition.layout.slots.len <= 64) .{ .bits = 0 } else .{ .tree = sets.empty }, .custody = try self.custody.create(definition.layout.slots.len, definition.custody.len) };
@@ -164,11 +166,11 @@ pub const Frames = struct {
         return result;
     }
     pub fn scope(self: *Frames, frame: *Frame, target: data.program.Id) Error!void {
-        try self.custody.moveTo(&frame.custody, self.program.functions[@intCast(frame.function)].custody, @intCast(target));
+        try self.custody.moveTo(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(target));
     }
     pub fn write(self: *Frames, frame: *Frame, slot: data.program.Id, value: data.graph.Value) Error!void {
         try self.custody.remove(&frame.custody, @intCast(slot));
-        if (value.body == .owned) try self.custody.establish(&frame.custody, self.program.functions[@intCast(frame.function)].custody, @intCast(slot));
+        if (value.body == .owned) try self.custody.establish(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(slot));
         try self.rewriteValue(frame, slot, value);
     }
     fn rewriteValue(self: *Frames, frame: *Frame, slot: data.program.Id, value: data.graph.Value) Error!void {
@@ -189,11 +191,15 @@ pub const Frames = struct {
         try self.custody.remove(&frame.custody, @intCast(slot));
         try self.slots.clear(frame.view, @intCast(slot));
     }
-    /// Restart the same function after its caller has gathered simultaneous
-    /// arguments. Retained views remain isolated by Slots' existing COW owner.
-    pub fn restart(self: *Frames, frame: *Frame, live: sets.Root, values: []const data.graph.Value) Error!void {
-        if (frame.custody.initialized) return error.InvalidState;
-        const function = self.program.functions[@intCast(frame.function)];
+    pub fn canRestart(self: *const Frames, frame: Frame, target: data.program.Id) bool {
+        return !frame.custody.initialized and self.layouts.compatible(frame.function, target);
+    }
+    /// Consume a compatible frame after gathering simultaneous arguments.
+    /// Exact schemas and custody capacity preserve its physical layout; retained
+    /// views remain isolated by Slots' existing COW owner.
+    pub fn restart(self: *Frames, frame: *Frame, target: data.program.Id, live: sets.Root, values: []const data.graph.Value) Error!void {
+        if (!self.canRestart(frame.*, target)) return error.InvalidState;
+        const function = self.layouts.functions[@intCast(target)];
         if (function.inputs.len != values.len) return error.InvalidState;
         var old = frame.live_bound.iterator(self.pool);
         while (old.next()) |slot| {
@@ -201,6 +207,7 @@ pub const Frames = struct {
             if (std.mem.indexOfScalar(data.program.Id, function.inputs, slot) == null)
                 try self.clear(frame, slot);
         }
+        frame.function = target;
         frame.custody.scope = 0;
         try self.apply(frame, live, function.inputs, values);
         frame.position = 0;
@@ -218,7 +225,7 @@ pub const Frames = struct {
             if (!selection.contains(self.pool, slot)) continue;
             const value = values[index];
             try self.custody.remove(&frame.custody, @intCast(slot));
-            if (value.body == .owned) try self.custody.establish(&frame.custody, self.program.functions[@intCast(frame.function)].custody, @intCast(slot));
+            if (value.body == .owned) try self.custody.establish(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(slot));
             try self.slots.set(frame.view, @intCast(slot), value);
         }
         try self.prune(frame, live);
@@ -232,7 +239,7 @@ pub const Frames = struct {
             .bits => |bits| .{ .bits = bits & ~retained.bits },
             .tree => |root| .{ .tree = try self.pool.difference(root, live) },
         };
-        const limit = self.program.functions[@intCast(frame.function)].layout.slots.len;
+        const limit = self.layouts.functions[@intCast(frame.function)].layout.slots.len;
         var iterator = removed.iterator(self.pool);
         while (iterator.next()) |slot| {
             if (slot >= limit) break;
@@ -254,7 +261,7 @@ pub const Frames = struct {
     pub fn rebaseFrame(self: *Frames, id: data.program.Id, map: anytype) data.graph_order.Error!void {
         const frame = self.entries.get(id) orelse return;
         var members = frame.live_bound.iterator(self.pool);
-        const limit = self.program.functions[@intCast(frame.function)].layout.slots.len;
+        const limit = self.layouts.functions[@intCast(frame.function)].layout.slots.len;
         while (members.next()) |slot| {
             if (slot >= limit) break;
             var value = self.slots.get(frame.view, @intCast(slot)) catch |err| switch (err) {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { lstat, readdir } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { lstat, readdir, mkdtemp, mkdir, writeFile, chmod, rm } from "node:fs/promises";
+import { resolve, join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { readRegularFile } from "./file-input.mjs";
 import { Kernel, packageVersion } from "../embedding/index.mjs";
 import { inspectKernelWasm } from "../embedding/wasm.mjs";
@@ -66,6 +67,48 @@ export async function verifyInventory(root, expected) {
     if (!paths.has(path)) reject("WORLD_BUNDLE_INCOMPLETE", `required file missing: ${path}`);
   return manifest;
 }
+
+/** Return the same bounded bytes whose identity matches the supplied inventory. */
+export async function readVerifiedFile(root, manifest, path, limit = 64 << 20) {
+  const entry = manifest.files.find(file => file.path === path);
+  if (!entry) reject("WORLD_BUNDLE_INCOMPLETE", `required file missing: ${path}`);
+  const bytes = await readBounded(join(root, path), limit);
+  if (bytes.length !== entry.bytes || sha256(bytes) !== entry.sha256)
+    reject("WORLD_BUNDLE_CORRUPT", `file identity mismatch: ${path}`);
+  return bytes;
+}
+
+async function useInventoryCopy(root, manifest, expected, use) {
+  const copy = await mkdtemp(join(tmpdir(), "world verified bundle "));
+  try {
+    const manifestBytes = await readBounded(join(root, "manifest.json"), 1 << 20);
+    if (sha256(manifestBytes) !== expected)
+      reject("WORLD_BUNDLE_IDENTITY_INVALID", "manifest changed before snapshot");
+    await writeFile(join(copy, "manifest.json"), manifestBytes, { flag: "wx", mode: 0o400 });
+    // At most one bounded file buffer is retained during copying. The private
+    // tree holds at most the already admitted file count and extents.
+    for (const entry of manifest.files) {
+      const stat = await lstat(join(root, entry.path));
+      if (!stat.isFile()) reject("WORLD_BUNDLE_INVALID", `not a regular file: ${entry.path}`);
+      const mode = stat.mode & 0o111 ? 0o500 : 0o400;
+      const bytes = await readVerifiedFile(root, manifest, entry.path);
+      const destination = join(copy, entry.path);
+      await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+      await writeFile(destination, bytes, { flag: "wx", mode });
+      await chmod(destination, mode);
+    }
+    return await use(copy, manifest);
+  } finally {
+    await rm(copy, { recursive: true, force: true });
+  }
+}
+
+/** Callback-scoped inventory snapshot; full runtime qualification is separate. */
+export async function withVerifiedInventory(root, expected, use) {
+  root = resolve(root);
+  return useInventoryCopy(root, await verifyInventory(root, expected), expected, use);
+}
+
 export async function verifyBundle(root, expected, smoke = false) {
   root = resolve(root);
   const manifest = await verifyInventory(root, expected);
@@ -76,24 +119,24 @@ export async function verifyBundle(root, expected, smoke = false) {
   if (!/^[a-f0-9]{40}$/.test(manifest.source?.commit ?? "") ||
       !/^[a-f0-9]{40}$/.test(manifest.source?.tree ?? "") || manifest.source.clean !== true ||
       manifest.source.repository !== "https://github.com/tkersey/world" ||
-      manifest.source.dependency?.commit !== "f512dbbfb14ab61ed5e1d875518c2b683ff5d215" ||
-      manifest.source.dependency?.package !== "boundary-3.0.0-dev.0-flclaCUnGwAErKpf2Ql6uEt80nLBXe3T0tcjbd4SoXgS" ||
+      manifest.source.dependency?.commit !== "511fe388587b36ae37307d277e04c22b0bb6f6d9" ||
+      manifest.source.dependency?.package !== "boundary-3.0.0-dev.0-flclaGcPXAB8lBsvhVLPJFZmROkee3fHGfsloqpgeZSE" ||
       !/^[a-f0-9]{64}$/.test(manifest.source.dependency?.lockSha256 ?? "") ||
       manifest.build.zig !== "0.16.0" || manifest.build.hostMode !== "ReleaseSafe" ||
       manifest.build.stackBytes !== 65536 || manifest.build.maximumMemoryBytes !== 268435456 ||
       manifest.build.defaults?.input !== 65536 || manifest.build.defaults?.working !== 1048576 || manifest.build.defaults?.output !== 65536)
     reject("WORLD_BUNDLE_INCOMPATIBLE", "missing or incompatible source/build profile");
-  const pkg = JSON.parse(await readBounded(join(root, "runtime/package.json"), 65536));
+  const pkg = JSON.parse(await readVerifiedFile(root, manifest, "runtime/package.json", 65536));
   if (pkg.name !== "@tkersey/world" || pkg.version !== packageVersion || pkg.type !== "module" ||
       pkg.exports?.["."] !== "./src/embedding/index.mjs" || pkg.bin?.world !== "./bin/world.mjs")
     reject("WORLD_BUNDLE_INCOMPATIBLE", "package metadata differs from its embedding");
-  const qualification = JSON.parse(await readBounded(join(root, "qualification.json"), 1 << 20));
+  const qualification = JSON.parse(await readVerifiedFile(root, manifest, "qualification.json", 1 << 20));
   if (JSON.stringify(manifest.requiredChecks) !== JSON.stringify(requiredChecks) ||
       !Array.isArray(qualification.checks) || requiredChecks.some(name =>
         qualification.checks.filter(check => check.name === name).length !== 1 ||
         qualification.checks.find(check => check.name === name)?.status !== "passed"))
     reject("WORLD_BUNDLE_INCOMPLETE", "required qualification has not passed");
-  const bytes = await readBounded(join(root, manifest.kernel.path));
+  const bytes = await readVerifiedFile(root, manifest, manifest.kernel.path);
   if (bytes.length !== manifest.kernel.bytes || sha256(bytes) !== manifest.kernel.sha256)
     reject("WORLD_BUNDLE_IDENTITY_INVALID", "kernel identity mismatch");
   const profile = inspectKernelWasm(bytes);
@@ -103,7 +146,8 @@ export async function verifyBundle(root, expected, smoke = false) {
   await Kernel.create({ bytes, expectedSha256: manifest.kernel.sha256 });
   if (smoke) {
     const { runSmoke } = await import("./runtime-smoke.mjs");
-    await runSmoke(root, manifest.kernel.sha256);
+    await useInventoryCopy(root, manifest, expected,
+      copy => runSmoke(copy, manifest.kernel.sha256));
   }
   return { manifestSha256: expected, kernelSha256: manifest.kernel.sha256, files: manifest.files.length, smoke };
 }

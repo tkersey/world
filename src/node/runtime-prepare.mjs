@@ -9,12 +9,16 @@ import { packageVersion, encodeInput } from "../embedding/index.mjs";
 import { runSmoke } from "./runtime-smoke.mjs";
 import { reserveOutput } from "./runtime-output.mjs";
 
-const dependencyCommit = "f512dbbfb14ab61ed5e1d875518c2b683ff5d215";
-const dependencyPackage = "boundary-3.0.0-dev.0-flclaCUnGwAErKpf2Ql6uEt80nLBXe3T0tcjbd4SoXgS";
+const dependencyCommit = "511fe388587b36ae37307d277e04c22b0bb6f6d9";
+const dependencyPackage = "boundary-3.0.0-dev.0-flclaGcPXAB8lBsvhVLPJFZmROkee3fHGfsloqpgeZSE";
 const dependencyUrl = `https://github.com/tkersey/boundary/archive/${dependencyCommit}.tar.gz`;
 const limits = { input: 65536, working: 1048576, output: 65536 };
 const json = value => JSON.stringify(value, null, 2) + "\n";
-const text = (command, args, cwd) => execFileSync(command, args, { cwd, encoding: "utf8", timeout: 120000, maxBuffer: 2 << 20 }).trim();
+const gitEnvironment = () => ({ ...process.env, GIT_NO_REPLACE_OBJECTS: "1" });
+const text = (command, args, cwd) => execFileSync(command, args, {
+  cwd, encoding: "utf8", timeout: 120000, maxBuffer: 2 << 20,
+  env: command === "git" ? gitEnvironment() : process.env,
+}).trim();
 export async function sourceIdentity(source) {
   source = await realpath(source);
   if (await realpath(fileURLToPath(new URL("../..", import.meta.url))) !== source)
@@ -25,7 +29,7 @@ export async function sourceIdentity(source) {
   const commit = text("git", ["rev-parse", "HEAD"], source);
   const tree = text("git", ["rev-parse", `${commit}^{tree}`], source);
   const lock = execFileSync("git", ["show", `${commit}:build.zig.zon`], {
-    cwd: source, timeout: 120000, maxBuffer: 1 << 20,
+    cwd: source, timeout: 120000, maxBuffer: 1 << 20, env: gitEnvironment(),
   });
   const zon = new TextDecoder().decode(lock);
   if (!zon.includes(`.url = "${dependencyUrl}"`) || !zon.includes(`.hash = "${dependencyPackage}"`))
@@ -64,7 +68,9 @@ export async function prepareBundle(source, output) {
     // Export only committed source: ignored zig-pkg/build state cannot influence qualification.
     source = join(lock, "source");
     await mkdir(source);
-    const sourceArchive = execFileSync("git", ["archive", identity.commit], { cwd: originalSource, maxBuffer: 64 << 20 });
+    const sourceArchive = execFileSync("git", ["archive", identity.commit], {
+      cwd: originalSource, maxBuffer: 64 << 20, env: gitEnvironment(),
+    });
     execFileSync("tar", ["-xf", "-", "-C", source], { input: sourceArchive, timeout: 120000 });
     await run("build", "zig", build(["build-runtime", "check-kernel"]));
     const dependency = join(source, "zig-pkg", dependencyPackage);

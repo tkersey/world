@@ -59,6 +59,7 @@ pub const Session = struct {
     transitions: usize = 0,
     // Live cursor counts set a geometric threshold for early reclamation.
     collection_cursors: usize = 8,
+    pending_blob_collection: bool = false,
     statistics: ?*@import("runtime_types.zig").Statistics = null,
 
     pub const Transaction = struct {
@@ -69,6 +70,7 @@ pub const Session = struct {
         poisoned: bool,
         transitions: usize,
         collection_cursors: usize,
+        pending_blob_collection: bool,
 
         pub fn commit(self: *Transaction, session: *Session) void {
             session.store.commit();
@@ -84,6 +86,7 @@ pub const Session = struct {
             session.poisoned = self.poisoned;
             session.transitions = self.transitions;
             session.collection_cursors = self.collection_cursors;
+            session.pending_blob_collection = self.pending_blob_collection;
             self.* = undefined;
         }
     };
@@ -100,6 +103,7 @@ pub const Session = struct {
             .poisoned = self.poisoned,
             .transitions = self.transitions,
             .collection_cursors = self.collection_cursors,
+            .pending_blob_collection = self.pending_blob_collection,
         };
     }
 
@@ -124,7 +128,7 @@ pub const Session = struct {
         var flow = try core.admitted().analysis(allocator);
         errdefer flow.deinit();
         const program = core.admitted().program();
-        const frames = try bindings.Frames.init(allocator, flow.facts.pool, program);
+        const frames = try bindings.Frames.init(allocator, flow.facts.pool, core.frameLayouts());
         return .{
             .allocator = allocator,
             .prepared = core,
@@ -309,8 +313,9 @@ pub const Session = struct {
         while (self.terminal == null and (self.status == .active or self.status == .unwinding) and
             (quantum == null or steps < quantum.?))
         {
-            steps +|= try self.stepInternal(quantum == null or quantum.? - steps >= 2);
+            steps +|= try self.stepInternal(if (quantum) |limit| @intCast(@min(8, limit - steps)) else 8);
         }
+        try self.finishRetention();
         return self.observe();
     }
 
@@ -374,13 +379,37 @@ pub const Session = struct {
     }
 
     pub fn step(self: *Session) Error!void {
-        _ = try self.stepInternal(false);
+        _ = try self.stepInternal(1);
+        try self.finishRetention();
     }
 
-    fn stepInternal(self: *Session, allow_fusion: bool) Error!u8 {
+    // Only total inline scalar operations qualify. Every original frame write
+    // still occurs, including liveness and copy-on-write handling. Stop before
+    // the next collection boundary so batching cannot extend physical retention.
+    fn scalarBatch(self: *const Session, code: ir.Block, position: usize, allowance: u8) u8 {
+        const limit = @min(@as(usize, allowance), 256 - self.transitions % 256);
+        const layout = self.program.functions[@intCast(code.function)].layout.slots;
+        var count: usize = 0;
+        while (count < limit and position + count < code.instructions.len) : (count += 1) {
+            const op = code.instructions[position + count];
+            switch (op.opcode) {
+                .integer_bit_and, .integer_bit_or, .integer_bit_xor, .integer_bit_not => {},
+                else => break,
+            }
+            if (op.failures.len != 0) break;
+            switch (self.program.schemas[@intCast(layout[@intCast(op.destination)])]) {
+                .u8, .u16, .u32, .u64 => {},
+                else => break,
+            }
+        }
+        return @intCast(count);
+    }
+
+    fn stepInternal(self: *Session, allowance: u8) Error!u8 {
         if (self.poisoned or self.terminal != null or (self.status != .active and self.status != .unwinding)) return error.InvalidState;
         errdefer self.poisoned = true;
         var work: u8 = 1;
+        var scalar_work: u8 = 0;
         var collect_cursors = false;
         const current = self.roots.current orelse return error.InvalidState;
         if (self.status == .unwinding) {
@@ -393,7 +422,7 @@ pub const Session = struct {
                 const instruction = code.instructions[frame.position];
                 // Qualified on 64-bit native storage. wasm32 keeps ordinary
                 // execution after a measured regression; work units agree.
-                const known_body = if (@sizeOf(usize) > 4 and allow_fusion and instruction.opcode == .computation and
+                const known_body = if (@sizeOf(usize) > 4 and allowance >= 2 and instruction.opcode == .computation and
                     code.terminator == .handle and frame.position + 1 == code.instructions.len)
                     self.knownHandlerBody(code)
                 else
@@ -414,7 +443,12 @@ pub const Session = struct {
                     // Other value paths do not change the map before their
                     // frame writes. A failure starts unwinding with no further
                     // use of this borrow.
-                    try self.executeInstruction(current, code, frame);
+                    if (instruction.opcode == .blob_length)
+                        self.pending_blob_collection = self.pending_blob_collection or try self.dropsLargeBlob(control.block, code, frame);
+                    const count = self.scalarBatch(code, frame.position, allowance);
+                    work = @max(1, count);
+                    for (0..work) |_| try self.executeInstruction(current, code, frame);
+                    if (count > 1) scalar_work = count;
                     // Inspect cursor growth only at operations that produce consumed tails.
                     if (@sizeOf(usize) > 4 and
                         (instruction.opcode == .sequence_pop or instruction.opcode == .sequence_pop_last))
@@ -431,20 +465,61 @@ pub const Session = struct {
             if (try self.store.get(current) == .control) self.frames.remove(current.id);
         }
         self.transitions +%= work;
-        if (self.statistics) |statistics| statistics.transitions +|= work;
+        if (self.statistics) |statistics| {
+            statistics.transitions +|= work;
+            statistics.dispatches +|= 1;
+            statistics.batched_scalar_operations +|= scalar_work;
+        }
         // A public suspension may last indefinitely. Reclaim its dead backing
         // before publication; checkpoint itself remains a read-only projection.
         if (self.terminal != null or self.status == .yielded or self.status == .parked or self.transitions % 256 < work or
             collect_cursors)
         {
-            try self.store.collectWith(self.roots, &self.frames);
-            // Live aliases survive tracing and raise the next threshold.
-            if (@sizeOf(usize) > 4) {
-                const live = self.store.encoded_sequences.count();
-                self.collection_cursors = @max(8, @as(usize, live) *| 2);
-            }
+            try self.collect();
         }
         return work;
+    }
+
+    fn collect(self: *Session) Error!void {
+        try self.store.collectWith(self.roots, &self.frames);
+        self.pending_blob_collection = false;
+        // Live aliases survive tracing and raise the next threshold.
+        if (@sizeOf(usize) > 4) {
+            const live = self.store.encoded_sequences.count();
+            self.collection_cursors = @max(8, @as(usize, live) *| 2);
+        }
+    }
+
+    fn finishRetention(self: *Session) Error!void {
+        if (!self.pending_blob_collection) return;
+        errdefer self.poisoned = true;
+        try self.collect();
+        if (self.statistics) |statistics| statistics.early_blob_collections +|= 1;
+    }
+
+    // A quantum-limited resident can remain paused indefinitely. When a large
+    // scalar-backed blob loses this slot after its length observation, request
+    // ordinary tracing now. Other live aliases/templates remain authoritative
+    // roots; this hint never frees backing directly or asserts uniqueness.
+    fn dropsLargeBlob(self: *Session, block: p.Id, code: ir.Block, frame: *const bindings.Frame) Error!bool {
+        const source = code.instructions[frame.position];
+        const slot = source.operands[0];
+        const live = self.flow.facts.live[@intCast(block)][frame.position + 1];
+        if (self.flow.facts.pool.contains(live, slot)) return false;
+        const value = try self.frames.slots.get(frame.view, @intCast(slot));
+        if (value.body != .blob) return false;
+        const id = std.math.cast(usize, value.body.blob.id) orelse return error.InvalidState;
+        if (id >= self.store.blobs.items.len or !self.store.blob_alive.items[id]) return error.InvalidState;
+        if (self.store.blobs.items[id].bytes.len < 64 << 10) return false;
+        // A known surviving direct alias cannot be reclaimed by tracing. Avoid
+        // repeated full traces while consuming a frame of identical aliases.
+        // Absence here is only a hint: indirect aliases still require tracing.
+        var iterator = try self.frames.slots.iterator(frame.view);
+        while (try iterator.next()) |binding| {
+            if (binding.slot == slot or !self.flow.facts.pool.contains(live, binding.slot)) continue;
+            if (binding.value.body == .blob and binding.value.body.blob.id == value.body.blob.id) return false;
+        }
+        return true;
     }
 
     fn executeInstruction(self: *Session, current: g.NodeRef, code: ir.Block, frame: *bindings.Frame) Error!void {
@@ -491,17 +566,34 @@ pub const Session = struct {
                 try self.jump(current, saved, frame, if (condition.body.scalar[0] == 1) branch.when_true else branch.when_false, null);
             },
             .call => |call| {
-                const arguments = try self.collectArguments(scratch, reader, call.arguments);
-                if (call.function == frame.function and self.isTail(call.next) and !frame.custody.initialized) {
+                // Both consumers copy descriptors into owned frame storage.
+                // Gather the entire predecessor view before any restart/write;
+                // this bounded scratch never escapes the current transition.
+                var small_arguments: [8]g.Value = undefined;
+                const arguments = if (call.arguments.len <= small_arguments.len) local: {
+                    const values = small_arguments[0..call.arguments.len];
+                    for (values, call.arguments) |*value, slot| value.* = try read(reader, slot);
+                    if (self.statistics) |statistics| statistics.stack_argument_calls +|= 1;
+                    break :local values;
+                } else heap_arguments: {
+                    if (self.statistics) |statistics| statistics.heap_argument_calls +|= 1;
+                    break :heap_arguments try self.collectArguments(scratch, reader, call.arguments);
+                };
+                const tail = self.isTail(call.next);
+                if (tail and self.frames.canRestart(frame.*, call.function)) {
                     const entry = self.program.functions[@intCast(call.function)].entry;
-                    try self.frames.restart(frame, self.flow.facts.live[@intCast(entry)][0], arguments);
+                    try self.frames.restart(frame, call.function, self.flow.facts.live[@intCast(entry)][0], arguments);
                     var changed = saved;
                     changed.block = entry;
                     try self.store.replace(current, .{ .control = changed });
                     self.frames.update(current.id, frame.*);
+                    if (self.statistics) |statistics| statistics.tail_frame_reuses +|= 1;
                     return;
                 }
-                const parent = if (self.isTail(call.next)) saved.parent else try self.captureContinuation(current, saved, frame.*, call.next);
+                if (tail) if (self.statistics) |statistics| {
+                    statistics.tail_frame_reuse_fallbacks +|= 1;
+                };
+                const parent = if (tail) saved.parent else try self.captureContinuation(current, saved, frame.*, call.next);
                 try self.enter(call.function, arguments, parent, saved.evidence, saved.region);
             },
             .apply => |apply| {

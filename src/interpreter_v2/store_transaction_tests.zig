@@ -3,6 +3,47 @@ const data = @import("boundary_data");
 const heap = @import("store.zig");
 const testing = std.testing;
 
+test "blob retirement visits each intern entry and preserves free order and rollback" {
+    var store: heap.Store = .{ .allocator = testing.allocator };
+    defer store.deinit();
+    var statistics: heap.Statistics = .{};
+    store.statistics = &statistics;
+    var values: [128]data.graph.Value = undefined;
+    var retained: [64]data.graph.Value = undefined;
+    for (&values, 0..) |*item, index| {
+        var encoded: [5]u8 = undefined;
+        encoded[0] = 4;
+        std.mem.writeInt(u32, encoded[1..5], @intCast(index), .little);
+        item.* = try store.literal(&.{.bytes}, .{ .schema = 0, .bytes = &encoded });
+        if (index % 2 == 1) retained[index / 2] = item.*;
+    }
+    const root = try store.add(.{ .environment = .{ .values = &retained, .tail = null } });
+    const roots: data.graph.Roots = .{ .current = root };
+    try store.begin();
+    try store.collect(roots);
+    try testing.expectEqual(@as(usize, 64), store.interned.count());
+    try testing.expectEqual(@as(u64, 128), statistics.retirement_table_entries);
+    try testing.expectEqual(@as(u64, 64), statistics.blob_retirements);
+    for (store.free_blobs.items, 0..) |id, index| try testing.expectEqual(index * 2, id);
+    for (store.blob_alive.items, 0..) |alive, index| try testing.expectEqual(index % 2 == 1, alive);
+    store.rollback();
+    try testing.expectEqual(@as(usize, 128), store.interned.count());
+    for (values, 0..) |value, index| {
+        var encoded: [5]u8 = undefined;
+        encoded[0] = 4;
+        std.mem.writeInt(u32, encoded[1..5], @intCast(index), .little);
+        const restored = try store.literal(&.{.bytes}, .{ .schema = 0, .bytes = &encoded });
+        try testing.expectEqual(value.body.blob.id, restored.body.blob.id);
+    }
+    try store.replace(root, .{ .environment = .{ .values = &.{}, .tail = null } });
+    try store.collect(roots);
+    try testing.expectEqual(@as(usize, 0), store.interned.count());
+    try testing.expectEqual(@as(usize, 128), store.free_blobs.items.len);
+    for (store.free_blobs.items, 0..) |id, index| try testing.expectEqual(index, id);
+    const replacement = try store.literal(&.{.bytes}, .{ .schema = 0, .bytes = &.{ 1, 99 } });
+    try testing.expectEqual(@as(u64, 127), replacement.body.blob.id);
+}
+
 fn encodedCursorFailure(allocator: std.mem.Allocator) !void {
     var store: heap.Store = .{ .allocator = allocator };
     defer store.deinit();
