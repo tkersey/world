@@ -30,10 +30,10 @@ for(const operations of [0,2,4,16,256,1024]){
  for(const arm of ['before','after']){
   const admission=await fresh(arm),p=admission.prepare(image),admitted={peak:Number(admission.usage().workingPeak),retained:Number(admission.usage().workingLive)};admission.releasePrepared(p);assert.equal(admission.usage().workingLive,0n);
   const execution=await fresh(arm),request=world.encodeInput({image,initialArgs:args}),out=world.decodeOutcome(execution.invoke(request));assert.equal(out.kind,'completed');assert.equal(Buffer.from(out.value).readBigUInt64LE(),expected);assert.equal(execution.usage().workingLive,0n);writeFileSync(`${corpus}/${operations}-fresh.pki3`,request);
-  const cycle=await fresh(arm);let input={image,initialArgs:args,quantum:1n},checkpointMax=0,steps=0;
-  while(true){const outcome=world.decodeOutcome(cycle.invoke(world.encodeInput(input)));assert(++steps<operations+10);if(outcome.kind==='completed'){assert.equal(Buffer.from(outcome.value).readBigUInt64LE(),expected);break;}assert.equal(outcome.kind,'progressed');checkpointMax=Math.max(checkpointMax,outcome.state.length);input={image,state:outcome.state,quantum:1n};}
+  const cycle=await fresh(arm);let input={image,initialArgs:args,quantum:1n},checkpointMax=0,steps=0,cyclePeak=0;
+  while(true){const outcome=world.decodeOutcome(cycle.invoke(world.encodeInput(input)));cyclePeak=Math.max(cyclePeak,Number(cycle.usage().workingPeak));assert(++steps<operations+10);if(outcome.kind==='completed'){assert.equal(Buffer.from(outcome.value).readBigUInt64LE(),expected);break;}assert.equal(outcome.kind,'progressed');checkpointMax=Math.max(checkpointMax,outcome.state.length);input={image,state:outcome.state,quantum:1n};}
   assert.equal(cycle.usage().workingLive,0n);
-  row.arms[arm]={admission:admitted,freshPeak:Number(execution.usage().workingPeak),cyclePeak:Number(cycle.usage().workingPeak),checkpointMax,steps};
+  row.arms[arm]={admission:admitted,freshPeak:Number(execution.usage().workingPeak),cyclePeak,checkpointMax,steps};
  }
  assert.deepEqual(row.arms.after,row.arms.before);
  report.rows.push(row);writeFileSync(output,JSON.stringify(report,null,2)+'\n');

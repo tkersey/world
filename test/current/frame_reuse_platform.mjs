@@ -20,14 +20,15 @@ for(const family of ['compatible','fallback']){
    row.arms[arm]={admission,freshPeak:Number(k.usage().workingPeak)};assert.equal(k.usage().workingLive,0n);
   }
   assert.deepEqual(terminal.after,terminal.before);
-  const cycles={before:await fresh('before'),after:await fresh('after')};let input={image,initialArgs:args,quantum:1n},steps=0,checkpointMax=0;
+  const cycles={before:await fresh('before'),after:await fresh('after')},cyclePeaks={before:0,after:0};let input={image,initialArgs:args,quantum:1n},steps=0,checkpointMax=0;
+  const observePeaks=()=>{for(const arm of ['before','after'])cyclePeaks[arm]=Math.max(cyclePeaks[arm],Number(cycles[arm].usage().workingPeak));};
   while(true){
-   const encoded=world.encodeInput(input),left=cycles.before.invoke(encoded),right=cycles.after.invoke(encoded);assert.deepEqual(Buffer.from(right),Buffer.from(left));report.requests++;assert(++steps<n*8+16);
+   const encoded=world.encodeInput(input),left=cycles.before.invoke(encoded),right=cycles.after.invoke(encoded);observePeaks();assert.deepEqual(Buffer.from(right),Buffer.from(left));report.requests++;assert(++steps<n*8+16);
    const out=world.decodeOutcome(right);if(out.kind==='completed'){assert.deepEqual(Buffer.from(right),terminal.after);break;}
    assert.equal(out.kind,'progressed');checkpointMax=Math.max(checkpointMax,out.state.length);input={image,state:out.state,quantum:1n};
-   if(n===8&&steps%5===0){const cancel=world.encodeInput({image,state:out.state,control:'cancel_text',value:'frame cut'}),l=cycles.before.invoke(cancel),r=cycles.after.invoke(cancel);assert.deepEqual(Buffer.from(r),Buffer.from(l));assert.equal(world.decodeOutcome(r).kind,'cancelled');}
+   if(n===8&&steps%5===0){const cancel=world.encodeInput({image,state:out.state,control:'cancel_text',value:'frame cut'}),l=cycles.before.invoke(cancel),r=cycles.after.invoke(cancel);observePeaks();assert.deepEqual(Buffer.from(r),Buffer.from(l));assert.equal(world.decodeOutcome(r).kind,'cancelled');}
   }
-  for(const arm of ['before','after']){assert.equal(cycles[arm].usage().workingLive,0n);Object.assign(row.arms[arm],{cyclePeak:Number(cycles[arm].usage().workingPeak),steps,checkpointMax});}
+  for(const arm of ['before','after']){assert.equal(cycles[arm].usage().workingLive,0n);Object.assign(row.arms[arm],{cyclePeak:cyclePeaks[arm],steps,checkpointMax});}
   report.rows.push(row);writeFileSync(output,JSON.stringify(report,null,2)+'\n');
  }
 }

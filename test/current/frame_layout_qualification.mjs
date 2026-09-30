@@ -14,7 +14,12 @@ if (args[0] === 'sample') {
   const k = await world.Kernel.create({bytes, expectedSha256:hash(bytes)});
   k.setLimits({input:256<<20, working:256<<20, output:256<<20});
   const image = readFileSync(imagePath), input = readFileSync(inputPath), initialArgs = readFileSync(argumentsPath);
+  let peakBytes = 0;
+  // The kernel resets its peak on every operation, including cleanup.
+  // Fold each observation before another operation can replace it.
+  const observePeak = () => { peakBytes = Math.max(peakBytes, Number(k.usage().workingPeak)); };
   const prepared = phase === 'resident' ? k.prepare(image) : null;
+  observePeak();
   const live = k.usage().workingLive, samplesNs = [], batch = image.length > 8192 || phase === 'resident' ? 1 : 64;
   let retainedBytes = Number(live);
   for (let sample=0; sample<12; sample++) {
@@ -23,22 +28,24 @@ if (args[0] === 'sample') {
       if (phase === 'admission') {
         const start=process.hrtime.bigint(), p=k.prepare(image);
         elapsed+=Number(process.hrtime.bigint()-start);
-        retainedBytes=Math.max(retainedBytes,Number(k.usage().workingLive)); k.releasePrepared(p);
+        observePeak();
+        retainedBytes=Math.max(retainedBytes,Number(k.usage().workingLive)); k.releasePrepared(p); observePeak();
       } else if (phase === 'resident') {
-        const session=k.start(prepared,initialArgs), start=process.hrtime.bigint();
+        const session=k.start(prepared,initialArgs); observePeak();
+        const start=process.hrtime.bigint();
         const result=k.drive(session,{}); elapsed+=Number(process.hrtime.bigint()-start);
-        assert.equal(hash(result),expected); k.close(session);
+        observePeak(); assert.equal(hash(result),expected); k.close(session); observePeak();
       } else {
         const start=process.hrtime.bigint(), result=k.invoke(input);
-        elapsed+=Number(process.hrtime.bigint()-start); assert.equal(hash(result),expected);
+        elapsed+=Number(process.hrtime.bigint()-start); observePeak(); assert.equal(hash(result),expected);
       }
       assert.equal(k.usage().workingLive,live);
     }
     if (sample>=3) samplesNs.push(elapsed/batch);
   }
-  if (prepared) k.releasePrepared(prepared);
+  if (prepared) { k.releasePrepared(prepared); observePeak(); }
   assert.equal(k.usage().workingLive,0n);
-  console.log(JSON.stringify({samplesNs,peakBytes:Number(k.usage().workingPeak),retainedBytes,batch}));
+  console.log(JSON.stringify({samplesNs,peakBytes,retainedBytes,batch}));
 } else {
   const [embedding,beforeKernel,afterKernel,emitter,beforeNative,afterNative,beforeResident,afterResident,corpus,output] = args;
   assert.equal(args.length,10); mkdirSync(corpus,{recursive:true});

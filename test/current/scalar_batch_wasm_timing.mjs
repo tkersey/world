@@ -27,7 +27,9 @@ if(args[0]==='sample'){
   if(sample>=3)samplesNs.push(elapsed/batch);
  }
  if(prepared)k.releasePrepared(prepared);
- console.log(JSON.stringify({samplesNs,peakBytes:Number(k.usage().workingPeak)}));
+ // This sampler measures latency. Lifecycle calls reset kernel memory peaks;
+ // memory qualification belongs to the separate platform/memory probes.
+ console.log(JSON.stringify({samplesNs}));
 }else{
  const [embedding,before,after,corpus,output]=args;assert.equal(args.length,5);
  const report={status:'running',kernels:{before:hash(readFileSync(before)),after:hash(readFileSync(after))},cells:[]};

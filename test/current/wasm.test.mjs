@@ -5,9 +5,56 @@ import { syncBuiltinESMExports } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { inspectKernelWasm, MAXIMUM_KERNEL_BYTES, wasmRange, wasmOffset } from '../../src/embedding/wasm.mjs';
 import { Kernel } from '../../src/embedding/kernel.mjs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 import { kernel } from "./wasm_fixture.mjs";
 const admit = (bytes, options) => Kernel.create({ bytes, ...options, instanceId: 1n });
+
+test('layout sampler preserves every operation peak across resetting lifecycle calls', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'world-layout-peaks-'));
+  try {
+    // Independent reset-on-call model: later calls deliberately erase a larger
+    // earlier observation. Real-kernel qualification supplies separate evidence.
+    const embedding = join(directory, 'embedding.mjs');
+    writeFileSync(embedding, `export class Kernel {
+      static async create({bytes}) { return new Kernel(JSON.parse(Buffer.from(bytes))); }
+      constructor(peaks) { this.peaks=peaks; this.live=0n; this.peak=0n; }
+      setLimits() {}
+      observe(operation,live) { this.peak=BigInt(this.peaks[operation]); this.live=BigInt(live); }
+      prepare() { this.observe('prepare',10); return {}; }
+      start() { this.observe('start',20); return {}; }
+      drive() { this.observe('drive',20); return Buffer.from([42]); }
+      invoke() { this.observe('invoke',0); return Buffer.from([42]); }
+      close() { this.observe('close',10); }
+      releasePrepared() { this.observe('release',0); }
+      usage() { return {workingLive:this.live,workingPeak:this.peak}; }
+    }`);
+    const image = join(directory, 'image'), input = join(directory, 'input');
+    const initialArgs = join(directory, 'args'), kernelPath = join(directory, 'kernel');
+    for (const path of [image, input, initialArgs]) writeFileSync(path, Buffer.alloc(1));
+    const expected = crypto.createHash('sha256').update(Buffer.from([42])).digest('hex');
+    const sampler = fileURLToPath(new URL('./frame_layout_qualification.mjs', import.meta.url));
+    for (const phase of ['admission', 'resident', 'fresh']) {
+      const operations = phase === 'admission' ? ['prepare', 'release'] :
+        phase === 'resident' ? ['prepare', 'start', 'drive', 'close', 'release'] : ['invoke'];
+      for (const largest of operations) {
+        const peaks = {prepare:100, start:200, drive:300, invoke:400, close:20, release:10};
+        peaks[largest] = 900;
+        writeFileSync(kernelPath, JSON.stringify(peaks));
+        const result = JSON.parse(execFileSync(process.execPath,
+          [sampler, 'sample', embedding, kernelPath, image, input, phase, expected, initialArgs],
+          {encoding:'utf8'}));
+        assert.equal(result.peakBytes, 900, `${phase}: preserve ${largest} peak`);
+        assert.equal(result.retainedBytes, phase === 'fresh' ? 0 : 10);
+        assert.equal(result.samplesNs.length, 9);
+      }
+    }
+  } finally { rmSync(directory, {recursive:true, force:true}); }
+});
 
 test('oversized kernel bytes reject before copying or hashing', async (t) => {
   const input = new Uint8Array(MAXIMUM_KERNEL_BYTES + 1);

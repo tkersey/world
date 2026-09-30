@@ -17,7 +17,8 @@ if(args[0]==='sample'){
   }
   if(sample>=3)samplesNs.push(elapsed/batch);
  }
- if(p)k.releasePrepared(p);assert.equal(k.usage().workingLive,0n);console.log(JSON.stringify({samplesNs,peakBytes:Number(k.usage().workingPeak)}));
+ // Memory is observed separately by the retention platform/alias probes.
+ if(p)k.releasePrepared(p);assert.equal(k.usage().workingLive,0n);console.log(JSON.stringify({samplesNs}));
 }else{
  const [embedding,before,after,corpus,output]=args;assert.equal(args.length,5);const report={status:'running',kernels:{before:hash(readFileSync(before)),after:hash(readFileSync(after))},cells:[]};
  for(const family of ['unique','alias','captured'])for(const length of [0,65532,65536,1048576])for(const phase of ['fresh','pause']){

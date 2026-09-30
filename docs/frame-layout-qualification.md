@@ -23,6 +23,36 @@ World check passes. No cell meets the specified confirmed-slowdown condition.
 Two medians exceed 5% without four-of-five confirmation and remain inconclusive.
 Native resident peak memory increases by 64 bytes in all six instrumented cases.
 
+### Corrected WASM peak observations
+
+Review of `f761a9d` found that the layout sampler read the kernel's peak after
+cleanup reset it. The twelve original WASM admission/resident peak fields are
+invalid memory evidence. Their raw values remain in the measurement record for
+provenance; the original timing samples retain their original subjects.
+
+The sampler now accumulates observations after preparation, start, drive,
+invocation and cleanup, before later calls can reset them. All eighteen corrected
+WASM memory comparisons use the same kernels and images: admission peaks are
+unchanged, while fresh and resident peaks increase by 32 bytes, below the
+unchanged `max(1024 bytes, ceil(1% of baseline peak))` limit. Retained preparation
+bytes remain a separate metric. Incidental timings from these memory runs receive
+no latency credit.
+
+The P25 scalar and P26 frame probes now accumulate every command's peak across
+their quantum-one sequences, including sampled cancellations. Reexecution against
+their original kernel pairs and image hashes passes all six scalar and ten frame
+cases with equal whole-sequence peaks. Timing-only scalar/blob samplers no longer
+publish misleading peak fields. Previously corrected alias-memory observations
+remain valid; they are not replaced by timing-sampler output.
+
+The Node suite passes 41/41 tests with no skips. Its sampler regression exercises
+eight phase/operation cases where a later call erases the largest earlier peak.
+The predecessor reports 10 bytes for an independently specified 900-byte peak;
+the corrected sampler reports 900. Actual-kernel observations provide separate
+validation. Source hashes, corrected values and reproduction commands are under
+`wasmPeakMemoryCorrection` in the measurement record. Runtime source, build inputs,
+kernel bytes and consumer images are unchanged by this measurement repair.
+
 ## Consumer qualification
 
 The qualified Actions bundle at World `a48d5fd` has the same runtime inventory as
