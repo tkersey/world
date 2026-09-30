@@ -577,7 +577,10 @@ pub const Store = struct {
         if (self.statistics) |s| s.swept_slots +|= marks.len + blob_marks.len;
         for (marks, 0..) |marked, id| if (!marked and self.alive.items[id]) {
             const held = try self.holdNode(id);
-            frames.remove(id);
+            frames.remove(id) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.InvalidState,
+            };
             self.retireNode(id, self.nodes.items[id], held);
             self.nodes.items[id] = empty;
             self.alive.items[id] = false;
@@ -698,5 +701,5 @@ pub fn release(comptime T: type, allocator: std.mem.Allocator, value: T) void {
 
 const NoFrames = struct {
     fn references(_: NoFrames, _: data.program.Id, _: *std.ArrayList(data.graph_order.Reference), _: std.mem.Allocator) Error!void {}
-    fn remove(_: NoFrames, _: data.program.Id) void {}
+    fn remove(_: NoFrames, _: data.program.Id) Error!void {}
 };

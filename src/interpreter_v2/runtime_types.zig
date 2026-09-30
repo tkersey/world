@@ -19,6 +19,7 @@ pub const Statistics = struct {
     one_shot_captures: u64 = 0,
     multi_templates: u64 = 0,
     branch_activations: u64 = 0,
+    frames: @import("activation_frames.zig").Statistics = .{},
     storage: @import("store.zig").Statistics = .{},
     snapshot: data.graph_order.Statistics = .{},
 };

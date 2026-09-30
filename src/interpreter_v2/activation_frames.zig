@@ -61,6 +61,13 @@ pub const Frame = struct {
     function: data.program.Id,
     custody: custody.State,
 };
+/// Attempt counters include failed attempts; they never participate in rollback.
+pub const Statistics = struct {
+    saved_entries: u64 = 0,
+    forked_frames: u64 = 0,
+    commit_entries: u64 = 0,
+    rollback_entries: u64 = 0,
+};
 pub const Frames = struct {
     allocator: std.mem.Allocator,
     slots: Slots,
@@ -68,35 +75,50 @@ pub const Frames = struct {
     layouts: *const Layouts,
     custody: custody.Custody,
     entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
+    statistics: ?*Statistics = null,
+    journal: ?Journal = null,
 
-    pub const Backup = struct {
-        entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
-        pub fn discard(self: *Backup, frames: *Frames) void {
-            var values = self.entries.valueIterator();
-            while (values.next()) |frame| frames.releaseFrame(frame.*);
-            self.entries.deinit(frames.allocator);
-            self.* = .{};
-        }
-        pub fn restore(self: *Backup, frames: *Frames) void {
-            var current = frames.entries.valueIterator();
-            while (current.next()) |frame| frames.releaseFrame(frame.*);
-            frames.entries.deinit(frames.allocator);
-            frames.entries = self.entries;
-            self.* = .{};
-        }
+    pub const Journal = struct {
+        // null records absence at entry, including a removed/reused identifier.
+        entries: std.AutoHashMapUnmanaged(data.program.Id, ?Frame) = .empty,
     };
-
-    /// Fork only view roots and custody handles, never their value descriptors.
-    pub fn backup(self: *Frames) Error!Backup {
-        var saved: Backup = .{};
-        errdefer saved.discard(self);
-        try saved.entries.ensureTotalCapacity(self.allocator, self.entries.count());
-        var entries = self.entries.iterator();
-        while (entries.next()) |entry| {
-            const frame = try self.forkFrame(entry.value_ptr.*);
-            saved.entries.putAssumeCapacity(entry.key_ptr.*, frame);
+    pub fn begin(self: *Frames) Error!void {
+        if (self.journal != null) return error.InvalidState;
+        self.journal = .{};
+    }
+    /// Secure the entry version before exposing a mutable frame or changing
+    /// membership. Reads never come here. Repeated touches retain the first one.
+    fn hold(self: *Frames, id: data.program.Id) Error!void {
+        const journal = if (self.journal) |*value| value else return;
+        if (journal.entries.contains(id)) return;
+        try journal.entries.ensureUnusedCapacity(self.allocator, 1);
+        const saved = if (self.entries.get(id)) |frame| try self.forkFrame(frame) else null;
+        journal.entries.putAssumeCapacity(id, saved);
+        if (self.statistics) |s| {
+            s.saved_entries +|= 1;
+            if (saved != null) s.forked_frames +|= 1;
         }
-        return saved;
+    }
+    pub fn commit(self: *Frames) void {
+        var journal = self.journal.?;
+        self.journal = null;
+        var saved = journal.entries.valueIterator();
+        while (saved.next()) |entry| if (entry.*) |frame| self.releaseFrame(frame);
+        if (self.statistics) |s| s.commit_entries +|= journal.entries.count();
+        journal.entries.deinit(self.allocator);
+    }
+    pub fn rollback(self: *Frames) void {
+        var journal = self.journal.?;
+        self.journal = null;
+        // Remove every successor first. The unchanged map retains its original
+        // capacity, so all entry frames fit on restoration without allocation.
+        var saved = journal.entries.keyIterator();
+        while (saved.next()) |id| if (self.entries.fetchRemove(id.*)) |entry| self.releaseFrame(entry.value);
+        var entries = journal.entries.iterator();
+        while (entries.next()) |entry| if (entry.value_ptr.*) |frame|
+            self.entries.putAssumeCapacity(entry.key_ptr.*, frame);
+        if (self.statistics) |s| s.rollback_entries +|= journal.entries.count();
+        journal.entries.deinit(self.allocator);
     }
 
     /// The layout index and its immutable functions outlive these frame views.
@@ -106,6 +128,7 @@ pub const Frames = struct {
         return .{ .allocator = allocator, .slots = slots, .pool = pool, .layouts = layouts, .custody = try custody.Custody.init(allocator) };
     }
     pub fn deinit(self: *Frames) void {
+        if (self.journal != null) self.rollback();
         self.entries.deinit(self.allocator);
         self.slots.deinit();
         self.custody.deinit();
@@ -116,7 +139,13 @@ pub const Frames = struct {
     }
     /// The borrow ends before any operation that changes the frame map.
     pub fn getMutable(self: *Frames, id: data.program.Id) Error!*Frame {
+        if (!self.entries.contains(id)) return error.InvalidState;
+        try self.hold(id);
         return self.entries.getPtr(id) orelse error.InvalidState;
+    }
+    /// A mutable copy is used when a caller can grow the map before update.
+    pub fn getForMutation(self: *Frames, id: data.program.Id) Error!Frame {
+        return (try self.getMutable(id)).*;
     }
     pub fn project(self: *Frames, id: data.program.Id, allocator: std.mem.Allocator) Error!?data.process_state.Activation {
         const frame = self.entries.get(id) orelse return null;
@@ -140,12 +169,17 @@ pub const Frames = struct {
     }
     pub fn put(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         if (self.entries.contains(id)) return error.InvalidState;
+        try self.hold(id);
         try self.entries.put(self.allocator, id, frame);
     }
-    pub fn update(self: *Frames, id: data.program.Id, frame: Frame) void {
+    pub fn update(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
+        if (!self.entries.contains(id)) return error.InvalidState;
+        try self.hold(id);
         self.entries.getPtr(id).?.* = frame;
     }
-    pub fn remove(self: *Frames, id: data.program.Id) void {
+    pub fn remove(self: *Frames, id: data.program.Id) Error!void {
+        if (!self.entries.contains(id)) return;
+        try self.hold(id);
         if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
     }
     pub fn create(self: *Frames, function: data.program.Id) Error!Frame {
@@ -255,11 +289,18 @@ pub const Frames = struct {
             else => error.InvalidState,
         };
         errdefer self.releaseFrame(copy);
-        try self.entries.put(self.allocator, to, copy);
+        self.put(to, copy) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.InvalidState,
+        };
     }
 
     pub fn rebaseFrame(self: *Frames, id: data.program.Id, map: anytype) data.graph_order.Error!void {
-        const frame = self.entries.get(id) orelse return;
+        if (!self.entries.contains(id)) return;
+        const frame = self.getForMutation(id) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.InvalidState,
+        };
         var members = frame.live_bound.iterator(self.pool);
         const limit = self.layouts.functions[@intCast(frame.function)].layout.slots.len;
         while (members.next()) |slot| {

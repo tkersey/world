@@ -70,7 +70,7 @@ fn discardFrame(machine: anytype, frame: g.NodeRef, parent: ?g.NodeRef) @TypeOf(
     const values = try machine.frames.discards(frame.id);
     errdefer machine.allocator.free(values);
     try positionOwned(machine, parent, values);
-    machine.frames.remove(frame.id);
+    try machine.frames.remove(frame.id);
 }
 
 pub fn cancel(machine: anytype, reason: data.invocation.Reason) @TypeOf(machine.*).ExecutionError!void {

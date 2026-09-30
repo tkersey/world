@@ -63,7 +63,6 @@ pub const Session = struct {
     statistics: ?*@import("runtime_types.zig").Statistics = null,
 
     pub const Transaction = struct {
-        frames: bindings.Frames.Backup,
         roots: g.Roots,
         status: g.Status,
         terminal: ?g.NodeRef,
@@ -74,11 +73,11 @@ pub const Session = struct {
 
         pub fn commit(self: *Transaction, session: *Session) void {
             session.store.commit();
-            self.frames.discard(&session.frames);
+            session.frames.commit();
             self.* = undefined;
         }
         pub fn rollback(self: *Transaction, session: *Session) void {
-            self.frames.restore(&session.frames);
+            session.frames.rollback();
             session.store.rollback();
             session.roots = self.roots;
             session.status = self.status;
@@ -95,8 +94,9 @@ pub const Session = struct {
         if (self.poisoned) return error.InvalidState;
         try self.store.begin();
         errdefer self.store.rollback();
+        self.frames.statistics = if (self.statistics) |s| &s.frames else null;
+        try self.frames.begin();
         return .{
-            .frames = try self.frames.backup(),
             .roots = self.roots,
             .status = self.status,
             .terminal = self.terminal,
@@ -220,7 +220,7 @@ pub const Session = struct {
 
     pub fn continuation(self: *Session, block: p.Id, _: anytype, control: g.Control) Error!g.NodeRef {
         const current = self.roots.current orelse return error.InvalidState;
-        return self.captureContinuation(current, control, try self.frames.get(current.id), nextEdge(self.program.blocks[@intCast(block)].terminator).?);
+        return self.captureContinuation(current, control, try self.frames.getForMutation(current.id), nextEdge(self.program.blocks[@intCast(block)].terminator).?);
     }
     pub fn activate(self: *Session, token: g.Capture, after: g.NodeRef) Error!void {
         try @import("resumption.zig").activate(self, token, after);
@@ -438,7 +438,7 @@ pub const Session = struct {
                     // takeCapture can instantiate frames and grow the map.
                     var saved_frame = frame.*;
                     try self.executeInstruction(current, code, &saved_frame);
-                    self.frames.update(current.id, saved_frame);
+                    try self.frames.update(current.id, saved_frame);
                 } else {
                     // Other value paths do not change the map before their
                     // frame writes. A failure starts unwinding with no further
@@ -462,7 +462,7 @@ pub const Session = struct {
         }
         if (self.roots.current == null or self.roots.current.?.id != current.id) {
             // A saved continuation keeps custody at the old control-node ID.
-            if (try self.store.get(current) == .control) self.frames.remove(current.id);
+            if (try self.store.get(current) == .control) try self.frames.remove(current.id);
         }
         self.transitions +%= work;
         if (self.statistics) |statistics| {
@@ -586,7 +586,7 @@ pub const Session = struct {
                     var changed = saved;
                     changed.block = entry;
                     try self.store.replace(current, .{ .control = changed });
-                    self.frames.update(current.id, frame.*);
+                    try self.frames.update(current.id, frame.*);
                     if (self.statistics) |statistics| statistics.tail_frame_reuses +|= 1;
                     return;
                 }
@@ -710,7 +710,7 @@ pub const Session = struct {
         if (reuse != null) {
             const previous = try self.frames.get(control.id);
             try self.store.replace(control, record);
-            self.frames.update(control.id, frame);
+            try self.frames.update(control.id, frame);
             self.frames.releaseFrame(previous);
         } else try self.frames.put(control.id, frame);
         self.roots.current = control;
@@ -749,7 +749,7 @@ pub const Session = struct {
             .evidence = control.evidence,
             .region = control.region,
         } });
-        self.frames.update(current.id, frame);
+        try self.frames.update(current.id, frame);
         return current;
     }
 
@@ -780,7 +780,7 @@ pub const Session = struct {
         var changed = control;
         changed.block = next.block;
         try self.store.replace(current, .{ .control = changed });
-        self.frames.update(current.id, frame.*);
+        try self.frames.update(current.id, frame.*);
     }
 
     pub fn resumeContinuation(self: *Session, reference: g.NodeRef, value: g.Value) Error!void {
@@ -795,9 +795,9 @@ pub const Session = struct {
             .evidence = saved.evidence,
             .region = saved.region,
         } });
-        var frame = try self.frames.get(reference.id);
+        var frame = try self.frames.getForMutation(reference.id);
         try self.assignEdge(&frame, next, value);
-        self.frames.update(current.id, frame);
+        try self.frames.update(current.id, frame);
         self.roots.current = current;
         self.roots.evidence = saved.evidence;
     }
