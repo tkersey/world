@@ -128,7 +128,7 @@ pub const Session = struct {
         var flow = try core.admitted().analysis(allocator);
         errdefer flow.deinit();
         const program = core.admitted().program();
-        const frames = try bindings.Frames.init(allocator, flow.facts.pool, program);
+        const frames = try bindings.Frames.init(allocator, flow.facts.pool, core.frameLayouts());
         return .{
             .allocator = allocator,
             .prepared = core,

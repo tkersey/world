@@ -110,3 +110,62 @@ test "eight stack arguments and nine heap arguments preserve ordered predecessor
         try std.testing.expectEqual(@as(u64, @intFromBool(count == 9)), stats.heap_argument_calls);
     }
 }
+
+pub fn wideFixture(allocator: std.mem.Allocator, count: usize, compatible: bool) !data.activation.Program {
+    if (count < 4 or count > 65536) return error.InvalidFixture;
+    if (count == 4) return fixture(allocator, compatible);
+    var program = try fixture(allocator, true);
+    const functions = try allocator.dupe(data.activation.Function, program.functions);
+    for (functions, 0..) |*function, index| {
+        const layout = try allocator.alloc(data.program.Id, count);
+        @memset(layout, 0);
+        layout[2] = 2;
+        if (!compatible and index == 1) layout[count - 1] = 1;
+        function.layout.slots = layout;
+    }
+    program.functions = functions;
+    return program;
+}
+
+test "wide exact layout classes survive shared preparation retained views and restoration" {
+    for ([_]usize{ 4096, 65536 }) |count| for ([_]bool{ false, true }) |compatible| {
+        var arena = std.heap.ArenaAllocator.init(a);
+        defer arena.deinit();
+        const program = try wideFixture(arena.allocator(), count, compatible);
+        const image = try a.alloc(u8, try data.program_image.encodedLength(program));
+        defer a.free(image);
+        _ = try data.program_image.encode(a, program, image);
+        var prepared = try runtime.Prepared.init(a, image);
+        defer prepared.deinit();
+        var survivor = try prepared.clone();
+        defer survivor.deinit();
+        var session = try runtime.Session.start(a, &prepared, &.{ 8, 0, 0, 0, 0, 0, 0, 0 });
+        defer session.deinit();
+        prepared.deinit();
+        try std.testing.expect(session.frames.layouts == survivor.core.?.frameLayouts());
+        const storage_bytes = try survivor.storageBytes();
+        const initial = try session.frames.get(session.roots.current.?.id);
+        const retained = try session.frames.forkFrame(initial);
+        defer session.frames.releaseFrame(retained);
+        var occupied = initial;
+        occupied.custody.initialized = true;
+        try std.testing.expect(!session.frames.canRestart(occupied, 1));
+        var stats: @import("runtime_types.zig").Statistics = .{};
+        session.statistics = &stats;
+        while (session.terminal == null) {
+            try session.step();
+            const checkpoint = try session.checkpoint(a);
+            defer a.free(checkpoint);
+            var restored = try runtime.Session.restore(a, &survivor, checkpoint);
+            defer restored.deinit();
+            try std.testing.expect(restored.frames.layouts == session.frames.layouts);
+            const result = try restored.run(null);
+            try std.testing.expect(result == .completed);
+            try std.testing.expectEqual(0, std.mem.readInt(u64, (try restored.bytes(&result.completed))[0..8], .little));
+        }
+        try std.testing.expectEqual(@as(u64, if (compatible) 8 else 0), stats.tail_frame_reuses);
+        try std.testing.expectEqual(@as(u64, if (compatible) 0 else 8), stats.tail_frame_reuse_fallbacks);
+        try std.testing.expectEqual(8, (try session.frames.slots.get(retained.view, 0)).body.scalar[0]);
+        try std.testing.expectEqual(storage_bytes, try survivor.storageBytes());
+    };
+}

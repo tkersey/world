@@ -199,7 +199,9 @@ test "nested templates rebase borrowed local scopes and preserve repeated aliase
         .blocks = &.{},
         .functions = &.{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = &.{ 0, 0 } }, .result = 0 }},
     };
-    var frames = try @import("activation_frames.zig").Frames.init(allocator, &pool, program);
+    var frame_layouts = try @import("frame_layouts.zig").Layouts.init(allocator, program.functions);
+    defer frame_layouts.deinit();
+    var frames = try @import("activation_frames.zig").Frames.init(allocator, &pool, &frame_layouts);
     defer frames.deinit();
     var store: Store = .{ .allocator = allocator };
     defer store.deinit();

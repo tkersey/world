@@ -26,7 +26,9 @@ fn pruneFrame(count: usize) !void {
         .blocks = &.{},
         .functions = &.{.{ .entry = 0, .inputs = &.{ 0, last }, .layout = .{ .slots = layout }, .result = 0 }},
     };
-    var frames = try Frames.init(testing.allocator, &pool, program);
+    var frame_layouts = try @import("frame_layouts.zig").Layouts.init(testing.allocator, program.functions);
+    defer frame_layouts.deinit();
+    var frames = try Frames.init(testing.allocator, &pool, &frame_layouts);
     defer frames.deinit();
     var original = try frames.create(0);
     defer frames.releaseFrame(original);
@@ -417,7 +419,9 @@ fn batchFrame(allocator: std.mem.Allocator, count: usize) !void {
         .blocks = &.{},
         .functions = &.{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = layout }, .result = 0 }},
     };
-    var frames = try Frames.init(allocator, &pool, program);
+    var frame_layouts = try @import("frame_layouts.zig").Layouts.init(allocator, program.functions);
+    defer frame_layouts.deinit();
+    var frames = try Frames.init(allocator, &pool, &frame_layouts);
     defer frames.deinit();
     var original = try frames.create(0);
     defer frames.releaseFrame(original);
@@ -468,7 +472,9 @@ fn restartFrame(allocator: std.mem.Allocator, count: usize, target: u64) !void {
             .{ .entry = 0, .inputs = &.{ 0, 1 }, .layout = .{ .slots = layout }, .result = 0 },
         },
     };
-    var frames = try Frames.init(allocator, &pool, program);
+    var frame_layouts = try @import("frame_layouts.zig").Layouts.init(allocator, program.functions);
+    defer frame_layouts.deinit();
+    var frames = try Frames.init(allocator, &pool, &frame_layouts);
     defer frames.deinit();
     var original = try frames.create(0);
     defer frames.releaseFrame(original);
@@ -513,7 +519,9 @@ test "cross-function restart rejects incompatible schemas capacity and active cu
             .{ .entry = 0, .inputs = &.{0}, .layout = .{ .slots = &.{ 0, 0 } }, .result = 0, .custody = &.{ .{}, .{ .parent = 0 } } },
         },
     };
-    var frames = try Frames.init(testing.allocator, &pool, program);
+    var frame_layouts = try @import("frame_layouts.zig").Layouts.init(testing.allocator, program.functions);
+    defer frame_layouts.deinit();
+    var frames = try Frames.init(testing.allocator, &pool, &frame_layouts);
     defer frames.deinit();
     var frame = try frames.create(0);
     defer frames.releaseFrame(frame);

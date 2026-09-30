@@ -31,7 +31,9 @@ pub fn main(init: std.process.Init) !void {
     var retained: usize = 0;
     for (0..12) |window| {
         var elapsed: u64 = 0;
-        const batch: usize = if (admission) 64 else if (cycle) 1 else 16;
+        // Large-layout probes already exceed clock resolution per invocation;
+        // retain all warmups/samples without multiplying costly preparations.
+        const batch: usize = if (cycle or bytes.len > 8192) 1 else if (admission) 64 else 16;
         for (0..batch) |_| {
             var arena = world.Workspace.init(storage);
             const start = std.Io.Clock.awake.now(init.io);

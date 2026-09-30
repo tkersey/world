@@ -2,6 +2,7 @@
 //! Reusable immutable Program ownership. Sessions retain their own strong lease.
 const std = @import("std");
 const data = @import("boundary_data");
+const Layouts = @import("frame_layouts.zig").Layouts;
 pub const Error = data.program_image.Error || error{InvalidState};
 pub const Contract = struct { payload: []const u8, resume_value: []const u8 };
 
@@ -11,6 +12,7 @@ const Storage = struct {
     admitted: *data.program_image.Admitted,
     arena: std.heap.ArenaAllocator,
     contracts: []const ?Contract,
+    layouts: Layouts,
 };
 
 pub const Core = opaque {
@@ -36,12 +38,16 @@ pub const Core = opaque {
         std.debug.assert(previous != 0);
         if (previous != 1) return;
         const allocator = owner.allocator;
+        owner.layouts.deinit();
         owner.arena.deinit();
         owner.admitted.deinit();
         allocator.destroy(owner);
     }
     pub fn admitted(self: *Core) *const data.program_image.Admitted {
         return self.storage().admitted;
+    }
+    pub fn frameLayouts(self: *Core) *const Layouts {
+        return &self.storage().layouts;
     }
     pub fn contract(self: *Core, effect: u64) Error!Contract {
         const contracts = self.storage().contracts;
@@ -50,7 +56,7 @@ pub const Core = opaque {
     }
     pub fn storageBytes(self: *Core) usize {
         const owner = self.storage();
-        return @sizeOf(Storage) + owner.arena.queryCapacity() + owner.admitted.storageBytes();
+        return @sizeOf(Storage) + owner.arena.queryCapacity() + owner.admitted.storageBytes() + owner.layouts.storageBytes();
     }
 };
 
@@ -64,6 +70,8 @@ pub const Prepared = struct {
         const admitted = try data.program_image.Admitted.decode(allocator, image);
         errdefer admitted.deinit();
         const program = admitted.program();
+        var layouts = try Layouts.init(allocator, program.functions);
+        errdefer layouts.deinit();
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const a = arena.allocator();
@@ -76,7 +84,7 @@ pub const Prepared = struct {
             };
         };
         const core = try allocator.create(Storage);
-        core.* = .{ .allocator = allocator, .admitted = admitted, .arena = arena, .contracts = contracts };
+        core.* = .{ .allocator = allocator, .admitted = admitted, .arena = arena, .contracts = contracts, .layouts = layouts };
         return .{ .core = @ptrCast(core) };
     }
 

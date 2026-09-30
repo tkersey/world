@@ -5,6 +5,7 @@ pub fn main(init: std.process.Init) !void {
     var args = init.minimal.args.iterate();
     _ = args.next();
     const mode = args.next() orelse return error.Mode;
+    const count = if (args.next()) |text| try std.fmt.parseInt(usize, text, 10) else 4;
     if (args.next() != null) return error.Arguments;
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writer(init.io, &buffer);
@@ -18,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
     const a = arena.allocator();
-    const program = try fixtures.fixture(a, compatible);
+    const program = try fixtures.wideFixture(a, count, compatible);
     const image = try a.alloc(u8, try data.program_image.encodedLength(program));
     _ = try data.program_image.encode(a, program, image);
     try output.interface.writeAll(image);

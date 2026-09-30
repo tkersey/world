@@ -33,6 +33,27 @@ pub fn main(init: std.process.Init) !void {
     const run_bytes = counting.allocated_bytes - start_bytes;
     try resident.close();
     if (counting.allocated_bytes != counting.freed_bytes) return error.Leak;
+    // Measure the complete retained preparation/session/outcome allocation
+    // domain separately from timing and the per-session allocation counters.
+    const memory = try init.gpa.alloc(u8, 256 << 20);
+    defer init.gpa.free(memory);
+    var workspace = world.Workspace.init(memory);
+    var retained_bytes: usize = 0;
+    {
+        const allocator = workspace.allocator();
+        var memory_prepared = try world.Prepared.init(allocator, image);
+        defer memory_prepared.deinit();
+        var memory_session = try world.Resident.start(allocator, &memory_prepared, input);
+        retained_bytes = workspace.live_payload;
+        var memory_paused = try memory_session.drive(allocator, .none, .{ .quantum = quantum });
+        defer memory_paused.deinit();
+        retained_bytes = @max(retained_bytes, workspace.live_payload);
+        var memory_result = try memory_session.drive(allocator, .none, .{});
+        defer memory_result.deinit();
+        if (memory_result.record != .completed or std.mem.readInt(u64, memory_result.record.completed[0..8], .little) != expected) return error.WrongResult;
+        try memory_session.close();
+    }
+    if (workspace.live_payload != 0) return error.Leak;
     var samples: [9]f64 = undefined;
     for (0..12) |sample| {
         var session = try world.Resident.start(init.gpa, &prepared, input);
@@ -48,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
     }
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writer(init.io, &buffer);
-    try std.json.Stringify.value(.{ .imageDigest = data.wire.digest(image), .startLive = start_live, .pauseLive = pause_live, .pauseAllocations = pause_allocations, .pauseAllocatedBytes = pause_bytes, .runAllocations = run_allocations, .runAllocatedBytes = run_bytes, .samplesNs = samples }, .{}, &output.interface);
+    try std.json.Stringify.value(.{ .imageDigest = data.wire.digest(image), .startLive = start_live, .pauseLive = pause_live, .pauseAllocations = pause_allocations, .pauseAllocatedBytes = pause_bytes, .runAllocations = run_allocations, .runAllocatedBytes = run_bytes, .peakBytes = workspace.peak_payload, .retainedBytes = retained_bytes, .samplesNs = samples }, .{}, &output.interface);
     try output.interface.writeByte('\n');
     try output.interface.flush();
 }
