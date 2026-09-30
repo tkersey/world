@@ -9,7 +9,8 @@ pub fn main(init: std.process.Init) !void {
     const path = args.next() orelse return error.Path;
     const admission = std.mem.eql(u8, phase, "admission");
     const cycle = std.mem.eql(u8, phase, "cycle");
-    if (!admission and !cycle and !std.mem.eql(u8, phase, "fresh")) return error.Phase;
+    const replay = std.mem.eql(u8, phase, "replay");
+    if (!admission and !cycle and !replay and !std.mem.eql(u8, phase, "fresh")) return error.Phase;
     var expected: [32]u8 = undefined;
     if (!admission) {
         const hex = args.next() orelse return error.Digest;
@@ -24,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
     defer init.gpa.free(output);
     const input_buffer = try init.gpa.alloc(u8, 8 << 20);
     defer init.gpa.free(input_buffer);
-    var input: ?protocol.Owned(protocol.Input) = if (!admission) try protocol.decode(protocol.Input, init.gpa, bytes) else null;
+    var input: ?protocol.Owned(protocol.Input) = if (!admission and !replay) try protocol.decode(protocol.Input, init.gpa, bytes) else null;
     defer if (input) |*value| value.deinit();
     var samples: [9]f64 = undefined;
     var peak: usize = 0;
@@ -43,6 +44,13 @@ pub fn main(init: std.process.Init) !void {
                 peak = @max(peak, arena.peak_payload);
                 retained = @max(retained, arena.live_payload);
                 prepared.deinit();
+            } else if (replay) {
+                // Preserve the recorded command, including its quantum,
+                // control and checkpoint, without invoking any host effect.
+                const result = try world.invocation.invokeInto(arena.allocator(), bytes, output);
+                elapsed += @intCast(start.durationTo(std.Io.Clock.awake.now(init.io)).nanoseconds);
+                peak = @max(peak, arena.peak_payload);
+                if (!std.mem.eql(u8, &data.wire.digest(result), &expected)) return error.OutcomeMismatch;
             } else {
                 var invocation = input.?.value;
                 invocation.quantum = if (cycle) 1 else null;
