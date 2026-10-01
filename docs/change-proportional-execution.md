@@ -1,7 +1,9 @@
 # Change-proportional resident execution
 
-The implementation is locally qualified against W0. Runtime bundle production,
-P0/P1 and independent serial review convergence remain required. The only public
+The two defects found on the first P0 are repaired. Correctness checks and all
+272 economic cells pass, and the repaired H lifecycle meets the primary win rule.
+Clean-successor bundle production and independent
+serial review convergence remain required. The only public
 subject is [draft World #60](https://github.com/tkersey/world/pull/60), assigned to
 tkersey and unmerged; its current public head precedes this qualified successor.
 The [supplied specification](change-proportional-spec.md), including W01–W40,
@@ -19,7 +21,7 @@ remains the accepted task. This document does not narrow that scope.
 - Zig 0.16.0, Node 26.10.0; native ReleaseSafe, normal ReleaseSmall WASM.
 - Apple M2 Pro, 12 CPUs, 32 GiB RAM; Darwin 27.2 arm64.
 - W0 kernel: `9627eb1e66239119bccb4ddcd43b4f6c757180dab930a9feb276671262f735d1`, 470027 bytes.
-- Qualified successor kernel: `1d9deda79268d2d9af53ef8a98acf04a235ed7b2818982b635b125366963239a`, 475389 bytes.
+- Repaired successor kernel: `f4c3c3db8c42ffeb085e273c82b775edde6b5b28274508c54e771c9031b9ff7a`, 475692 bytes.
 - ABI 3, import-free wasm32; existing 65536-byte stack, 256 MiB maximum,
   default input/working/output budgets 65536/1048576/65536 remain unchanged.
 
@@ -50,15 +52,21 @@ Prepared-owned exact layout classes remain authoritative. The journal does not
 replace them. Store's existing failure rollback rebuilds indices in linear time;
 no claim makes that failure path change-proportional.
 
-Resident owns only the last published canonical 32-byte request identity. During
-its existing exclusive operation it lends a const pointer to the shared response
-checker; standalone low-level Session.answer recomputes canonically. Required
+Session owns the last published canonical 32-byte request identity. Its supported
+mutation entrypoints invalidate that identity, including native cancellation,
+resumption, capture and execution. Read-only inspection preserves it. A public
+transaction moves the entry identity into rollback custody before exposing
+mutation; rollback restores it and commit awaits a new canonical publication.
+During Resident's gated operation, that transaction lends its entry identity to
+the shared response checker; standalone Session.answer recomputes canonically. Required
 response parsing and schema/value admission remain shared. Canonical finish writes
 Resident's operation-local publication slot; its low-level three-argument entry
 has no slot. That lifecycle fact is selected at compile time, so fresh publication
 carries no runtime metadata branch or larger Outcome. The prior value carrier and
 ambient Session next-identity pointer were removed. These handoff changes retain
-the Resident owner, canonical producer, publication law and failure falsifiers.
+the canonical producer, publication law and failure falsifiers. Moving retained
+identity ownership into Session closes the native mutation and replacement escape
+without restricting the existing embedded Session API or adding a revision key.
 
 Every successful publication replaces or clears the private identity only after
 all fallible output construction/encoding. Failure restores entry State and leaves
@@ -67,7 +75,16 @@ and cache; restore starts without a private identity. The incoming borrow clears
 before replacing its owner and on every failure exit. No full State graph, result,
 approval or response is cached. Required low-level Session capabilities remain.
 The existing owning/noncopyable Resident contract and stable-address gate govern
-controlled operations; independently mutable low-level Sessions do not trust reuse.
+controlled operations; low-level Session.answer does not trust the retained identity.
+
+The first P0 review found an unwind ownership failure: after positionOwned handed
+its values buffer to Store, fallible frame removal could activate the old local
+errdefer and then Store rollback, freeing the buffer twice. Local cleanup now ends
+at the successful ownership transfer. A live Resident allocation-failure sweep
+fails on P0, passes W0 and the repair, and verifies exact State and retry behavior.
+The same WASM pressure case retains its entry allocation count and releases to
+zero after retry; 277 owned-unwind capacity failures pass. Restoring a checkpoint
+before injecting failures alone had missed the original private-capacity state.
 
 WASM returns gather the value before returnTo can grow the frame map, avoiding a
 frame copy and unused general-control scratch. Native retains ordinary control
@@ -126,12 +143,15 @@ results. Timing ran without other task build/benchmark/qualification CPU work.
 
 | Complete lifecycle, depth 1024 | Ratio | Reduction | Saved per lifecycle | Peak working bytes |
 |---|---:|---:|---:|---:|
-| wasm H | 0.901221 | 9.88% | 5.913 ms | 2331659 → 2204299 |
-| wasm Q | 0.943090 | 5.69% | 1.871 ms | 2044517 → 1962213 |
-| native H | 0.488245 | 51.18% | 3.756 ms | 2976143 → 2762575 |
-| native Q | 0.725221 | 27.48% | 1.078 ms | 2636580 → 2504932 |
+| wasm H | 0.909635 | 9.04% | 5.452 ms | 2331659 → 2204299 |
+| wasm Q | 0.945528 | 5.45% | 1.791 ms | 2044517 → 1962213 |
+| native H | 0.492884 | 50.71% | 3.630 ms | 2976143 → 2762575 |
+| native Q | 0.719917 | 28.01% | 1.076 ms | 2636580 → 2504932 |
 
-Both WASM primary cells meet the prospective win rule. H includes preparation,
+The repaired WASM H primary cell meets the prospective win rule in all five
+windows. Q's largest median is lower, but only three windows cross 0.95, so that
+cell is inconclusive under the fixed rule. Both native primary cells qualify.
+H includes preparation,
 start/yield, resumption, 64 live-handle drives, checkpoint transfer, restore,
 cancellation, close and release. Q includes initial request publication, three
 invalid replies, the valid reply, cancellation, close and release. All smaller
@@ -149,7 +169,7 @@ Every WASM memory observation folds the peak immediately before another command
 can reset it, including failure and cleanup. Memory passes are separate from
 latency. Native peak covers one full retained preparation/session/outcome allocation
 domain, with allocation traffic separate. Native Session/Resident/Outcome sizes are
-1512/1560/112 bytes. Working/live allocation is distinct from reserved linear memory
+1544/1560/112 bytes. Working/live allocation is distinct from reserved linear memory
 and native workspace capacity; H/Q use common 2 MiB/32 MiB/2 MiB stress budgets,
 and layout/blob guards their declared 256 MiB test allowances. Defaults are unchanged.
 
@@ -166,8 +186,8 @@ improvement over an obsolete pre-reclamation baseline.
 
 [Machine-readable report](change-proportional-execution.json) binds source/product
 hashes, exact scopes, cells and open work. [Raw evidence archive](performance/change-proportional-raw.tar.gz)
-SHA-256: `1a7b51e2178574c4d6b94dceac4ffaf99e07b79c52e19317c45633344bfec588` (4544562 bytes), with an inner
-path/hash inventory. It contains passing and failed/inconclusive windows, current
+SHA-256: `6d73c78e9e6b917a2d2127aab77e9aa8401a03c186121838bd37ffd985871027` (20963559 bytes), with historical and repaired-source
+path/hash inventories. It contains passing and failed/inconclusive windows, current
 verifier logs, frozen H/Q replies, 18 BPI3 inputs and the 491 exact input/output pairs.
 These documents/archive are outside npm files and Zig source-package paths.
 
@@ -195,7 +215,18 @@ World's existing producer, including source-free verification and smoke. Its act
 source/tree/kernel/profile/package/delivery identities will be recorded with P0.
 Then serial review requires native/default standard, the five installed auxiliary
 lenses, and four further native/default standard confirmations on the same head.
-No review epoch has opened, no review credit exists, and P0/P1 are not selected.
+The first P0 was `32f7c576da52c06dfb9d3dea893aa8d43f785fb1`, tree
+`ead1e4b3818b1be57aff95ca48b4fc8038543fd3`. Its clean-source bundle was produced,
+acquired and verified outside the source tree, but standard and recovered
+soundness reviews found the unwind double-free. A root native comparison also
+established the stale binding after embedded Session cancellation. Both defects
+were current, entailed failures, and all old-head credit is zero.
+
+The user directed immediate bug repair while the invalidated initial wave was
+open. The footgun request was interrupted without a semantic verdict; the old
+wave is superseded and is not claimed complete. After qualification, the repaired
+head receives the full initial six-lens serial wave and four further standard
+confirmations. The repaired review head and P1 are not selected yet.
 Material findings or head changes reset all credit. The PR remains draft/unmerged.
 
 Historical Review Fold/negative-evidence custody is unregistered. Current accepted

@@ -1,5 +1,5 @@
 {
-  "status": "locally-qualified-awaiting-bundle-and-review",
+  "status": "locally-qualified-repair-awaiting-clean-source-bundle-and-review",
   "specSha256": "d914b959e32d10b841e549cb27665689c419856e5b77ae632363fb71b22e92f3",
   "worldBaseline": "c61edfc8208c375d5188e476131ca8cff5aeeb8a",
   "runtimeData": "511fe388587b36ae37307d277e04c22b0bb6f6d9",
@@ -8,16 +8,17 @@
   "boundaryHarness": "93340dade30b7d27a1e139f107359f91fb66fad3",
   "sourceSha256": {
     "src/interpreter_v2/activation_frames.zig": "197c37e40a27593b035b8486ce0134c3bd83789e6cee7b445b69feba353945cc",
-    "src/interpreter_v2/stable_session.zig": "2afab144e117b528b1f6c5778c88bccef96c743399cad121a38a503df3f2ce6b",
-    "src/interpreter_v2/resident.zig": "5aa172f934d639138847321f1b8edb5f0c0f31577d05a8e8fa4c0a54bb5b3467",
+    "src/interpreter_v2/stable_session.zig": "73ad6ca7b63231924def763533398f0161bde5c486cc356ac255b47bd0efefcc",
+    "src/interpreter_v2/resident.zig": "84312911d1274220045770060819c4906b037ea588596fb50200ed4649aac047",
     "src/interpreter_v2/invocation.zig": "f4d32617d90457e4275c222d71d8fea065d43082f0c08fe818a81a02da79e731",
+    "src/interpreter_v2/unwind.zig": "d7bceee43cc9c3df9fa113cff7dbfef0d5398d5d12294751ad12632dc5dfcfca",
     "src/interpreter_v2/runtime_types.zig": "c31dd763569320578f0742c35185175b7ebfd5b9cc1278a4e8d0b4939a47a518"
   },
-  "kernelSha256": "1d9deda79268d2d9af53ef8a98acf04a235ed7b2818982b635b125366963239a",
-  "kernelBytes": 475389,
+  "kernelSha256": "f4c3c3db8c42ffeb085e273c82b775edde6b5b28274508c54e771c9031b9ff7a",
+  "kernelBytes": 475692,
   "baselineKernelSha256": "9627eb1e66239119bccb4ddcd43b4f6c757180dab930a9feb276671262f735d1",
   "correctness": {
-    "native": 89,
+    "native": 91,
     "storage": 74,
     "aggregateSteps": 39,
     "sourceFixtures": 42,
@@ -33,7 +34,8 @@
     "scalarObservations": 158,
     "frameObservations": 6530,
     "blobPrefixes": 90,
-    "blobCapacityCases": 10
+    "blobCapacityCases": 10,
+    "ownedUnwindCapacityFailures": 277
   },
   "consumer": {
     "images": 18,
@@ -51,71 +53,71 @@
   },
   "completedTiming": [
     {
-      "name": "static-publication-scalar-wasm",
-      "sha256": "d87c03763496ef7ba8e6a00481200bb3d65846a6b3ccb3ee2daabea6746f33bd",
-      "cells": 18,
-      "confirmedSlowdowns": 0,
-      "memoryViolations": 0
-    },
-    {
-      "name": "static-scalar-native",
-      "sha256": "c5e0abd33aecf07953d03c5b79f138a44a30884c518fabb9ef382eda16e3b8cd",
+      "name": "repair-scalar-native",
+      "sha256": "cff967b8bb90ae980c29e371775695d1a85620d4d2d092ddef3fb6f9ee62dc09",
       "cells": 12,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "static-resident-guardrails",
-      "sha256": "6b2a95be07a519903b7a7cc2b6db4b16847d88c3597c8d896032b215d2d64777",
+      "name": "repair-scalar-wasm",
+      "sha256": "50fc03975b60e836ddc3e463f3a22c8f6f3edd66579352db6dda21bdbbe011b0",
+      "cells": 18,
+      "confirmedSlowdowns": 0,
+      "memoryViolations": 0
+    },
+    {
+      "name": "repair-resident-guardrails",
+      "sha256": "8ce522de64a800578f5b6806bce2a499f4e26984bf4a5d84ec24bca820e14226",
       "cells": 20,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "static-layout",
-      "sha256": "5c587377541f19e4a9691a93489712227d17ffe2a4715eea552d5c8375091a09",
+      "name": "repair-layout",
+      "sha256": "7be231223cb62bab4bf55094f24a250d433969946a9fdd504815a0c159434358",
       "cells": 36,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "static-frame-timing",
-      "sha256": "23847a6c02c7721fe12c629624822e429aadcf5f7967097f6a99b30c50ccb8c4",
+      "name": "repair-frame-timing",
+      "sha256": "2327fd167c7c26f2e22f7eae129826f41b7265dec4c54d01fad0dfc967323ebd",
       "cells": 44,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "static-blob-wasm",
-      "sha256": "6d6c95cbcaaf3b288b177d7be4fcb4bdb67a30adcbb2b53ff199e97ba0cbc51c",
+      "name": "repair-blob-timing",
+      "sha256": "42af26b3fa073038f98ec2d1a49232f4ba31942553f020c10be23024357b44bb",
       "cells": 24,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "static-alias",
-      "sha256": "bb04bd2c4629d55996e5cbb81463d32f275ab295ae9482ef8e15d4becf0c3827",
+      "name": "repair-alias",
+      "sha256": "b9ee01f4a8185d194a77baf7f04b6df5af50ba0431311fd800db7d20e6feffa5",
       "cells": 4,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "static-consumer-native",
-      "sha256": "8aa1b51fa778c5741f45b2781145037d7ee649abc9bf34ff439eeb24b49d8968",
+      "name": "repair-consumer-native",
+      "sha256": "fe7783ede99e40c04ead636e00025a6f4dda516dc6aeed2ab4476dfbd46dedae",
       "cells": 48,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "static-consumer-wasm",
-      "sha256": "b6943790ea63148e201974036fbc625178de7927841aab034babade88a4f5862",
+      "name": "repair-consumer-wasm",
+      "sha256": "d785cccd3072a8d9ba6e6c6e107242e3f71f613a2f749365da3d2e3514dbcb54",
       "cells": 48,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "static-lifecycle",
-      "sha256": "0a63f95e2a0aa2bb284163ebf874d67df57c425fd56ecc6d1c35dbf8332ec250",
+      "name": "repair-lifecycle",
+      "sha256": "74ff7a40bdcfa6d3805c113037798bb9b90a10b9b8edaf5d33a4baf06a8c4bc4",
       "cells": 18,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
@@ -127,7 +129,16 @@
     "P1 and exact draft PR publication readback"
   ],
   "reviews": {
-    "P0": null,
+    "P0": {
+      "head": "32f7c576da52c06dfb9d3dea893aa8d43f785fb1",
+      "tree": "ead1e4b3818b1be57aff95ca48b4fc8038543fd3",
+      "disposition": "invalidated",
+      "standardFindings": 1,
+      "recoveredSoundnessFindings": 1,
+      "rootAdditionalFindings": 1,
+      "initialWave": "superseded under explicit immediate-repair user direction; footgun interrupted without semantic result"
+    },
+    "repairedP0": null,
     "P1": null,
     "standardCredit": 0,
     "auxiliaryCredit": []
@@ -139,25 +150,26 @@
   "timingCells": 272,
   "rawArchive": {
     "path": "performance/change-proportional-raw.tar.gz",
-    "sha256": "1a7b51e2178574c4d6b94dceac4ffaf99e07b79c52e19317c45633344bfec588",
-    "bytes": 4544562
+    "sha256": "6d73c78e9e6b917a2d2127aab77e9aa8401a03c186121838bd37ffd985871027",
+    "bytes": 20963559,
+    "inventory": "repair-inventory.json"
   },
   "lifecycles": [
     {
       "engine": "wasm",
       "family": "H",
       "depth": 1,
-      "ratio": 0.9891449777621387,
+      "ratio": 1.0191415963369022,
       "confirmedWin": false,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -7959,
+      "deltaNs": 13833,
       "windowRatios": [
-        0.978559549733304,
-        1.0178109962573516,
-        0.9633584796054052,
-        0.9932176536337098,
-        0.9891449777621387
+        1.0191415963369022,
+        0.9703805977360849,
+        1.015059846591963,
+        1.0277483137606405,
+        1.0222842700228585
       ],
       "peakBytes": {
         "before": 78646,
@@ -172,17 +184,17 @@
       "engine": "wasm",
       "family": "H",
       "depth": 16,
-      "ratio": 0.8645523380171014,
+      "ratio": 0.8881243219007656,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -159958,
+      "deltaNs": -128292,
       "windowRatios": [
-        0.846398584735855,
-        0.8729377831076541,
-        0.8645523380171014,
-        0.8582988232960704,
-        0.9229565087325527
+        0.8585016565138399,
+        0.901193468151833,
+        0.9068061668869044,
+        0.887970924764685,
+        0.8881243219007656
       ],
       "peakBytes": {
         "before": 104053,
@@ -197,17 +209,17 @@
       "engine": "wasm",
       "family": "H",
       "depth": 64,
-      "ratio": 0.7131878801923411,
+      "ratio": 0.7123739945747117,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -618833,
+      "deltaNs": -620709,
       "windowRatios": [
-        0.7163249603479932,
-        0.7033455911652531,
-        0.7131878801923411,
-        0.7357276939228979,
-        0.7129780752365567
+        0.6936107777651986,
+        0.7170422877500219,
+        0.6937084947111769,
+        0.7123739945747117,
+        0.7267648659787758
       ],
       "peakBytes": {
         "before": 213517,
@@ -222,17 +234,17 @@
       "engine": "wasm",
       "family": "H",
       "depth": 256,
-      "ratio": 0.7282500372448062,
+      "ratio": 0.7079418469947628,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -1420958,
+      "deltaNs": -1502834,
       "windowRatios": [
-        0.7282500372448062,
-        0.7134091501809454,
-        0.7296441390792292,
-        0.7372185071302326,
-        0.69273401503614
+        0.7403339013189717,
+        0.6874364481495968,
+        0.7079418469947628,
+        0.7247122375835952,
+        0.6911963479005183
       ],
       "peakBytes": {
         "before": 647162,
@@ -247,17 +259,17 @@
       "engine": "wasm",
       "family": "H",
       "depth": 1024,
-      "ratio": 0.901220635159291,
+      "ratio": 0.909635116404824,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -5912834,
+      "deltaNs": -5452041,
       "windowRatios": [
-        0.8919456874677669,
-        0.9114994139241591,
-        0.8960827936875394,
-        0.901220635159291,
-        0.9029871399826119
+        0.9039984456056961,
+        0.9236132314605507,
+        0.9227359586717825,
+        0.9022947396961825,
+        0.909635116404824
       ],
       "peakBytes": {
         "before": 2331659,
@@ -272,17 +284,17 @@
       "engine": "wasm",
       "family": "Q",
       "depth": 1,
-      "ratio": 0.9219471092524022,
-      "confirmedWin": true,
+      "ratio": 0.9420583202117676,
+      "confirmedWin": false,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -30291,
+      "deltaNs": -22042,
       "windowRatios": [
-        0.9168692981802963,
-        0.9201563054326237,
-        0.9219471092524022,
-        0.9318999138271986,
-        1.080755627765559
+        0.9420583202117676,
+        1.0035552682611506,
+        0.9267086716466385,
+        0.9574516006838867,
+        0.8607284970921335
       ],
       "peakBytes": {
         "before": 78734,
@@ -297,17 +309,17 @@
       "engine": "wasm",
       "family": "Q",
       "depth": 64,
-      "ratio": 0.7337066479142244,
+      "ratio": 0.7410408226861951,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -317333,
+      "deltaNs": -311625,
       "windowRatios": [
-        0.7272887143460798,
-        0.7435519509951608,
-        0.7337066479142244,
-        0.7652936540705051,
-        0.7261355315326736
+        0.7177707491600783,
+        0.7808104136048709,
+        0.7557363417946308,
+        0.7410408226861951,
+        0.7351556101556102
       ],
       "peakBytes": {
         "before": 193913,
@@ -322,17 +334,17 @@
       "engine": "wasm",
       "family": "Q",
       "depth": 256,
-      "ratio": 0.736815961586224,
+      "ratio": 0.7431909847405083,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -794750,
+      "deltaNs": -772792,
       "windowRatios": [
-        0.7361867062510309,
-        0.7329936460757722,
-        0.7603050861463455,
-        0.736815961586224,
-        0.833134794582964
+        0.8190783493154942,
+        0.7431909847405083,
+        0.7319022408545575,
+        0.763802636994889,
+        0.7313536576657785
       ],
       "peakBytes": {
         "before": 561868,
@@ -347,17 +359,17 @@
       "engine": "wasm",
       "family": "Q",
       "depth": 1024,
-      "ratio": 0.943090378299477,
-      "confirmedWin": true,
+      "ratio": 0.9455282794344178,
+      "confirmedWin": false,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -1871416,
+      "deltaNs": -1791332,
       "windowRatios": [
-        0.8751695121527174,
-        0.943090378299477,
-        0.9442153595574466,
-        0.9386155527378927,
-        0.9536421799163399
+        0.9303092965767494,
+        0.9595804234741452,
+        0.9455282794344178,
+        0.9346748098673224,
+        0.9530830612400446
       ],
       "peakBytes": {
         "before": 2044517,
@@ -372,17 +384,17 @@
       "engine": "native",
       "family": "H",
       "depth": 1,
-      "ratio": 1.0123080559518483,
+      "ratio": 1.0889116174084785,
       "confirmedWin": false,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": 1458,
+      "deltaNs": 10084,
       "windowRatios": [
-        2.7484662576687118,
-        1.2617653098141213,
-        0.910160105102368,
-        1.0123080559518483,
-        0.9448756973807166
+        2.586505592841163,
+        1.1388075818495118,
+        0.9638095000062483,
+        1.0889116174084785,
+        0.9624814371257485
       ],
       "peakBytes": {
         "before": 78329,
@@ -397,17 +409,17 @@
       "engine": "native",
       "family": "H",
       "depth": 16,
-      "ratio": 0.7736318551576419,
+      "ratio": 0.775194914375871,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -39209,
+      "deltaNs": -39041,
       "windowRatios": [
-        0.7541518589393111,
-        0.775377969762419,
-        0.7736318551576419,
-        0.7703203463203463,
-        0.7773264849811939
+        0.739242460421028,
+        0.8066663960050343,
+        0.763572040669801,
+        0.7998002936857562,
+        0.775194914375871
       ],
       "peakBytes": {
         "before": 119353,
@@ -422,17 +434,17 @@
       "engine": "native",
       "family": "H",
       "depth": 64,
-      "ratio": 0.594091248706847,
+      "ratio": 0.5970097517580071,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -169501,
+      "deltaNs": -166250,
       "windowRatios": [
-        0.5962107228889568,
-        0.5634021493342385,
-        0.6062968515742129,
-        0.5531184115895531,
-        0.594091248706847
+        0.5907681289167412,
+        0.6007916313259825,
+        0.6486722276765232,
+        0.5731476451892517,
+        0.5970097517580071
       ],
       "peakBytes": {
         "before": 259561,
@@ -447,17 +459,17 @@
       "engine": "native",
       "family": "H",
       "depth": 256,
-      "ratio": 0.4804341657033418,
+      "ratio": 0.4882329280109388,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -843208,
+      "deltaNs": -796459,
       "windowRatios": [
-        0.4782800233633295,
-        0.48583255546691095,
-        0.480268388101116,
-        0.485114956736712,
-        0.4804341657033418
+        0.47502966956686166,
+        0.4833257925760714,
+        0.4917737780977522,
+        0.4920191540303272,
+        0.4882329280109388
       ],
       "peakBytes": {
         "before": 813159,
@@ -472,17 +484,17 @@
       "engine": "native",
       "family": "H",
       "depth": 1024,
-      "ratio": 0.48824492351999077,
+      "ratio": 0.49288445755993643,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -3755792,
+      "deltaNs": -3630250,
       "windowRatios": [
-        0.48392546415961346,
-        0.48824492351999077,
-        0.48466743519200217,
-        0.49356062590473565,
-        0.49496339957777524
+        0.4940517931770096,
+        0.5010066566277973,
+        0.4898877082492924,
+        0.49023484247511173,
+        0.49288445755993643
       ],
       "peakBytes": {
         "before": 2976143,
@@ -497,17 +509,17 @@
       "engine": "native",
       "family": "Q",
       "depth": 1,
-      "ratio": 0.9256107919780014,
+      "ratio": 0.9383797309978105,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -5167,
+      "deltaNs": -4334,
       "windowRatios": [
-        0.9373271625281197,
-        0.9158866629960611,
-        0.8828773357605612,
-        0.9274786467321162,
-        0.9256107919780014
+        0.8999463216182619,
+        0.9723842862699339,
+        0.8843783120432867,
+        0.9473108348134991,
+        0.9383797309978105
       ],
       "peakBytes": {
         "before": 79817,
@@ -522,17 +534,17 @@
       "engine": "native",
       "family": "Q",
       "depth": 64,
-      "ratio": 0.728396452790819,
+      "ratio": 0.7173974895397489,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -65083,
+      "deltaNs": -67499,
       "windowRatios": [
-        0.713913969494433,
-        0.6897838836924604,
-        0.7525638413474599,
-        0.761951832460733,
-        0.728396452790819
+        0.6961114544494603,
+        0.7155937016765473,
+        0.7239422742060155,
+        0.7216711001169075,
+        0.7173974895397489
       ],
       "peakBytes": {
         "before": 236223,
@@ -547,17 +559,17 @@
       "engine": "native",
       "family": "Q",
       "depth": 256,
-      "ratio": 0.6719042808750932,
+      "ratio": 0.6785107804433647,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -276416,
+      "deltaNs": -264666,
       "windowRatios": [
-        0.682819205690575,
-        0.6719042808750932,
-        0.6662232076866224,
-        0.6594875910995174,
-        0.6719097922848665
+        0.6785107804433647,
+        0.6925371025079371,
+        0.6445687708536956,
+        0.6789211289092296,
+        0.6683371298405467
       ],
       "peakBytes": {
         "before": 711698,
@@ -572,17 +584,17 @@
       "engine": "native",
       "family": "Q",
       "depth": 1024,
-      "ratio": 0.7252207178968939,
+      "ratio": 0.7199166349292462,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -1077833,
+      "deltaNs": -1075917,
       "windowRatios": [
-        0.7269990606540727,
-        0.7166771844703586,
-        0.7146569492392277,
-        0.7321637444826679,
-        0.7252207178968939
+        0.7275539318179365,
+        0.7214922497132558,
+        0.7199166349292462,
+        0.7043077209317625,
+        0.7160799740226507
       ],
       "peakBytes": {
         "before": 2636580,
@@ -597,24 +609,33 @@
   "pendingChecks": [
     {
       "diagnostic": "InvalidResult",
-      "allocations": 2,
-      "bytes": 215,
-      "checkpointConstructions": 0,
-      "bindingReuses": 1
+      "allocations": 11,
+      "bytes": 652521,
+      "checkpointConstructions": 1,
+      "bindingReuses": 0
     },
     {
       "diagnostic": "Truncated",
-      "allocations": 1,
-      "bytes": 64,
-      "checkpointConstructions": 0,
-      "bindingReuses": 1
+      "allocations": 10,
+      "bytes": 652370,
+      "checkpointConstructions": 1,
+      "bindingReuses": 0
     },
     {
       "diagnostic": "InvalidValue",
-      "allocations": 3,
-      "bytes": 484,
-      "checkpointConstructions": 0,
-      "bindingReuses": 1
+      "allocations": 12,
+      "bytes": 652790,
+      "checkpointConstructions": 1,
+      "bindingReuses": 0
     }
-  ]
+  ],
+  "repairs": {
+    "unwind": "End errdefer scope after successful Store ownership transfer; native allocation sweep and 277 WASM pressure failures preserve exact State/retry and balanced release.",
+    "binding": "Retained identity belongs to Session. Mutation entrypoints and public transactions invalidate it; Resident borrows the transaction-entry identity; rollback restores it and canonical publication commits its successor. Native API remains available.",
+    "nativeSizes": {
+      "Session": 1544,
+      "Resident": 1560,
+      "Outcome": 112
+    }
+  }
 }

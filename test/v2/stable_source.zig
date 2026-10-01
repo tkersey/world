@@ -460,6 +460,60 @@ fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, che
     return residentFailureSweepWithBinding(prepared, checkpoint, control, checkpoint_mode, false);
 }
 
+fn residentBeforeOwnedUnwind(allocator: std.mem.Allocator, prepared: *const @import("stable_runtime").Prepared) !Resident {
+    var resident = try Resident.start(allocator, prepared, &.{});
+    errdefer releaseResident(&resident);
+    var yielded = try resident.drive(allocator, .none, .{});
+    defer yielded.deinit();
+    try testing.expect(yielded.record == .yielded);
+    var cancelling = try resident.drive(allocator, .{ .cancel = .{ .text = "live-owned-unwind" } }, .{ .quantum = 0 });
+    defer cancelling.deinit();
+    return resident;
+}
+
+test "live owned unwind preserves physical ownership and retry at every allocation failure" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.ownership(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var reference = try residentBeforeOwnedUnwind(testing.allocator, &prepared);
+    defer releaseResident(&reference);
+    var expected = try reference.drive(testing.allocator, .none, .{ .quantum = 1 });
+    defer expected.deinit();
+    var index: usize = 0;
+    while (true) : (index += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{});
+        var resident = try residentBeforeOwnedUnwind(failing.allocator(), &prepared);
+        defer releaseResident(&resident);
+        const entry = try resident.checkpoint(testing.allocator);
+        defer testing.allocator.free(entry);
+        failing.fail_index = failing.alloc_index + index;
+        failing.resize_fail_index = failing.resize_index;
+        var output = resident.drive(failing.allocator(), .none, .{ .quantum = 1 }) catch |err| {
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+            try testing.expectEqual(error.OutOfMemory, err);
+            const actual = try resident.checkpoint(testing.allocator);
+            defer testing.allocator.free(actual);
+            try testing.expectEqualSlices(u8, entry, actual);
+            var retry = try resident.drive(failing.allocator(), .none, .{ .quantum = 1 });
+            defer retry.deinit();
+            try testing.expectEqualDeep(expected.record, retry.record);
+            continue;
+        };
+        defer output.deinit();
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try testing.expectEqualDeep(expected.record, output.record);
+        try testing.expect(index != 0);
+        break;
+    }
+}
+
 fn residentFailureSweepWithBinding(prepared: *const @import("stable_runtime").Prepared, checkpoint: []const u8, control: boundary.data.invocation.Control, checkpoint_mode: bool, establish_binding: bool) !void {
     var reference = try Resident.restore(testing.allocator, prepared, checkpoint);
     defer releaseResident(&reference);
@@ -475,7 +529,7 @@ fn residentFailureSweepWithBinding(prepared: *const @import("stable_runtime").Pr
             var published = try resident.drive(failing.allocator(), .none, .{});
             defer published.deinit();
             try testing.expect(published.record == .requested);
-            try testing.expect(resident.expected_binding != null);
+            try testing.expect(resident.session.?.published_binding != null);
         }
         var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
         resident.session.?.statistics = &statistics;
@@ -621,7 +675,7 @@ test "resident retains only a published expectation and low-level answer remains
     var request = try protocol.decode(protocol.Request, testing.allocator, pending.record.requested.request);
     defer request.deinit();
     const identity = request.value.request_identity;
-    try testing.expectEqualDeep(identity, resident.expected_binding.?);
+    try testing.expectEqualDeep(identity, resident.session.?.published_binding.?);
     try testing.expectEqual(1, stats.pending_binding_constructions);
     var wrong = identity;
     wrong[0] ^= 1;
@@ -635,7 +689,7 @@ test "resident retains only a published expectation and low-level answer remains
         const constructions = stats.checkpoint_constructions;
         try testing.expectError(expected_error, resident.drive(testing.allocator, .{ .reply = invalid }, .{}));
         try testing.expectEqual(constructions, stats.checkpoint_constructions);
-        try testing.expectEqualDeep(identity, resident.expected_binding.?);
+        try testing.expectEqualDeep(identity, resident.session.?.published_binding.?);
         try testing.expect(resident.session.?.resident_expected_binding == null);
         const checkpoint = try resident.checkpoint(testing.allocator);
         defer testing.allocator.free(checkpoint);
@@ -644,18 +698,18 @@ test "resident retains only a published expectation and low-level answer remains
     try testing.expectEqual(3, stats.expected_binding_reuses);
     var tiny: [1]u8 = undefined;
     try testing.expectError(error.Capacity, resident.driveInto(.{ .reply = reply }, .{}, &tiny));
-    try testing.expectEqualDeep(identity, resident.expected_binding.?);
+    try testing.expectEqualDeep(identity, resident.session.?.published_binding.?);
     try testing.expect(resident.session.?.resident_expected_binding == null);
     const transferred = try resident.takeCheckpoint(testing.allocator);
     defer testing.allocator.free(transferred);
-    try testing.expect(resident.expected_binding == null);
+    try testing.expect(resident.session == null);
     var restored = try Resident.restore(testing.allocator, &prepared, transferred);
     defer releaseResident(&restored);
-    try testing.expect(restored.expected_binding == null);
+    try testing.expect(restored.session.?.published_binding == null);
     var completed = try restored.drive(testing.allocator, .{ .reply = reply }, .{});
     defer completed.deinit();
     try testing.expectEqualSlices(u8, arguments, completed.record.completed);
-    try testing.expect(restored.expected_binding == null);
+    try testing.expect(restored.session.?.published_binding == null);
     // A separate mutable Session never receives Resident's borrowed identity.
     var low_level = try Session.restore(testing.allocator, &prepared, transferred);
     defer low_level.deinit();
@@ -663,6 +717,40 @@ test "resident retains only a published expectation and low-level answer remains
     const constructions = stats.checkpoint_constructions;
     try testing.expectError(error.InvalidResult, low_level.answer(wrong_binding));
     try testing.expectEqual(constructions + 1, stats.checkpoint_constructions);
+}
+
+test "native Session mutation invalidates a Resident binding while inspection preserves it" {
+    const protocol = boundary.data.invocation;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.unwind(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var resident = try Resident.start(testing.allocator, &prepared, &.{0});
+    defer releaseResident(&resident);
+    var pending = try resident.drive(testing.allocator, .none, .{});
+    defer pending.deinit();
+    var old = try protocol.decode(protocol.Request, testing.allocator, pending.record.requested.request);
+    defer old.deinit();
+    const checkpoint = try resident.session.?.checkpoint(testing.allocator);
+    defer testing.allocator.free(checkpoint);
+    try testing.expectEqualDeep(old.value.request_identity, resident.session.?.published_binding.?);
+    try resident.session.?.cancel(.{ .text = "native-session-cancel" });
+    try testing.expect(resident.session.?.published_binding == null);
+    var canonical = try resident.session.?.pendingRequest(testing.allocator);
+    defer canonical.deinit();
+    try testing.expect(!std.mem.eql(u8, &old.value.request_identity, &canonical.request.request_identity));
+    const stale = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = old.value.request_identity, .value = &.{} });
+    defer testing.allocator.free(stale);
+    try testing.expectError(error.InvalidResult, resident.drive(testing.allocator, .{ .reply = stale }, .{ .quantum = 0 }));
+    const current = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = canonical.request.request_identity, .value = &.{} });
+    defer testing.allocator.free(current);
+    var accepted = try resident.drive(testing.allocator, .{ .reply = current }, .{ .quantum = 0 });
+    defer accepted.deinit();
+    try testing.expect(accepted.record == .progressed);
 }
 
 test "cancellation changes the canonical pending binding and failed output retains its predecessor" {
@@ -683,13 +771,13 @@ test "cancellation changes the canonical pending binding and failed output retai
     defer old.deinit();
     var tiny: [1]u8 = undefined;
     try testing.expectError(error.Capacity, resident.driveInto(.{ .cancel = .{ .text = "cancel-binding" } }, .{ .quantum = 0 }, &tiny));
-    try testing.expectEqualDeep(old.value.request_identity, resident.expected_binding.?);
+    try testing.expectEqualDeep(old.value.request_identity, resident.session.?.published_binding.?);
     var changed = try resident.drive(testing.allocator, .{ .cancel = .{ .text = "cancel-binding" } }, .{ .quantum = 0, .checkpoint = true });
     defer changed.deinit();
     var current = try protocol.decode(protocol.Request, testing.allocator, changed.record.requested.request);
     defer current.deinit();
     try testing.expect(!std.mem.eql(u8, &old.value.request_identity, &current.value.request_identity));
-    try testing.expectEqualDeep(current.value.request_identity, resident.expected_binding.?);
+    try testing.expectEqualDeep(current.value.request_identity, resident.session.?.published_binding.?);
     // Establish the replacement independently from admitted portable State.
     var reference = try Session.restore(testing.allocator, &prepared, changed.record.requested.state.?);
     defer reference.deinit();

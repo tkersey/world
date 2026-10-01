@@ -61,6 +61,9 @@ pub const Session = struct {
     collection_cursors: usize = 8,
     pending_blob_collection: bool = false,
     statistics: ?*@import("runtime_types.zig").Statistics = null,
+    // The mutable Session owns the identity published for its parked State.
+    // Its mutation entrypoints invalidate it; inspection leaves it intact.
+    published_binding: ?[32]u8 = null,
     // Borrowed only for Resident's gated unpublished command. Standalone
     // Session.answer always derives its expectation from current canonical State.
     resident_expected_binding: ?*const [32]u8 = null,
@@ -73,6 +76,7 @@ pub const Session = struct {
         transitions: usize,
         collection_cursors: usize,
         pending_blob_collection: bool,
+        published_binding: ?[32]u8,
 
         pub fn commit(self: *Transaction, session: *Session) void {
             session.store.commit();
@@ -89,6 +93,7 @@ pub const Session = struct {
             session.transitions = self.transitions;
             session.collection_cursors = self.collection_cursors;
             session.pending_blob_collection = self.pending_blob_collection;
+            session.published_binding = self.published_binding;
             self.* = undefined;
         }
     };
@@ -99,7 +104,7 @@ pub const Session = struct {
         errdefer self.store.rollback();
         self.frames.statistics = if (self.statistics) |s| &s.frames else null;
         try self.frames.begin();
-        return .{
+        const transaction: Transaction = .{
             .roots = self.roots,
             .status = self.status,
             .terminal = self.terminal,
@@ -107,7 +112,16 @@ pub const Session = struct {
             .transitions = self.transitions,
             .collection_cursors = self.collection_cursors,
             .pending_blob_collection = self.pending_blob_collection,
+            .published_binding = self.published_binding,
         };
+        // Public low-level transactions may mutate Store/Frames directly. The
+        // entry binding remains only in rollback custody until publication.
+        self.invalidateBinding();
+        return transaction;
+    }
+
+    inline fn invalidateBinding(self: *Session) void {
+        self.published_binding = null;
     }
 
     /// The fresh path uses the same prepared owner, releasing its outer handle
@@ -225,12 +239,15 @@ pub const Session = struct {
 
     pub fn continuation(self: *Session, block: p.Id, _: anytype, control: g.Control) Error!g.NodeRef {
         const current = self.roots.current orelse return error.InvalidState;
+        self.invalidateBinding();
         return self.captureContinuation(current, control, try self.frames.getForMutation(current.id), nextEdge(self.program.blocks[@intCast(block)].terminator).?);
     }
     pub fn activate(self: *Session, token: g.Capture, after: g.NodeRef) Error!void {
+        self.invalidateBinding();
         try @import("resumption.zig").activate(self, token, after);
     }
     pub fn unwindReturnTo(self: *Session, parent: ?g.NodeRef, value: g.Value) Error!?void {
+        self.invalidateBinding();
         try self.returnTo(parent, value);
         return if (self.terminal != null) {} else null;
     }
@@ -252,6 +269,7 @@ pub const Session = struct {
     pub fn finishUnwind(self: *Session, reason: g.Exit) Error!void {
         if (reason.reason != .failure and reason.reason != .cancellation) return error.InvalidState;
         if (reason.reason == .cancellation and reason.cancellation == null) return error.InvalidState;
+        self.invalidateBinding();
         try self.finishTerminal(reason);
     }
     fn failCurrent(self: *Session, current: g.NodeRef, value: g.Value) Error!void {
@@ -263,6 +281,7 @@ pub const Session = struct {
     pub fn cancel(self: *Session, reason: data.invocation.Reason) Error!void {
         if (self.poisoned or self.terminal != null) return error.InvalidState;
         if (reason == .text and !std.unicode.utf8ValidateSlice(reason.text)) return error.InvalidUtf8;
+        self.invalidateBinding();
         errdefer self.poisoned = true;
         try @import("unwind.zig").cancel(self, reason);
     }
@@ -286,6 +305,7 @@ pub const Session = struct {
     }
 
     pub fn instructionFailure(self: *Session, instruction: ir.Instruction, fault: p.Fault) Error!g.Value {
+        self.invalidateBinding();
         for (instruction.failures) |failure| if (failure.kind == fault)
             return self.store.literal(self.program.schemas, self.program.constants[@intCast(failure.value)]);
         return error.InvalidProgram;
@@ -314,6 +334,7 @@ pub const Session = struct {
     }
 
     pub fn run(self: *Session, quantum: ?u64) Error!Observation {
+        if (self.status == .active or self.status == .unwinding) self.invalidateBinding();
         var steps: u64 = 0;
         while (self.terminal == null and (self.status == .active or self.status == .unwinding) and
             (quantum == null or steps < quantum.?))
@@ -326,6 +347,7 @@ pub const Session = struct {
 
     pub fn resumeYield(self: *Session) Error!void {
         if (self.poisoned or self.status != .yielded) return error.InvalidState;
+        self.invalidateBinding();
         self.status = .active;
     }
 
@@ -386,6 +408,7 @@ pub const Session = struct {
         const facts = self.value_facts;
         const literal: p.Literal = .{ .schema = effect.result, .bytes = input };
         try data.admission.value(scratch.allocator(), self.program.schemas, facts, literal);
+        self.invalidateBinding();
         errdefer self.poisoned = true; // Resident restores its retained entry on error.
         const value = try self.store.literal(self.program.schemas, literal);
         try self.resumeContinuation(pending.continuation, value);
@@ -394,6 +417,7 @@ pub const Session = struct {
     }
 
     pub fn step(self: *Session) Error!void {
+        self.invalidateBinding();
         _ = try self.stepInternal(1);
         try self.finishRetention();
     }
@@ -743,6 +767,7 @@ pub const Session = struct {
     }
 
     pub fn applyComputation(self: *Session, value: g.Value, supplied: []const g.Value, parent: ?g.NodeRef, evidence: ?g.NodeRef, region: ?g.NodeRef) Error!void {
+        self.invalidateBinding();
         const closure = (try self.store.get(valueRef(value))).computation;
         const definition = self.program.constructors[@intCast(closure.constructor)];
         const captured = (try self.store.get(closure.environment)).environment.values;
@@ -809,6 +834,7 @@ pub const Session = struct {
     }
 
     pub fn resumeContinuation(self: *Session, reference: g.NodeRef, value: g.Value) Error!void {
+        self.invalidateBinding();
         const saved = (try self.store.get(reference)).continuation;
         const next = nextEdge(self.program.blocks[@intCast(saved.source_block)].terminator).?;
         // Consume the existing continuation, keeping its frame custody.
@@ -982,6 +1008,7 @@ pub const Session = struct {
     }
 
     pub fn takeCapture(self: *Session, value: g.Value) Error!g.Capture {
+        self.invalidateBinding();
         const reference = valueRef(value);
         const record = try self.store.get(reference);
         if (record == .multi_template) {

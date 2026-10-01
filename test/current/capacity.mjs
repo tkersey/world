@@ -86,4 +86,46 @@ try {
   assert.ok(capacity.memoryPages.bytes > BigInt(pages));
   assert.deepEqual(host.invoke(command), expected);
 } finally { await rm(directory, { recursive: true, force: true }); }
-console.log("Current input, working, output and physical-memory failures preserve unchanged retry input");
+// Exercise live frame ownership rather than restoring a checkpoint before each
+// failure: restoration can change the private capacities and miss this transfer.
+const ownershipImage = new Uint8Array(execFileSync(fixtures, ["image", "ownership"]));
+async function ownedUnwind() {
+  const k = await Kernel.create({ bytes: code, expectedSha256: createHash("sha256").update(code).digest("hex") });
+  k.setLimits(limits);
+  const prepared = k.prepare(ownershipImage), session = k.start(prepared);
+  assert.equal(decodeOutcome(k.drive(session)).kind, "yielded");
+  k.drive(session, { control: "cancel_text", value: "test", quantum: 0n });
+  return { k, prepared, session };
+}
+const reference = await ownedUnwind();
+const entryLive = reference.k.usage().workingLive;
+const unwindExpected = reference.k.drive(reference.session, { quantum: 1n });
+const maximumExtra = Number(reference.k.usage().workingPeak - entryLive);
+reference.k.checkpoint(reference.session, { transfer: true });
+reference.k.releasePrepared(reference.prepared);
+assert.equal(reference.k.usage().workingLive, 0n);
+let unwindFailures = 0;
+for (const extra of new Set([1296, ...Array.from({ length: Math.floor(maximumExtra / 8) + 1 }, (_, i) => i * 8)])) {
+  const { k, prepared, session } = await ownedUnwind();
+  const state = k.checkpoint(session), live = k.usage().workingLive;
+  k.setLimits({ ...limits, working: Number(live) + extra });
+  try {
+    assert.deepEqual(k.drive(session, { quantum: 1n }), unwindExpected);
+  } catch (error) {
+    assert.equal(error.code, "WORLD_CAPACITY");
+    assert.equal(error.details.arena, "working");
+    ++unwindFailures;
+    // Private container capacity may grow during a failed attempt, but entry
+    // allocations must remain owned and teardown must still balance exactly.
+    assert.ok(k.usage().workingLive >= live, "rollback lost physical ownership");
+    k.setLimits(limits);
+    assert.deepEqual(k.checkpoint(session), state);
+    assert.deepEqual(k.drive(session, { quantum: 1n }), unwindExpected);
+  }
+  k.setLimits(limits);
+  k.checkpoint(session, { transfer: true });
+  k.releasePrepared(prepared);
+  assert.equal(k.usage().workingLive, 0n, "unwind failure/retry leaked or freed twice");
+}
+assert.ok(unwindFailures > 0);
+console.log(`Current capacity failures preserve unchanged retry input and owned unwind (${unwindFailures} pressure cases)`);

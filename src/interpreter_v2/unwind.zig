@@ -67,9 +67,11 @@ pub fn failValues(machine: anytype, value: g.Value, parent: ?g.NodeRef, values: 
 }
 
 fn discardFrame(machine: anytype, frame: g.NodeRef, parent: ?g.NodeRef) @TypeOf(machine.*).ExecutionError!void {
-    const values = try machine.frames.discards(frame.id);
-    errdefer machine.allocator.free(values);
-    try positionOwned(machine, parent, values);
+    {
+        const values = try machine.frames.discards(frame.id);
+        errdefer machine.allocator.free(values);
+        try positionOwned(machine, parent, values);
+    } // Store owns the values after successful publication of the unwind node.
     try machine.frames.remove(frame.id);
 }
 
