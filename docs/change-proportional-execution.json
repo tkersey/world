@@ -1,5 +1,5 @@
 {
-  "status": "locally-qualified-probe-correction-awaiting-fresh-review",
+  "status": "locally-qualified-borrow-repair-awaiting-clean-source-producer-and-review",
   "specSha256": "d914b959e32d10b841e549cb27665689c419856e5b77ae632363fb71b22e92f3",
   "worldBaseline": "c61edfc8208c375d5188e476131ca8cff5aeeb8a",
   "runtimeData": "511fe388587b36ae37307d277e04c22b0bb6f6d9",
@@ -7,19 +7,20 @@
   "compiler": "65f46131f366bdd21aa98701f4110ecb801d2c8d",
   "boundaryHarness": "93340dade30b7d27a1e139f107359f91fb66fad3",
   "sourceSha256": {
-    "src/interpreter_v2/activation_frames.zig": "197c37e40a27593b035b8486ce0134c3bd83789e6cee7b445b69feba353945cc",
-    "src/interpreter_v2/stable_session.zig": "73ad6ca7b63231924def763533398f0161bde5c486cc356ac255b47bd0efefcc",
+    "src/interpreter_v2/activation_frames.zig": "a66a3e505b640aed6275900743e469cfcd3072f31a76e566a11e4fea8f67b6b3",
+    "src/interpreter_v2/stable_session.zig": "05c7a25abec5bc31925e9ab01ca2343f6bb5fe77c2de853778007a90639487f7",
     "src/interpreter_v2/resident.zig": "84312911d1274220045770060819c4906b037ea588596fb50200ed4649aac047",
     "src/interpreter_v2/invocation.zig": "f4d32617d90457e4275c222d71d8fea065d43082f0c08fe818a81a02da79e731",
     "src/interpreter_v2/unwind.zig": "d7bceee43cc9c3df9fa113cff7dbfef0d5398d5d12294751ad12632dc5dfcfca",
-    "src/interpreter_v2/runtime_types.zig": "c31dd763569320578f0742c35185175b7ebfd5b9cc1278a4e8d0b4939a47a518"
+    "src/interpreter_v2/runtime_types.zig": "c31dd763569320578f0742c35185175b7ebfd5b9cc1278a4e8d0b4939a47a518",
+    "src/interpreter_v2/frame_transaction_tests.zig": "c6f4f31804d3abb0f096c38470a9066781c300fb1caa891e607156d9f9938ca7"
   },
-  "kernelSha256": "f4c3c3db8c42ffeb085e273c82b775edde6b5b28274508c54e771c9031b9ff7a",
-  "kernelBytes": 475692,
+  "kernelSha256": "a184db4ee2ecf1eb2dc7c4bec4abb93a35cbfa106be4999c9551e18c10437ec6",
+  "kernelBytes": 479028,
   "baselineKernelSha256": "9627eb1e66239119bccb4ddcd43b4f6c757180dab930a9feb276671262f735d1",
   "correctness": {
     "native": 91,
-    "storage": 74,
+    "storage": 77,
     "aggregateSteps": 39,
     "sourceFixtures": 42,
     "sourceObservations": 8692,
@@ -49,75 +50,76 @@
     "warmups": 3,
     "samples": 9,
     "nativeResidentBatch": 64,
-    "memoryPassSeparate": true
+    "memoryPassSeparate": true,
+    "memoryCoverage": "scoped-value-memory-derived.json plus separately executed scalar/frame/blob preservation reports; absent timing peak fields are not treated as zero"
   },
   "completedTiming": [
     {
-      "name": "repair-scalar-native",
-      "sha256": "cff967b8bb90ae980c29e371775695d1a85620d4d2d092ddef3fb6f9ee62dc09",
+      "name": "scoped-value-scalar-native",
+      "sha256": "9210fd46f609b6fa4e897b354c8aac6eef37312d96fa3f4b0a39b185905efe50",
       "cells": 12,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "repair-scalar-wasm",
-      "sha256": "50fc03975b60e836ddc3e463f3a22c8f6f3edd66579352db6dda21bdbbe011b0",
+      "name": "scoped-value-scalar-wasm",
+      "sha256": "453ae70858f0d579e8a267cd9d138d6c2310b3606211859a3044a20d0dffccd0",
       "cells": 18,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "repair-resident-guardrails",
-      "sha256": "8ce522de64a800578f5b6806bce2a499f4e26984bf4a5d84ec24bca820e14226",
+      "name": "scoped-value-resident-guardrails",
+      "sha256": "2aebb1d42676ca11affcb21f99b904f58d8e6864e1fdbbbe62a5ce06aab86bb3",
       "cells": 20,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "repair-layout",
-      "sha256": "7be231223cb62bab4bf55094f24a250d433969946a9fdd504815a0c159434358",
+      "name": "scoped-value-layout",
+      "sha256": "b4856c11a9d003ad2ab22f467d5c78de8132d31efddc470f3f642e66a679576a",
       "cells": 36,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "repair-frame-timing",
-      "sha256": "2327fd167c7c26f2e22f7eae129826f41b7265dec4c54d01fad0dfc967323ebd",
+      "name": "scoped-value-frame-timing",
+      "sha256": "05cf4c075317a24148063d515214b4467497cdc0080a0c5c069d8dad95c9cbcc",
       "cells": 44,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "repair-blob-timing",
-      "sha256": "42af26b3fa073038f98ec2d1a49232f4ba31942553f020c10be23024357b44bb",
+      "name": "scoped-value-blob-timing",
+      "sha256": "2186f36bb08023857121afdf7c1c313e2318980e176768bd38a0a184c57ee1d6",
       "cells": 24,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "repair-alias",
-      "sha256": "b9ee01f4a8185d194a77baf7f04b6df5af50ba0431311fd800db7d20e6feffa5",
+      "name": "scoped-value-alias",
+      "sha256": "40320bfd0db420210aa7620cfc5058abb234a526f521df227476e1978f9e00f3",
       "cells": 4,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "repair-consumer-native",
-      "sha256": "fe7783ede99e40c04ead636e00025a6f4dda516dc6aeed2ab4476dfbd46dedae",
+      "name": "scoped-value-consumer-native",
+      "sha256": "c064645e16635700fc55b175829927356a5313e217b28086c23040dffb16958d",
       "cells": 48,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "repair-consumer-wasm",
-      "sha256": "d785cccd3072a8d9ba6e6c6e107242e3f71f613a2f749365da3d2e3514dbcb54",
+      "name": "scoped-value-consumer-wasm",
+      "sha256": "28bb8bbc32fc555fe4923f9a040aaacdd111ccdd6f731eadb7bbf810bab0abe8",
       "cells": 48,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
     },
     {
-      "name": "repair-lifecycle",
-      "sha256": "74ff7a40bdcfa6d3805c113037798bb9b90a10b9b8edaf5d33a4baf06a8c4bc4",
+      "name": "scoped-value-lifecycle",
+      "sha256": "221cbf0d7e266ba7ca73588b919fc5250f304bc1aa725fa12a015d8ebdec6115",
       "cells": 18,
       "confirmedSlowdowns": 0,
       "memoryViolations": 0
@@ -148,7 +150,15 @@
     },
     "P1": null,
     "standardCredit": 0,
-    "auxiliaryCredit": []
+    "auxiliaryCredit": [],
+    "probeP0": {
+      "head": "7dca3ddf148936a69cc9a780243b9390d68896ac",
+      "tree": "a31f9ecc065f58cd350f42622e0aecc341d109f7",
+      "standard": "clean",
+      "soundness": "clean",
+      "footgun": "P2 pre-entry mutable borrow bypasses rollback",
+      "disposition": "invalidated; immediate repair under explicit user direction; no inherited credit"
+    }
   },
   "historyHorizon": {
     "complete": false,
@@ -157,8 +167,8 @@
   "timingCells": 272,
   "rawArchive": {
     "path": "performance/change-proportional-raw.tar.gz",
-    "sha256": "da1998352aa2d2b8fb46955fd7141025285a2f9526c371e05ac7d0c903c02afa",
-    "bytes": 20967952,
+    "sha256": "0ddfb598c1cf52e98feeebae0250149e1d2da39adaf854525ec5a013095de9e9",
+    "bytes": 38117092,
     "inventory": "repair-inventory.json"
   },
   "lifecycles": [
@@ -166,17 +176,17 @@
       "engine": "wasm",
       "family": "H",
       "depth": 1,
-      "ratio": 1.0191415963369022,
+      "ratio": 0.992197243286053,
       "confirmedWin": false,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": 13833,
+      "deltaNs": -6000,
       "windowRatios": [
-        1.0191415963369022,
-        0.9703805977360849,
-        1.015059846591963,
-        1.0277483137606405,
-        1.0222842700228585
+        0.9493003950950889,
+        0.9857602643942449,
+        1.0172403904453415,
+        0.9999460289127063,
+        0.992197243286053
       ],
       "peakBytes": {
         "before": 78646,
@@ -191,21 +201,21 @@
       "engine": "wasm",
       "family": "H",
       "depth": 16,
-      "ratio": 0.8881243219007656,
+      "ratio": 0.8570397111913357,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -128292,
+      "deltaNs": -170041,
       "windowRatios": [
-        0.8585016565138399,
-        0.901193468151833,
-        0.9068061668869044,
-        0.887970924764685,
-        0.8881243219007656
+        0.8555761758148424,
+        0.8764713661085635,
+        0.8754367109096796,
+        0.8172284744713786,
+        0.8570397111913357
       ],
       "peakBytes": {
         "before": 104053,
-        "after": 103285
+        "after": 103541
       },
       "reservedBytes": {
         "before": 1179648,
@@ -216,21 +226,21 @@
       "engine": "wasm",
       "family": "H",
       "depth": 64,
-      "ratio": 0.7123739945747117,
+      "ratio": 0.7237115702008992,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -620709,
+      "deltaNs": -617250,
       "windowRatios": [
-        0.6936107777651986,
-        0.7170422877500219,
-        0.6937084947111769,
-        0.7123739945747117,
-        0.7267648659787758
+        0.7250097455031465,
+        0.712461633509554,
+        0.7195648213899083,
+        0.7237115702008992,
+        0.736086886192952
       ],
       "peakBytes": {
         "before": 213517,
-        "after": 208781
+        "after": 209805
       },
       "reservedBytes": {
         "before": 1179648,
@@ -241,21 +251,21 @@
       "engine": "wasm",
       "family": "H",
       "depth": 256,
-      "ratio": 0.7079418469947628,
+      "ratio": 0.7703361573668323,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -1502834,
+      "deltaNs": -1179209,
       "windowRatios": [
-        0.7403339013189717,
-        0.6874364481495968,
-        0.7079418469947628,
-        0.7247122375835952,
-        0.6911963479005183
+        0.7703361573668323,
+        0.6896686327077748,
+        0.7733922755364114,
+        0.7900221138392047,
+        0.7598000622377321
       ],
       "peakBytes": {
         "before": 647162,
-        "after": 639546
+        "after": 643642
       },
       "reservedBytes": {
         "before": 1179648,
@@ -266,21 +276,21 @@
       "engine": "wasm",
       "family": "H",
       "depth": 1024,
-      "ratio": 0.909635116404824,
+      "ratio": 0.903377673795422,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -5452041,
+      "deltaNs": -5895375,
       "windowRatios": [
-        0.9039984456056961,
-        0.9236132314605507,
-        0.9227359586717825,
-        0.9022947396961825,
-        0.909635116404824
+        0.9301451602786812,
+        0.8977732670332859,
+        0.903377673795422,
+        0.898569357625226,
+        0.9163990661684578
       ],
       "peakBytes": {
         "before": 2331659,
-        "after": 2204299
+        "after": 2220683
       },
       "reservedBytes": {
         "before": 2949120,
@@ -291,17 +301,17 @@
       "engine": "wasm",
       "family": "Q",
       "depth": 1,
-      "ratio": 0.9420583202117676,
+      "ratio": 0.948570631490849,
       "confirmedWin": false,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -22042,
+      "deltaNs": -19541,
       "windowRatios": [
-        0.9420583202117676,
-        1.0035552682611506,
-        0.9267086716466385,
-        0.9574516006838867,
-        0.8607284970921335
+        0.948570631490849,
+        0.9993418887792037,
+        0.9175043731778426,
+        0.9635296461929228,
+        0.9132036501179168
       ],
       "peakBytes": {
         "before": 78734,
@@ -316,21 +326,21 @@
       "engine": "wasm",
       "family": "Q",
       "depth": 64,
-      "ratio": 0.7410408226861951,
+      "ratio": 0.7337479830277998,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -311625,
+      "deltaNs": -318959,
       "windowRatios": [
-        0.7177707491600783,
-        0.7808104136048709,
-        0.7557363417946308,
-        0.7410408226861951,
-        0.7351556101556102
+        0.7438418246101165,
+        0.7329630379890345,
+        0.7200941613022604,
+        0.7414090150250418,
+        0.7337479830277998
       ],
       "peakBytes": {
         "before": 193913,
-        "after": 189177
+        "after": 190201
       },
       "reservedBytes": {
         "before": 1179648,
@@ -341,21 +351,21 @@
       "engine": "wasm",
       "family": "Q",
       "depth": 256,
-      "ratio": 0.7431909847405083,
+      "ratio": 0.7466676684197345,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -772792,
+      "deltaNs": -784750,
       "windowRatios": [
-        0.8190783493154942,
-        0.7431909847405083,
-        0.7319022408545575,
-        0.763802636994889,
-        0.7313536576657785
+        0.7475051109820127,
+        0.7291784232365145,
+        0.7544426425288898,
+        0.7466676684197345,
+        0.7439745524244525
       ],
       "peakBytes": {
         "before": 561868,
-        "after": 554252
+        "after": 558348
       },
       "reservedBytes": {
         "before": 1179648,
@@ -366,21 +376,21 @@
       "engine": "wasm",
       "family": "Q",
       "depth": 1024,
-      "ratio": 0.9455282794344178,
-      "confirmedWin": false,
+      "ratio": 0.9323420501414077,
+      "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -1791332,
+      "deltaNs": -2266251,
       "windowRatios": [
-        0.9303092965767494,
-        0.9595804234741452,
-        0.9455282794344178,
-        0.9346748098673224,
-        0.9530830612400446
+        0.924608051669964,
+        0.937045472057796,
+        0.9391703096128713,
+        0.9323420501414077,
+        0.9228632314956248
       ],
       "peakBytes": {
         "before": 2044517,
-        "after": 1962213
+        "after": 1978597
       },
       "reservedBytes": {
         "before": 2752512,
@@ -391,21 +401,21 @@
       "engine": "native",
       "family": "H",
       "depth": 1,
-      "ratio": 1.0889116174084785,
+      "ratio": 1.0451491734034104,
       "confirmedWin": false,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": 10084,
+      "deltaNs": 6082,
       "windowRatios": [
-        2.586505592841163,
-        1.1388075818495118,
-        0.9638095000062483,
-        1.0889116174084785,
-        0.9624814371257485
+        3.4481523473165643,
+        2.0692787779753377,
+        1.0442502190604903,
+        1.0451491734034104,
+        0.9445427338414987
       ],
       "peakBytes": {
         "before": 78329,
-        "after": 77913
+        "after": 77977
       },
       "reservedBytes": {
         "before": 33554432,
@@ -416,21 +426,21 @@
       "engine": "native",
       "family": "H",
       "depth": 16,
-      "ratio": 0.775194914375871,
+      "ratio": 0.7808407643312102,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -39041,
+      "deltaNs": -38709,
       "windowRatios": [
-        0.739242460421028,
-        0.8066663960050343,
-        0.763572040669801,
-        0.7998002936857562,
-        0.775194914375871
+        0.8523856749311295,
+        0.7808407643312102,
+        0.7639528564449104,
+        0.8166500683234129,
+        0.7352337665203098
       ],
       "peakBytes": {
         "before": 119353,
-        "after": 118073
+        "after": 118329
       },
       "reservedBytes": {
         "before": 33554432,
@@ -441,21 +451,21 @@
       "engine": "native",
       "family": "H",
       "depth": 64,
-      "ratio": 0.5970097517580071,
+      "ratio": 0.6136290170839143,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -166250,
+      "deltaNs": -160167,
       "windowRatios": [
-        0.5907681289167412,
-        0.6007916313259825,
-        0.6486722276765232,
-        0.5731476451892517,
-        0.5970097517580071
+        0.6413973270844645,
+        0.599959635566832,
+        0.5832300730623784,
+        0.6167664670658682,
+        0.6136290170839143
       ],
       "peakBytes": {
         "before": 259561,
-        "after": 251945
+        "after": 252969
       },
       "reservedBytes": {
         "before": 33554432,
@@ -466,21 +476,21 @@
       "engine": "native",
       "family": "H",
       "depth": 256,
-      "ratio": 0.4882329280109388,
+      "ratio": 0.48031836235869235,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -796459,
+      "deltaNs": -846083,
       "windowRatios": [
-        0.47502966956686166,
-        0.4833257925760714,
-        0.4917737780977522,
-        0.4920191540303272,
-        0.4882329280109388
+        0.4940128419846437,
+        0.4927428262046562,
+        0.47118757025176544,
+        0.48031836235869235,
+        0.4782499036460341
       ],
       "peakBytes": {
         "before": 813159,
-        "after": 799687
+        "after": 803783
       },
       "reservedBytes": {
         "before": 33554432,
@@ -491,21 +501,21 @@
       "engine": "native",
       "family": "H",
       "depth": 1024,
-      "ratio": 0.49288445755993643,
+      "ratio": 0.49409990575947627,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -3630250,
+      "deltaNs": -3745916,
       "windowRatios": [
-        0.4940517931770096,
-        0.5010066566277973,
-        0.4898877082492924,
-        0.49023484247511173,
-        0.49288445755993643
+        0.49400790690876045,
+        0.4918848416479178,
+        0.49869343578164427,
+        0.49409990575947627,
+        0.49529933121664527
       ],
       "peakBytes": {
         "before": 2976143,
-        "after": 2762575
+        "after": 2778959
       },
       "reservedBytes": {
         "before": 33554432,
@@ -516,21 +526,21 @@
       "engine": "native",
       "family": "Q",
       "depth": 1,
-      "ratio": 0.9383797309978105,
-      "confirmedWin": true,
+      "ratio": 0.9354936708860759,
+      "confirmedWin": false,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -4334,
+      "deltaNs": -4459,
       "windowRatios": [
-        0.8999463216182619,
-        0.9723842862699339,
-        0.8843783120432867,
-        0.9473108348134991,
-        0.9383797309978105
+        0.9089979836451215,
+        0.9354936708860759,
+        0.9113561466690768,
+        0.9526902736261209,
+        0.9779320214669052
       ],
       "peakBytes": {
         "before": 79817,
-        "after": 79881
+        "after": 79945
       },
       "reservedBytes": {
         "before": 33554432,
@@ -541,21 +551,21 @@
       "engine": "native",
       "family": "Q",
       "depth": 64,
-      "ratio": 0.7173974895397489,
+      "ratio": 0.7248410278929546,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -67499,
+      "deltaNs": -65875,
       "windowRatios": [
-        0.6961114544494603,
-        0.7155937016765473,
-        0.7239422742060155,
-        0.7216711001169075,
-        0.7173974895397489
+        0.7195589902112314,
+        0.7248410278929546,
+        0.7247558840611199,
+        0.7442529808190772,
+        0.7293229382405171
       ],
       "peakBytes": {
         "before": 236223,
-        "after": 228607
+        "after": 229631
       },
       "reservedBytes": {
         "before": 33554432,
@@ -566,21 +576,21 @@
       "engine": "native",
       "family": "Q",
       "depth": 256,
-      "ratio": 0.6785107804433647,
+      "ratio": 0.6816891252955083,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -264666,
+      "deltaNs": -269291,
       "windowRatios": [
-        0.6785107804433647,
-        0.6925371025079371,
-        0.6445687708536956,
-        0.6789211289092296,
-        0.6683371298405467
+        0.6816891252955083,
+        0.6892351969961571,
+        0.6732415618701731,
+        0.6952530321791766,
+        0.6674700103388206
       ],
       "peakBytes": {
         "before": 711698,
-        "after": 698226
+        "after": 702322
       },
       "reservedBytes": {
         "before": 33554432,
@@ -591,21 +601,21 @@
       "engine": "native",
       "family": "Q",
       "depth": 1024,
-      "ratio": 0.7199166349292462,
+      "ratio": 0.7364498012402608,
       "confirmedWin": true,
       "confirmedSlowdown": false,
       "memoryExceeded": false,
-      "deltaNs": -1075917,
+      "deltaNs": -1035917,
       "windowRatios": [
-        0.7275539318179365,
-        0.7214922497132558,
-        0.7199166349292462,
-        0.7043077209317625,
-        0.7160799740226507
+        0.7181865088937445,
+        0.7406822118438752,
+        0.7364498012402608,
+        0.7233768971172958,
+        0.7437372271391234
       ],
       "peakBytes": {
         "before": 2636580,
-        "after": 2504932
+        "after": 2521316
       },
       "reservedBytes": {
         "before": 33554432,
@@ -640,18 +650,79 @@
     "unwind": "End errdefer scope after successful Store ownership transfer; native allocation sweep and 277 WASM pressure failures preserve exact State/retry and balanced release.",
     "binding": "Retained identity belongs to Session. Mutation entrypoints and public transactions invalidate it; Resident borrows the transaction-entry identity; rollback restores it and canonical publication commits its successor. Native API remains available.",
     "nativeSizes": {
-      "Session": 1544,
-      "Resident": 1560,
+      "Session": 1592,
+      "Resident": 1608,
       "Outcome": 112
+    },
+    "preentryBorrow": "Track actual escaping getMutable IDs and protect them at transaction entry. Copies use a minted owner hint plus full backing-view equality at mutation. Interpreter pointers are callback-scoped; step facts return by value. Saved rollback frames omit derived hints and release slot/custody ownership directly. Allocation-failure, no-allocation resolution, independent-fork and map-growth witnesses pass.",
+    "scalarMemoryOracle": {
+      "originalSamplersUnchanged": true,
+      "originalFailures": [
+        "scoped-value-scalar-platform-strict-equality-failure.log",
+        "scoped-value-scalar-memory-strict-equality-failure.log"
+      ],
+      "independentEvidence": "frame-metadata-comparison.json: native frame 104→112, wasm frame 96→104, map capacity 8; hence exactly 64 bytes",
+      "supplement": "scalar_preservation.mjs retains exact semantic/admission/retention assertions; fresh/cycle peaks must increase by exactly 64 bytes and pass unchanged spec 10.4 margin",
+      "memoryReports": [
+        "scoped-value-scalar-platform.json",
+        "scoped-value-scalar-memory.json"
+      ]
     }
   },
   "runtimeDelivery": {
-    "producerCommit": "60f1ff037ccbf7eaaa75b7854de981d7239cab31",
-    "producerTree": "523e0dc0434c1279ee79d899d45d15a1f0fef575",
-    "manifestSha256": "5a7aa584f3b0758f9780e4c4848e0583754236fe8d4527cbf015c7ad8099f84b",
-    "archiveSha256": "258b5b03e371a23dab0ca5905bffadf514ce30f47f6f72145c61cef5859b8cb1",
-    "checksPassed": 11,
-    "sourceFreeSmoke": true,
-    "reuseBasis": "Successor changes only diagnostic probe, report and raw evidence. Production sources, build/profile/dependency and delivered runtime files are byte-identical to qualified producer input; recorded producer identity is preserved."
+    "previous": {
+      "producerCommit": "60f1ff037ccbf7eaaa75b7854de981d7239cab31",
+      "producerTree": "523e0dc0434c1279ee79d899d45d15a1f0fef575",
+      "manifestSha256": "5a7aa584f3b0758f9780e4c4848e0583754236fe8d4527cbf015c7ad8099f84b",
+      "archiveSha256": "258b5b03e371a23dab0ca5905bffadf514ce30f47f6f72145c61cef5859b8cb1",
+      "checksPassed": 11,
+      "sourceFreeSmoke": true,
+      "reuseBasis": "Successor changes only diagnostic probe, report and raw evidence. Production sources, build/profile/dependency and delivered runtime files are byte-identical to qualified producer input; recorded producer identity is preserved."
+    },
+    "current": null,
+    "status": "Current production changed; fresh clean-source producer/acquire/source-free verification required. Historical f4c bundle is not qualification for this kernel."
+  },
+  "structuralH": {
+    "retainedFrames": 1025,
+    "protectedAtBegin": 0,
+    "drives": 64,
+    "savedFramesPerDrive": [
+      1
+    ],
+    "firstAllocatedBytes": 1920,
+    "maxAllocatedBytes": 1960,
+    "traced": 0,
+    "raw": "scoped-value-H-native.json",
+    "sha256": "f7f9392719ee3ed9e333dd557ea81533a3d756e1f5b0a8a5387679a58b32565e"
+  },
+  "borrowMetadata": {
+    "before": {
+      "native": {
+        "frameBytes": 104,
+        "frameCapacity": 8,
+        "framesBytes": 328,
+        "sessionBytes": 1456,
+        "residentBytes": 1472,
+        "outcomeBytes": 112
+      },
+      "wasm": {
+        "frameBytes": 96,
+        "framesBytes": 216
+      }
+    },
+    "after": {
+      "native": {
+        "frameBytes": 112,
+        "frameCapacity": 8,
+        "framesBytes": 424,
+        "sessionBytes": 1592,
+        "residentBytes": 1608,
+        "outcomeBytes": 112
+      },
+      "wasm": {
+        "frameBytes": 104,
+        "framesBytes": 288
+      }
+    }
   }
 }

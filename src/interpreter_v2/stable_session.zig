@@ -454,56 +454,10 @@ pub const Session = struct {
         if (self.status == .unwinding) {
             _ = try @import("unwind.zig").step(self);
         } else {
-            const control = (try self.store.get(current)).control;
-            const code = self.program.blocks[@intCast(control.block)];
-            const frame = try self.frames.getMutable(current.id);
-            if (frame.position < code.instructions.len) {
-                const instruction = code.instructions[frame.position];
-                // Qualified on 64-bit native storage. wasm32 keeps ordinary
-                // execution after a measured regression; work units agree.
-                const known_body = if (@sizeOf(usize) > 4 and allowance >= 2 and instruction.opcode == .computation and
-                    code.terminator == .handle and frame.position + 1 == code.instructions.len)
-                    self.knownHandlerBody(code)
-                else
-                    null;
-                if (known_body) |constructor| {
-                    // No intermediate callable is published. Installation may
-                    // grow the frame map, so end the borrow before entering it.
-                    var saved_frame = frame.*;
-                    saved_frame.position += 1;
-                    try self.executeControl(current, control, code, &saved_frame, constructor);
-                    work = 2;
-                } else if (instruction.opcode == .clone_resumption) {
-                    // takeCapture can instantiate frames and grow the map.
-                    var saved_frame = frame.*;
-                    try self.executeInstruction(current, code, &saved_frame);
-                    try self.frames.update(current.id, saved_frame);
-                } else {
-                    // Other value paths do not change the map before their
-                    // frame writes. A failure starts unwinding with no further
-                    // use of this borrow.
-                    if (instruction.opcode == .blob_length)
-                        self.pending_blob_collection = self.pending_blob_collection or try self.dropsLargeBlob(control.block, code, frame);
-                    const count = self.scalarBatch(code, frame.position, allowance);
-                    work = @max(1, count);
-                    for (0..work) |_| try self.executeInstruction(current, code, frame);
-                    if (count > 1) scalar_work = count;
-                    // Inspect cursor growth only at operations that produce consumed tails.
-                    if (@sizeOf(usize) > 4 and
-                        (instruction.opcode == .sequence_pop or instruction.opcode == .sequence_pop_last))
-                        collect_cursors = self.store.encoded_sequences.count() >= self.collection_cursors;
-                }
-            } else {
-                if (@import("builtin").cpu.arch == .wasm32 and code.terminator == .return_value) {
-                    // Gather the return value before returnTo can change the
-                    // map. No frame copy or control scratch is needed here.
-                    try self.executeReturn(control.parent, try self.frames.slots.reader(frame.view), code.terminator.return_value);
-                } else {
-                    // Other control may insert/remove frames or grow the map.
-                    var saved_frame = frame.*;
-                    try self.executeControl(current, control, code, &saved_frame, null);
-                }
-            }
+            const active = try self.frames.withMutable(current.id, ActiveStep{ .session = self, .current = current, .allowance = allowance }, stepActive);
+            work = active.work;
+            scalar_work = active.scalar_work;
+            collect_cursors = active.collect_cursors;
         }
         if (self.roots.current == null or self.roots.current.?.id != current.id) {
             // A saved continuation keeps custody at the old control-node ID.
@@ -523,6 +477,66 @@ pub const Session = struct {
             try self.collect();
         }
         return work;
+    }
+
+    const ActiveStep = struct { session: *Session, current: g.NodeRef, allowance: u8 };
+    const ActiveWork = struct { work: u8 = 1, scalar_work: u8 = 0, collect_cursors: bool = false };
+
+    inline fn stepActive(context: ActiveStep, frame: *bindings.Frame) Error!ActiveWork {
+        var result: ActiveWork = .{};
+        const self = context.session;
+        const current = context.current;
+        const allowance = context.allowance;
+        const control = (try self.store.get(current)).control;
+        const code = self.program.blocks[@intCast(control.block)];
+        if (frame.position < code.instructions.len) {
+            const instruction = code.instructions[frame.position];
+            // Qualified on 64-bit native storage. wasm32 keeps ordinary
+            // execution after a measured regression; work units agree.
+            const known_body = if (@sizeOf(usize) > 4 and allowance >= 2 and instruction.opcode == .computation and
+                code.terminator == .handle and frame.position + 1 == code.instructions.len)
+                self.knownHandlerBody(code)
+            else
+                null;
+            if (known_body) |constructor| {
+                // No intermediate callable is published. Installation may
+                // grow the frame map, so end the borrow before entering it.
+                var saved_frame = frame.*;
+                saved_frame.position += 1;
+                try self.executeControl(current, control, code, &saved_frame, constructor);
+                result.work = 2;
+            } else if (instruction.opcode == .clone_resumption) {
+                // takeCapture can instantiate frames and grow the map.
+                var saved_frame = frame.*;
+                try self.executeInstruction(current, code, &saved_frame);
+                try self.frames.update(current.id, saved_frame);
+            } else {
+                // Other value paths do not change the map before their
+                // frame writes. A failure starts unwinding with no further
+                // use of this borrow.
+                if (instruction.opcode == .blob_length)
+                    self.pending_blob_collection = self.pending_blob_collection or try self.dropsLargeBlob(control.block, code, frame);
+                const count = self.scalarBatch(code, frame.position, allowance);
+                result.work = @max(1, count);
+                for (0..result.work) |_| try self.executeInstruction(current, code, frame);
+                if (count > 1) result.scalar_work = count;
+                // Inspect cursor growth only at operations that produce consumed tails.
+                if (@sizeOf(usize) > 4 and
+                    (instruction.opcode == .sequence_pop or instruction.opcode == .sequence_pop_last))
+                    result.collect_cursors = self.store.encoded_sequences.count() >= self.collection_cursors;
+            }
+        } else {
+            if (@import("builtin").cpu.arch == .wasm32 and code.terminator == .return_value) {
+                // Gather the return value before returnTo can change the
+                // map. No frame copy or control scratch is needed here.
+                try self.executeReturn(control.parent, try self.frames.slots.reader(frame.view), code.terminator.return_value);
+            } else {
+                // Other control may insert/remove frames or grow the map.
+                var saved_frame = frame.*;
+                try self.executeControl(current, control, code, &saved_frame, null);
+            }
+        }
+        return result;
     }
 
     fn collect(self: *Session) Error!void {

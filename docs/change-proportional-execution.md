@@ -1,13 +1,13 @@
 # Change-proportional resident execution
 
-The two defects found on the first P0 are repaired. Correctness checks and all
-272 economic cells pass, and the repaired H lifecycle meets the primary win rule.
-The runtime bundle is qualified and verified outside the source tree. Independent
-serial review convergence remains required. The only public
-subject is [draft World #60](https://github.com/tkersey/world/pull/60), assigned to
-tkersey and unmerged; its current public head precedes this qualified successor.
-The [supplied specification](change-proportional-spec.md), including W01–W40,
-remains the accepted task. This document does not narrow that scope.
+The confirmed unwind, stale-binding and pre-entry-borrow defects are repaired.
+The current production kernel passes all 272 economic cells, full runtime checks,
+and the independent state/transfer/consumer preservation lanes. H and Q both meet
+the primary WASM lifecycle win rule. A fresh clean-source bundle and full serial
+review convergence remain required; this is local qualification, not completion.
+The only public subject is [draft World #60](https://github.com/tkersey/world/pull/60),
+assigned to tkersey and unmerged. The [supplied specification](change-proportional-spec.md),
+including W01–W40, remains the accepted task.
 
 ## Fixed inputs and product
 
@@ -21,7 +21,7 @@ remains the accepted task. This document does not narrow that scope.
 - Zig 0.16.0, Node 26.10.0; native ReleaseSafe, normal ReleaseSmall WASM.
 - Apple M2 Pro, 12 CPUs, 32 GiB RAM; Darwin 27.2 arm64.
 - W0 kernel: `9627eb1e66239119bccb4ddcd43b4f6c757180dab930a9feb276671262f735d1`, 470027 bytes.
-- Repaired successor kernel: `f4c3c3db8c42ffeb085e273c82b775edde6b5b28274508c54e771c9031b9ff7a`, 475692 bytes.
+- Repaired successor kernel: `a184db4ee2ecf1eb2dc7c4bec4abb93a35cbfa106be4999c9551e18c10437ec6`, 479028 bytes.
 - ABI 3, import-free wasm32; existing 65536-byte stack, 256 MiB maximum,
   default input/working/output budgets 65536/1048576/65536 remain unchanged.
 
@@ -32,14 +32,22 @@ ReleaseSafe; the normal World owner builds the WASM product.
 
 ## Construction and coverage
 
-Frames owns a first-touch journal. Begin creates an empty journal without visiting
-registered frames. Protected mutable acquisition and membership changes save the
+Frames owns a first-touch journal. Begin protects only live mutable pointers acquired
+before entry; an inline first ID and cold additional-ID set avoid scanning the
+registered population. Protected mutable acquisition and membership changes save the
 entry version once; commit releases only those saved entries. Rollback first removes
 all touched successors, then restores originals using retained map capacity, without
 allocation. Null entries preserve entry absence across creation/removal/ID reuse.
 The original frame-map pointer is read before protection and exposed only afterward;
 protection grows its own journal and slot/custody tables, never the frame map.
-A last-held shortcut is certified by the nonempty attempt journal and resets with it.
+Interpreter instruction borrows end inside a synchronous callback and do not enter
+the escaped-pointer set. The public getMutable API retains its original lifetime.
+Mutable borrows remain protected across commit until membership changes; rollback
+invalidates them. Copies survive map growth: the installed owner ID is only a lookup
+hint, and the full backing-view handle must match before saving the registered entry.
+Independent semantic forks retain distinct handles. Rollback snapshots exclude that
+derived hint, reconstruct it from the journal key, and release slot/custody ownership
+directly at commit. A present last-held ID certifies successful protection and resets with each attempt.
 The rare protection path is separated from the common no-transaction/repeated-write
 branch. No old/new selector or all-frame backup implementation remains.
 
@@ -102,8 +110,10 @@ codec changes or compiler/control changes invalidate the relevant proof.
 The C0 H/Q fixture retains usable non-tail continuation history; completion observes
 every distinguishing depth separately. At depth 1024 it has 1025 registered frames.
 W0 protects all 1025 at begin and spends 232376 allocated bytes on the first small
-H drive. The successor protects zero at begin and one per small drive; the first
-costs 1920 bytes. All 64 drives avoid collection. Large retained-population unit
+H drive. The current successor protects zero at begin and one per small drive;
+the first costs 1920 bytes. Escaping mutable pointers are additionally protected
+at begin, bounded by actual acquired borrows rather than retained frame count.
+Interpreter pointers end inside their callback and do not add entry-time protection. All 64 drives avoid collection. Large retained-population unit
 cases independently cover mutation sets 1, 7 and 31, repeated writes and untouched
 reads. Saved entries, forks and commit work equal the changed set.
 
@@ -113,13 +123,13 @@ binding reuse each. Their temporary allocations are 215/64/484 bytes, versus W0'
 Q agreement also repeats rejection 128 times per arm, preserves exact State and
 constant live allocation, and records reserved memory separately.
 
-Executed on this product: 89 native and 74 storage tests, all 39 aggregate steps;
+Executed on the current repaired product: 91 native and 76 storage tests, all 39 aggregate steps;
 42 independent source fixtures / 8692 exact observations; 159 Wasmtime/native/Node
 transfer boundaries; real Chromium 153.0.8010.12 and Firefox 155 Workers; codecs,
 capacity, storage WASM and extracted standalone package checks. Additional proofs:
 19 prescribed/neighbor H/Q cells with both transfer directions and late output
 failure/retry; 12 fresh-process H/Q cells through Node/native/Wasmtime; six scalar
-sizes / 158 observations and exact native memory equality; ten frame cases / 6530
+sizes / 158 exact logical observations and 18 native memory cells; ten frame cases / 6530
 observations; 15 blob cases / 90 prefixes / ten capacity cases. Existing failure
 sweeps cover record, encoded and caller-buffer publication, including primed and
 unprimed reply/cancellation paths. Semantic forks and packed shifts are tested at
@@ -143,14 +153,15 @@ results. Timing ran without other task build/benchmark/qualification CPU work.
 
 | Complete lifecycle, depth 1024 | Ratio | Reduction | Saved per lifecycle | Peak working bytes |
 |---|---:|---:|---:|---:|
-| wasm H | 0.909635 | 9.04% | 5.452 ms | 2331659 → 2204299 |
-| wasm Q | 0.945528 | 5.45% | 1.791 ms | 2044517 → 1962213 |
-| native H | 0.492884 | 50.71% | 3.630 ms | 2976143 → 2762575 |
-| native Q | 0.719917 | 28.01% | 1.076 ms | 2636580 → 2504932 |
+| wasm H | 0.903378 | 9.66% | 5.895 ms | 2331659 → 2220683 |
+| wasm Q | 0.932342 | 6.77% | 2.266 ms | 2044517 → 1978597 |
+| native H | 0.494100 | 50.59% | 3.746 ms | 2976143 → 2778959 |
+| native Q | 0.736450 | 26.36% | 1.036 ms | 2636580 → 2521316 |
 
-The repaired WASM H primary cell meets the prospective win rule in all five
-windows. Q's largest median is lower, but only three windows cross 0.95, so that
-cell is inconclusive under the fixed rule. Both native primary cells qualify.
+Both largest WASM primary cells satisfy the prospective five-window win rule.
+Both largest native cells also qualify. All smaller and inconclusive cells remain
+in the raw results; the fixed numerical gates are unchanged.
+
 H includes preparation,
 start/yield, resumption, 64 live-handle drives, checkpoint transfer, restore,
 cancellation, close and release. Q includes initial request publication, three
@@ -169,7 +180,7 @@ Every WASM memory observation folds the peak immediately before another command
 can reset it, including failure and cleanup. Memory passes are separate from
 latency. Native peak covers one full retained preparation/session/outcome allocation
 domain, with allocation traffic separate. Native Session/Resident/Outcome sizes are
-1544/1560/112 bytes. Working/live allocation is distinct from reserved linear memory
+1592/1608/112 bytes. Working/live allocation is distinct from reserved linear memory
 and native workspace capacity; H/Q use common 2 MiB/32 MiB/2 MiB stress budgets,
 and layout/blob guards their declared 256 MiB test allowances. Defaults are unchanged.
 
@@ -184,9 +195,20 @@ improvement over an obsolete pre-reclamation baseline.
 
 ## Retained evidence and reproduction
 
+W0's scalar samplers assert exact physical memory equality. Their original current-source
+failures are retained and the samplers are unchanged. The association hint adds eight
+bytes to each frame: independent native/wasm layout probes observe 104→112 and
+96→104 bytes respectively, with eight reserved map entries in these scalar fixtures.
+The supplementary preservation lane requires exactly 64 added fresh/cycle peak bytes,
+exact admission and post-release retention, and every original logical/canonical
+assertion. All six scalar sizes / 158 observations and 18 native memory cells pass;
+64 bytes is below the unchanged specification §10.4 margin. This is separate from
+latency qualification and does not grant a tradeoff exception.
+
+
 [Machine-readable report](change-proportional-execution.json) binds source/product
 hashes, exact scopes, cells and open work. [Raw evidence archive](performance/change-proportional-raw.tar.gz)
-SHA-256: `da1998352aa2d2b8fb46955fd7141025285a2f9526c371e05ac7d0c903c02afa` (20967952 bytes), with historical and repaired-source
+SHA-256: `0ddfb598c1cf52e98feeebae0250149e1d2da39adaf854525ec5a013095de9e9` (38117092 bytes), with historical and repaired-source
 path/hash inventories. It contains passing and failed/inconclusive windows, current
 verifier logs, frozen H/Q replies, 18 BPI3 inputs and the 491 exact input/output pairs.
 These documents/archive are outside npm files and Zig source-package paths.
@@ -212,9 +234,9 @@ raw report identities and file hashes bind actual replay inputs and outputs.
 
 World's normal producer completed all 11 checks at `60f1ff037ccbf7eaaa75b7854de981d7239cab31`
 (tree `523e0dc0434c1279ee79d899d45d15a1f0fef575`). Acquisition and moved source-free
-verification/smoke passed. The subsequent probe-only correction leaves production,
-profile/dependency and packaged runtime inputs identical; the artifact retains its
-actual producer identity rather than relabeling it as a newer commit. Manifest:
+verification/smoke passed. The subsequent probe-only correction reused those identical production inputs.
+The current borrow repair changes production and requires a new bundle; the previous
+artifact retains its actual producer identity and receives no current-product credit. Manifest:
 `5a7aa584f3b0758f9780e4c4848e0583754236fe8d4527cbf015c7ad8099f84b`; archive:
 `258b5b03e371a23dab0ca5905bffadf514ce30f47f6f72145c61cef5859b8cb1`.
 Then serial review requires native/default standard, the five installed auxiliary
@@ -235,7 +257,13 @@ probe committed an inspection-only transaction, clearing the binding before Q
 measurement. The probe now rolls that transaction back and requires zero checkpoint
 constructions plus one binding reuse per invalid reply. Its corrected counters
 restore W17 evidence; production behavior and all 272 timing windows are unchanged.
-All review credit resets for this probe correction; final P1 remains unselected.
+The corrected head `7dca3dd` received clean standard and soundness reviews, then a
+footgun P2: a mutable frame pointer obtained before transaction entry could bypass
+rollback. W0 restores that position; the old journal did not. The current repair
+protects actual outstanding pointers at begin and copied backing views at mutation.
+New tests cover position/slots, copies across map growth, independent forks, every
+begin allocation failure, no-allocation commit/rollback, and pointers across commit.
+All credit resets for this production repair; final P1 remains unselected.
 Material findings or head changes reset all credit. The PR remains draft/unmerged.
 
 Historical Review Fold/negative-evidence custody is unregistered. Current accepted

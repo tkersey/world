@@ -60,6 +60,9 @@ pub const Frame = struct {
     position: usize = 0,
     function: data.program.Id,
     custody: custody.State,
+    // Map installation supplies a lookup hint. Only equality with the map's
+    // full backing-view handle establishes a registered mutation target.
+    owner_hint: data.program.Id = 0,
 };
 /// Attempt counters include failed attempts; they never participate in rollback.
 pub const Statistics = struct {
@@ -77,26 +80,65 @@ pub const Frames = struct {
     entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
     statistics: ?*Statistics = null,
     journal: ?Journal = null,
+    // Mutable borrows survive transaction entry/commit until membership changes.
+    // The ordinary active-frame borrow stays inline; additional live borrows
+    // are recorded only when callers acquire them, never by scanning entries.
+    borrowed_first: ?data.program.Id = null,
+    borrowed_more: std.AutoHashMapUnmanaged(data.program.Id, void) = .empty,
 
     pub const Journal = struct {
         // null records absence at entry, including a removed/reused identifier.
-        entries: std.AutoHashMapUnmanaged(data.program.Id, ?Frame) = .empty,
+        entries: std.AutoHashMapUnmanaged(data.program.Id, ?SavedFrame) = .empty,
         // A successful hold remains valid for this entire attempt, even if the
         // identifier is removed and reused. Avoid rehashing the active frame on
         // every instruction; the journal still owns its first entry version.
-        // Nonempty entries certify that last_held was successfully protected;
-        // no second validity tag is needed for this attempt-local shortcut.
-        last_held: data.program.Id = 0,
+        // A present ID certifies successful protection in this attempt. Keep
+        // that fact inline, rather than loading the map count on every write.
+        last_held: ?data.program.Id = null,
+    };
+    // The map key reconstructs owner_hint on rollback. Retain only physical
+    // entry state, so derived association metadata does not enlarge snapshots.
+    const SavedFrame = struct {
+        view: Slots.Handle,
+        live_bound: Bound,
+        position: usize,
+        function: data.program.Id,
+        custody: custody.State,
+
+        fn fork(frames: *Frames, frame: *const Frame) Error!SavedFrame {
+            const view = try frames.slots.fork(frame.view);
+            errdefer frames.slots.release(view) catch unreachable;
+            return .{ .view = view, .live_bound = frame.live_bound, .position = frame.position, .function = frame.function, .custody = try frames.custody.fork(frame.custody) };
+        }
+        fn restore(self: SavedFrame, id: data.program.Id) Frame {
+            return .{ .view = self.view, .live_bound = self.live_bound, .position = self.position, .function = self.function, .custody = self.custody, .owner_hint = id };
+        }
     };
     pub fn begin(self: *Frames) Error!void {
         if (self.journal != null) return error.InvalidState;
         self.journal = .{};
+        errdefer self.releaseJournal();
+        if (self.borrowed_first) |id| try self.hold(id, self.entries.getPtr(id) orelse return error.InvalidState);
+        var borrowed = self.borrowed_more.keyIterator();
+        while (borrowed.next()) |id| try self.hold(id.*, self.entries.getPtr(id.*) orelse return error.InvalidState);
+    }
+
+    inline fn rememberBorrow(self: *Frames, id: data.program.Id) Error!void {
+        if (self.borrowed_first) |first| {
+            if (first == id) return;
+            try self.borrowed_more.put(self.allocator, id, {});
+        } else self.borrowed_first = id;
+    }
+
+    fn clearBorrows(self: *Frames) void {
+        self.borrowed_first = null;
+        self.borrowed_more.clearRetainingCapacity();
     }
     /// Secure the entry version before exposing a mutable frame or changing
     /// membership. Reads never come here. Repeated touches retain the first one.
     inline fn hold(self: *Frames, id: data.program.Id, original: ?*const Frame) Error!void {
         const journal = if (self.journal) |*value| value else return;
-        if (journal.entries.count() != 0 and journal.last_held == id) return;
+        if (journal.last_held == id) return;
         try self.holdUncached(journal, id, original);
     }
     // Fresh execution and repeated active-frame writes avoid calling the
@@ -107,7 +149,7 @@ pub const Frames = struct {
             return;
         }
         try journal.entries.ensureUnusedCapacity(self.allocator, 1);
-        const saved = if (original) |frame| try self.forkFrame(frame.*) else null;
+        const saved: ?SavedFrame = if (original) |frame| try SavedFrame.fork(self, frame) else null;
         journal.entries.putAssumeCapacity(id, saved);
         journal.last_held = id;
         if (self.statistics) |s| {
@@ -116,23 +158,31 @@ pub const Frames = struct {
         }
     }
     pub fn commit(self: *Frames) void {
+        if (self.statistics) |s| s.commit_entries +|= self.journal.?.entries.count();
+        self.releaseJournal();
+    }
+
+    inline fn releaseJournal(self: *Frames) void {
         var journal = self.journal.?;
         self.journal = null;
         var saved = journal.entries.valueIterator();
-        while (saved.next()) |entry| if (entry.*) |frame| self.releaseFrame(frame);
-        if (self.statistics) |s| s.commit_entries +|= journal.entries.count();
+        while (saved.next()) |entry| if (entry.*) |frame| {
+            self.slots.release(frame.view) catch unreachable;
+            self.custody.release(frame.custody);
+        };
         journal.entries.deinit(self.allocator);
     }
     pub fn rollback(self: *Frames) void {
         var journal = self.journal.?;
         self.journal = null;
+        self.clearBorrows();
         // Remove every successor first. The unchanged map retains its original
         // capacity, so all entry frames fit on restoration without allocation.
         var saved = journal.entries.keyIterator();
         while (saved.next()) |id| if (self.entries.fetchRemove(id.*)) |entry| self.releaseFrame(entry.value);
         var entries = journal.entries.iterator();
         while (entries.next()) |entry| if (entry.value_ptr.*) |frame|
-            self.entries.putAssumeCapacity(entry.key_ptr.*, frame);
+            self.entries.putAssumeCapacity(entry.key_ptr.*, frame.restore(entry.key_ptr.*));
         if (self.statistics) |s| s.rollback_entries +|= journal.entries.count();
         journal.entries.deinit(self.allocator);
     }
@@ -145,6 +195,7 @@ pub const Frames = struct {
     }
     pub fn deinit(self: *Frames) void {
         if (self.journal != null) self.rollback();
+        self.borrowed_more.deinit(self.allocator);
         self.entries.deinit(self.allocator);
         self.slots.deinit();
         self.custody.deinit();
@@ -159,11 +210,22 @@ pub const Frames = struct {
         // hold grows its own journal and slot/custody view tables, never this
         // map. The local pointer stays valid and is exposed only after protection.
         try self.hold(id, frame);
+        try self.rememberBorrow(id);
         return frame;
+    }
+    /// The callback's borrow ends when it returns (or changes membership).
+    /// It must not retain the pointer. The entry version is protected before
+    /// the callback runs; only escaping getMutable borrows need begin tracking.
+    pub inline fn withMutable(self: *Frames, id: data.program.Id, context: anytype, comptime operation: anytype) @typeInfo(@TypeOf(operation)).@"fn".return_type.? {
+        const frame = self.entries.getPtr(id) orelse return error.InvalidState;
+        try self.hold(id, frame);
+        return operation(context, frame);
     }
     /// A mutable copy is used when a caller can grow the map before update.
     pub fn getForMutation(self: *Frames, id: data.program.Id) Error!Frame {
-        return (try self.getMutable(id)).*;
+        const frame = self.entries.getPtr(id) orelse return error.InvalidState;
+        try self.hold(id, frame);
+        return frame.*;
     }
     pub fn project(self: *Frames, id: data.program.Id, allocator: std.mem.Allocator) Error!?data.process_state.Activation {
         const frame = self.entries.get(id) orelse return null;
@@ -188,17 +250,24 @@ pub const Frames = struct {
     pub fn put(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         if (self.entries.contains(id)) return error.InvalidState;
         try self.hold(id, null);
-        try self.entries.put(self.allocator, id, frame);
+        var registered = frame;
+        registered.owner_hint = id;
+        try self.entries.put(self.allocator, id, registered);
+        self.clearBorrows();
     }
     pub fn update(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         const target = self.entries.getPtr(id) orelse return error.InvalidState;
         try self.hold(id, target);
         target.* = frame;
+        target.owner_hint = id;
     }
     pub fn remove(self: *Frames, id: data.program.Id) Error!void {
         const original = self.entries.getPtr(id) orelse return;
         try self.hold(id, original);
-        if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
+        if (self.entries.fetchRemove(id)) |entry| {
+            self.clearBorrows();
+            self.releaseFrame(entry.value);
+        }
     }
     pub fn create(self: *Frames, function: data.program.Id) Error!Frame {
         const definition = self.layouts.functions[@intCast(function)];
@@ -217,10 +286,23 @@ pub const Frames = struct {
         result.custody = try self.custody.fork(original.custody);
         return result;
     }
+    /// A copied frame can outlive map growth while retaining its backing view.
+    /// Protect that registered view before mutation, even if the copy was
+    /// obtained before this transaction. Independent forks remain independent.
+    inline fn protectView(self: *Frames, frame: *const Frame) Error!void {
+        const journal = if (self.journal) |*value| value else return;
+        const id = frame.owner_hint;
+        if (journal.last_held == id) return;
+        const original = self.entries.getPtr(id) orelse return;
+        if (!std.meta.eql(original.view, frame.view)) return;
+        try self.hold(id, original);
+    }
     pub fn scope(self: *Frames, frame: *Frame, target: data.program.Id) Error!void {
+        try self.protectView(frame);
         try self.custody.moveTo(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(target));
     }
     pub fn write(self: *Frames, frame: *Frame, slot: data.program.Id, value: data.graph.Value) Error!void {
+        try self.protectView(frame);
         try self.custody.remove(&frame.custody, @intCast(slot));
         if (value.body == .owned) try self.custody.establish(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(slot));
         try self.rewriteValue(frame, slot, value);
@@ -240,6 +322,7 @@ pub const Frames = struct {
         return values;
     }
     pub fn clear(self: *Frames, frame: *Frame, slot: data.program.Id) Error!void {
+        try self.protectView(frame);
         try self.custody.remove(&frame.custody, @intCast(slot));
         try self.slots.clear(frame.view, @intCast(slot));
     }
@@ -251,6 +334,7 @@ pub const Frames = struct {
     /// views remain isolated by Slots' existing COW owner.
     pub fn restart(self: *Frames, frame: *Frame, target: data.program.Id, live: sets.Root, values: []const data.graph.Value) Error!void {
         if (!self.canRestart(frame.*, target)) return error.InvalidState;
+        try self.protectView(frame);
         const function = self.layouts.functions[@intCast(target)];
         if (function.inputs.len != values.len) return error.InvalidState;
         var old = frame.live_bound.iterator(self.pool);
@@ -268,6 +352,7 @@ pub const Frames = struct {
     /// include uninitialized slots; only Slots.get/iterator observe actual values.
     pub fn apply(self: *Frames, frame: *Frame, live: sets.Root, destinations: anytype, values: []const data.graph.Value) Error!void {
         if (destinations.len != values.len) return error.InvalidState;
+        try self.protectView(frame);
         const selection: Bound = switch (frame.live_bound) {
             .bits => .{ .bits = self.pool.lowWord(live) },
             .tree => .{ .tree = live },
