@@ -61,6 +61,9 @@ pub const Session = struct {
     collection_cursors: usize = 8,
     pending_blob_collection: bool = false,
     statistics: ?*@import("runtime_types.zig").Statistics = null,
+    // Borrowed only for Resident's gated unpublished command. Standalone
+    // Session.answer always derives its expectation from current canonical State.
+    resident_expected_binding: ?[32]u8 = null,
 
     pub const Transaction = struct {
         roots: g.Roots,
@@ -187,10 +190,12 @@ pub const Session = struct {
     /// restoreImage checks the matching Program and complete portable State.
     pub fn checkpoint(self: *Session, allocator: std.mem.Allocator) Error![]u8 {
         if (self.poisoned) return error.InvalidState;
+        if (self.statistics) |s| s.checkpoint_constructions +|= 1;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
         const count = self.store.nodes.items.len;
+        if (self.statistics) |s| s.checkpoint_node_visits +|= count;
         const nodes = try a.alloc(data.process_state.Node, count);
         for (self.store.nodes.items, self.store.alive.items, 0..) |node, alive, id| {
             // A reachable dead handle must fail graph shape checks, never become
@@ -326,6 +331,7 @@ pub const Session = struct {
 
     pub fn pendingRequest(self: *Session, allocator: std.mem.Allocator) Error!Pending {
         if (self.poisoned or self.terminal != null or self.status != .parked) return error.InvalidState;
+        if (self.statistics) |s| s.pending_binding_constructions +|= 1;
         const operation = (try self.store.get(self.roots.pending.?)).pending;
         const effect = self.program.effects[@intCast(operation.effect)];
         const state = try self.checkpoint(allocator);
@@ -350,13 +356,22 @@ pub const Session = struct {
         }) };
     }
 
-    /// Recompute the pending binding before accepting an ERS3 response.
+    /// The low-level path derives the expectation afresh. Resident can lend its
+    /// already published identity during its exclusive command; parsing and
+    /// typed value admission are shared by both lifecycles.
     pub fn answer(self: *Session, input: []const u8) Error!void {
-        var expected = try self.pendingRequest(self.allocator);
-        defer expected.deinit();
+        if (self.poisoned or self.terminal != null or self.status != .parked) return error.InvalidState;
+        const identity = self.resident_expected_binding orelse blk: {
+            var expected = try self.pendingRequest(self.allocator);
+            defer expected.deinit();
+            break :blk expected.request.request_identity;
+        };
+        if (self.resident_expected_binding != null) if (self.statistics) |s| {
+            s.expected_binding_reuses +|= 1;
+        };
         var response = try protocol.decode(protocol.Result, self.allocator, input);
         defer response.deinit();
-        if (!std.mem.eql(u8, &expected.request.request_identity, &response.value.request_identity)) return error.InvalidResult;
+        if (!std.mem.eql(u8, &identity, &response.value.request_identity)) return error.InvalidResult;
         // The expected descriptors are immutable preparation data. The actual
         // Program result schema is checked below with those same admitted facts.
         try self.answerValue(response.value.value);

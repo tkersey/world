@@ -37,6 +37,37 @@ pub fn main(init: std.process.Init) !void {
     var stats: world.Statistics = .{};
     resident.session.?.statistics = &stats;
     resident.session.?.store.statistics = &stats.storage;
+    var rejected: [3]struct { diagnostic: []const u8, allocations: usize, bytes: usize, checkpointConstructions: ?u64, bindingReuses: ?u64 } = undefined;
+    if (pending) {
+        var request = try protocol.decode(protocol.Request, a, first.record.requested.request);
+        defer request.deinit();
+        var wrong = request.value.request_identity;
+        wrong[0] ^= 1;
+        var reply_value: [8]u8 = undefined;
+        std.mem.writeInt(u64, &reply_value, 7, .little);
+        const wrong_binding = try protocol.encodeOwned(protocol.Result, a, .{ .request_identity = wrong, .value = &reply_value });
+        defer a.free(wrong_binding);
+        const wrong_type = try protocol.encodeOwned(protocol.Result, a, .{ .request_identity = request.value.request_identity, .value = &.{0} });
+        defer a.free(wrong_type);
+        const before = try resident.checkpoint(init.gpa);
+        defer init.gpa.free(before);
+        for ([_][]const u8{ wrong_binding, &.{0}, wrong_type }, &rejected) |reply, *row| {
+            const allocations = counting.allocations;
+            const bytes = counting.allocated_bytes;
+            const checkpoints = if (@hasField(world.Statistics, "checkpoint_constructions")) stats.checkpoint_constructions else 0;
+            const reuses = if (@hasField(world.Statistics, "expected_binding_reuses")) stats.expected_binding_reuses else 0;
+            var diagnostic: []const u8 = "accepted";
+            if (resident.drive(a, .{ .reply = reply }, .{ .quantum = 0 })) |outcome| {
+                var out = outcome;
+                out.deinit();
+                return error.AcceptedInvalidResponse;
+            } else |err| diagnostic = @errorName(err);
+            row.* = .{ .diagnostic = diagnostic, .allocations = counting.allocations - allocations, .bytes = counting.allocated_bytes - bytes, .checkpointConstructions = if (@hasField(world.Statistics, "checkpoint_constructions")) stats.checkpoint_constructions - checkpoints else null, .bindingReuses = if (@hasField(world.Statistics, "expected_binding_reuses")) stats.expected_binding_reuses - reuses else null };
+            const unchanged = try resident.checkpoint(init.gpa);
+            defer init.gpa.free(unchanged);
+            if (!std.mem.eql(u8, before, unchanged)) return error.ChangedOnRejection;
+        }
+    } else @memset(&rejected, .{ .diagnostic = "not-requested", .allocations = 0, .bytes = 0, .checkpointConstructions = null, .bindingReuses = null });
     if (!pending) {
         var resumed = try resident.drive(a, .resume_yield, .{ .quantum = 0 });
         resumed.deinit();
@@ -76,7 +107,7 @@ pub fn main(init: std.process.Init) !void {
     if (counting.allocated_bytes != counting.freed_bytes) return error.Leak;
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writer(init.io, &buffer);
-    try std.json.Stringify.value(.{ .family = mode, .depth = depth, .retainedFrames = frames, .protectedAtBegin = protected_at_begin, .changes = changes, .distinctReplies = replies, .totalAllocatedBytes = counting.allocated_bytes }, .{}, &output.interface);
+    try std.json.Stringify.value(.{ .family = mode, .depth = depth, .retainedFrames = frames, .protectedAtBegin = protected_at_begin, .changes = changes, .rejected = rejected, .distinctReplies = replies, .totalAllocatedBytes = counting.allocated_bytes }, .{}, &output.interface);
     try output.interface.writeByte('\n');
     try output.interface.flush();
 }

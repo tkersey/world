@@ -9,6 +9,8 @@ pub const Error = runtime.Error;
 pub const Outcome = struct {
     arena: std.heap.ArenaAllocator,
     record: protocol.Outcome,
+    // Private publication metadata, never part of portable Outcome or identity.
+    expected_binding: ?[32]u8 = null,
     pub fn deinit(self: *Outcome) void {
         self.arena.deinit();
         self.* = undefined;
@@ -49,17 +51,20 @@ pub fn finish(allocator: std.mem.Allocator, session: *runtime.Session, checkpoin
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
+    var expected_binding: ?[32]u8 = null;
     const result: protocol.Outcome = switch (observation) {
         .progressed => .{ .progressed = if (checkpoint) try session.checkpoint(a) else null },
         .yielded => .{ .yielded = if (checkpoint) try session.checkpoint(a) else null },
         .requested => blk: {
             if (checkpoint) {
                 const pending = try session.pendingRequest(a);
+                expected_binding = pending.request.request_identity;
                 // This invocation arena owns all Pending allocations.
                 break :blk .{ .requested = .{ .state = pending.state, .request = try protocol.encodeOwned(protocol.Request, a, pending.request) } };
             }
             var pending = try session.pendingRequest(allocator);
             defer pending.deinit();
+            expected_binding = pending.request.request_identity;
             break :blk .{ .requested = .{ .state = null, .request = try protocol.encodeOwned(protocol.Request, a, pending.request) } };
         },
         .completed => |value| .{ .completed = try a.dupe(u8, try session.bytes(&value)) },
@@ -70,7 +75,7 @@ pub fn finish(allocator: std.mem.Allocator, session: *runtime.Session, checkpoin
         } },
         .cancelled => |reason| .{ .cancelled = .{ .reason = try heap.duplicate(protocol.Reason, a, reason), .cleanup_failures = try failures(a, session) } },
     };
-    return .{ .arena = arena, .record = result };
+    return .{ .arena = arena, .record = result, .expected_binding = expected_binding };
 }
 
 fn failures(allocator: std.mem.Allocator, session: *runtime.Session) Error![]const u8 {

@@ -457,6 +457,10 @@ fn releaseResident(resident: *Resident) void {
 }
 
 fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, checkpoint: []const u8, control: boundary.data.invocation.Control, checkpoint_mode: bool) !void {
+    return residentFailureSweepWithBinding(prepared, checkpoint, control, checkpoint_mode, false);
+}
+
+fn residentFailureSweepWithBinding(prepared: *const @import("stable_runtime").Prepared, checkpoint: []const u8, control: boundary.data.invocation.Control, checkpoint_mode: bool, establish_binding: bool) !void {
     var reference = try Resident.restore(testing.allocator, prepared, checkpoint);
     defer releaseResident(&reference);
     var expected = try reference.drive(testing.allocator, control, .{ .checkpoint = checkpoint_mode });
@@ -467,6 +471,12 @@ fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, che
         var failing = testing.FailingAllocator.init(testing.allocator, .{});
         var resident = try Resident.restore(failing.allocator(), prepared, checkpoint);
         defer releaseResident(&resident);
+        if (establish_binding) {
+            var published = try resident.drive(failing.allocator(), .none, .{});
+            defer published.deinit();
+            try testing.expect(published.record == .requested);
+            try testing.expect(resident.expected_binding != null);
+        }
         var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
         resident.session.?.statistics = &statistics;
         resident.session.?.store.statistics = &statistics.storage;
@@ -531,8 +541,10 @@ test "resident rollback preserves acquired replies, cleanup custody, and reentra
             defer pending.deinit();
             const reply = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = pending.request.request_identity, .value = &.{} });
             defer testing.allocator.free(reply);
-            for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, checkpoint, .{ .reply = reply }, with_checkpoint);
-            if (index == 1) for ([_]bool{ false, true }) |with_checkpoint| try residentFailureSweep(&prepared, checkpoint, .{ .cancel = .{ .text = "stop" } }, with_checkpoint);
+            for ([_]bool{ false, true }) |with_checkpoint| for ([_]bool{ false, true }) |establish_binding|
+                try residentFailureSweepWithBinding(&prepared, checkpoint, .{ .reply = reply }, with_checkpoint, establish_binding);
+            if (index == 1) for ([_]bool{ false, true }) |with_checkpoint| for ([_]bool{ false, true }) |establish_binding|
+                try residentFailureSweepWithBinding(&prepared, checkpoint, .{ .cancel = .{ .text = "stop" } }, with_checkpoint, establish_binding);
         }
     }
 }
@@ -587,6 +599,106 @@ test "resident output capacity and checkpoint transfer preserve custody on failu
     try restored.close();
     try testing.expectError(error.InvalidState, restored.close());
     try testing.expectError(error.InvalidState, restored.drive(testing.allocator, .none, .{ .quantum = 0 }));
+}
+
+test "resident retains only a published expectation and low-level answer remains canonical" {
+    const protocol = boundary.data.invocation;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    const arguments = &[_]u8{ 42, 0, 0, 0, 0, 0, 0, 0 };
+    var resident = try Resident.start(testing.allocator, &prepared, arguments);
+    defer releaseResident(&resident);
+    var stats: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+    resident.session.?.statistics = &stats;
+    var pending = try resident.drive(testing.allocator, .none, .{ .checkpoint = true });
+    defer pending.deinit();
+    var request = try protocol.decode(protocol.Request, testing.allocator, pending.record.requested.request);
+    defer request.deinit();
+    const identity = request.value.request_identity;
+    try testing.expectEqualDeep(identity, resident.expected_binding.?);
+    try testing.expectEqual(1, stats.pending_binding_constructions);
+    var wrong = identity;
+    wrong[0] ^= 1;
+    const wrong_binding = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = wrong, .value = &.{} });
+    defer testing.allocator.free(wrong_binding);
+    const wrong_type = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = identity, .value = &.{0} });
+    defer testing.allocator.free(wrong_type);
+    const reply = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = identity, .value = &.{} });
+    defer testing.allocator.free(reply);
+    for ([_][]const u8{ wrong_binding, &.{0}, wrong_type }, [_]anyerror{ error.InvalidResult, error.Truncated, error.NonCanonical }) |invalid, expected_error| {
+        const constructions = stats.checkpoint_constructions;
+        try testing.expectError(expected_error, resident.drive(testing.allocator, .{ .reply = invalid }, .{}));
+        try testing.expectEqual(constructions, stats.checkpoint_constructions);
+        try testing.expectEqualDeep(identity, resident.expected_binding.?);
+        try testing.expect(resident.session.?.resident_expected_binding == null);
+        const checkpoint = try resident.checkpoint(testing.allocator);
+        defer testing.allocator.free(checkpoint);
+        try testing.expectEqualSlices(u8, pending.record.requested.state.?, checkpoint);
+    }
+    try testing.expectEqual(3, stats.expected_binding_reuses);
+    var tiny: [1]u8 = undefined;
+    try testing.expectError(error.Capacity, resident.driveInto(.{ .reply = reply }, .{}, &tiny));
+    try testing.expectEqualDeep(identity, resident.expected_binding.?);
+    try testing.expect(resident.session.?.resident_expected_binding == null);
+    const transferred = try resident.takeCheckpoint(testing.allocator);
+    defer testing.allocator.free(transferred);
+    try testing.expect(resident.expected_binding == null);
+    var restored = try Resident.restore(testing.allocator, &prepared, transferred);
+    defer releaseResident(&restored);
+    try testing.expect(restored.expected_binding == null);
+    var completed = try restored.drive(testing.allocator, .{ .reply = reply }, .{});
+    defer completed.deinit();
+    try testing.expectEqualSlices(u8, arguments, completed.record.completed);
+    try testing.expect(restored.expected_binding == null);
+    // A separate mutable Session never receives Resident's borrowed identity.
+    var low_level = try Session.restore(testing.allocator, &prepared, transferred);
+    defer low_level.deinit();
+    low_level.statistics = &stats;
+    const constructions = stats.checkpoint_constructions;
+    try testing.expectError(error.InvalidResult, low_level.answer(wrong_binding));
+    try testing.expectEqual(constructions + 1, stats.checkpoint_constructions);
+}
+
+test "cancellation changes the canonical pending binding and failed output retains its predecessor" {
+    const protocol = boundary.data.invocation;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.unwind(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var resident = try Resident.start(testing.allocator, &prepared, &.{0});
+    defer releaseResident(&resident);
+    var pending = try resident.drive(testing.allocator, .none, .{ .checkpoint = true });
+    defer pending.deinit();
+    var old = try protocol.decode(protocol.Request, testing.allocator, pending.record.requested.request);
+    defer old.deinit();
+    var tiny: [1]u8 = undefined;
+    try testing.expectError(error.Capacity, resident.driveInto(.{ .cancel = .{ .text = "cancel-binding" } }, .{ .quantum = 0 }, &tiny));
+    try testing.expectEqualDeep(old.value.request_identity, resident.expected_binding.?);
+    var changed = try resident.drive(testing.allocator, .{ .cancel = .{ .text = "cancel-binding" } }, .{ .quantum = 0, .checkpoint = true });
+    defer changed.deinit();
+    var current = try protocol.decode(protocol.Request, testing.allocator, changed.record.requested.request);
+    defer current.deinit();
+    try testing.expect(!std.mem.eql(u8, &old.value.request_identity, &current.value.request_identity));
+    try testing.expectEqualDeep(current.value.request_identity, resident.expected_binding.?);
+    // Establish the replacement independently from admitted portable State.
+    var reference = try Session.restore(testing.allocator, &prepared, changed.record.requested.state.?);
+    defer reference.deinit();
+    var canonical = try reference.pendingRequest(testing.allocator);
+    defer canonical.deinit();
+    try testing.expectEqualDeep(canonical.request.request_identity, current.value.request_identity);
+    const stale = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = old.value.request_identity, .value = &.{} });
+    defer testing.allocator.free(stale);
+    try testing.expectError(error.InvalidResult, resident.drive(testing.allocator, .{ .reply = stale }, .{}));
 }
 
 test "shallow resumption preserves every resident boundary after failed publication" {

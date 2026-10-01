@@ -100,3 +100,79 @@ drives; the first drive allocates 1920 bytes. All 1024 later effects retain thei
 distinguishing values. Actual Node/WASM H/Q completion passes every specified size.
 Paused live bytes are unchanged in this instrumented pass. These are structural
 and correctness observations, not timing acceptance.
+
+## Current handoff within this execution
+
+The early draft is [World #60](https://github.com/tkersey/world/pull/60), assigned
+to tkersey, at `ad4cf8ea7f842dc9201a0affbc04e4e00c38dfe0` (tree
+`4df3e7c8afa9b3b0bb4d73b060c56e659ed6a0a1`). It remains draft and unmerged.
+This is a partial slice, not P0. No independent review epoch has opened.
+
+The Q baseline now exercises wrong binding, truncated response and correctly
+bound ill-typed value, preserving the exact entry checkpoint on every rejection
+before accepting the original valid response. At Q=1024 the three rejected
+calls allocate 883969, 883818 and 884238 temporary bytes respectively, with
+diagnostics InvalidResult, Truncated and InvalidValue. The baseline builds,
+frozen images and raw observations remain in this execution's isolated sibling
+evidence directory. The checked-in emitters/probes supply reproduction sources.
+
+Pending-binding implementation, complete lifecycle timing/economic acceptance,
+fixed consumer emission/replay, final platform/package qualification, P0/P1,
+serial review closure and the final consolidated report remain required.
+
+## Pending observation construction
+
+The selected boundary retains only the canonical request identity in Resident,
+derived from the actual published Outcome. It lends that identity to the shared
+response checker during a gated drive. Standalone low-level Session.answer keeps
+canonical recomputation, preserving its independently mutable lifecycle. No
+response value, authority decision, checkpoint graph or serialized State is cached.
+
+Every successful drive replaces the identity with the new published pending
+identity or null for a nonpending observation. The replacement occurs after all
+fallible output construction and encoding, at the existing transaction commit
+fence. Failed drives leave the previous identity untouched and rollback the
+computation. Checkpoint inspection does not change it; transfer and close clear
+it; restoration starts with no private identity. A stale identity after successful
+progress/cancellation or a failed-publication retry mismatch falsifies this design.
+The ownership premise is the existing exclusive, noncopyable Resident contract;
+the separate low-level Session route does not acquire that premise or trust a cache.
+
+The candidate's Q=1024 wrong-binding, truncated and ill-typed response checks
+each perform zero checkpoint constructions and one expected-binding reuse.
+Their temporary allocation is respectively 215, 64 and 484 bytes, versus
+883969, 883818 and 884238 in W0. The exact rejection diagnostics, entry State
+and succeeding original reply agree. The native failure sweep also runs reply
+and cancellation allocations after establishing the private binding, retaining
+every original unprimed failure case.
+
+The cumulative World suite passes 89 native and 73 storage tests, 42 source
+fixtures / 8692 exact observations, 159 Wasmtime/native/Node transfer boundaries,
+the real Chromium 153.0.8010.12 and Firefox 155.0 Worker checks, capacity and
+standalone package checks. The additional H/Q agreement contains 19 prescribed
+and neighbor cells, both W0↔candidate transfer directions and late output-failure
+retry. Scalar preservation covers six sizes / 158 observations; frame preservation
+covers ten cases / 6530 observations; blob preservation covers 15 cases / 90
+prefixes and ten capacity cases. W0 already reclaims dead large backing, so this
+run asserts that existing absolute reclamation and alias behavior; it does not
+reuse the old sampler's demand for another gain over a pre-reclamation baseline.
+
+The initial five-window WASM comparison at H=1024 has median ratio 0.914626
+(5.45 ms less per lifecycle) and satisfies the prospective 5% win criterion.
+Q=1024 is 0.952547 and does not satisfy that criterion. All nine primary cells
+remain below the timing/memory regression gates in that initial measurement.
+Final guardrail and cumulative timing qualification remains open.
+
+All 18 A0/C0 economy images reproduce the previously accepted hashes. The fixed
+fresh-invocation regression lane contains exactly 30 named cells / 491 commands,
+with expected bytes captured from W0 under the original deterministic assertions.
+Candidate document, consequence and reciprocal recursive-participant assertions
+pass against actual candidate kernel bytes. The adapted World test wiring leaves
+Agent's runtime verifier and historical installation unchanged; that authenticated
+bridge remains independent reference evidence.
+
+After the workspace permission profile changed, the live Inquiry host test stops
+before kernel execution: its existing nested sandbox-exec profile probe returns
+`sandbox_apply: Operation not permitted`. No sandbox, assertion or approval policy
+was bypassed. Frozen Inquiry replay remains independently executable. This limits
+the live-host rerun claim and is not a candidate runtime defect.

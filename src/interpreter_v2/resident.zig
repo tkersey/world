@@ -14,6 +14,10 @@ pub const Error = runtime.Error || error{ Busy, UnfinishedSession };
 pub const Resident = struct {
     session: ?runtime.Session,
     gate: std.atomic.Value(bool) = .init(false),
+    // Identity of the last successfully published parked computation. The
+    // Resident owns its Session exclusively; arbitrary low-level Sessions
+    // keep canonical recomputation and never retain this metadata.
+    expected_binding: ?[32]u8 = null,
 
     pub fn start(allocator: std.mem.Allocator, prepared: *const runtime.Prepared, arguments: []const u8) Error!Resident {
         return .{ .session = try runtime.Session.start(allocator, prepared, arguments) };
@@ -44,12 +48,20 @@ pub const Resident = struct {
         const owned = try heap.duplicate(protocol.Control, input.allocator(), control);
         var transaction = try session.begin();
         errdefer transaction.rollback(session);
+        session.resident_expected_binding = self.expected_binding;
+        defer session.resident_expected_binding = null;
         _ = try invocation.advance(session, owned, options.quantum);
+        var next_binding: ?[32]u8 = null;
         const published: Published = switch (destination) {
-            .record => |allocator| .{ .record = try invocation.finish(allocator, session, options.checkpoint) },
+            .record => |allocator| blk: {
+                const result = try invocation.finish(allocator, session, options.checkpoint);
+                next_binding = result.expected_binding;
+                break :blk .{ .record = result };
+            },
             .encoded, .buffer => blk: {
                 var result = try invocation.finish(session.allocator, session, options.checkpoint);
                 defer result.deinit();
+                next_binding = result.expected_binding;
                 break :blk switch (destination) {
                     .encoded => |allocator| .{ .encoded = try protocol.encodeOwned(protocol.Outcome, allocator, result.record) },
                     .buffer => |buffer| .{ .buffer = try protocol.encode(protocol.Outcome, session.allocator, result.record, buffer) },
@@ -58,6 +70,9 @@ pub const Resident = struct {
             },
         };
         transaction.commit(session);
+        // Publish derived metadata at the same fence as semantic advancement.
+        // On any prior error the original expectation remains applicable.
+        self.expected_binding = next_binding;
         session.store.compactImported() catch {};
         return published;
     }
@@ -83,6 +98,7 @@ pub const Resident = struct {
         const bytes = try session.checkpoint(output);
         session.deinit();
         self.session = null;
+        self.expected_binding = null;
         return bytes;
     }
     /// Physical release is permitted only after terminal observation. Unfinished
@@ -93,5 +109,6 @@ pub const Resident = struct {
         if (session.terminal == null) return error.UnfinishedSession;
         session.deinit();
         self.session = null;
+        self.expected_binding = null;
     }
 };

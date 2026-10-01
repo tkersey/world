@@ -1,0 +1,145 @@
+{
+  "status": "partial",
+  "sourceSha256": {
+    "src/interpreter_v2/activation_frames.zig": "4f8e8839a1d816c55097387eeb05732c154ab23bae8acdaa13ceae924c62917e",
+    "src/interpreter_v2/stable_session.zig": "f69cfffa537e94d0da54af7faff91c8fe44517975a3f7fa537a3ac494f6e231f",
+    "src/interpreter_v2/resident.zig": "cd44aca0c759b554ed07c1f8628fffdcb29667fa519624a8c3fca5910e877a85",
+    "src/interpreter_v2/invocation.zig": "22bc8497667c01e1d0b22c539193cd80830648aad29140a11a138c77ee039b50",
+    "src/interpreter_v2/runtime_types.zig": "c31dd763569320578f0742c35185175b7ebfd5b9cc1278a4e8d0b4939a47a518"
+  },
+  "kernelSha256": "cf73594981466c772d5dc0d0dbf44fc0a85ebdca8e70f8c20a8a59d970b04399",
+  "kernelBytes": 473355,
+  "baselineKernelSha256": "9627eb1e66239119bccb4ddcd43b4f6c757180dab930a9feb276671262f735d1",
+  "correctness": {
+    "native": 89,
+    "storage": 73,
+    "sourceFixtures": 42,
+    "sourceObservations": 8692,
+    "wasmtimeBoundaries": 159,
+    "browsers": [
+      "Chromium 153.0.8010.12",
+      "Firefox 155.0"
+    ],
+    "historyCells": 19
+  },
+  "primaryWasmLifecycle": [
+    {
+      "family": "H",
+      "depth": 1,
+      "ratio": 0.9864615608643243,
+      "confirmedWin": false,
+      "confirmedSlowdown": false,
+      "memoryExceeded": false,
+      "deltaNs": -10041
+    },
+    {
+      "family": "H",
+      "depth": 16,
+      "ratio": 0.8444715047150472,
+      "confirmedWin": true,
+      "confirmedSlowdown": false,
+      "memoryExceeded": false,
+      "deltaNs": -189667
+    },
+    {
+      "family": "H",
+      "depth": 64,
+      "ratio": 0.7232146605201363,
+      "confirmedWin": true,
+      "confirmedSlowdown": false,
+      "memoryExceeded": false,
+      "deltaNs": -646167
+    },
+    {
+      "family": "H",
+      "depth": 256,
+      "ratio": 0.7509117462545363,
+      "confirmedWin": true,
+      "confirmedSlowdown": false,
+      "memoryExceeded": false,
+      "deltaNs": -1331709
+    },
+    {
+      "family": "H",
+      "depth": 1024,
+      "ratio": 0.9146260520434946,
+      "confirmedWin": true,
+      "confirmedSlowdown": false,
+      "memoryExceeded": false,
+      "deltaNs": -5446584
+    },
+    {
+      "family": "Q",
+      "depth": 1,
+      "ratio": 0.9278505063059943,
+      "confirmedWin": true,
+      "confirmedSlowdown": false,
+      "memoryExceeded": false,
+      "deltaNs": -30417
+    },
+    {
+      "family": "Q",
+      "depth": 64,
+      "ratio": 0.7575839150760545,
+      "confirmedWin": true,
+      "confirmedSlowdown": false,
+      "memoryExceeded": false,
+      "deltaNs": -292667
+    },
+    {
+      "family": "Q",
+      "depth": 256,
+      "ratio": 0.7934393550751191,
+      "confirmedWin": true,
+      "confirmedSlowdown": false,
+      "memoryExceeded": false,
+      "deltaNs": -634167
+    },
+    {
+      "family": "Q",
+      "depth": 1024,
+      "ratio": 0.9525467078615948,
+      "confirmedWin": false,
+      "confirmedSlowdown": false,
+      "memoryExceeded": false,
+      "deltaNs": -1669041
+    }
+  ],
+  "pending": [
+    {
+      "diagnostic": "InvalidResult",
+      "allocations": 2,
+      "bytes": 215,
+      "checkpointConstructions": 0,
+      "bindingReuses": 1
+    },
+    {
+      "diagnostic": "Truncated",
+      "allocations": 1,
+      "bytes": 64,
+      "checkpointConstructions": 0,
+      "bindingReuses": 1
+    },
+    {
+      "diagnostic": "InvalidValue",
+      "allocations": 3,
+      "bytes": 484,
+      "checkpointConstructions": 0,
+      "bindingReuses": 1
+    }
+  ],
+  "consumer": {
+    "images": 18,
+    "replayCells": 30,
+    "commands": 491,
+    "originalAgentLockUnmodified": true,
+    "liveInquiryHost": "blocked before kernel execution: sandbox-exec sandbox_apply Operation not permitted"
+  },
+  "remaining": [
+    "guardrail timings",
+    "native lifecycle timings",
+    "full frozen consumer replay",
+    "package producer qualification",
+    "P0/P1 and serial reviews"
+  ]
+}

@@ -20,6 +20,10 @@ pub const Statistics = struct {
     multi_templates: u64 = 0,
     branch_activations: u64 = 0,
     frames: @import("activation_frames.zig").Statistics = .{},
+    checkpoint_constructions: u64 = 0,
+    checkpoint_node_visits: u64 = 0,
+    pending_binding_constructions: u64 = 0,
+    expected_binding_reuses: u64 = 0,
     storage: @import("store.zig").Statistics = .{},
     snapshot: data.graph_order.Statistics = .{},
 };
