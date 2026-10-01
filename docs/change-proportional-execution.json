@@ -1,5 +1,5 @@
 {
-  "status": "locally-qualified-repair-awaiting-clean-source-bundle-and-review",
+  "status": "locally-qualified-probe-correction-awaiting-fresh-review",
   "specSha256": "d914b959e32d10b841e549cb27665689c419856e5b77ae632363fb71b22e92f3",
   "worldBaseline": "c61edfc8208c375d5188e476131ca8cff5aeeb8a",
   "runtimeData": "511fe388587b36ae37307d277e04c22b0bb6f6d9",
@@ -138,7 +138,14 @@
       "rootAdditionalFindings": 1,
       "initialWave": "superseded under explicit immediate-repair user direction; footgun interrupted without semantic result"
     },
-    "repairedP0": null,
+    "repairedP0": {
+      "head": "60f1ff037ccbf7eaaa75b7854de981d7239cab31",
+      "tree": "523e0dc0434c1279ee79d899d45d15a1f0fef575",
+      "disposition": "invalidated structural probe claim",
+      "standardFindings": 1,
+      "productionKernelChanged": false,
+      "resolution": "Inspection-only transaction now rolls back; probe requires zero checkpoint constructions and one binding reuse per rejection."
+    },
     "P1": null,
     "standardCredit": 0,
     "auxiliaryCredit": []
@@ -150,8 +157,8 @@
   "timingCells": 272,
   "rawArchive": {
     "path": "performance/change-proportional-raw.tar.gz",
-    "sha256": "6d73c78e9e6b917a2d2127aab77e9aa8401a03c186121838bd37ffd985871027",
-    "bytes": 20963559,
+    "sha256": "da1998352aa2d2b8fb46955fd7141025285a2f9526c371e05ac7d0c903c02afa",
+    "bytes": 20967952,
     "inventory": "repair-inventory.json"
   },
   "lifecycles": [
@@ -609,24 +616,24 @@
   "pendingChecks": [
     {
       "diagnostic": "InvalidResult",
-      "allocations": 11,
-      "bytes": 652521,
-      "checkpointConstructions": 1,
-      "bindingReuses": 0
+      "allocations": 2,
+      "bytes": 215,
+      "checkpointConstructions": 0,
+      "bindingReuses": 1
     },
     {
       "diagnostic": "Truncated",
-      "allocations": 10,
-      "bytes": 652370,
-      "checkpointConstructions": 1,
-      "bindingReuses": 0
+      "allocations": 1,
+      "bytes": 64,
+      "checkpointConstructions": 0,
+      "bindingReuses": 1
     },
     {
       "diagnostic": "InvalidValue",
-      "allocations": 12,
-      "bytes": 652790,
-      "checkpointConstructions": 1,
-      "bindingReuses": 0
+      "allocations": 3,
+      "bytes": 484,
+      "checkpointConstructions": 0,
+      "bindingReuses": 1
     }
   ],
   "repairs": {
@@ -637,5 +644,14 @@
       "Resident": 1560,
       "Outcome": 112
     }
+  },
+  "runtimeDelivery": {
+    "producerCommit": "60f1ff037ccbf7eaaa75b7854de981d7239cab31",
+    "producerTree": "523e0dc0434c1279ee79d899d45d15a1f0fef575",
+    "manifestSha256": "5a7aa584f3b0758f9780e4c4848e0583754236fe8d4527cbf015c7ad8099f84b",
+    "archiveSha256": "258b5b03e371a23dab0ca5905bffadf514ce30f47f6f72145c61cef5859b8cb1",
+    "checksPassed": 11,
+    "sourceFreeSmoke": true,
+    "reuseBasis": "Successor changes only diagnostic probe, report and raw evidence. Production sources, build/profile/dependency and delivered runtime files are byte-identical to qualified producer input; recorded producer identity is preserved."
   }
 }

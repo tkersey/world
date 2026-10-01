@@ -2,8 +2,8 @@
 
 The two defects found on the first P0 are repaired. Correctness checks and all
 272 economic cells pass, and the repaired H lifecycle meets the primary win rule.
-Clean-successor bundle production and independent
-serial review convergence remain required. The only public
+The runtime bundle is qualified and verified outside the source tree. Independent
+serial review convergence remains required. The only public
 subject is [draft World #60](https://github.com/tkersey/world/pull/60), assigned to
 tkersey and unmerged; its current public head precedes this qualified successor.
 The [supplied specification](change-proportional-spec.md), including W01–W40,
@@ -186,7 +186,7 @@ improvement over an obsolete pre-reclamation baseline.
 
 [Machine-readable report](change-proportional-execution.json) binds source/product
 hashes, exact scopes, cells and open work. [Raw evidence archive](performance/change-proportional-raw.tar.gz)
-SHA-256: `6d73c78e9e6b917a2d2127aab77e9aa8401a03c186121838bd37ffd985871027` (20963559 bytes), with historical and repaired-source
+SHA-256: `da1998352aa2d2b8fb46955fd7141025285a2f9526c371e05ac7d0c903c02afa` (20967952 bytes), with historical and repaired-source
 path/hash inventories. It contains passing and failed/inconclusive windows, current
 verifier logs, frozen H/Q replies, 18 BPI3 inputs and the 491 exact input/output pairs.
 These documents/archive are outside npm files and Zig source-package paths.
@@ -210,9 +210,13 @@ raw report identities and file hashes bind actual replay inputs and outputs.
 
 ## Remaining delivery and review
 
-Runtime prepare/acquire/verify must run on the clean committed successor through
-World's existing producer, including source-free verification and smoke. Its actual
-source/tree/kernel/profile/package/delivery identities will be recorded with P0.
+World's normal producer completed all 11 checks at `60f1ff037ccbf7eaaa75b7854de981d7239cab31`
+(tree `523e0dc0434c1279ee79d899d45d15a1f0fef575`). Acquisition and moved source-free
+verification/smoke passed. The subsequent probe-only correction leaves production,
+profile/dependency and packaged runtime inputs identical; the artifact retains its
+actual producer identity rather than relabeling it as a newer commit. Manifest:
+`5a7aa584f3b0758f9780e4c4848e0583754236fe8d4527cbf015c7ad8099f84b`; archive:
+`258b5b03e371a23dab0ca5905bffadf514ce30f47f6f72145c61cef5859b8cb1`.
 Then serial review requires native/default standard, the five installed auxiliary
 lenses, and four further native/default standard confirmations on the same head.
 The first P0 was `32f7c576da52c06dfb9d3dea893aa8d43f785fb1`, tree
@@ -226,7 +230,12 @@ The user directed immediate bug repair while the invalidated initial wave was
 open. The footgun request was interrupted without a semantic verdict; the old
 wave is superseded and is not claimed complete. After qualification, the repaired
 head receives the full initial six-lens serial wave and four further standard
-confirmations. The repaired review head and P1 are not selected yet.
+confirmations. The first repaired head, `60f1ff0`, then received a standard P2: the diagnostic
+probe committed an inspection-only transaction, clearing the binding before Q
+measurement. The probe now rolls that transaction back and requires zero checkpoint
+constructions plus one binding reuse per invalid reply. Its corrected counters
+restore W17 evidence; production behavior and all 272 timing windows are unchanged.
+All review credit resets for this probe correction; final P1 remains unselected.
 Material findings or head changes reset all credit. The PR remains draft/unmerged.
 
 Historical Review Fold/negative-evidence custody is unregistered. Current accepted

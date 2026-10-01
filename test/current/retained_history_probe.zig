@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
         transaction.frames.entries.count()
     else
         resident.session.?.frames.journal.?.entries.count();
-    transaction.commit(&resident.session.?);
+    transaction.rollback(&resident.session.?);
     var changes: [64]struct { allocations: usize, bytes: usize, traced: u64, copies: u64, savedFrames: u64 } = undefined;
     var stats: world.Statistics = .{};
     resident.session.?.statistics = &stats;
@@ -63,6 +63,10 @@ pub fn main(init: std.process.Init) !void {
                 return error.AcceptedInvalidResponse;
             } else |err| diagnostic = @errorName(err);
             row.* = .{ .diagnostic = diagnostic, .allocations = counting.allocations - allocations, .bytes = counting.allocated_bytes - bytes, .checkpointConstructions = if (@hasField(world.Statistics, "checkpoint_constructions")) stats.checkpoint_constructions - checkpoints else null, .bindingReuses = if (@hasField(world.Statistics, "expected_binding_reuses")) stats.expected_binding_reuses - reuses else null };
+            if (@hasField(world.Statistics, "expected_binding_reuses")) {
+                if (row.checkpointConstructions != 0 or row.bindingReuses != 1)
+                    return error.BindingReuseNotObserved;
+            }
             const unchanged = try resident.checkpoint(init.gpa);
             defer init.gpa.free(unchanged);
             if (!std.mem.eql(u8, before, unchanged)) return error.ChangedOnRejection;
