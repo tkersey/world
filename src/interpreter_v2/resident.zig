@@ -48,20 +48,18 @@ pub const Resident = struct {
         const owned = try heap.duplicate(protocol.Control, input.allocator(), control);
         var transaction = try session.begin();
         errdefer transaction.rollback(session);
-        session.resident_expected_binding = self.expected_binding;
+        session.resident_expected_binding = if (self.expected_binding) |*binding| binding else null;
         defer session.resident_expected_binding = null;
-        _ = try invocation.advance(session, owned, options.quantum);
         var next_binding: ?[32]u8 = null;
+        _ = try invocation.advance(session, owned, options.quantum);
         const published: Published = switch (destination) {
             .record => |allocator| blk: {
-                const result = try invocation.finish(allocator, session, options.checkpoint);
-                next_binding = result.expected_binding;
+                const result = try invocation.finishWithBinding(allocator, session, options.checkpoint, &next_binding);
                 break :blk .{ .record = result };
             },
             .encoded, .buffer => blk: {
-                var result = try invocation.finish(session.allocator, session, options.checkpoint);
+                var result = try invocation.finishWithBinding(session.allocator, session, options.checkpoint, &next_binding);
                 defer result.deinit();
-                next_binding = result.expected_binding;
                 break :blk switch (destination) {
                     .encoded => |allocator| .{ .encoded = try protocol.encodeOwned(protocol.Outcome, allocator, result.record) },
                     .buffer => |buffer| .{ .buffer = try protocol.encode(protocol.Outcome, session.allocator, result.record, buffer) },
@@ -69,6 +67,7 @@ pub const Resident = struct {
                 };
             },
         };
+        session.resident_expected_binding = null;
         transaction.commit(session);
         // Publish derived metadata at the same fence as semantic advancement.
         // On any prior error the original expectation remains applicable.

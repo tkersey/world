@@ -63,7 +63,7 @@ pub const Session = struct {
     statistics: ?*@import("runtime_types.zig").Statistics = null,
     // Borrowed only for Resident's gated unpublished command. Standalone
     // Session.answer always derives its expectation from current canonical State.
-    resident_expected_binding: ?[32]u8 = null,
+    resident_expected_binding: ?*const [32]u8 = null,
 
     pub const Transaction = struct {
         roots: g.Roots,
@@ -361,7 +361,7 @@ pub const Session = struct {
     /// typed value admission are shared by both lifecycles.
     pub fn answer(self: *Session, input: []const u8) Error!void {
         if (self.poisoned or self.terminal != null or self.status != .parked) return error.InvalidState;
-        const identity = self.resident_expected_binding orelse blk: {
+        const identity = if (self.resident_expected_binding) |binding| binding.* else blk: {
             var expected = try self.pendingRequest(self.allocator);
             defer expected.deinit();
             break :blk expected.request.request_identity;
@@ -470,9 +470,15 @@ pub const Session = struct {
                         collect_cursors = self.store.encoded_sequences.count() >= self.collection_cursors;
                 }
             } else {
-                // Control may insert/remove frames or grow the map.
-                var saved_frame = frame.*;
-                try self.executeControl(current, control, code, &saved_frame, null);
+                if (@import("builtin").cpu.arch == .wasm32 and code.terminator == .return_value) {
+                    // Gather the return value before returnTo can change the
+                    // map. No frame copy or control scratch is needed here.
+                    try self.executeReturn(control.parent, try self.frames.slots.reader(frame.view), code.terminator.return_value);
+                } else {
+                    // Other control may insert/remove frames or grow the map.
+                    var saved_frame = frame.*;
+                    try self.executeControl(current, control, code, &saved_frame, null);
+                }
             }
         }
         if (self.roots.current == null or self.roots.current.?.id != current.id) {
@@ -561,6 +567,10 @@ pub const Session = struct {
                 try self.frames.apply(frame, self.flow.facts.live[@intCast((try self.store.get(current)).control.block)][frame.position], @as([]const p.Id, &.{source.destination}), &.{value});
             },
         }
+    }
+
+    fn executeReturn(self: *Session, parent: ?g.NodeRef, reader: Slots.Reader, slot: p.Id) Error!void {
+        try self.returnTo(parent, try read(reader, slot));
     }
 
     fn executeControl(self: *Session, current: g.NodeRef, saved: g.Control, code: ir.Block, frame: *bindings.Frame, body_constructor: ?p.Id) Error!void {

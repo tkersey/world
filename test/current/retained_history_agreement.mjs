@@ -14,6 +14,7 @@ for(const family of ["H","Q"]) for(const depth of family==="H"?[1,16,64,256,1024
     k.setLimits({input:2<<20,working:32<<20,output:2<<20});const p=k.prepare(image),s=k.start(p,integer(depth));arms.push({k,p,s});
   }
   let boundaries=0;
+  const repeatedFailures=[];
   const drive=options=>{
     const bytes=arms.map(({k,s})=>Buffer.from(k.drive(s,{checkpoint:true,...options})));
     assert.deepEqual(bytes[1],bytes[0]);boundaries++;return world.decodeOutcome(bytes[0]);
@@ -25,6 +26,18 @@ for(const family of ["H","Q"]) for(const depth of family==="H"?[1,16,64,256,1024
       const checkpoints=arms.map(({k,s})=>Buffer.from(k.checkpoint(s)));
       for(const {k,s}of arms) assert.throws(()=>k.drive(s,{control:"reply",value,quantum:0n}),error=>error.code==="WORLD_KERNEL_REJECTED"&&error.details.diagnostic===["InvalidResult","Truncated","InvalidValue"][index]);
       arms.forEach(({k,s},i)=>assert.deepEqual(Buffer.from(k.checkpoint(s)),checkpoints[i]));
+    }
+    if(depth===1024)for(const {k,s}of arms){
+      const entry=Buffer.from(k.checkpoint(s)),live=k.usage().workingLive;
+      const value=readFileSync(`${corpus}/Q-${depth}-invalid-0.ers3`);
+      let peak=0,reserved=0;
+      for(let attempt=0;attempt<128;attempt++){
+        assert.throws(()=>k.drive(s,{control:"reply",value,quantum:0n}),error=>error.code==="WORLD_KERNEL_REJECTED"&&error.details.diagnostic==="InvalidResult");
+        const usage=k.usage();peak=Math.max(peak,Number(usage.workingPeak));reserved=Math.max(reserved,Number(usage.memoryBytes));
+        assert.equal(usage.workingLive,live,"failed attempts retain private history");
+      }
+      assert.deepEqual(Buffer.from(k.checkpoint(s)),entry);
+      repeatedFailures.push({attempts:128,liveBytes:Number(live),peakBytes:peak,reservedBytes:reserved});
     }
     // Late output failure must preserve both State and the original response.
     const value=readFileSync(`${corpus}/Q-${depth}-valid.ers3`);
@@ -51,7 +64,7 @@ for(const family of ["H","Q"]) for(const depth of family==="H"?[1,16,64,256,1024
   }
   assert.equal(out.kind,"completed");assert.equal(Buffer.from(out.value).readBigUInt64LE(),family==="Q"?135n:128n);
   for(const {k,p,s}of arms){k.close(s);k.releasePrepared(p);assert.equal(k.usage().workingLive,0n);}
-  report.cells.push({family,depth,imageSha256:hash(image),boundaries,distinctContinuationEffects:Number(next)-1,transferDirections:2,rejections:family==="Q"?6:0,lateOutputFailures:family==="Q"?2:0});
+  report.cells.push({family,depth,imageSha256:hash(image),boundaries,distinctContinuationEffects:Number(next)-1,transferDirections:2,rejections:family==="Q"?6:0,lateOutputFailures:family==="Q"?2:0,repeatedFailures});
   writeFileSync(output,JSON.stringify(report,null,2)+"\n");console.log(JSON.stringify(report.cells.at(-1)));
 }
 report.status="complete";writeFileSync(output,JSON.stringify(report,null,2)+"\n");

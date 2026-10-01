@@ -55,21 +55,29 @@ pub fn main(init: std.process.Init) !void {
     }
     if (workspace.live_payload != 0) return error.Leak;
     var samples: [9]f64 = undefined;
+    // Equal, predeclared repetitions make clock quantization negligible for
+    // submicrosecond drives. Setup and teardown remain outside this drive-only
+    // interval; the separate single-resident memory pass above is unchanged.
+    const batch = 64;
     for (0..12) |sample| {
-        var session = try world.Resident.start(init.gpa, &prepared, input);
+        var sessions: [batch]world.Resident = undefined;
+        var outcomes: [batch]world.invocation.Outcome = undefined;
+        for (&sessions) |*session| session.* = try world.Resident.start(init.gpa, &prepared, input);
         const start = std.Io.Clock.awake.now(init.io);
-        var out = try session.drive(init.gpa, .none, .{ .quantum = quantum });
+        for (&sessions, &outcomes) |*session, *outcome| outcome.* = try session.drive(init.gpa, .none, .{ .quantum = quantum });
         const elapsed = start.durationTo(std.Io.Clock.awake.now(init.io)).nanoseconds;
-        out.deinit();
-        if (sample >= 3) samples[sample - 3] = @floatFromInt(elapsed);
-        var final = try session.drive(init.gpa, .none, .{});
-        defer final.deinit();
-        if (final.record != .completed or std.mem.readInt(u64, final.record.completed[0..8], .little) != expected) return error.WrongResult;
-        try session.close();
+        if (sample >= 3) samples[sample - 3] = @as(f64, @floatFromInt(elapsed)) / batch;
+        for (&sessions, &outcomes) |*session, *outcome| {
+            outcome.deinit();
+            var final = try session.drive(init.gpa, .none, .{});
+            defer final.deinit();
+            if (final.record != .completed or std.mem.readInt(u64, final.record.completed[0..8], .little) != expected) return error.WrongResult;
+            try session.close();
+        }
     }
     var buffer: [4096]u8 = undefined;
     var output = std.Io.File.stdout().writer(init.io, &buffer);
-    try std.json.Stringify.value(.{ .imageDigest = data.wire.digest(image), .startLive = start_live, .pauseLive = pause_live, .pauseAllocations = pause_allocations, .pauseAllocatedBytes = pause_bytes, .runAllocations = run_allocations, .runAllocatedBytes = run_bytes, .peakBytes = workspace.peak_payload, .retainedBytes = retained_bytes, .samplesNs = samples }, .{}, &output.interface);
+    try std.json.Stringify.value(.{ .imageDigest = data.wire.digest(image), .startLive = start_live, .pauseLive = pause_live, .pauseAllocations = pause_allocations, .pauseAllocatedBytes = pause_bytes, .runAllocations = run_allocations, .runAllocatedBytes = run_bytes, .peakBytes = workspace.peak_payload, .retainedBytes = retained_bytes, .batch = batch, .samplesNs = samples }, .{}, &output.interface);
     try output.interface.writeByte('\n');
     try output.interface.flush();
 }

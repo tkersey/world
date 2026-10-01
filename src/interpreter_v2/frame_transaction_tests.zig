@@ -132,3 +132,42 @@ test "every fallible frame protection and successor allocation preserves retryab
         }
     }
 }
+
+test "fixed large retained population protects and releases only the selected mutation set" {
+    const a = testing.allocator;
+    var pool: data.analysis_sets.Pool = .{ .allocator = a, .limit = 4 };
+    defer pool.deinit();
+    const functions = [_]data.activation.Function{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = &.{ 0, 0, 0, 0 } }, .result = 0 }};
+    var layouts = try bindings.Layouts.init(a, &functions);
+    defer layouts.deinit();
+    var frames = try bindings.Frames.init(a, &pool, &layouts);
+    defer frames.deinit();
+    for (0..1024) |id| {
+        var frame = try frames.create(0);
+        errdefer frames.releaseFrame(frame);
+        try frames.write(&frame, 0, Values.natural(0, id));
+        try frames.put(id, frame);
+    }
+    for ([_]usize{ 1, 7, 31 }) |changed| {
+        var stats: bindings.Statistics = .{};
+        frames.statistics = &stats;
+        try frames.begin();
+        for (0..1024) |id| _ = try frames.get(id);
+        try testing.expectEqual(0, frames.journal.?.entries.count());
+        for (0..changed) |id| {
+            const frame = try frames.getMutable(id);
+            try frames.write(frame, 1, Values.natural(0, id + 1000));
+            try frames.write(frame, 1, Values.natural(0, id + 2000));
+        }
+        try testing.expectEqual(changed, stats.saved_entries);
+        try testing.expectEqual(changed, stats.forked_frames);
+        frames.commit();
+        try testing.expectEqual(changed, stats.commit_entries);
+        try testing.expectEqual(1024, frames.entries.count());
+        for (0..1024) |id| {
+            const value = try frames.slots.get((try frames.get(id)).view, 0);
+            try testing.expectEqual(id, std.mem.readInt(u64, value.body.scalar[0..8], .little));
+        }
+    }
+    frames.statistics = null;
+}

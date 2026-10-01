@@ -81,6 +81,12 @@ pub const Frames = struct {
     pub const Journal = struct {
         // null records absence at entry, including a removed/reused identifier.
         entries: std.AutoHashMapUnmanaged(data.program.Id, ?Frame) = .empty,
+        // A successful hold remains valid for this entire attempt, even if the
+        // identifier is removed and reused. Avoid rehashing the active frame on
+        // every instruction; the journal still owns its first entry version.
+        // Nonempty entries certify that last_held was successfully protected;
+        // no second validity tag is needed for this attempt-local shortcut.
+        last_held: data.program.Id = 0,
     };
     pub fn begin(self: *Frames) Error!void {
         if (self.journal != null) return error.InvalidState;
@@ -88,12 +94,22 @@ pub const Frames = struct {
     }
     /// Secure the entry version before exposing a mutable frame or changing
     /// membership. Reads never come here. Repeated touches retain the first one.
-    fn hold(self: *Frames, id: data.program.Id) Error!void {
+    inline fn hold(self: *Frames, id: data.program.Id, original: ?*const Frame) Error!void {
         const journal = if (self.journal) |*value| value else return;
-        if (journal.entries.contains(id)) return;
+        if (journal.entries.count() != 0 and journal.last_held == id) return;
+        try self.holdUncached(journal, id, original);
+    }
+    // Fresh execution and repeated active-frame writes avoid calling the
+    // allocation/fork path. A miss still establishes the same entry version.
+    noinline fn holdUncached(self: *Frames, journal: *Journal, id: data.program.Id, original: ?*const Frame) Error!void {
+        if (journal.entries.contains(id)) {
+            journal.last_held = id;
+            return;
+        }
         try journal.entries.ensureUnusedCapacity(self.allocator, 1);
-        const saved = if (self.entries.get(id)) |frame| try self.forkFrame(frame) else null;
+        const saved = if (original) |frame| try self.forkFrame(frame.*) else null;
         journal.entries.putAssumeCapacity(id, saved);
+        journal.last_held = id;
         if (self.statistics) |s| {
             s.saved_entries +|= 1;
             if (saved != null) s.forked_frames +|= 1;
@@ -139,9 +155,11 @@ pub const Frames = struct {
     }
     /// The borrow ends before any operation that changes the frame map.
     pub fn getMutable(self: *Frames, id: data.program.Id) Error!*Frame {
-        if (!self.entries.contains(id)) return error.InvalidState;
-        try self.hold(id);
-        return self.entries.getPtr(id) orelse error.InvalidState;
+        const frame = self.entries.getPtr(id) orelse return error.InvalidState;
+        // hold grows its own journal and slot/custody view tables, never this
+        // map. The local pointer stays valid and is exposed only after protection.
+        try self.hold(id, frame);
+        return frame;
     }
     /// A mutable copy is used when a caller can grow the map before update.
     pub fn getForMutation(self: *Frames, id: data.program.Id) Error!Frame {
@@ -169,17 +187,17 @@ pub const Frames = struct {
     }
     pub fn put(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         if (self.entries.contains(id)) return error.InvalidState;
-        try self.hold(id);
+        try self.hold(id, null);
         try self.entries.put(self.allocator, id, frame);
     }
     pub fn update(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
-        if (!self.entries.contains(id)) return error.InvalidState;
-        try self.hold(id);
-        self.entries.getPtr(id).?.* = frame;
+        const target = self.entries.getPtr(id) orelse return error.InvalidState;
+        try self.hold(id, target);
+        target.* = frame;
     }
     pub fn remove(self: *Frames, id: data.program.Id) Error!void {
-        if (!self.entries.contains(id)) return;
-        try self.hold(id);
+        const original = self.entries.getPtr(id) orelse return;
+        try self.hold(id, original);
         if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
     }
     pub fn create(self: *Frames, function: data.program.Id) Error!Frame {
