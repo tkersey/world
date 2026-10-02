@@ -56,6 +56,44 @@ test('layout sampler preserves every operation peak across resetting lifecycle c
   } finally { rmSync(directory, {recursive:true, force:true}); }
 });
 
+test('blob lifecycle and alias samplers preserve each peak before cleanup resets it', () => {
+  const directory=mkdtempSync(join(tmpdir(),'world-blob-peaks-'));
+  try {
+    const embedding=join(directory,'embedding.mjs'),kernelPath=join(directory,'kernel');
+    writeFileSync(embedding, `
+const encoded=(kind,value)=>{const bytes=Buffer.alloc(8);bytes.writeBigUInt64LE(BigInt(value));return Buffer.from(JSON.stringify({kind,value:Array.from(bytes)}));};
+export const encodeInput=()=>Buffer.alloc(1);
+export const decodeOutcome=bytes=>{const out=JSON.parse(Buffer.from(bytes));out.value=Buffer.from(out.value);return out;};
+export class Kernel {
+ static async create({bytes}){return new Kernel(JSON.parse(Buffer.from(bytes)));}
+ constructor({largest,value}){this.largest=largest;this.value=value;this.live=0n;this.peak=0n;}
+ setLimits(){}
+ observe(name,live){this.peak=BigInt(name===this.largest?900:10);this.live=BigInt(live);}
+ prepare(){this.observe('prepare',10);return {};}
+ start(){this.step=0;this.observe('start',20);return {};}
+ drive(){this.observe('drive'+(++this.step),20);return encoded(this.step===1?'progressed':'completed',this.value);}
+ invoke(){this.observe('invoke',0);return encoded('completed',this.value);}
+ close(){this.observe('close',10);}
+ releasePrepared(){this.observe('release',0);}
+ usage(){return {workingLive:this.live,workingPeak:this.peak,memoryBytes:1024};}
+}`);
+    for(const name of ['unique.bpi3','unique-0.args','1.bpi3','1.args'])writeFileSync(join(directory,name),Buffer.alloc(1));
+    const phases=['prepare','start','drive1','drive2','close','release'];
+    for(const phase of ['fresh','resident-lifecycle'])for(const largest of phase==='fresh'?['invoke']:phases){
+      writeFileSync(kernelPath,JSON.stringify({largest,value:0}));
+      const script=fileURLToPath(new URL('./blob_retention_timing.mjs',import.meta.url));
+      const result=JSON.parse(execFileSync(process.execPath,[script,'sample',embedding,kernelPath,directory,'unique','0',phase,'memory'],{encoding:'utf8'}));
+      assert.equal(result.peakBytes,900,phase+': '+largest);
+    }
+    for(const largest of phases){
+      writeFileSync(kernelPath,JSON.stringify({largest,value:65536}));
+      const script=fileURLToPath(new URL('./blob_alias_scaling.mjs',import.meta.url));
+      const result=JSON.parse(execFileSync(process.execPath,[script,'sample',embedding,kernelPath,directory,'1','complete'],{encoding:'utf8'}));
+      assert.equal(result.peakBytes,900,'alias: '+largest);assert.equal(result.samplesNs.length,9);
+    }
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
 test('retained lifecycle sampler observes failed commands and cleanup before peak reset', () => {
   const directory = mkdtempSync(join(tmpdir(), 'world-retained-peaks-'));
   try {

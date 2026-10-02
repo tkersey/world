@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync,writeFileSync,readdirSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
+import {dirname,resolve} from 'node:path';
 const [before,after,corpus,output,...manifests]=process.argv.slice(2);
 assert(before&&after&&corpus&&output);
 const hash=p=>createHash('sha256').update(readFileSync(p)).digest('hex');
@@ -13,8 +14,9 @@ for(const path of manifests){
  for(const name of new Set(rows.map(r=>r.name))){
   assert(!cases.some(c=>c.name===name),'duplicate case name');
   const commands=rows.filter(r=>r.name===name).map(r=>{
-   assert.equal(hash(r.inputFile),r.inputSha256);assert.equal(hash(r.outputFile),r.outputSha256);
-   return{path:r.inputFile,sha256:r.inputSha256,expected:r.outputSha256};
+   const input=resolve(dirname(path),r.inputFile),output=resolve(dirname(path),r.outputFile);
+   assert.equal(hash(input),r.inputSha256);assert.equal(hash(output),r.outputSha256);
+   return{path:input,sha256:r.inputSha256,expected:r.outputSha256};
   });
   cases.push({name,phase:'replay',commands});
  }

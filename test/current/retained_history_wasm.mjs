@@ -7,7 +7,7 @@ import {frame, concat, field} from '../../src/embedding/wire.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const [action, embedding, kernelPath, imagePath, mode, depthText, recordPath, profile = 'normal'] = process.argv.slice(2);
-assert(['freeze', 'sample', 'memory', 'complete'].includes(action));
+assert(['freeze', 'sample', 'memory', 'complete', 'plateau'].includes(action));
 assert(['H','Q'].includes(mode));
 assert(['normal','failure'].includes(profile));
 const world = await import(pathToFileURL(embedding));
@@ -122,6 +122,14 @@ if (action === 'freeze') {
 } else if (action === 'memory') {
   const result = run(true);
   console.log(JSON.stringify({mode, depth, kernelSha256:hash(bytes), ...result}));
+} else if (action === 'plateau') {
+  const cycles=[];
+  for(let i=0;i<64;i++){
+    const result=run(true);
+    cycles.push({peakBytes:result.peakBytes,reservedBytes:result.reservedBytes,pauseLive:result.pauseLive});
+    if(i>=16)assert.deepEqual(cycles[i],cycles[16]);
+  }
+  console.log(JSON.stringify({mode,depth,kernelSha256:hash(bytes),cycles}));
 } else {
   // Every saved continuation has a distinct expected effect, not a checksum.
   const p = kernel.prepare(image), s = kernel.start(p, initialArgs);
