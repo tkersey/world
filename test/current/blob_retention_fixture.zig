@@ -1,6 +1,18 @@
 const std = @import("std");
 const data = @import("boundary_data");
 const fixtures = @import("retention_fixture");
+// Keep the reusable captured branch live across its first application. Both
+// observations contribute to the result; prefix checks distinguish each call.
+const retained = blk: {
+    var p = fixtures.captured;
+    p.blocks = &.{
+        fixtures.captured.blocks[0],
+        .{ .function = 0, .instructions = &.{}, .terminator = .{ .apply = .{ .computation = 2, .arguments = &.{}, .next = .{ .block = 3, .assignments = &.{.{ .destination = 1, .source = .returned }} } } } },
+        fixtures.captured.blocks[2],
+        .{ .function = 0, .instructions = &.{.{ .destination = 3, .opcode = .integer_bit_xor, .operands = &.{ 1, 3 } }}, .terminator = .{ .return_value = 3 } },
+    };
+    break :blk p;
+};
 fn aliases(a: std.mem.Allocator, count: usize) !data.activation.Program {
     if (count == 0 or count > 128) return error.Count;
     const inputs = try a.alloc(data.program.Id, count);
@@ -25,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.next() != null) return error.Arguments;
     var arena = std.heap.ArenaAllocator.init(init.gpa);
     defer arena.deinit();
-    const program = if (std.mem.eql(u8, mode, "unique")) comptime fixtures.program(false) else if (std.mem.eql(u8, mode, "alias")) comptime fixtures.program(true) else if (std.mem.eql(u8, mode, "captured")) fixtures.captured else if (std.mem.startsWith(u8, mode, "aliases-")) try aliases(arena.allocator(), try std.fmt.parseInt(usize, mode[8..], 10)) else return error.Mode;
+    const program = if (std.mem.eql(u8, mode, "unique")) comptime fixtures.program(false) else if (std.mem.eql(u8, mode, "alias")) comptime fixtures.program(true) else if (std.mem.eql(u8, mode, "captured")) fixtures.captured else if (std.mem.eql(u8, mode, "retained")) retained else if (std.mem.startsWith(u8, mode, "aliases-")) try aliases(arena.allocator(), try std.fmt.parseInt(usize, mode[8..], 10)) else return error.Mode;
     const image = try init.gpa.alloc(u8, try data.program_image.encodedLength(program));
     defer init.gpa.free(image);
     _ = try data.program_image.encode(init.gpa, program, image);

@@ -94,9 +94,14 @@ pub const Frames = struct {
         if (self.journal != null) return error.InvalidState;
         self.journal = .{ .node_count = node_count };
     }
-    fn hold(self: *Frames, id: data.program.Id) Error!void {
+    inline fn hold(self: *Frames, id: data.program.Id) Error!void {
         const journal = if (self.journal) |*value| value else return;
         if (id >= journal.node_count or journal.last_held == id) return;
+        return self.holdEntry(id, journal);
+    }
+    // Keep fresh/no-transaction and repeated active-frame acquisition cheap;
+    // allocation and persistent-root preparation belong to first touch.
+    noinline fn holdEntry(self: *Frames, id: data.program.Id, journal: *Journal) Error!void {
         if (journal.entries.contains(id)) {
             journal.last_held = id;
             return;

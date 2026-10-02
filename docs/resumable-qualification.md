@@ -195,3 +195,44 @@ The four-operation cell remains variable (median ratio 1.0776 with fewer than
 four windows over 1.05), so it is disclosed as inconclusive pending the cumulative
 run rather than described as a speedup. Full final cost and package qualification
 remain required before P0.
+
+### Bounded dispatch ablation
+
+The complete cost pass at `36b7fa5` clears the long-tail gates but introduces a
+reproducible native fresh-replay regression: consequence scenarios are about
+10–11% slower and document scenarios about 12–13% slower. That run is retained
+as failed; its native replay was stopped after the repeated failures, and its
+remaining cases receive no qualification credit. Fresh invocation never opens a
+frame journal, so the extra cost is not actual first-touch allocation.
+
+A three-window diagnostic holds the same binary inputs and controls fixed while
+separating the cached journal key from the reduced frame lookup. Restoring the
+old double lookup preserves the document cost but loses roughly 6–7% on long
+native tail calls. Removing the cached key also clears the document regression,
+but forfeits its resident benefit. Keeping both changes and explicitly inlining
+only the empty/new/already-protected checks, with first-touch preparation in a
+separate function, clears both diagnostic costs: document/consequence ratios
+are 1.002/0.999 and compatible/fallback 512-call ratios are 1.015/1.023. These
+are mechanism diagnostics, not final acceptance. No ownership, mutation surface,
+transaction semantics, or observation changes in this correction.
+
+The short fallback-eight WASM fresh cell also exposed an invalid steady-latency
+interpretation of the historical three-warmup sampler: measured batches descend
+from about 60 to 31 microseconds while the sum of the original nine batches
+stays within 2%. Independent V8 compilation traces show tier compilation inside
+those measured batches on both binaries. The revised F sampler uses 64 fixed
+warmups for both WASM arms and retains every warmup, the entire original
+12-batch cold-ramp total, and engine setup time. Native warmup remains three.
+A separate trace at 64 warmups still observes occasional compilation but no
+comparable twofold ramp (about 27–30 microseconds across the final nine samples).
+Original failed windows remain evidence; final timing uses normal engine flags
+and must independently satisfy the unchanged five-window rules.
+
+The additional retained-blob witness applies a reusable captured branch twice,
+with both reads contributing to the result. Baseline/candidate canonical prefixes
+match at nine cuts across all six threshold/size cases. The 1 MiB backing remains
+live after the first branch returns and is reclaimed at the public pause after
+its last read, before final completion. Native full-lifecycle smoke also covers
+these six cases and direct alias counts 1/4/16/64 with identical outcome digests.
+The corrected source passes 77 storage and 91 native tests. Complete cumulative
+cost and package qualification remain open.
