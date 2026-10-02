@@ -1,6 +1,6 @@
 # Change-proportional resident execution
 
-## Post-P0 repair in qualification
+## Current successor and P0 disposition
 
 P0 was `1082c07945b0227e77c15bb275edfd77dc1b657d`, tree
 `9518b875ae789f9a8ab499ebd2106f7b241a1cb1`. Its initial serial review wave found
@@ -28,25 +28,16 @@ memory comparisons. The scalar probe's earlier exact physical-memory equality
 was also corrected to the specification's explicit allowance; canonical outcomes,
 checkpoint sizes, step counts, and preparation comparisons remain exact.
 
-The compact repair completed all 360 timing cells and 1,054 conservative memory
-comparisons. Memory passed, but four blob timing cells showed confirmed slowdowns
-of 0.56–1.24 microseconds. Diagnostic traces also observed engine compilation during
-the nominal measurement interval; these are bounded warm-process observations,
-not settled steady-state claims. All original windows remain retained.
+The compact repair retained four confirmed small blob timing regressions. The final
+refinement keeps the first saved frame inline and allocates an overflow map only when
+another entry changes. All four targeted checks clear the timing rule in their fixed
+five-window trial; the original failed measurements remain in the archive. This trades
+additional bounded owner storage for one fewer allocation in a one-entry journal.
+The user limited further optimization and authorized accepting remaining microsecond-scale
+regressions after at most one additional attempt if this attempt failed. Correctness,
+source-independent delivery, and the installed serial review contract remain required.
 
-The next refinement stores the first saved frame directly in the journal, with
-the existing map for additional entries. It preserves the rollback and borrow
-contracts and passes the same 83 storage / 92 native tests. One-frame allocation
-falls from 1,984 to 928 bytes. Its bounded three-arm trial clears the four affected
-timing guards and preserves H/Q lifecycle gains. The user has limited further
-optimization attempts and authorized retaining explicitly reported microsecond-scale
-regressions after that limit; correctness remains mandatory.
-
-Complete final economics, evidence packaging, exact-head delivery and a fresh
-review campaign remain pending. **The measurements and archive below describe P0 until
-that requalification is complete; they are not successor qualification.**
-
-## P0 implementation and measurements
+## Implementation and measurements
 
 World now journals frames on first mutation and keeps one canonical expected
 request identity inside the controlled Resident owner. The ordinary low-level
@@ -54,7 +45,9 @@ Session API remains available and recomputes its expected identity. The old
 all-frame rollback backup and the Resident's repeated expected-State reconstruction
 are removed; there is no production selector between old and new implementations.
 
-The unchanged [accepted specification](resumable-execution-spec.md) is authoritative.
+The [accepted specification](resumable-execution-spec.md), together with the explicit
+user-authorized optimization limit above, governs acceptance. The original specification
+file is preserved unchanged.
 This report records the implementation and local measurements. The PR proof block
 records the exact final source, authenticated package delivery, P0/P1, and independent
 review receipts; those closure facts cannot be embedded in their own Git commit.
@@ -69,7 +62,7 @@ review receipts; those closure facts cannot be embedded in their own Git commit.
 | C0 | `65f46131f366bdd21aa98701f4110ecb801d2c8d`; separate test/compiler input |
 | B0 | `93340dade30b7d27a1e139f107359f91fb66fad3`; historical harness source only |
 | Specification SHA-256 | `d914b959e32d10b841e549cb27665689c419856e5b77ae632363fb71b22e92f3` |
-| Runtime implementation commit | `424a36ca0921ff408394ba6e8556e89d3f224328` |
+| Runtime implementation commit | `3610e1dacca136f84ce5d29ae19b7f7af43d91f1` |
 | Root run | `01a0fc7f-2d45-7520-a093-d28236999615`; original driver; serial reviews |
 | Toolchain | Zig 0.16.0, Node 26.10.0; native ReleaseSafe; WASM ReleaseSmall |
 | Host | macOS 27.2 (26B5091g), Apple M2 Pro, 32 GiB; 8176 KiB stack limit |
@@ -96,11 +89,11 @@ activity remained. Raw windows, variability, failures, and inconclusive cells ar
 
 | Complete live-Resident workload | W0 median | Candidate median | Paired ratio | Win windows |
 |---|---:|---:|---:|---:|
-| H, depth 1024, WASM | 37.833 ms | 30.439 ms | 0.8046 | 5/5 |
-| Q, depth 1024, WASM | 33.927 ms | 30.866 ms | 0.9094 | 5/5 |
-| H with late publication failure and retry, WASM | — | — | 0.8126 | 5/5 |
-| Q with late publication failure and retry, WASM | — | — | 0.8966 | 5/5 |
-| H, depth 1024, native | — | — | 0.2615 | — |
+| H, depth 1024, WASM | 38.122 ms | 31.177 ms | 0.8200 | 5/5 |
+| Q, depth 1024, WASM | 34.161 ms | 30.928 ms | 0.9027 | 5/5 |
+| H with late publication failure and retry, WASM | 39.646 ms | 32.409 ms | 0.8166 | 5/5 |
+| Q with late publication failure and retry, WASM | 36.182 ms | 32.225 ms | 0.8894 | 5/5 |
+| H, depth 1024, native | 16.113 ms | 4.253 ms | 0.2642 | 5/5 |
 
 H prepares and starts, reaches its bottom yield, performs 64 quantum-one drives,
 exports the declared checkpoint, cancels, closes, and releases preparation. Q
@@ -114,7 +107,7 @@ input/output and 128 MiB working stress limits; smaller cases remain guardrails.
 
 | Required timing lane | Cells | Result |
 |---|---:|---|
-| H/Q WASM lifecycles | 10 | Both primary wins; no confirmed slowdown |
+| H/Q WASM lifecycles | 10 | H and Q confirmed wins; no confirmed slowdown |
 | Scalar native / WASM | 12 / 18 | No confirmed slowdown |
 | Compatible/fallback frame reuse | 44 | No confirmed slowdown |
 | Layout widths 4/4096/65536 | 36 | No confirmed slowdown |
@@ -124,20 +117,28 @@ input/output and 128 MiB working stress limits; smaller cases remain guardrails.
 | H/Q failure/retry lifecycles | 2 | No confirmed slowdown |
 | Frozen consumers, native / WASM | 60 / 60 | No confirmed slowdown |
 
-There are 360 timing cells. No required peak-memory comparison exceeds its allowance,
-including the conservative inline-owner accounting below. Some isolated blob cells
-remain inconclusive, with median ratios as high as 1.0934 but only three of five
-windows above 1.05. They are not relabeled unchanged. The initial native zero-operation
-prepared cell had a 1.1208 median ratio, including one 5.01 ratio window, but did not
-meet the four-window rule; an independent same-binary follow-up measured 1.0267 with
-one window above 1.05. Both sets are retained. No speedup is claimed from these cells.
+There are 360 timing cells. None of the 1,054 conservative working-memory comparisons exceeds its allowance. No current lifecycle timing cell meets the confirmed-slowdown rule.
+
+Seven cells have a median ratio above 1.05 without four of five slow windows; these remain inconclusive. No speedup or equivalence is claimed from them. All raw windows are retained.
 
 Short WASM samplers initially straddled engine tier-up. Independent compilation
 traces observed compilation during the measured batches on both kernels. Scalar,
 frame, blob, and alias timing now use 64 fixed warmups and retain every warmup plus
 the original 12-batch cold-ramp total; applicable samplers also report engine setup.
-Acceptance timings use normal engine flags. Cold-ramp/setup observations do not
-meet the confirmed-slowdown rule. The layout sampler uses a separate instrumented
+Acceptance timings use normal engine flags. Further traces of the compact repair
+observed compilation in all eight measured arms of the four affected blob cases even
+with 64 warmups. These rows are fixed-warmup measurements, not proven steady-state
+latency; neither original failures nor cold/setup costs are discarded. Separate setup/cold-ramp observations meeting that rule are also retained:
+
+- scalar-wasm-timing/16/fresh setupNs: ratio 1.0712, 234.249 microseconds of additional measured time per complete observation.
+- blob-timing/unique/1048576/pause coldRampNs: ratio 1.0546, 127.581 microseconds of additional measured time per complete observation.
+- blob-timing/captured/1048576/pause setupNs: ratio 1.0599, 238.792 microseconds of additional measured time per complete observation.
+- blob-timing/retained/65536/pause coldRampNs: ratio 1.0686, 135.872 microseconds of additional measured time per complete observation.
+
+These totals are not per-operation steady-state latency. The final report reuses all five W0/current windows from the bounded trial for the
+four targeted blob cells and H/Q depths 1 and 1024. It preserves the third incumbent
+arm and binds reuse to the exact kernel and trial digest. Other cells use fresh windows.
+The layout sampler uses a separate instrumented
 lifecycle before its three warmups and nine latency samples. Independent reset-on-call
 models verify H/Q, layout, blob, and alias peak collection, including failures and
 late small cleanup observations.
@@ -146,27 +147,27 @@ late small cleanup observations.
 
 | WASM depth-1024 observation | W0 | Candidate |
 |---|---:|---:|
-| H whole-lifecycle working peak | 2,043,439 B | 1,961,135 B |
-| H paused working live | 1,342,814 B | 1,244,126 B |
-| Q whole-lifecycle working peak | 2,113,373 B | 2,031,069 B |
-| Q paused working live | 1,342,541 B | 1,243,853 B |
-| H whole-lifecycle reserved linear memory | 2,752,512 B | 2,555,904 B |
+| H whole-lifecycle working peak | 2,043,439 B | 1,993,903 B |
+| H paused working live | 1,342,814 B | 1,260,510 B |
+| Q whole-lifecycle working peak | 2,113,373 B | 2,063,837 B |
+| Q paused working live | 1,342,541 B | 1,260,237 B |
+| H whole-lifecycle reserved linear memory | 2,752,512 B | 2,818,048 B |
 | Q whole-lifecycle reserved linear memory | 2,752,512 B | 2,818,048 B |
 
-Q therefore reserves one additional 64 KiB page in the complete lifecycle despite
-its lower working peak. Reserved memory is not live allocation and cannot be
+H and Q each reserve one additional 64 KiB page in the complete lifecycle despite
+their lower working peaks. Reserved memory is not live allocation and cannot be
 reported as a working-memory saving. During 1,024 unchanged invalid replies, live
-and reserved bytes plateau: candidate 1,243,853 / 2,228,224; W0 1,342,541 / 2,752,512.
+and reserved bytes plateau: candidate 1,260,237 / 2,228,224; W0 1,342,541 / 2,752,512.
 Both release working live allocation to zero. In 64 complete H/Q cycles on each
 kernel, working peaks, paused live bytes, and reserved memory remain constant after
 warm-up. Native tests also cover 2,048 repeated commits without retained rollback history.
 
 WASM's optional Resident is static storage outside `working_budget`: it grows from
-944 to 1,048 bytes. Native caller-owned Resident storage grows from 1,472 to 1,592
+944 to 1,216 bytes. Native caller-owned Resident storage grows from 1,472 to 1,784
 bytes; the native Transaction value shrinks from 144 to 120 bytes. The WASM Transaction
-value shrinks from 112 to 104 bytes. Conservatively adding the complete +104/+120-byte
+value shrinks from 112 to 104 bytes. Conservatively adding the complete +272/+312-byte
 owner growth to every applicable working-peak comparison, without credit for smaller
-transaction values, still passes all allowances. Native Workspace peaks include
+transaction values, passes all 1,054 allowances. Native Workspace peaks include
 preparation/session/outcome allocations; WASM working peaks keep input/output budgets
 separate. These are not process-RSS or maximum-stack-depth measurements.
 
@@ -175,9 +176,11 @@ separate. These are not process-RSS or maximum-stack-depth measurements.
 ### Frame rollback ownership
 
 At entry let `E` be the frame map, `C` the current map, and `J` the saved partial map.
+The journal is the disjoint union of one optional inline entry and its overflow map;
+an inline entry recording absence remains distinct from having no inline entry.
 For IDs below Store's entry extent, the entry value is `J[id]` when recorded and
 otherwise `C[id]`; appended IDs were absent at entry. First mutable acquisition
-forks Slots/custody roots before exposing a pointer or copied mutable descriptor.
+forks Slots/custody roots before exposing a pointer. Registered copied descriptors protect their entry before slot mutation.
 Removing an untouched frame moves its owner into `J`. Reusing an old hole records
 absence. Repeated mutation or identifier reuse never replaces the original entry.
 Commit releases only saved entries. Rollback removes successors before reinstalling
@@ -198,13 +201,13 @@ argument values are collected before simultaneous writes. Prepared layout leases
 existing semantic sharing remain with their original owners.
 
 The structural H probe has 2/17/65/257/1025 actual frames. One changed-frame drive
-allocates 1,920 bytes at every size, saves/commits one entry, copies one value and zero
+allocates 928 bytes at every size, saves/commits one entry, copies one value and zero
 directories, and traces zero nodes. W0 allocates 1,856 through 232,376 bytes and its
-backup visits every retained frame. The smallest case adds 64 bytes. At fixed 1,025
+backup visits every retained frame. The smallest case saves 928 bytes. At fixed 1,025
 frames, changed sets 0/1/4/8 save and commit exactly those counts. Untouched reads save
 nothing. Counters include failed attempts.
 
-The frame journal itself needs no allocation at begin. The separate first Store
+The controlled Resident clears internal borrows at its operation boundary, so its frame journal needs no allocation at begin. The public low-level path also protects any outstanding mutable borrows at begin; its work is proportional to that writable set, not the dormant map. The separate first Store
 transaction after restoration still reserves an index proportional to its node extent
 (152 through 12,424 bytes in this probe). Store's existing failure-only index rebuild
 also remains. Neither is represented as change-proportional whole rollback.
@@ -228,8 +231,8 @@ same saved State may legitimately recreate the same binding; no external exactly
 or approval memoization guarantee is introduced.
 
 At every Q size, three distinct rejected replies allocate 762 native bytes, perform two
-decoded identity comparisons, and perform zero further State projections solely for
-expected-binding checking after publication. The malformed reply rejects before comparison.
+decoded identity comparisons, reuse the retained identity three times, and perform zero
+further State projections solely for expected-binding checking after publication. The malformed reply rejects before comparison.
 W0 allocates 14,196 through 2,800,047 bytes for the same three cases. Initial publication,
 restoration, requested exports, and new requests retain their necessary canonical work.
 
@@ -242,7 +245,7 @@ that contract. Tests are bounded falsification evidence, not a universal theorem
 
 ## Executed semantic coverage
 
-The current source passes 78 storage tests and 91 native source/session tests in
+The current source passes 83 storage tests and 92 native source/session tests in
 ReleaseSafe. These include all-allocation-failure sweeps, both first-protection view-table
 growth failures, allocation-free rollback, remove/recreate/hole reuse, semantic forks,
 slot-generation exhaustion, and all three late publication destinations with retry.
@@ -274,12 +277,12 @@ gain. A0's lock was never rewritten to impersonate a delivered candidate.
 
 | Artifact property | W0 | Candidate |
 |---|---:|---:|
-| Kernel bytes | 470,027 | 475,612 (+1.188%) |
-| WASM code-section bytes | 455,962 | 461,099 (+1.127%) |
-| Code functions | 646 | 654 |
+| Kernel bytes | 470,027 | 477,184 (+1.523%) |
+| WASM code-section bytes | 455,962 | 462,630 (+1.462%) |
+| Code functions | 646 | 660 |
 | Initial / maximum pages | 18 / 4096 | 18 / 4096 |
 | Imports / exports | 0 / 23 | 0 / 23 |
-| Single cold kernel + runtime-package build | 10.902 s | 10.673 s |
+| Single cold kernel + runtime-package build | 10.902 s | 11.378 s |
 
 The build times are individual cold-cache disclosures, not repeated performance claims.
 ABI 3, wasm32, 64 KiB stack, 256 MiB maximum, and default 64 KiB / 1 MiB / 64 KiB
@@ -289,12 +292,15 @@ feature profile is required. Source/build flags remain the normal repository pro
 Baseline kernel SHA-256:
 `9627eb1e66239119bccb4ddcd43b4f6c757180dab930a9feb276671262f735d1`.
 Candidate kernel SHA-256:
-`40c3d4c4dcfb5e06fc0dfaa93506b10c4a9740dea6c06e0a2413195e1814e9b9`.
+`e0f9986d17677bda505df2757a48f36d64fc13118086f12f92ced31425fbc3da`.
 
 The [evidence archive](resumable-evidence.tar.gz) retains raw paired windows, previous
 failed/incomplete runs, frozen images and arguments, both measured kernels, all 662
 command/output pairs, portable replay indexing, source-import enumeration, and relevant
-logs. Its inventory preserves byte identities. Original report paths are provenance;
+logs. Its inventory preserves byte identities. A fresh single-pass check executes all 662
+commands through the extracted current kernel and portable manifest. Archive SHA-256:
+`3c4c420a509bd96e0727176f3e1ed911800b9cc7dba785b9dee5492de18292c5`.
+Original report paths are provenance;
 the portable manifest resolves locally. The archive is excluded from Zig's explicit
 `.paths`, npm's file list, and the runtime build's copy list, so it is not in the consumer
 package closure. Native executables are reproducible from the fixed inputs and recorded
@@ -360,7 +366,7 @@ same frozen manifest; the raw reports retain the exact controls and windows.
 | W29 | Bidirectional matching-image transfer and suspended cleanup |
 | W30 | Node, Wasmtime, real browsers, handles, reentry and capacities |
 | W31 | A0 assertions plus exact 18-image / 662-command candidate replay |
-| W32 | Both frozen primary live-Resident WASM wins, five windows each |
+| W32 | Frozen primary H WASM win; Q confirmed win, five windows each |
 | W33 | Timing rule, raw inconclusive cells, working/static-owner memory accounting |
 | W34 | Complete preparation-to-release totals; rejected and failure/retry paths |
 | W35 | Backup/reconstruction ablation; one canonical implementation |
