@@ -82,9 +82,9 @@ pub const Frames = struct {
     const Journal = struct {
         node_count: usize,
         entries: std.AutoHashMapUnmanaged(data.program.Id, ?Frame) = .empty,
-        // Membership only grows during an attempt. Reusing this one proven key
-        // avoids hashing it again at every instruction of a long active drive.
-        last_held: ?data.program.Id = null,
+        // The entry extent itself is an initially safe (absent-at-entry) key.
+        // Later keys are protected journal members; neither needs a tag.
+        last_held: data.program.Id,
     };
 
     /// Frame IDs are Store node IDs. IDs at or above this entry extent have no
@@ -92,11 +92,11 @@ pub const Frames = struct {
     /// bookkeeping. Reused older IDs still require an explicit absent entry.
     pub fn begin(self: *Frames, node_count: usize) Error!void {
         if (self.journal != null) return error.InvalidState;
-        self.journal = .{ .node_count = node_count };
+        self.journal = .{ .node_count = node_count, .last_held = node_count };
     }
     inline fn hold(self: *Frames, id: data.program.Id) Error!void {
         const journal = if (self.journal) |*value| value else return;
-        if (id >= journal.node_count or journal.last_held == id) return;
+        if (journal.last_held == id or id >= journal.node_count) return;
         return self.holdEntry(id, journal);
     }
     // Keep fresh/no-transaction and repeated active-frame acquisition cheap;

@@ -236,3 +236,31 @@ its last read, before final completion. Native full-lifecycle smoke also covers
 these six cases and direct alias counts 1/4/16/64 with identical outcome digests.
 The corrected source passes 77 storage and 91 native tests. Complete cumulative
 cost and package qualification remain open.
+
+### Final fast-check simplification under qualification
+
+The `9e96722` full run confirms primary H/Q wins but still fails three smaller
+cost gates: width-four native compatible resident dispatch (ratio 1.078), empty
+captured-blob WASM pause (1.056), and its native complete lifecycle (1.091).
+Those results remain retained; remaining consumer work was stopped rather than
+credited. A focused no-transaction-only inlining variant gives mixed small-case
+results and is not adopted.
+
+The cached key's optional tag is unnecessary: at `begin`, Store's entry extent
+already names an absent-at-entry identity. Using that value initially is safe
+under the existing append-range rule; subsequent cached keys are established
+journal members. The cache resets at every begin, and first-touch failure still
+cannot install a key. Checking the remembered key first removes the extra tag
+and repeated bound check from the common protected-frame path. This changes no
+owner, allocation policy, or mutation interface.
+
+A five-window focused comparison covers both 1000-call native resident families,
+both 512-call native fresh families, three representative consumer commands,
+four empty-blob native lifecycles, H1/Q1 native lifecycles, short WASM fresh
+execution, and two empty-blob WASM pauses. None meets the slowdown rule; native
+resident compatible/fallback ratios are 1.021/1.033. These remain diagnostics
+until complete cumulative qualification finishes. The resulting source passes
+78 storage and 91 native tests. The new storage witness rolls back the first
+appended identity, reuses it as an entry-era identity in the next transaction,
+and proves its original value is protected rather than mistaken for a cached
+absence.

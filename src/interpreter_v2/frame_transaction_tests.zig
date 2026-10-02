@@ -67,6 +67,24 @@ test "frame transaction setup and commit visit only acquired entries" {
     }
 }
 
+test "first appended identity becomes an ordinary protected entry in the next transaction" {
+    var c: Context = undefined;
+    try c.init(testing.allocator, 65);
+    defer c.deinit();
+    try c.frames.begin(0);
+    try c.insert(0, 10);
+    try c.frames.write(try c.frames.getMutable(0), 0, Values.natural(0, 11));
+    try testing.expectEqual(0, c.frames.statistics.saved_entries);
+    c.frames.rollback(1);
+    try testing.expectEqual(0, c.frames.entries.count());
+    try c.insert(0, 20);
+    try c.frames.begin(1);
+    try c.frames.write(try c.frames.getMutable(0), 0, Values.natural(0, 21));
+    try testing.expectEqual(1, c.frames.statistics.saved_entries);
+    c.frames.rollback(1);
+    try testing.expectEqual(20, try c.value(0, 0));
+}
+
 test "frame transaction restores entry membership through reuse and semantic forks without allocation" {
     var counting = testing.FailingAllocator.init(testing.allocator, .{});
     var c: Context = undefined;
