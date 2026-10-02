@@ -1264,6 +1264,108 @@ fn retainedInputExample(builder: *source.Builder) !source.Module {
     return builder.module(main, unit);
 }
 
+test "escaped frame borrow remains excluded from binding reuse after republishing" {
+    const protocol = boundary.data.invocation;
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var arguments: [8]u8 = undefined;
+    std.mem.writeInt(u64, &arguments, 42, .little);
+    var resident = try Resident.start(testing.allocator, &prepared, &arguments);
+    defer releaseResident(&resident);
+    var initial = try resident.drive(testing.allocator, .none, .{});
+    defer initial.deinit();
+    const pending = (try resident.session.?.store.get(resident.session.?.roots.pending.?)).pending;
+    _ = try resident.session.?.frames.getMutable(pending.continuation.id);
+    var republished = try resident.drive(testing.allocator, .none, .{ .quantum = 0 });
+    defer republished.deinit();
+    var request = try protocol.decode(protocol.Request, testing.allocator, republished.record.requested.request);
+    defer request.deinit();
+    var wrong = request.value.request_identity;
+    wrong[0] ^= 1;
+    const reply = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = wrong, .value = &.{} });
+    defer testing.allocator.free(reply);
+    var stats: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
+    resident.session.?.statistics = &stats;
+    try testing.expectError(error.InvalidResult, resident.drive(testing.allocator, .{ .reply = reply }, .{}));
+    try testing.expectEqual(0, stats.expected_binding_reuses);
+    try testing.expectEqual(1, stats.checkpoint_constructions);
+}
+
+test "native frame, copied view, slot and Store mutations rebind published requests" {
+    const protocol = boundary.data.invocation;
+    for (0..4) |mode| {
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        const integer = try builder.scalar(u64);
+        const unit = try builder.scalar(void);
+        const effect = try builder.effect(.{ .identity = "binding/owner-mutation", .payload = integer, .result = unit });
+        const main = try builder.declare(&.{integer}, integer, &.{effect}, &.{});
+        const parameter = builder.parameter(main, 0);
+        const operation = try builder.term(.{ .perform = .{ .effect = effect, .payload = try builder.reference(parameter) } });
+        try builder.define(main, try builder.bind(try builder.variable(unit), operation, try builder.pure(try builder.reference(parameter))));
+        var compiled = try source.lower(testing.allocator, builder.module(main, unit));
+        defer compiled.deinit();
+        const image = try programBytes(compiled.program);
+        defer testing.allocator.free(image);
+        var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+        defer prepared.deinit();
+        var arguments: [8]u8 = undefined;
+        std.mem.writeInt(u64, &arguments, 42, .little);
+        var resident = try Resident.start(testing.allocator, &prepared, &arguments);
+        defer releaseResident(&resident);
+        var initial = try resident.drive(testing.allocator, .none, .{});
+        defer initial.deinit();
+        var request = try protocol.decode(protocol.Request, testing.allocator, initial.record.requested.request);
+        defer request.deinit();
+        const pending_ref = resident.session.?.roots.pending.?;
+        var pending = (try resident.session.?.store.get(pending_ref)).pending;
+        if (mode == 3) {
+            std.mem.writeInt(u64, &pending.payload.body.scalar, 100, .little);
+            try resident.session.?.store.replace(pending_ref, .{ .pending = pending });
+        } else {
+            const id = pending.continuation.id;
+            var frame = try resident.session.?.frames.get(id);
+            var slots = try resident.session.?.frames.slots.iterator(frame.view);
+            var changed = false;
+            while (try slots.next()) |binding| {
+                if (resident.session.?.program.schemas[@intCast(binding.value.schema)] != .u64) continue;
+                var value = binding.value;
+                std.mem.writeInt(u64, &value.body.scalar, 100, .little);
+                switch (mode) {
+                    0 => try resident.session.?.frames.write(try resident.session.?.frames.getMutable(id), binding.slot, value),
+                    1 => try resident.session.?.frames.write(&frame, binding.slot, value),
+                    2 => try resident.session.?.frames.slots.set(frame.view, binding.slot, value),
+                    else => unreachable,
+                }
+                changed = true;
+                break;
+            }
+            try testing.expect(changed);
+        }
+        var canonical = try resident.session.?.pendingRequest(testing.allocator);
+        defer canonical.deinit();
+        try testing.expect(!std.mem.eql(u8, &request.value.request_identity, &canonical.request.request_identity));
+        const stale = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = request.value.request_identity, .value = &.{} });
+        defer testing.allocator.free(stale);
+        try testing.expectError(error.InvalidResult, resident.drive(testing.allocator, .{ .reply = stale }, .{}));
+        const after = try resident.checkpoint(testing.allocator);
+        defer testing.allocator.free(after);
+        try testing.expectEqualSlices(u8, canonical.state, after);
+        const current = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = canonical.request.request_identity, .value = &.{} });
+        defer testing.allocator.free(current);
+        var completed = try resident.drive(testing.allocator, .{ .reply = current }, .{});
+        defer completed.deinit();
+        try testing.expect(completed.record == .completed);
+        try testing.expectEqual(@as(u64, if (mode == 3) 42 else 100), std.mem.readInt(u64, completed.record.completed[0..8], .little));
+    }
+}
+
 fn invocationFailure(allocator: std.mem.Allocator, command: []const u8) !void {
     var output = [_]u8{0xa5} ** 1024;
     const bytes = @import("stable_runtime").invocation.invokeInto(allocator, command, &output) catch |err| {

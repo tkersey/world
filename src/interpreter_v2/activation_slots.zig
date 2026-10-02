@@ -59,6 +59,7 @@ pub fn Slots(comptime Value: type) type {
             generation: u64 = 1,
             revision: u64 = 0,
             active: bool = true,
+            frame_owned: bool = false,
             root: Node = .empty,
             // Active views carry a slot limit; retired views use the same word
             // for an intrusive free-list link. lookupView rejects retired views.
@@ -93,6 +94,114 @@ pub fn Slots(comptime Value: type) type {
         views: std.ArrayList(View) = .empty,
         free_view: usize = std.math.maxInt(usize),
         statistics: Statistics = .{},
+        observation_clean: bool = false,
+        next_generation: u64 = 1,
+        transaction: ?Transaction = null,
+        const SavedRoot = struct { handle: Handle, root: Node };
+        const Transaction = struct {
+            start_generation: u64,
+            observation_clean: bool,
+            roots: ?*RootJournal = null,
+            frame_backed_index: usize = std.math.maxInt(usize),
+            frame_backed_generation: u64 = 0,
+        };
+        const RootJournal = struct {
+            first: ?SavedRoot = null,
+            more: std.AutoHashMapUnmanaged(usize, SavedRoot) = .empty,
+        };
+
+        pub inline fn beginTransaction(self: *Self) Error!void {
+            if (self.transaction != null) return error.InvalidHandle;
+            self.transaction = .{ .start_generation = self.next_generation, .observation_clean = self.observation_clean };
+        }
+
+        pub fn registerFrame(self: *Self, handle: Handle) void {
+            (self.lookupView(handle) catch unreachable).frame_owned = true;
+        }
+
+        pub fn markFrameBacked(self: *Self, handle: Handle) void {
+            if (self.transaction) |*transaction| {
+                transaction.frame_backed_index = handle.index;
+                transaction.frame_backed_generation = handle.generation;
+            }
+        }
+
+        fn reserveGeneration(self: *Self) Error!u64 {
+            if (self.next_generation == std.math.maxInt(u64)) return error.CapacityExceeded;
+            const revision = self.next_generation;
+            self.next_generation += 1;
+            return revision;
+        }
+
+        fn savedRoot(self: *Self, handle: Handle) ?SavedRoot {
+            const transaction = if (self.transaction) |*value| value else return null;
+            const roots = transaction.roots orelse return null;
+            if (roots.first) |first| if (std.meta.eql(first.handle, handle)) return first;
+            const saved = roots.more.get(handle.index) orelse return null;
+            return if (std.meta.eql(saved.handle, handle)) saved else null;
+        }
+
+        inline fn protectRoot(self: *Self, handle: Handle, entry: *const View) Error!void {
+            if (entry.frame_owned) self.observation_clean = false;
+            const transaction = if (self.transaction) |*value| value else return;
+            if (!entry.frame_owned or entry.generation >= transaction.start_generation) return;
+            // lookupView already established this store's instance. An index
+            // outside every valid array and the generation certify this cache.
+            if (transaction.frame_backed_index == handle.index and transaction.frame_backed_generation == handle.generation) return;
+            try self.captureRoot(transaction, handle, entry);
+        }
+
+        noinline fn captureRoot(self: *Self, transaction: *Transaction, handle: Handle, entry: *const View) Error!void {
+            if (self.savedRoot(handle) != null) return;
+            if (transaction.roots == null) {
+                const roots = try self.allocator.create(RootJournal);
+                roots.* = .{};
+                transaction.roots = roots;
+            }
+            const roots = transaction.roots.?;
+            const root = try retain(entry.root);
+            errdefer self.drop(root);
+            const saved: SavedRoot = .{ .handle = handle, .root = root };
+            if (roots.first == null) roots.first = saved else try roots.more.put(self.allocator, handle.index, saved);
+        }
+
+        pub inline fn commitTransaction(self: *Self) void {
+            const transaction = self.transaction.?;
+            self.transaction = null;
+            if (transaction.roots) |roots| self.releaseRootJournal(roots);
+        }
+
+        noinline fn releaseRootJournal(self: *Self, roots: *RootJournal) void {
+            if (roots.first) |first| self.drop(first.root);
+            var saved = roots.more.valueIterator();
+            while (saved.next()) |entry| self.drop(entry.root);
+            roots.more.deinit(self.allocator);
+            self.allocator.destroy(roots);
+        }
+
+        fn restoreRoot(self: *Self, saved: SavedRoot) void {
+            const entry = self.lookupView(saved.handle) catch {
+                self.drop(saved.root);
+                return;
+            };
+            self.drop(entry.root);
+            entry.root = saved.root;
+            // The forward mutation reserved this last revision for rollback.
+            entry.revision += 1;
+        }
+
+        pub fn rollbackTransaction(self: *Self) void {
+            const transaction = self.transaction.?;
+            self.transaction = null;
+            if (transaction.roots) |roots| {
+                if (roots.first) |first| self.restoreRoot(first);
+                var saved = roots.more.valueIterator();
+                while (saved.next()) |entry| self.restoreRoot(entry.*);
+                roots.more.deinit(self.allocator);
+                self.allocator.destroy(roots);
+            }
+            self.observation_clean = transaction.observation_clean;
+        }
         var next_instance = std.atomic.Value(usize).init(1);
 
         pub fn init(allocator: std.mem.Allocator) Error!Self {
@@ -106,6 +215,7 @@ pub fn Slots(comptime Value: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            if (self.transaction != null) self.commitTransaction();
             for (self.views.items) |view| if (view.active) self.drop(view.root);
             self.views.deinit(self.allocator);
             self.* = undefined;
@@ -128,11 +238,12 @@ pub fn Slots(comptime Value: type) type {
 
         fn addView(self: *Self, view: View) Error!Handle {
             var result = view;
+            result.generation = try self.reserveGeneration();
+            result.frame_owned = false;
             const index = if (self.free_view != std.math.maxInt(usize)) blk: {
                 const free = self.free_view;
                 std.debug.assert(!self.views.items[free].active);
                 self.free_view = self.views.items[free].limit;
-                result.generation = self.views.items[free].generation;
                 self.views.items[free] = result;
                 break :blk free;
             } else blk: {
@@ -157,6 +268,14 @@ pub fn Slots(comptime Value: type) type {
             copy.root = try retain(copy.root);
             errdefer self.drop(copy.root);
             copy.revision = 0;
+            return self.addView(copy);
+        }
+
+        pub fn forkEntry(self: *Self, handle: Handle) Error!Handle {
+            var copy = (try self.lookupView(handle)).*;
+            if (self.savedRoot(handle)) |saved| copy.root = saved.root;
+            copy.root = try retain(copy.root);
+            errdefer self.drop(copy.root);
             return self.addView(copy);
         }
 
@@ -186,7 +305,8 @@ pub fn Slots(comptime Value: type) type {
             const source = try self.lookupView(candidate);
             if (destination.limit != source.limit or destination.depth != source.depth)
                 return error.InvalidSelection;
-            if (destination.revision == std.math.maxInt(u64)) return error.CapacityExceeded;
+            if (destination.revision >= std.math.maxInt(u64) - @as(u64, @intFromBool(self.transaction != null))) return error.CapacityExceeded;
+            try self.protectRoot(target, destination);
             const previous = destination.root;
             destination.root = source.root;
             source.root = .empty;
@@ -232,11 +352,12 @@ pub fn Slots(comptime Value: type) type {
         fn change(self: *Self, handle: Handle, slot: usize, value: ?Value) Error!void {
             const entry = try self.lookupView(handle);
             if (slot >= entry.limit) return error.InvalidSlot;
-            if (entry.revision == std.math.maxInt(u64)) return error.CapacityExceeded;
+            if (entry.revision >= std.math.maxInt(u64) - @as(u64, @intFromBool(self.transaction != null))) return error.CapacityExceeded;
             if (value == null) {
                 const page = locate(entry.root, entry.depth, slot) orelse return;
                 if (page.initialized & mask(slot) == 0) return;
             }
+            try self.protectRoot(handle, entry);
             try self.changeOwned(&entry.root, entry.depth, slot, value);
             entry.revision += 1;
             self.statistics.writes +|= 1;
@@ -246,7 +367,7 @@ pub fn Slots(comptime Value: type) type {
         /// disposition. This operation itself has no authority to discard owners.
         pub fn retainOnly(self: *Self, handle: Handle, selected: []const usize) Error!void {
             const original = (try self.lookupView(handle)).*;
-            if (original.revision == std.math.maxInt(u64)) return error.CapacityExceeded;
+            if (original.revision >= std.math.maxInt(u64) - @as(u64, @intFromBool(self.transaction != null))) return error.CapacityExceeded;
             for (selected, 0..) |slot, index| {
                 if (index != 0 and selected[index - 1] >= slot) return error.InvalidSelection;
                 _ = try self.get(handle, slot);
@@ -256,6 +377,7 @@ pub fn Slots(comptime Value: type) type {
             for (selected) |slot| try self.set(temporary, slot, try self.get(handle, slot));
             const replacement = try self.lookupView(temporary);
             const entry = try self.lookupView(handle);
+            try self.protectRoot(handle, entry);
             const previous = entry.root;
             entry.root = replacement.root;
             replacement.root = .empty;

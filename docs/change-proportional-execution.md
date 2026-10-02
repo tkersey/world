@@ -1,13 +1,27 @@
 # Change-proportional resident execution
 
-The confirmed unwind, stale-binding and pre-entry-borrow defects are repaired.
-The current production kernel passes all 272 economic cells, full runtime checks,
-and the independent state/transfer/consumer preservation lanes. H and Q both meet
-the primary WASM lifecycle win rule. A fresh clean-source bundle and full serial
-review convergence remain required; this is local qualification, not completion.
-The only public subject is [draft World #60](https://github.com/tkersey/world/pull/60),
-assigned to tkersey and unmerged. The [supplied specification](change-proportional-spec.md),
-including W01–W40, remains the accepted task.
+The latest successor repairs stale published bindings after native Frame, copied-view,
+Slot and Store mutation, and restores direct Slot writes on transaction rollback.
+Escaped native Frame pointers remain excluded from binding reuse after republishing.
+The repair passes 93 native tests, 80 storage tests, and the local native/Node/WASM
+qualification lanes; the final small transaction-entry optimization is being checked.
+
+The user accepted the measured microsecond costs and requested one final optimization
+attempt for operations below 100 ms, followed by code reviews. That one attempt
+leaves two confirmed native timing increases: compatible-128 adds 3.313140625 µs
+(6.0492%) and unique-0 adds 0.02084375 µs (6.0182%). All 20 measured native resident
+cells stay within the memory limit. Raw results are retained; no further threshold
+tuning is planned. This acceptance covers these observed costs, not unknown regressions.
+
+Reviews are restarting on the repaired source at the user's request. The previous
+1850937 review results have zero credit after confirmed binding and rollback defects.
+Full final package/platform/economic qualification and review convergence remain
+required for completion. Current browser qualification cannot listen on localhost,
+and the required Python 3.14.7 is unavailable; neither blocked lane is called passed.
+The only public subject remains [draft World #60](https://github.com/tkersey/world/pull/60).
+
+The detailed results below describe the historical 1850937 successor and its kernel
+`a184db4e…`. They are retained as prior evidence and do not qualify this new repair.
 
 ## Fixed inputs and product
 

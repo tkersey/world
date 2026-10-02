@@ -27,6 +27,7 @@ pub const EncodedSequence = struct { backing: g.BlobRef, start: usize, length: u
 const SavedNode = struct { value: g.Node, alive: bool, borrowed: bool, fields: ?*SharedFields, sequence: ?EncodedSequence };
 const SavedBlob = struct { value: g.Blob, alive: bool, borrowed: bool };
 const Journal = struct {
+    observation_clean: bool,
     node_count: usize,
     blob_count: usize,
     nodes: std.AutoHashMapUnmanaged(usize, SavedNode) = .empty,
@@ -57,6 +58,7 @@ const Backing = union(enum) {
 pub const Store = struct {
     allocator: std.mem.Allocator,
     statistics: ?*Statistics = null,
+    observation_clean: bool = false,
     nodes: std.ArrayList(g.Node) = .empty,
     alive: std.ArrayList(bool) = .empty,
     free_nodes: std.ArrayList(usize) = .empty,
@@ -81,7 +83,7 @@ pub const Store = struct {
         try self.free_nodes.ensureTotalCapacity(self.allocator, self.nodes.items.len);
         try self.free_blobs.ensureTotalCapacity(self.allocator, self.blobs.items.len);
         try self.interned.ensureTotalCapacity(self.allocator, std.math.cast(u32, self.blobs.items.len) orelse return error.Capacity);
-        self.journal = .{ .node_count = self.nodes.items.len, .blob_count = self.blobs.items.len };
+        self.journal = .{ .observation_clean = self.observation_clean, .node_count = self.nodes.items.len, .blob_count = self.blobs.items.len };
     }
 
     fn holdNode(self: *Store, id: usize) Error!bool {
@@ -136,6 +138,7 @@ pub const Store = struct {
     pub fn rollback(self: *Store) void {
         var journal = self.journal.?;
         self.journal = null;
+        self.observation_clean = journal.observation_clean;
         var nodes = journal.nodes.iterator();
         while (nodes.next()) |entry| {
             const id = entry.key_ptr.*;
@@ -240,6 +243,7 @@ pub const Store = struct {
     }
 
     fn insertNode(self: *Store, copied: g.Node) Error!g.NodeRef {
+        self.observation_clean = false;
         if (self.free_nodes.items.len != 0) {
             const id = self.free_nodes.items[self.free_nodes.items.len - 1];
             _ = try self.holdNode(id);
@@ -334,6 +338,7 @@ pub const Store = struct {
         const replacement = try duplicate(g.Node, self.allocator, value);
         errdefer release(g.Node, self.allocator, replacement);
         const held = try self.holdNode(@intCast(reference.id));
+        self.observation_clean = false;
         self.nodes.items[@intCast(reference.id)] = replacement;
         self.retireNode(@intCast(reference.id), previous, held);
     }
@@ -343,6 +348,7 @@ pub const Store = struct {
     pub fn replaceOwned(self: *Store, reference: g.NodeRef, value: g.Node) Error!void {
         const previous = try self.get(reference);
         const held = try self.holdNode(@intCast(reference.id));
+        self.observation_clean = false;
         self.nodes.items[@intCast(reference.id)] = value;
         self.retireNode(@intCast(reference.id), previous, held);
     }
@@ -390,6 +396,7 @@ pub const Store = struct {
     }
 
     fn insertBlobOwned(self: *Store, copied: g.Blob) Error!g.Value {
+        self.observation_clean = false;
         try self.interned.ensureUnusedCapacity(self.allocator, 1);
         const id = if (self.free_blobs.items.len != 0) blk: {
             const free = self.free_blobs.items[self.free_blobs.items.len - 1];

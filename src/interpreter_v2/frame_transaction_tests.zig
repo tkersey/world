@@ -281,7 +281,8 @@ test "copied mutable and read views survive map growth without bypassing rollbac
     try testing.expectEqual(0, stats.saved_entries);
     try frames.write(&copy, 0, Values.natural(0, 100));
     try frames.write(&read_copy, 1, Values.natural(0, 200));
-    try testing.expectEqual(1, stats.saved_entries);
+    try testing.expectEqual(0, stats.saved_entries);
+    try testing.expect(frames.slots.transaction.?.roots.?.first != null);
     frames.rollback();
     const restored = try frames.get(0);
     try testing.expectEqual(42, std.mem.readInt(u64, (try frames.slots.get(restored.view, 0)).body.scalar[0..8], .little));
@@ -322,4 +323,141 @@ test "scoped mutation protects entry state without forgetting escaping pointers"
     escaping.position = 100;
     frames.rollback();
     try testing.expectEqual(99, (try frames.get(0)).position);
+}
+
+test "direct slot roots and later frame protection share the entry version" {
+    const a = testing.allocator;
+    var pool: data.analysis_sets.Pool = .{ .allocator = a, .limit = 65 };
+    defer pool.deinit();
+    const slot_types = [_]data.program.Id{0} ** 65;
+    const functions = [_]data.activation.Function{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = &slot_types }, .result = 0 }};
+    var layouts = try bindings.Layouts.init(a, &functions);
+    defer layouts.deinit();
+    var frames = try bindings.Frames.init(a, &pool, &layouts);
+    defer frames.deinit();
+    var initial = try frames.create(0);
+    try frames.write(&initial, 0, Values.natural(0, 42));
+    try frames.write(&initial, 64, Values.natural(0, 99));
+    try frames.put(0, initial);
+    const before = try frames.forkFrame(try frames.get(0));
+    defer frames.releaseFrame(before);
+    try frames.begin();
+    const view = (try frames.get(0)).view;
+    try frames.slots.set(view, 0, Values.natural(0, 100));
+    const during = try frames.forkFrame(try frames.get(0));
+    defer frames.releaseFrame(during);
+    try frames.slots.set(during.view, 0, Values.natural(0, 333));
+    try frames.slots.clear(view, 64);
+    const raw = try frames.getMutable(0);
+    raw.position = 19;
+    try frames.write(raw, 1, Values.natural(0, 200));
+    try frames.remove(0);
+    var replacement = try frames.create(0);
+    try frames.write(&replacement, 0, Values.natural(0, 999));
+    try frames.put(0, replacement);
+    frames.rollback();
+    const restored = try frames.get(0);
+    try testing.expectEqual(0, restored.position);
+    try testing.expectEqual(42, (try frames.slots.get(restored.view, 0)).body.scalar[0]);
+    try testing.expectEqual(99, (try frames.slots.get(restored.view, 64)).body.scalar[0]);
+    try testing.expectError(error.UninitializedSlot, frames.slots.get(restored.view, 1));
+    try testing.expectEqual(42, (try frames.slots.get(before.view, 0)).body.scalar[0]);
+    try testing.expectEqual(@as(u64, 333), std.mem.readInt(u64, &(try frames.slots.get(during.view, 0)).body.scalar, .little));
+}
+
+test "direct slot rollback restores without allocation and invalidates both iterator versions" {
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    const a = failing.allocator();
+    var pool: data.analysis_sets.Pool = .{ .allocator = a, .limit = 1 };
+    defer pool.deinit();
+    const functions = [_]data.activation.Function{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = &.{0} }, .result = 0 }};
+    var layouts = try bindings.Layouts.init(a, &functions);
+    defer layouts.deinit();
+    var frames = try bindings.Frames.init(a, &pool, &layouts);
+    defer frames.deinit();
+    var frame = try frames.create(0);
+    try frames.write(&frame, 0, Values.natural(0, 42));
+    try frames.put(0, frame);
+    var old_iterator = try frames.slots.iterator(frame.view);
+    try frames.begin();
+    try frames.slots.set(frame.view, 0, Values.natural(0, 100));
+    var tentative_iterator = try frames.slots.iterator(frame.view);
+    const allocations = failing.alloc_index;
+    failing.fail_index = allocations;
+    failing.resize_fail_index = failing.resize_index;
+    frames.rollback();
+    try testing.expectEqual(allocations, failing.alloc_index);
+    try testing.expectEqual(42, (try frames.slots.get(frame.view, 0)).body.scalar[0]);
+    try testing.expectError(error.StaleIterator, old_iterator.next());
+    try testing.expectError(error.StaleIterator, tentative_iterator.next());
+}
+
+fn directSlotAttempt(width: usize, fail_after: ?usize, commit: bool) !bool {
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    const a = failing.allocator();
+    var pool: data.analysis_sets.Pool = .{ .allocator = a, .limit = width };
+    defer pool.deinit();
+    const types = try a.alloc(data.program.Id, width);
+    defer a.free(types);
+    @memset(types, 0);
+    const functions = [_]data.activation.Function{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = types }, .result = 0 }};
+    var layouts = try bindings.Layouts.init(a, &functions);
+    defer layouts.deinit();
+    var frames = try bindings.Frames.init(a, &pool, &layouts);
+    defer frames.deinit();
+    for (0..3) |id| {
+        var frame = try frames.create(0);
+        errdefer frames.releaseFrame(frame);
+        try frames.write(&frame, 0, Values.natural(0, 42 + id));
+        try frames.write(&frame, width - 1, Values.natural(0, 99));
+        try frames.put(id, frame);
+    }
+    try frames.begin();
+    if (fail_after) |offset| {
+        failing.fail_index = failing.alloc_index + offset;
+        failing.resize_fail_index = failing.resize_index;
+    }
+    const failed = mutation: {
+        for (0..3) |id| {
+            const view = (try frames.get(id)).view;
+            frames.slots.set(view, 1, Values.natural(0, 100 + id)) catch |err| {
+                try testing.expectEqual(error.OutOfMemory, err);
+                break :mutation true;
+            };
+            frames.slots.clear(view, width - 1) catch |err| {
+                try testing.expectEqual(error.OutOfMemory, err);
+                break :mutation true;
+            };
+        }
+        break :mutation false;
+    };
+    const allocations = failing.alloc_index;
+    const resizes = failing.resize_index;
+    failing.fail_index = allocations;
+    failing.resize_fail_index = resizes;
+    if (commit and !failed) frames.commit() else frames.rollback();
+    try testing.expectEqual(allocations, failing.alloc_index);
+    try testing.expectEqual(resizes, failing.resize_index);
+    for (0..3) |id| {
+        const view = (try frames.get(id)).view;
+        try testing.expectEqual(42 + id, (try frames.slots.get(view, 0)).body.scalar[0]);
+        if (commit and !failed) {
+            try testing.expectEqual(100 + id, (try frames.slots.get(view, 1)).body.scalar[0]);
+            try testing.expectError(error.UninitializedSlot, frames.slots.get(view, width - 1));
+        } else {
+            try testing.expectError(error.UninitializedSlot, frames.slots.get(view, 1));
+            try testing.expectEqual(99, (try frames.slots.get(view, width - 1)).body.scalar[0]);
+        }
+    }
+    return failed;
+}
+
+test "direct slot root capture and COW failures roll back multiple roots without allocation" {
+    for ([_]usize{ 4, 65, 4096 }) |width| {
+        try testing.expect(!(try directSlotAttempt(width, null, false)));
+        try testing.expect(!(try directSlotAttempt(width, null, true)));
+        var failures: usize = 0;
+        while (try directSlotAttempt(width, failures, false)) : (failures += 1) {}
+        try testing.expect(failures != 0);
+    }
 }

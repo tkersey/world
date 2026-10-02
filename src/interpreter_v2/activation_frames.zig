@@ -60,9 +60,6 @@ pub const Frame = struct {
     position: usize = 0,
     function: data.program.Id,
     custody: custody.State,
-    // Map installation supplies a lookup hint. Only equality with the map's
-    // full backing-view handle establishes a registered mutation target.
-    owner_hint: data.program.Id = 0,
 };
 /// Attempt counters include failed attempts; they never participate in rollback.
 pub const Statistics = struct {
@@ -80,6 +77,7 @@ pub const Frames = struct {
     entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
     statistics: ?*Statistics = null,
     journal: ?Journal = null,
+    observation_clean: bool = false,
     // Mutable borrows survive transaction entry/commit until membership changes.
     // The ordinary active-frame borrow stays inline; additional live borrows
     // are recorded only when callers acquire them, never by scanning entries.
@@ -87,6 +85,7 @@ pub const Frames = struct {
     borrowed_more: std.AutoHashMapUnmanaged(data.program.Id, void) = .empty,
 
     pub const Journal = struct {
+        observation_clean: bool,
         // null records absence at entry, including a removed/reused identifier.
         entries: std.AutoHashMapUnmanaged(data.program.Id, ?SavedFrame) = .empty,
         // A successful hold remains valid for this entire attempt, even if the
@@ -96,8 +95,7 @@ pub const Frames = struct {
         // that fact inline, rather than loading the map count on every write.
         last_held: ?data.program.Id = null,
     };
-    // The map key reconstructs owner_hint on rollback. Retain only physical
-    // entry state, so derived association metadata does not enlarge snapshots.
+    // Physical entry state; slot and custody stores protect direct view writes.
     const SavedFrame = struct {
         view: Slots.Handle,
         live_bound: Bound,
@@ -106,18 +104,28 @@ pub const Frames = struct {
         custody: custody.State,
 
         fn fork(frames: *Frames, frame: *const Frame) Error!SavedFrame {
-            const view = try frames.slots.fork(frame.view);
+            const view = try frames.slots.forkEntry(frame.view);
             errdefer frames.slots.release(view) catch unreachable;
-            return .{ .view = view, .live_bound = frame.live_bound, .position = frame.position, .function = frame.function, .custody = try frames.custody.fork(frame.custody) };
+            return .{ .view = view, .live_bound = frame.live_bound, .position = frame.position, .function = frame.function, .custody = try frames.custody.forkEntry(frame.custody) };
         }
-        fn restore(self: SavedFrame, id: data.program.Id) Frame {
-            return .{ .view = self.view, .live_bound = self.live_bound, .position = self.position, .function = self.function, .custody = self.custody, .owner_hint = id };
+        fn restore(self: SavedFrame, _: data.program.Id) Frame {
+            return .{ .view = self.view, .live_bound = self.live_bound, .position = self.position, .function = self.function, .custody = self.custody };
         }
     };
-    pub fn begin(self: *Frames) Error!void {
+    pub inline fn begin(self: *Frames) Error!void {
         if (self.journal != null) return error.InvalidState;
-        self.journal = .{};
+        try self.slots.beginTransaction();
+        errdefer self.slots.rollbackTransaction();
+        try self.custody.nodes.beginTransaction();
+        errdefer self.custody.nodes.rollbackTransaction();
+        self.journal = .{ .observation_clean = self.observation_clean };
         errdefer self.releaseJournal();
+        if (self.borrowed_first != null) try self.protectEntryBorrows();
+    }
+
+    // Interpreter borrows are scoped. Keep protection for escaping native
+    // pointers out of the ordinary transaction-entry instruction stream.
+    noinline fn protectEntryBorrows(self: *Frames) Error!void {
         if (self.borrowed_first) |id| try self.hold(id, self.entries.getPtr(id) orelse return error.InvalidState);
         var borrowed = self.borrowed_more.keyIterator();
         while (borrowed.next()) |id| try self.hold(id.*, self.entries.getPtr(id.*) orelse return error.InvalidState);
@@ -140,6 +148,11 @@ pub const Frames = struct {
         const journal = if (self.journal) |*value| value else return;
         if (journal.last_held == id) return;
         try self.holdUncached(journal, id, original);
+        if (original) |frame| self.markBacked(frame.*);
+    }
+    inline fn markBacked(self: *Frames, frame: Frame) void {
+        self.slots.markFrameBacked(frame.view);
+        self.custody.nodes.markFrameBacked(frame.custody.view);
     }
     // Fresh execution and repeated active-frame writes avoid calling the
     // allocation/fork path. A miss still establishes the same entry version.
@@ -160,6 +173,8 @@ pub const Frames = struct {
     pub fn commit(self: *Frames) void {
         if (self.statistics) |s| s.commit_entries +|= self.journal.?.entries.count();
         self.releaseJournal();
+        self.slots.commitTransaction();
+        self.custody.nodes.commitTransaction();
     }
 
     inline fn releaseJournal(self: *Frames) void {
@@ -181,8 +196,13 @@ pub const Frames = struct {
         var saved = journal.entries.keyIterator();
         while (saved.next()) |id| if (self.entries.fetchRemove(id.*)) |entry| self.releaseFrame(entry.value);
         var entries = journal.entries.iterator();
-        while (entries.next()) |entry| if (entry.value_ptr.*) |frame|
+        while (entries.next()) |entry| if (entry.value_ptr.*) |frame| {
             self.entries.putAssumeCapacity(entry.key_ptr.*, frame.restore(entry.key_ptr.*));
+            self.registerViews(frame.restore(entry.key_ptr.*));
+        };
+        self.observation_clean = journal.observation_clean;
+        self.slots.rollbackTransaction();
+        self.custody.nodes.rollbackTransaction();
         if (self.statistics) |s| s.rollback_entries +|= journal.entries.count();
         journal.entries.deinit(self.allocator);
     }
@@ -211,6 +231,7 @@ pub const Frames = struct {
         // map. The local pointer stays valid and is exposed only after protection.
         try self.hold(id, frame);
         try self.rememberBorrow(id);
+        self.observation_clean = false;
         return frame;
     }
     /// The callback's borrow ends when it returns (or changes membership).
@@ -219,6 +240,7 @@ pub const Frames = struct {
     pub inline fn withMutable(self: *Frames, id: data.program.Id, context: anytype, comptime operation: anytype) @typeInfo(@TypeOf(operation)).@"fn".return_type.? {
         const frame = self.entries.getPtr(id) orelse return error.InvalidState;
         try self.hold(id, frame);
+        self.observation_clean = false;
         return operation(context, frame);
     }
     /// A mutable copy is used when a caller can grow the map before update.
@@ -250,24 +272,30 @@ pub const Frames = struct {
     pub fn put(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         if (self.entries.contains(id)) return error.InvalidState;
         try self.hold(id, null);
-        var registered = frame;
-        registered.owner_hint = id;
-        try self.entries.put(self.allocator, id, registered);
+        try self.entries.put(self.allocator, id, frame);
+        self.registerViews(frame);
+        self.observation_clean = false;
         self.clearBorrows();
     }
     pub fn update(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         const target = self.entries.getPtr(id) orelse return error.InvalidState;
         try self.hold(id, target);
         target.* = frame;
-        target.owner_hint = id;
+        self.registerViews(target.*);
+        self.observation_clean = false;
     }
     pub fn remove(self: *Frames, id: data.program.Id) Error!void {
         const original = self.entries.getPtr(id) orelse return;
         try self.hold(id, original);
         if (self.entries.fetchRemove(id)) |entry| {
+            self.observation_clean = false;
             self.clearBorrows();
             self.releaseFrame(entry.value);
         }
+    }
+    fn registerViews(self: *Frames, frame: Frame) void {
+        self.slots.registerFrame(frame.view);
+        self.custody.nodes.registerFrame(frame.custody.view);
     }
     pub fn create(self: *Frames, function: data.program.Id) Error!Frame {
         const definition = self.layouts.functions[@intCast(function)];
@@ -286,23 +314,12 @@ pub const Frames = struct {
         result.custody = try self.custody.fork(original.custody);
         return result;
     }
-    /// A copied frame can outlive map growth while retaining its backing view.
-    /// Protect that registered view before mutation, even if the copy was
-    /// obtained before this transaction. Independent forks remain independent.
-    inline fn protectView(self: *Frames, frame: *const Frame) Error!void {
-        const journal = if (self.journal) |*value| value else return;
-        const id = frame.owner_hint;
-        if (journal.last_held == id) return;
-        const original = self.entries.getPtr(id) orelse return;
-        if (!std.meta.eql(original.view, frame.view)) return;
-        try self.hold(id, original);
-    }
     pub fn scope(self: *Frames, frame: *Frame, target: data.program.Id) Error!void {
-        try self.protectView(frame);
+        self.observation_clean = false;
         try self.custody.moveTo(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(target));
     }
     pub fn write(self: *Frames, frame: *Frame, slot: data.program.Id, value: data.graph.Value) Error!void {
-        try self.protectView(frame);
+        self.observation_clean = false;
         try self.custody.remove(&frame.custody, @intCast(slot));
         if (value.body == .owned) try self.custody.establish(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(slot));
         try self.rewriteValue(frame, slot, value);
@@ -322,7 +339,7 @@ pub const Frames = struct {
         return values;
     }
     pub fn clear(self: *Frames, frame: *Frame, slot: data.program.Id) Error!void {
-        try self.protectView(frame);
+        self.observation_clean = false;
         try self.custody.remove(&frame.custody, @intCast(slot));
         try self.slots.clear(frame.view, @intCast(slot));
     }
@@ -334,7 +351,7 @@ pub const Frames = struct {
     /// views remain isolated by Slots' existing COW owner.
     pub fn restart(self: *Frames, frame: *Frame, target: data.program.Id, live: sets.Root, values: []const data.graph.Value) Error!void {
         if (!self.canRestart(frame.*, target)) return error.InvalidState;
-        try self.protectView(frame);
+        self.observation_clean = false;
         const function = self.layouts.functions[@intCast(target)];
         if (function.inputs.len != values.len) return error.InvalidState;
         var old = frame.live_bound.iterator(self.pool);
@@ -352,7 +369,7 @@ pub const Frames = struct {
     /// include uninitialized slots; only Slots.get/iterator observe actual values.
     pub fn apply(self: *Frames, frame: *Frame, live: sets.Root, destinations: anytype, values: []const data.graph.Value) Error!void {
         if (destinations.len != values.len) return error.InvalidState;
-        try self.protectView(frame);
+        self.observation_clean = false;
         const selection: Bound = switch (frame.live_bound) {
             .bits => .{ .bits = self.pool.lowWord(live) },
             .tree => .{ .tree = live },

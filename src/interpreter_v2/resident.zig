@@ -68,6 +68,10 @@ pub const Resident = struct {
         // Publish derived metadata at the same fence as semantic advancement.
         // On any prior error the original expectation remains applicable.
         session.published_binding = next_binding;
+        session.store.observation_clean = true;
+        session.frames.observation_clean = true;
+        session.frames.slots.observation_clean = true;
+        session.frames.custody.nodes.observation_clean = true;
         session.store.compactImported() catch {};
         return published;
     }

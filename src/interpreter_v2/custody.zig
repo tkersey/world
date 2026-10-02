@@ -38,6 +38,11 @@ pub const Custody = struct {
         result.view = try self.nodes.fork(state.view);
         return result;
     }
+    pub fn forkEntry(self: *Custody, state: State) Error!State {
+        var result = state;
+        result.view = try self.nodes.forkEntry(state.view);
+        return result;
+    }
     pub fn release(self: *Custody, state: State) void {
         self.nodes.release(state.view) catch unreachable;
     }

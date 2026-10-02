@@ -100,6 +100,11 @@ pub const Session = struct {
 
     pub fn begin(self: *Session) Error!Transaction {
         if (self.poisoned) return error.InvalidState;
+        // Logical owners certify the publication. A live raw Frame borrow can
+        // mutate fields without another API call, so it never lends a cache.
+        const reusable = self.store.observation_clean and self.frames.observation_clean and
+            self.frames.slots.observation_clean and self.frames.custody.nodes.observation_clean and
+            self.frames.borrowed_first == null;
         try self.store.begin();
         errdefer self.store.rollback();
         self.frames.statistics = if (self.statistics) |s| &s.frames else null;
@@ -112,7 +117,7 @@ pub const Session = struct {
             .transitions = self.transitions,
             .collection_cursors = self.collection_cursors,
             .pending_blob_collection = self.pending_blob_collection,
-            .published_binding = self.published_binding,
+            .published_binding = if (reusable) self.published_binding else null,
         };
         // Public low-level transactions may mutate Store/Frames directly. The
         // entry binding remains only in rollback custody until publication.

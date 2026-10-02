@@ -1,5 +1,5 @@
 {
-  "status": "locally-qualified-borrow-repair-awaiting-clean-source-producer-and-review",
+  "status": "historical-1850937-qualification-with-successor-under-review",
   "specSha256": "d914b959e32d10b841e549cb27665689c419856e5b77ae632363fb71b22e92f3",
   "worldBaseline": "c61edfc8208c375d5188e476131ca8cff5aeeb8a",
   "runtimeData": "511fe388587b36ae37307d277e04c22b0bb6f6d9",
@@ -724,5 +724,41 @@
         "framesBytes": 288
       }
     }
+  },
+  "currentSuccessor": {
+    "status": "locally-tested; final entry optimization check running; reviews requested",
+    "native": 93,
+    "storage": 80,
+    "changes": [
+      "Native logical-owner mutation invalidates published binding reuse",
+      "Direct Slot roots share transaction entry protection",
+      "Escaped mutable Frame borrows remain excluded after republishing"
+    ],
+    "performance": {
+      "oneFinalAttempt": true,
+      "scope": "20 native resident cells",
+      "confirmedSlowdowns": [
+        {
+          "family": "compatible",
+          "n": 128,
+          "addedMicroseconds": 3.313140625,
+          "ratio": 1.0604924042507666
+        },
+        {
+          "family": "unique",
+          "n": 0,
+          "addedMicroseconds": 0.02084375,
+          "ratio": 1.0601822611206353
+        }
+      ],
+      "memoryExceeded": 0,
+      "disposition": "Measured microsecond costs accepted by current user instruction; no additional threshold tuning"
+    },
+    "limitations": [
+      "Historical detailed fields retain 1850937 provenance; not new repair qualification",
+      "Current browser lane blocked by localhost listen permission",
+      "Pinned Python 3.14.7 unavailable; Wasmtime lane not passed",
+      "Final qualification and serial review convergence remain open"
+    ]
   }
 }
