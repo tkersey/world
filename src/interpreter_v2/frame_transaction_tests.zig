@@ -157,24 +157,30 @@ test "failed borrowed begin retries with the latest entry and no stale pointer l
     try c.init(counting.allocator(), 65);
     defer c.deinit();
     try c.insert(0, 10);
+    // Protection must grow a view table even when the first journal entry
+    // needs no allocation of its own.
+    while (c.frames.slots.views.items.len < c.frames.slots.views.capacity)
+        try c.insert(c.frames.entries.count(), 11);
+    const count = c.frames.entries.count();
     const frame = try c.frames.getMutable(0);
     counting.fail_index = counting.alloc_index;
-    try testing.expectError(error.OutOfMemory, c.frames.begin(1));
+    try testing.expectError(error.OutOfMemory, c.frames.begin(count));
     try testing.expectEqual(null, c.frames.journal);
     counting.fail_index = std.math.maxInt(usize);
     try c.frames.write(frame, 0, Values.natural(0, 15));
-    try c.frames.begin(1);
+    try c.frames.begin(count);
     try c.frames.write(frame, 0, Values.natural(0, 20));
     const allocations = counting.allocations;
     counting.fail_index = counting.alloc_index;
-    c.frames.rollback(1);
+    c.frames.rollback(count);
     try testing.expectEqual(allocations, counting.allocations);
     try testing.expectEqual(15, try c.value(0, 0));
     counting.fail_index = std.math.maxInt(usize);
     _ = try c.frames.getMutable(0);
-    try c.insert(1, 11); // Successful map mutation ends the documented borrow.
+    try c.insert(count, 11); // Successful map mutation ends the documented borrow.
     try testing.expectEqual(null, c.frames.borrowed);
-    try c.frames.begin(2);
+    try c.frames.begin(count + 1);
+    try testing.expectEqual(null, c.frames.journal.?.first);
     try testing.expectEqual(0, c.frames.journal.?.entries.count());
     c.frames.commit();
 }
@@ -313,6 +319,9 @@ fn protectionFailure(allocator: std.mem.Allocator, remove: bool) !void {
     try testing.expectEqual(c.frames.custody.nodes.views.items.len, c.frames.custody.nodes.views.capacity);
     const count = c.frames.entries.count();
     try c.frames.begin(count);
+    // The first untouched removal can transfer ownership without allocation.
+    // Force overflow storage for the next removal and verify both on rollback.
+    if (remove) try c.frames.remove(count - 1);
     const attempted = if (remove) c.frames.remove(0) else blk: {
         _ = c.frames.getMutable(0) catch |err| break :blk @as(FramesError!void, err);
         break :blk @as(FramesError!void, {});
@@ -321,11 +330,13 @@ fn protectionFailure(allocator: std.mem.Allocator, remove: bool) !void {
         c.frames.rollback(count);
         try testing.expectEqual(count, c.frames.entries.count());
         try testing.expectEqual(10, try c.value(0, 0));
+        try testing.expectEqual(11, try c.value(count - 1, 0));
         return err;
     };
     c.frames.rollback(count);
     try testing.expectEqual(count, c.frames.entries.count());
     try testing.expectEqual(10, try c.value(0, 0));
+    try testing.expectEqual(11, try c.value(count - 1, 0));
 }
 const FramesError = @import("activation_frames.zig").Error;
 

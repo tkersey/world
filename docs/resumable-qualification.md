@@ -28,7 +28,21 @@ memory comparisons. The scalar probe's earlier exact physical-memory equality
 was also corrected to the specification's explicit allowance; canonical outcomes,
 checkpoint sizes, step counts, and preparation comparisons remain exact.
 
-Complete successor economics, evidence packaging, exact-head delivery and a fresh
+The compact repair completed all 360 timing cells and 1,054 conservative memory
+comparisons. Memory passed, but four blob timing cells showed confirmed slowdowns
+of 0.56–1.24 microseconds. Diagnostic traces also observed engine compilation during
+the nominal measurement interval; these are bounded warm-process observations,
+not settled steady-state claims. All original windows remain retained.
+
+The next refinement stores the first saved frame directly in the journal, with
+the existing map for additional entries. It preserves the rollback and borrow
+contracts and passes the same 83 storage / 92 native tests. One-frame allocation
+falls from 1,984 to 928 bytes. Its bounded three-arm trial clears the four affected
+timing guards and preserves H/Q lifecycle gains. The user has limited further
+optimization attempts and authorized retaining explicitly reported microsecond-scale
+regressions after that limit; correctness remains mandatory.
+
+Complete final economics, evidence packaging, exact-head delivery and a fresh
 review campaign remain pending. **The measurements and archive below describe P0 until
 that requalification is complete; they are not successor qualification.**
 

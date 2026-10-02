@@ -93,10 +93,26 @@ pub const Frames = struct {
     };
     const Journal = struct {
         node_count: usize,
+        // The ordinary drive changes one frame. Keep that saved owner here;
+        // additional entries retain expected constant-time lookup.
+        first: ?struct { id: data.program.Id, frame: ?Frame } = null,
         entries: std.AutoHashMapUnmanaged(data.program.Id, ?Frame) = .empty,
         // The entry extent itself is an initially safe (absent-at-entry) key.
         // Later keys are protected journal members; neither needs a tag.
         last_held: data.program.Id,
+
+        fn contains(self: *const Journal, id: data.program.Id) bool {
+            if (self.first) |first| if (first.id == id) return true;
+            return self.entries.contains(id);
+        }
+        fn reserve(self: *Journal, allocator: std.mem.Allocator) Error!void {
+            if (self.first != null) try self.entries.ensureUnusedCapacity(allocator, 1);
+        }
+        fn save(self: *Journal, id: data.program.Id, frame: ?Frame) void {
+            if (self.first == null) {
+                self.first = .{ .id = id, .frame = frame };
+            } else self.entries.putAssumeCapacity(id, frame);
+        }
     };
 
     /// Frame IDs are Store node IDs. IDs at or above this entry extent have no
@@ -124,15 +140,15 @@ pub const Frames = struct {
     // Keep fresh/no-transaction and repeated active-frame acquisition cheap;
     // allocation and persistent-root preparation belong to first touch.
     noinline fn holdEntry(self: *Frames, id: data.program.Id, journal: *Journal) Error!void {
-        if (journal.entries.contains(id)) {
+        if (journal.contains(id)) {
             journal.last_held = id;
             return;
         }
         // Reserve first: failure cannot strand a retained frame or admit a
         // mutable borrow without its transaction-entry version.
-        try journal.entries.ensureUnusedCapacity(self.allocator, 1);
+        try journal.reserve(self.allocator);
         const saved = if (self.entries.get(id)) |frame| try self.forkFrame(frame) else null;
-        journal.entries.putAssumeCapacity(id, saved);
+        journal.save(id, saved);
         journal.last_held = id;
         self.statistics.saved_entries +|= 1;
         if (saved != null) self.statistics.forked_frames +|= 1;
@@ -140,6 +156,10 @@ pub const Frames = struct {
     pub fn commit(self: *Frames) void {
         var journal = self.journal.?;
         self.journal = null;
+        if (journal.first) |first| {
+            if (first.frame) |frame| self.releaseFrame(frame);
+            self.statistics.commit_entries +|= 1;
+        }
         var values = journal.entries.valueIterator();
         while (values.next()) |saved| {
             if (saved.*) |frame| self.releaseFrame(frame);
@@ -158,11 +178,20 @@ pub const Frames = struct {
             if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
             self.statistics.rollback_entries +|= 1;
         }
+        if (journal.first) |first| {
+            if (self.entries.fetchRemove(first.id)) |current| self.releaseFrame(current.value);
+            self.statistics.rollback_entries +|= 1;
+        }
         var entries = journal.entries.iterator();
         while (entries.next()) |entry| {
             if (self.entries.fetchRemove(entry.key_ptr.*)) |current| self.releaseFrame(current.value);
             self.statistics.rollback_entries +|= 1;
         }
+        if (journal.first) |first| if (first.frame) |saved| {
+            var frame = saved;
+            frame.owner_id = first.id;
+            self.entries.putAssumeCapacity(first.id, frame);
+        };
         entries = journal.entries.iterator();
         while (entries.next()) |entry| if (entry.value_ptr.*) |saved| {
             var frame = saved;
@@ -259,10 +288,11 @@ pub const Frames = struct {
     pub fn remove(self: *Frames, id: data.program.Id) Error!void {
         const frame = self.entries.get(id) orelse return;
         if (self.journal) |*journal| {
-            if (id < journal.node_count and !journal.entries.contains(id)) {
+            if (id < journal.node_count and !journal.contains(id)) {
                 // Removal transfers the untouched entry owner; no fork or
                 // temporary successor handle is necessary.
-                try journal.entries.put(self.allocator, id, frame);
+                try journal.reserve(self.allocator);
+                journal.save(id, frame);
                 journal.last_held = id;
                 self.endMutableBorrows();
                 _ = self.entries.remove(id);
