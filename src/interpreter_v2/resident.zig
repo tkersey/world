@@ -60,6 +60,9 @@ pub const Resident = struct {
         return error.InvalidState;
     }
     fn leave(self: *Resident) void {
+        // No mutable engine borrow escapes this closed owner. Its next drive
+        // need not protect pointers whose entire operation has already ended.
+        if (self.live) self.owner().session.frames.endMutableBorrows();
         self.gate.store(false, .release);
     }
 

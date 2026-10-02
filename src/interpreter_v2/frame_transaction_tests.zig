@@ -51,6 +51,7 @@ test "frame transaction setup and commit visit only acquired entries" {
         try c.init(testing.allocator, 65);
         defer c.deinit();
         for (0..count) |id| try c.insert(id, id + 10);
+        for (0..count) |id| _ = try c.frames.get(id);
         try c.frames.begin(count);
         for (0..count) |id| _ = try c.frames.get(id);
         try testing.expectEqual(0, c.frames.statistics.saved_entries);
@@ -65,6 +66,132 @@ test "frame transaction setup and commit visit only acquired entries" {
         try testing.expectEqual(30, try c.value(0, 64));
         for (1..count) |id| try testing.expectEqual(id + 10, try c.value(id, 0));
     }
+}
+
+test "mutable map borrows survive begin and commit with entry-time protection" {
+    var c: Context = undefined;
+    try c.init(testing.allocator, 65);
+    defer c.deinit();
+    for (0..257) |id| try c.insert(id, id + 10);
+    const first = try c.frames.getMutable(0);
+    const second = try c.frames.getMutable(1);
+    _ = try c.frames.getMutable(0); // Reacquisition must not duplicate the list.
+    try c.frames.write(first, 0, Values.natural(0, 15));
+    try c.frames.begin(257);
+    try testing.expectEqual(2, c.frames.statistics.borrowed_entries);
+    try testing.expectEqual(2, c.frames.statistics.saved_entries);
+    try c.frames.write(first, 0, Values.natural(0, 20));
+    second.position = 7; // A raw metadata write through the supported borrow.
+    c.frames.commit();
+    // Commit does not mutate the map and cannot invalidate either pointer.
+    try c.frames.begin(257);
+    try testing.expectEqual(4, c.frames.statistics.borrowed_entries);
+    try c.frames.write(first, 0, Values.natural(0, 30));
+    second.position = 9;
+    c.frames.rollback(257);
+    try testing.expectEqual(20, try c.value(0, 0));
+    try testing.expectEqual(7, (try c.frames.get(1)).position);
+    try testing.expectEqual(null, c.frames.borrowed);
+    for (2..257) |id| try testing.expectEqual(id + 10, try c.value(id, 0));
+}
+
+test "copied read descriptors acquire protection at each sanctioned mutation" {
+    const Operation = enum { write, clear, apply, prune, restart };
+    for ([_]bool{ false, true }) |before_begin| inline for (std.meta.tags(Operation)) |operation| {
+        var c: Context = undefined;
+        try c.init(testing.allocator, 65);
+        defer c.deinit();
+        try c.insert(0, 10);
+        const live = try c.pool.insert(data.analysis_sets.empty, 0);
+        var frame: Frame = if (before_begin) try c.frames.get(0) else undefined;
+        try c.frames.begin(1);
+        if (!before_begin) frame = try c.frames.get(0);
+        try testing.expectEqual(0, c.frames.statistics.saved_entries);
+        switch (operation) {
+            .write => try c.frames.write(&frame, 0, Values.natural(0, 20)),
+            .clear => try c.frames.clear(&frame, 0),
+            .apply => try c.frames.apply(&frame, live, &[_]u64{0}, &.{Values.natural(0, 20)}),
+            .prune => try c.frames.prune(&frame, data.analysis_sets.empty),
+            .restart => try c.frames.restart(&frame, 0, live, &.{Values.natural(0, 20)}),
+        }
+        try testing.expectEqual(1, c.frames.statistics.saved_entries);
+        c.frames.rollback(1);
+        try testing.expectEqual(10, try c.value(0, 0));
+        try testing.expectEqual(0, (try c.frames.get(0)).position);
+    };
+}
+
+fn borrowedBeginFailure(allocator: std.mem.Allocator) !void {
+    var c: Context = undefined;
+    try c.init(allocator, 65);
+    defer c.deinit();
+    try c.insert(0, 10);
+    while (c.frames.slots.views.items.len < c.frames.slots.views.capacity)
+        try c.insert(c.frames.entries.count(), 11);
+    const count = c.frames.entries.count();
+    const first = try c.frames.getMutable(0);
+    const second = try c.frames.getMutable(1);
+    c.frames.begin(count) catch |err| {
+        try testing.expectEqual(null, c.frames.journal);
+        try testing.expect(c.frames.borrowed != null);
+        try testing.expectEqual(0, first.position);
+        try testing.expectEqual(0, second.position);
+        try testing.expectEqual(10, try c.value(0, 0));
+        try testing.expectEqual(11, try c.value(1, 0));
+        return err;
+    };
+    first.position = 9;
+    second.position = 10;
+    c.frames.rollback(count);
+    try testing.expectEqual(0, (try c.frames.get(0)).position);
+    try testing.expectEqual(0, (try c.frames.get(1)).position);
+}
+
+test "failure protecting preexisting borrows leaves begin unpublished" {
+    try testing.checkAllAllocationFailures(testing.allocator, borrowedBeginFailure, .{});
+}
+
+test "failed borrowed begin retries with the latest entry and no stale pointer list" {
+    var counting = testing.FailingAllocator.init(testing.allocator, .{});
+    var c: Context = undefined;
+    try c.init(counting.allocator(), 65);
+    defer c.deinit();
+    try c.insert(0, 10);
+    const frame = try c.frames.getMutable(0);
+    counting.fail_index = counting.alloc_index;
+    try testing.expectError(error.OutOfMemory, c.frames.begin(1));
+    try testing.expectEqual(null, c.frames.journal);
+    counting.fail_index = std.math.maxInt(usize);
+    try c.frames.write(frame, 0, Values.natural(0, 15));
+    try c.frames.begin(1);
+    try c.frames.write(frame, 0, Values.natural(0, 20));
+    const allocations = counting.allocations;
+    counting.fail_index = counting.alloc_index;
+    c.frames.rollback(1);
+    try testing.expectEqual(allocations, counting.allocations);
+    try testing.expectEqual(15, try c.value(0, 0));
+    counting.fail_index = std.math.maxInt(usize);
+    _ = try c.frames.getMutable(0);
+    try c.insert(1, 11); // Successful map mutation ends the documented borrow.
+    try testing.expectEqual(null, c.frames.borrowed);
+    try c.frames.begin(2);
+    try testing.expectEqual(0, c.frames.journal.?.entries.count());
+    c.frames.commit();
+}
+
+test "independent semantic forks do not acquire their source frame" {
+    var c: Context = undefined;
+    try c.init(testing.allocator, 65);
+    defer c.deinit();
+    try c.insert(0, 10);
+    var fork = try c.frames.forkFrame(try c.frames.get(0));
+    defer c.frames.releaseFrame(fork);
+    try c.frames.begin(1);
+    try c.frames.write(&fork, 0, Values.natural(0, 20));
+    try testing.expectEqual(0, c.frames.statistics.saved_entries);
+    c.frames.commit();
+    try testing.expectEqual(10, try c.value(0, 0));
+    try testing.expectEqual(20, (try c.frames.slots.get(fork.view, 0)).body.scalar[0]);
 }
 
 test "first appended identity becomes an ordinary protected entry in the next transaction" {

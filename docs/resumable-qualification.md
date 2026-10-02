@@ -1,5 +1,33 @@
 # Change-proportional resident execution
 
+## Post-P0 repair in qualification
+
+P0 was `1082c07945b0227e77c15bb275edfd77dc1b657d`, tree
+`9518b875ae789f9a8ab499ebd2106f7b241a1cb1`. Its initial serial review wave found
+one rollback defect: a mutable frame pointer acquired before transaction entry
+could write without acquiring a saved entry. The driver reproduced that case and
+two copied-descriptor cases; all three fail on P0 and pass on W0. P0 is invalidated,
+and none of its initial review credit carries to the successor.
+
+The repair keeps Frames as the transaction owner. Registered descriptors carry
+their entry identity, so frame-writing operations acquire protection even when
+the descriptor came from a read. Outstanding mutable map pointers are recorded
+without allocation; begin protects only those possibly writable entries. Their
+borrows survive begin/commit and end at the existing map-mutation boundary.
+Resident ends its internal borrows at its operation boundary because its private
+Session cannot expose them. Independent construction and semantic forks remain
+separate owning values; map insertion transfers their ownership as before.
+
+The repaired source passes 83 storage tests, 92 native tests, and the normal
+aggregate, including 43 JavaScript tests and actual Node, Wasmtime, browser,
+source-oracle, capacity, and extracted-package checks. Its preliminary five-window
+H/Q primary ratios are 0.8348 / 0.9259; scalar timing guardrails pass. Complete
+successor economics, evidence packaging, exact-head delivery and a fresh review
+campaign remain pending. **The measurements and archive below describe P0 until
+that requalification is complete; they are not successor qualification.**
+
+## P0 implementation and measurements
+
 World now journals frames on first mutation and keeps one canonical expected
 request identity inside the controlled Resident owner. The ordinary low-level
 Session API remains available and recomputes its expected identity. The old

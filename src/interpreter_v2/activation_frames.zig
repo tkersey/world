@@ -60,6 +60,12 @@ pub const Frame = struct {
     position: usize = 0,
     function: data.program.Id,
     custody: custody.State,
+    // Registered descriptors route writes back to their authoritative entry.
+    // Independent construction and semantic forks have no map owner yet.
+    owner_id: ?data.program.Id = null,
+    // Intrusive list of map pointers whose documented borrow is still live.
+    // A self-link terminates the list; null means this entry is not borrowed.
+    borrowed_next: ?data.program.Id = null,
 };
 pub const Frames = struct {
     allocator: std.mem.Allocator,
@@ -69,6 +75,7 @@ pub const Frames = struct {
     custody: custody.Custody,
     entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
     journal: ?Journal = null,
+    borrowed: ?data.program.Id = null,
     /// Diagnostic work includes failed attempts; never portable or rolled back.
     statistics: Statistics = .{},
 
@@ -78,6 +85,8 @@ pub const Frames = struct {
         moved_frames: u64 = 0,
         commit_entries: u64 = 0,
         rollback_entries: u64 = 0,
+        borrowed_entries: u64 = 0,
+        released_borrows: u64 = 0,
     };
     const Journal = struct {
         node_count: usize,
@@ -93,6 +102,14 @@ pub const Frames = struct {
     pub fn begin(self: *Frames, node_count: usize) Error!void {
         if (self.journal != null) return error.InvalidState;
         self.journal = .{ .node_count = node_count, .last_held = node_count };
+        errdefer self.commit(); // Only protection ran; entry contents are intact.
+        var cursor = self.borrowed;
+        while (cursor) |id| {
+            const next = self.entries.get(id).?.borrowed_next.?;
+            try self.hold(id);
+            self.statistics.borrowed_entries +|= 1;
+            cursor = if (next == id) null else next;
+        }
     }
     inline fn hold(self: *Frames, id: data.program.Id) Error!void {
         const journal = if (self.journal) |*value| value else return;
@@ -129,6 +146,7 @@ pub const Frames = struct {
     /// Remove successors first; retained map capacity then suffices for every
     /// entry frame. No allocation or full retained-frame traversal is needed.
     pub fn rollback(self: *Frames, node_count: usize) void {
+        self.endMutableBorrows(); // Restoring map entries ends their borrows.
         var journal = self.journal.?;
         self.journal = null;
         for (journal.node_count..node_count) |id| {
@@ -141,7 +159,10 @@ pub const Frames = struct {
             self.statistics.rollback_entries +|= 1;
         }
         entries = journal.entries.iterator();
-        while (entries.next()) |entry| if (entry.value_ptr.*) |frame| {
+        while (entries.next()) |entry| if (entry.value_ptr.*) |saved| {
+            var frame = saved;
+            frame.owner_id = entry.key_ptr.*;
+            frame.borrowed_next = null;
             self.entries.putAssumeCapacity(entry.key_ptr.*, frame);
         };
         journal.entries.deinit(self.allocator);
@@ -168,12 +189,36 @@ pub const Frames = struct {
         const frame = self.entries.getPtr(id) orelse return error.InvalidState;
         // Protection may grow the journal or view tables, never this frame map.
         try self.hold(id);
+        if (frame.borrowed_next == null) {
+            frame.borrowed_next = self.borrowed orelse id;
+            self.borrowed = id;
+        }
         return frame;
     }
     /// A copied descriptor still mutates its owned slot/custody handles.
     /// Acquire protection before copying, not when later publishing the fields.
     pub fn getForUpdate(self: *Frames, id: data.program.Id) Error!Frame {
-        return (try self.getMutable(id)).*;
+        const frame = try self.get(id);
+        try self.hold(id);
+        return frame;
+    }
+    /// Ends all outstanding map-pointer borrows. Map mutation does this
+    /// automatically. A closed owner may also call it when no pointer escapes
+    /// its operation; ordinary low-level callers need no extra choreography.
+    pub fn endMutableBorrows(self: *Frames) void {
+        var id = self.borrowed orelse return;
+        self.borrowed = null;
+        while (true) {
+            const frame = self.entries.getPtr(id).?;
+            const next = frame.borrowed_next.?;
+            frame.borrowed_next = null;
+            self.statistics.released_borrows +|= 1;
+            if (next == id) break;
+            id = next;
+        }
+    }
+    inline fn protect(self: *Frames, frame: *const Frame) Error!void {
+        if (frame.owner_id) |id| try self.hold(id);
     }
     pub fn project(self: *Frames, id: data.program.Id, allocator: std.mem.Allocator) Error!?data.process_state.Activation {
         const frame = self.entries.get(id) orelse return null;
@@ -198,11 +243,19 @@ pub const Frames = struct {
     pub fn put(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         if (self.entries.contains(id)) return error.InvalidState;
         try self.hold(id);
-        try self.entries.put(self.allocator, id, frame);
+        var registered = frame;
+        registered.owner_id = id;
+        registered.borrowed_next = null;
+        try self.entries.put(self.allocator, id, registered);
+        self.endMutableBorrows();
     }
     pub fn update(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         try self.hold(id);
-        self.entries.getPtr(id).?.* = frame;
+        self.endMutableBorrows();
+        var registered = frame;
+        registered.owner_id = id;
+        registered.borrowed_next = null;
+        self.entries.getPtr(id).?.* = registered;
     }
     pub fn remove(self: *Frames, id: data.program.Id) Error!void {
         const frame = self.entries.get(id) orelse return;
@@ -212,12 +265,14 @@ pub const Frames = struct {
                 // temporary successor handle is necessary.
                 try journal.entries.put(self.allocator, id, frame);
                 journal.last_held = id;
+                self.endMutableBorrows();
                 _ = self.entries.remove(id);
                 self.statistics.saved_entries +|= 1;
                 self.statistics.moved_frames +|= 1;
                 return;
             }
         }
+        self.endMutableBorrows();
         if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
     }
     pub fn create(self: *Frames, function: data.program.Id) Error!Frame {
@@ -232,15 +287,19 @@ pub const Frames = struct {
     }
     pub fn forkFrame(self: *Frames, original: Frame) Error!Frame {
         var result = original;
+        result.owner_id = null;
+        result.borrowed_next = null;
         result.view = try self.slots.fork(original.view);
         errdefer self.slots.release(result.view) catch unreachable;
         result.custody = try self.custody.fork(original.custody);
         return result;
     }
     pub fn scope(self: *Frames, frame: *Frame, target: data.program.Id) Error!void {
+        try self.protect(frame);
         try self.custody.moveTo(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(target));
     }
     pub fn write(self: *Frames, frame: *Frame, slot: data.program.Id, value: data.graph.Value) Error!void {
+        try self.protect(frame);
         try self.custody.remove(&frame.custody, @intCast(slot));
         if (value.body == .owned) try self.custody.establish(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(slot));
         try self.rewriteValue(frame, slot, value);
@@ -260,6 +319,10 @@ pub const Frames = struct {
         return values;
     }
     pub fn clear(self: *Frames, frame: *Frame, slot: data.program.Id) Error!void {
+        try self.protect(frame);
+        try self.clearProtected(frame, slot);
+    }
+    fn clearProtected(self: *Frames, frame: *Frame, slot: data.program.Id) Error!void {
         try self.custody.remove(&frame.custody, @intCast(slot));
         try self.slots.clear(frame.view, @intCast(slot));
     }
@@ -273,21 +336,26 @@ pub const Frames = struct {
         if (!self.canRestart(frame.*, target)) return error.InvalidState;
         const function = self.layouts.functions[@intCast(target)];
         if (function.inputs.len != values.len) return error.InvalidState;
+        try self.protect(frame);
         var old = frame.live_bound.iterator(self.pool);
         while (old.next()) |slot| {
             if (slot >= function.layout.slots.len) break;
             if (std.mem.indexOfScalar(data.program.Id, function.inputs, slot) == null)
-                try self.clear(frame, slot);
+                try self.clearProtected(frame, slot);
         }
         frame.function = target;
         frame.custody.scope = 0;
-        try self.apply(frame, live, function.inputs, values);
+        try self.applyProtected(frame, live, function.inputs, values);
         frame.position = 0;
     }
     /// Writes and reclamation share one owner. The admitted liveness bound may
     /// include uninitialized slots; only Slots.get/iterator observe actual values.
     pub fn apply(self: *Frames, frame: *Frame, live: sets.Root, destinations: anytype, values: []const data.graph.Value) Error!void {
         if (destinations.len != values.len) return error.InvalidState;
+        try self.protect(frame);
+        try self.applyProtected(frame, live, destinations, values);
+    }
+    fn applyProtected(self: *Frames, frame: *Frame, live: sets.Root, destinations: anytype, values: []const data.graph.Value) Error!void {
         const selection: Bound = switch (frame.live_bound) {
             .bits => .{ .bits = self.pool.lowWord(live) },
             .tree => .{ .tree = live },
@@ -300,9 +368,13 @@ pub const Frames = struct {
             if (value.body == .owned) try self.custody.establish(&frame.custody, self.layouts.functions[@intCast(frame.function)].custody, @intCast(slot));
             try self.slots.set(frame.view, @intCast(slot), value);
         }
-        try self.prune(frame, live);
+        try self.pruneProtected(frame, live);
     }
     pub fn prune(self: *Frames, frame: *Frame, live: sets.Root) Error!void {
+        try self.protect(frame);
+        try self.pruneProtected(frame, live);
+    }
+    fn pruneProtected(self: *Frames, frame: *Frame, live: sets.Root) Error!void {
         const retained: Bound = switch (frame.live_bound) {
             .bits => .{ .bits = self.pool.lowWord(live) },
             .tree => .{ .tree = live },
@@ -315,7 +387,7 @@ pub const Frames = struct {
         var iterator = removed.iterator(self.pool);
         while (iterator.next()) |slot| {
             if (slot >= limit) break;
-            try self.clear(frame, slot);
+            try self.clearProtected(frame, slot);
         }
         frame.live_bound = retained;
     }

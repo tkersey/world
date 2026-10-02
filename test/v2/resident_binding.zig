@@ -220,3 +220,42 @@ test "low level Session mutation still requires a newly canonicalized binding" {
     try expect(done == .completed);
     try eq(43, done.completed.body.scalar[0]);
 }
+
+test "low level preexisting frame borrow rolls back to the canonical pending state" {
+    const program = try image(false);
+    defer a.free(program);
+    var session = try runtime.Session.initImage(a, program, &.{ 42, 0, 0, 0, 0, 0, 0, 0 });
+    defer session.deinit();
+    try expect(try session.run(null) == .requested);
+    const before = try session.checkpoint(a);
+    defer a.free(before);
+    var pending = try session.pendingRequest(a);
+    defer pending.deinit();
+    const continuation = (try session.store.get(session.roots.pending.?)).pending.continuation;
+    const frame = try session.frames.getMutable(continuation.id);
+    var iterator = try session.frames.slots.iterator(frame.view);
+    var changed = false;
+    while (try iterator.next()) |binding| {
+        if (session.program.schemas[@intCast(binding.value.schema)] != .u64) continue;
+        var transaction = try session.begin();
+        var value = binding.value;
+        std.mem.writeInt(u64, value.body.scalar[0..8], 43, .little);
+        session.frames.write(frame, binding.slot, value) catch |err| {
+            transaction.rollback(&session);
+            return err;
+        };
+        transaction.rollback(&session);
+        changed = true;
+        break; // Rollback ends both the frame borrow and packed-slot iterator.
+    }
+    try expect(changed);
+    const after = try session.checkpoint(a);
+    defer a.free(after);
+    try bytesEq(u8, before, after);
+    const reply = try protocol.encodeOwned(protocol.Result, a, .{ .request_identity = pending.request.request_identity, .value = &.{} });
+    defer a.free(reply);
+    try session.answer(reply);
+    const done = try session.run(null);
+    try expect(done == .completed);
+    try eq(42, done.completed.body.scalar[0]);
+}
