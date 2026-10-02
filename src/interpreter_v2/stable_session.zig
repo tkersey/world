@@ -104,7 +104,7 @@ pub const Session = struct {
         // mutate fields without another API call, so it never lends a cache.
         const reusable = self.store.observation_clean and self.frames.observation_clean and
             self.frames.slots.observation_clean and self.frames.custody.nodes.observation_clean and
-            self.frames.borrowed_first == null;
+            self.frames.borrowed_first == null and self.frames.scoped_borrows == null;
         try self.store.begin();
         errdefer self.store.rollback();
         self.frames.statistics = if (self.statistics) |s| &s.frames else null;

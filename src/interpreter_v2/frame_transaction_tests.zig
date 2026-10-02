@@ -325,6 +325,82 @@ test "scoped mutation protects entry state without forgetting escaping pointers"
     try testing.expectEqual(99, (try frames.get(0)).position);
 }
 
+test "scoped borrows protect later entry and entry after commit without allocation during rollback" {
+    for ([_]bool{ false, true }) |commit_first| {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{});
+        const a = failing.allocator();
+        var pool: data.analysis_sets.Pool = .{ .allocator = a, .limit = 1 };
+        defer pool.deinit();
+        const functions = [_]data.activation.Function{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = &.{0} }, .result = 0 }};
+        var layouts = try bindings.Layouts.init(a, &functions);
+        defer layouts.deinit();
+        var frames = try bindings.Frames.init(a, &pool, &layouts);
+        defer frames.deinit();
+        try frames.put(0, try frames.create(0));
+        const Context = struct { frames: *bindings.Frames, failing: *testing.FailingAllocator, commit_first: bool };
+        const operation = struct {
+            fn run(context: Context, frame: *bindings.Frame) !void {
+                if (context.commit_first) {
+                    frame.position += 1;
+                    context.frames.commit();
+                }
+                try context.frames.begin();
+                frame.position += 1;
+                const allocations = context.failing.alloc_index;
+                const resizes = context.failing.resize_index;
+                context.failing.fail_index = allocations;
+                context.failing.resize_fail_index = resizes;
+                context.frames.rollback();
+                try testing.expectEqual(allocations, context.failing.alloc_index);
+                try testing.expectEqual(resizes, context.failing.resize_index);
+            }
+        }.run;
+        if (commit_first) try frames.begin();
+        try frames.withMutable(0, Context{ .frames = &frames, .failing = &failing, .commit_first = commit_first }, operation);
+        try testing.expectEqual(@as(usize, @intFromBool(commit_first)), (try frames.get(0)).position);
+    }
+}
+
+test "nested scoped borrows restore both frames and do not protect a reused occupant after membership ends" {
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    const a = failing.allocator();
+    var pool: data.analysis_sets.Pool = .{ .allocator = a, .limit = 1 };
+    defer pool.deinit();
+    const functions = [_]data.activation.Function{.{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = &.{0} }, .result = 0 }};
+    var layouts = try bindings.Layouts.init(a, &functions);
+    defer layouts.deinit();
+    var frames = try bindings.Frames.init(a, &pool, &layouts);
+    defer frames.deinit();
+    for (0..2) |id| try frames.put(id, try frames.create(0));
+    const Context = struct { frames: *bindings.Frames, failing: *testing.FailingAllocator };
+    const operations = struct {
+        const Inner = struct { frames: *bindings.Frames, outer: *bindings.Frame };
+        fn inner(context: Inner, frame: *bindings.Frame) !void {
+            try context.frames.begin();
+            context.outer.position = 17;
+            frame.position = 19;
+            context.frames.rollback();
+        }
+        fn outer(context: Context, frame: *bindings.Frame) !void {
+            try context.frames.withMutable(1, Inner{ .frames = context.frames, .outer = frame }, inner);
+            // Both old pointers ended at rollback. Use only fresh map reads.
+            for (0..2) |id| try testing.expectEqual(0, (try context.frames.get(id)).position);
+            try context.frames.remove(0);
+            var replacement = try context.frames.create(0);
+            replacement.position = 5;
+            try context.frames.put(0, replacement);
+            const allocations = context.failing.alloc_index;
+            context.failing.fail_index = allocations;
+            context.failing.resize_fail_index = context.failing.resize_index;
+            try context.frames.begin();
+            context.frames.rollback();
+            try testing.expectEqual(allocations, context.failing.alloc_index);
+            try testing.expectEqual(5, (try context.frames.get(0)).position);
+        }
+    };
+    try frames.withMutable(0, Context{ .frames = &frames, .failing = &failing }, operations.outer);
+}
+
 test "direct slot roots and later frame protection share the entry version" {
     const a = testing.allocator;
     var pool: data.analysis_sets.Pool = .{ .allocator = a, .limit = 65 };

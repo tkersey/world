@@ -1,5 +1,5 @@
 {
-  "status": "historical-1850937-qualification-with-successor-under-review",
+  "status": "historical-1850937-detail-with-current-scoped-lifetime-successor",
   "specSha256": "d914b959e32d10b841e549cb27665689c419856e5b77ae632363fb71b22e92f3",
   "worldBaseline": "c61edfc8208c375d5188e476131ca8cff5aeeb8a",
   "runtimeData": "511fe388587b36ae37307d277e04c22b0bb6f6d9",
@@ -166,10 +166,10 @@
   },
   "timingCells": 272,
   "rawArchive": {
-    "path": "performance/change-proportional-raw.tar.gz",
-    "sha256": "0ddfb598c1cf52e98feeebae0250149e1d2da39adaf854525ec5a013095de9e9",
-    "bytes": 38117092,
-    "inventory": "repair-inventory.json"
+    "path": "docs/performance/change-proportional-raw.tar.gz",
+    "bytes": 56374189,
+    "sha256": "382b8ad587d1704932e13be85bb1c7ea02ba68618e1078388d5623da8d984b98",
+    "scope": "Historical failures, fixed W0/C0 corpus and previous reports retained, plus current scoped-lifetime source witnesses, all272timings, allpreservation, currentkernels/native samplers and six-lens99bb1a6 receipts. Producer source identity remains99bb1a6 and is not relabeled as the successor."
   },
   "lifecycles": [
     {
@@ -726,39 +726,65 @@
     }
   },
   "currentSuccessor": {
-    "status": "locally-tested; final entry optimization check running; reviews requested",
-    "native": 93,
-    "storage": 80,
-    "changes": [
-      "Native logical-owner mutation invalidates published binding reuse",
-      "Direct Slot roots share transaction entry protection",
-      "Escaped mutable Frame borrows remain excluded after republishing"
-    ],
-    "performance": {
-      "oneFinalAttempt": true,
-      "scope": "20 native resident cells",
-      "confirmedSlowdowns": [
-        {
-          "family": "compatible",
-          "n": 128,
-          "addedMicroseconds": 3.313140625,
-          "ratio": 1.0604924042507666
-        },
-        {
-          "family": "unique",
-          "n": 0,
-          "addedMicroseconds": 0.02084375,
-          "ratio": 1.0601822611206353
-        }
-      ],
-      "memoryExceeded": 0,
-      "disposition": "Measured microsecond costs accepted by current user instruction; no additional threshold tuning"
+    "status": "Full correctness/economic qualification complete; final-head publication and fresh review convergence pending",
+    "native": 94,
+    "storage": 82,
+    "aggregateSteps": 39,
+    "kernel": {
+      "sha256": "4159328d1c881147292c0ad998a30280bfafb9167077dc8c30e260f47561f0dc",
+      "bytes": 486492
     },
-    "limitations": [
-      "Historical detailed fields retain 1850937 provenance; not new repair qualification",
-      "Current browser lane blocked by localhost listen permission",
-      "Pinned Python 3.14.7 unavailable; Wasmtime lane not passed",
-      "Final qualification and serial review convergence remain open"
-    ]
+    "scopeBorrowRepair": {
+      "owner": "Frames callback-lifetime stack plus Session observation-reuse fence",
+      "witnesses": [
+        "later transaction entry",
+        "entry after earlier commit",
+        "metadata mutation after publication"
+      ],
+      "originalScalarEqualityCanonical": true,
+      "obsolete64ByteWrapperRemoved": true
+    },
+    "preservation": {
+      "lanes": 7,
+      "consumerFamilies": 8,
+      "historyCells": 19,
+      "freshProcessTransferCells": 12
+    },
+    "primary": {
+      "wasmH1024": {
+        "ratio": 0.9094566823329804,
+        "deltaNs": -5483292,
+        "confirmedWin": true
+      },
+      "wasmQ1024": {
+        "ratio": 0.9458039518758613,
+        "deltaNs": -1799582,
+        "confirmedWin": true
+      }
+    },
+    "review": {
+      "initialHead": "99bb1a6c138a3c937597de4ed6c03df94e63d696",
+      "sixLensWaveComplete": true,
+      "standardCredit": 0,
+      "auxiliaryCredit": [],
+      "freshSuccessorWavePending": true
+    },
+    "performanceDirection": "One optimization attempt for sub100ms operations completed; no further tuning, absolute costs remain visible",
+    "remaining": [
+      "Freeze and publish final source/report",
+      "Normal final-head clean-source bundle/acquisition/verification",
+      "Fresh serial review convergence",
+      "W01-W40 final audit and handoff"
+    ],
+    "economics": {
+      "timingCells": 272,
+      "confirmedSlowdownCells": 23,
+      "minimumAddedMicroseconds": 0.024734375,
+      "maximumAddedMicroseconds": 78.703125,
+      "allAffectedWorkloadsBelow100ms": true,
+      "disposition": "Current user direction: one attempt for sub100ms operations then proceed to reviews; absolute measured costs disclosed",
+      "memoryComparisons": 1061,
+      "memoryGateViolations": 0
+    }
   }
 }

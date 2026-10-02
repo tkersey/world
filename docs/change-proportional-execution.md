@@ -1,27 +1,50 @@
 # Change-proportional resident execution
 
-The latest successor repairs stale published bindings after native Frame, copied-view,
-Slot and Store mutation, and restores direct Slot writes on transaction rollback.
-Escaped native Frame pointers remain excluded from binding reuse after republishing.
-The repair passes 93 native tests, 80 storage tests, and the local native/Node/WASM
-qualification lanes; the final small transaction-entry optimization is being checked.
+The current successor repairs native Frame/Slot/Store binding invalidation, direct
+Slot rollback, and the lifetime of scoped callback borrows. Frames tracks active
+callbacks with automatic stack nodes alongside escaping native borrows. Transaction
+entry protects those live IDs; membership changes end their borrows. Session denies
+binding reuse during a callback, and callback exit invalidates observation metadata
+because a callback may publish and then directly change its frame.
 
-The user accepted the measured microsecond costs and requested one final optimization
-attempt for operations below 100 ms, followed by code reviews. That one attempt
-leaves two confirmed native timing increases: compatible-128 adds 3.313140625 µs
-(6.0492%) and unique-0 adds 0.02084375 µs (6.0182%). All 20 measured native resident
-cells stay within the memory limit. Raw results are retained; no further threshold
-tuning is planned. This acceptance covers these observed costs, not unknown regressions.
+Three scoped-lifetime comparisons fail on 99bb1a6 and pass on W0's equivalent
+getMutable adapter: transaction entry inside a callback, entry after committing an
+earlier transaction, and direct metadata mutation after publication. All pass on
+the repair. Committed regressions cover nested callbacks, identifier reuse, denied
+allocation during rollback, and stale replies both during and after a callback.
+The obsolete scalar 64-byte supplementary wrapper is removed; original exact
+scalar equality samplers remain canonical and pass.
 
-Reviews are restarting on the repaired source at the user's request. The previous
-1850937 review results have zero credit after confirmed binding and rollback defects.
-Full final package/platform/economic qualification and review convergence remain
-required for completion. Current browser qualification cannot listen on localhost,
-and the required Python 3.14.7 is unavailable; neither blocked lane is called passed.
+Current qualification passes 94 native tests, 82 storage tests and all 39 normal
+aggregate steps, including Node/native/WASM, 159 Wasmtime boundaries, actual Chromium
+and Firefox Workers, 277 capacity cases and package/source checks. All seven
+independent preservation lanes pass, including original scalar equality, 19 history
+cases, 12 fresh-process transfers and all eight fixed Agent fixture families.
+Current kernel: `4159328d1c881147292c0ad998a30280bfafb9167077dc8c30e260f47561f0dc`,
+486492 bytes, normal ReleaseSmall profile and unchanged arena/stack/memory limits.
+
+Current H1024 complete WASM lifecycle saves 5.483292 ms (9.05%); Q1024 saves 1.799582 ms
+(5.42%). Both satisfy the five-window win rule. All 272 economic timing cells are complete. Twenty-three cells exceed the
+original 5% detection rule: their added costs range from 0.024735 µs to 78.703125 µs,
+and every affected measured workload is below 100 ms. The full raw cost table is
+retained; no percentages or samples are hidden. All peak-memory gates pass,
+including 1061 paired-window and independent preservation-peak comparisons. The user's direction is one
+optimization attempt for operations below 100 ms, then code review; that attempt is
+complete and no further threshold tuning is planned. New correctness fixes are
+requalified rather than credited with the predecessor's timings.
+
+The six-lens99bb1a6 initial wave is terminal and folded. Four lenses independently
+confirmed the obsolete scalar expectation; invariant review found the scoped entry
+gap, and root comparisons confirmed the related publication gap. Soundness found
+no additional defect. Reviewer blocked fresh-cache commands remain blocked in their
+receipts; root qualification is reported separately. All invalidated-head review
+credit is zero. Fresh clean-source delivery and complete serial review convergence
+on the eventual committed successor remain required; completion is not claimed.
 The only public subject remains [draft World #60](https://github.com/tkersey/world/pull/60).
 
-The detailed results below describe the historical 1850937 successor and its kernel
-`a184db4e…`. They are retained as prior evidence and do not qualify this new repair.
+The detailed results below are historical1850937 evidence, including its kernel
+`a184db4e…`, old frame-association construction and measurements. They do not
+qualify this current scoped-lifetime repair.
 
 ## Fixed inputs and product
 

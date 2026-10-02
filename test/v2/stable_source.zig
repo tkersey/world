@@ -1264,6 +1264,54 @@ fn retainedInputExample(builder: *source.Builder) !source.Module {
     return builder.module(main, unit);
 }
 
+test "scoped metadata mutation invalidates bindings during and after republishing" {
+    const protocol = boundary.data.invocation;
+    const Frames = @TypeOf(@as(Session, undefined).frames);
+    const Frame = @TypeOf(@as(*Frames, undefined).get(0) catch unreachable);
+    const Context = struct { resident: *Resident, stale: []const u8, check_inside: bool };
+    const operation = struct {
+        fn run(context: Context, frame: *Frame) !void {
+            var published = try context.resident.drive(testing.allocator, .none, .{ .quantum = 0 });
+            defer published.deinit();
+            frame.position ^= 1;
+            if (context.check_inside) {
+                if (context.resident.drive(testing.allocator, .{ .reply = context.stale }, .{ .quantum = 0 })) |output| {
+                    var owned = output;
+                    owned.deinit();
+                    return error.AcceptedStaleBinding;
+                } else |err| try testing.expectEqual(error.InvalidResult, err);
+                // The failed drive rolled back; do not use frame afterward.
+            }
+        }
+    }.run;
+    for ([_]bool{ false, true }) |check_inside| {
+        var builder = source.Builder.init(testing.allocator);
+        defer builder.deinit();
+        var compiled = try source.lower(testing.allocator, try retainedInputExample(&builder));
+        defer compiled.deinit();
+        const image = try programBytes(compiled.program);
+        defer testing.allocator.free(image);
+        var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+        defer prepared.deinit();
+        var arguments: [8]u8 = undefined;
+        std.mem.writeInt(u64, &arguments, 42, .little);
+        var resident = try Resident.start(testing.allocator, &prepared, &arguments);
+        defer releaseResident(&resident);
+        var initial = try resident.drive(testing.allocator, .none, .{});
+        defer initial.deinit();
+        var request = try protocol.decode(protocol.Request, testing.allocator, initial.record.requested.request);
+        defer request.deinit();
+        const stale = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = request.value.request_identity, .value = &.{} });
+        defer testing.allocator.free(stale);
+        const pending = (try resident.session.?.store.get(resident.session.?.roots.pending.?)).pending;
+        try resident.session.?.frames.withMutable(pending.continuation.id, Context{ .resident = &resident, .stale = stale, .check_inside = check_inside }, operation);
+        var canonical = try resident.session.?.pendingRequest(testing.allocator);
+        defer canonical.deinit();
+        try testing.expect(!std.mem.eql(u8, &request.value.request_identity, &canonical.request.request_identity));
+        try testing.expectError(error.InvalidResult, resident.drive(testing.allocator, .{ .reply = stale }, .{ .quantum = 0 }));
+    }
+}
+
 test "escaped frame borrow remains excluded from binding reuse after republishing" {
     const protocol = boundary.data.invocation;
     var builder = source.Builder.init(testing.allocator);

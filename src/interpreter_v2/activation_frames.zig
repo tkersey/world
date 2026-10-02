@@ -83,6 +83,14 @@ pub const Frames = struct {
     // are recorded only when callers acquire them, never by scanning entries.
     borrowed_first: ?data.program.Id = null,
     borrowed_more: std.AutoHashMapUnmanaged(data.program.Id, void) = .empty,
+    // Callback borrows live on their callers' stacks. A callback may open a
+    // transaction or publish before returning, so entry must cover this lifetime.
+    scoped_borrows: ?*ScopedBorrow = null,
+    const ScopedBorrow = struct {
+        id: data.program.Id,
+        previous: ?*ScopedBorrow,
+        active: bool = true,
+    };
 
     pub const Journal = struct {
         observation_clean: bool,
@@ -120,7 +128,7 @@ pub const Frames = struct {
         errdefer self.custody.nodes.rollbackTransaction();
         self.journal = .{ .observation_clean = self.observation_clean };
         errdefer self.releaseJournal();
-        if (self.borrowed_first != null) try self.protectEntryBorrows();
+        if (self.borrowed_first != null or self.scoped_borrows != null) try self.protectEntryBorrows();
     }
 
     // Interpreter borrows are scoped. Keep protection for escaping native
@@ -129,6 +137,10 @@ pub const Frames = struct {
         if (self.borrowed_first) |id| try self.hold(id, self.entries.getPtr(id) orelse return error.InvalidState);
         var borrowed = self.borrowed_more.keyIterator();
         while (borrowed.next()) |id| try self.hold(id.*, self.entries.getPtr(id.*) orelse return error.InvalidState);
+        var scoped = self.scoped_borrows;
+        while (scoped) |borrow| : (scoped = borrow.previous) {
+            if (borrow.active) try self.hold(borrow.id, self.entries.getPtr(borrow.id) orelse return error.InvalidState);
+        }
     }
 
     inline fn rememberBorrow(self: *Frames, id: data.program.Id) Error!void {
@@ -141,6 +153,8 @@ pub const Frames = struct {
     fn clearBorrows(self: *Frames) void {
         self.borrowed_first = null;
         self.borrowed_more.clearRetainingCapacity();
+        var scoped = self.scoped_borrows;
+        while (scoped) |borrow| : (scoped = borrow.previous) borrow.active = false;
     }
     /// Secure the entry version before exposing a mutable frame or changing
     /// membership. Reads never come here. Repeated touches retain the first one.
@@ -236,10 +250,18 @@ pub const Frames = struct {
     }
     /// The callback's borrow ends when it returns (or changes membership).
     /// It must not retain the pointer. The entry version is protected before
-    /// the callback runs; only escaping getMutable borrows need begin tracking.
+    /// the callback runs. Nested transaction entry also protects its live borrow.
     pub inline fn withMutable(self: *Frames, id: data.program.Id, context: anytype, comptime operation: anytype) @typeInfo(@TypeOf(operation)).@"fn".return_type.? {
         const frame = self.entries.getPtr(id) orelse return error.InvalidState;
         try self.hold(id, frame);
+        var borrow: ScopedBorrow = .{ .id = id, .previous = self.scoped_borrows };
+        self.scoped_borrows = &borrow;
+        defer {
+            self.scoped_borrows = borrow.previous;
+            // The callback may publish and then write metadata directly. Its
+            // final write need not pass through another invalidating operation.
+            self.observation_clean = false;
+        }
         self.observation_clean = false;
         return operation(context, frame);
     }
