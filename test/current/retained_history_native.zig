@@ -25,6 +25,7 @@ pub fn main(init: std.process.Init) !void {
     const image_path = args.next() orelse return error.Image;
     const depth = try std.fmt.parseInt(u64, args.next() orelse return error.Depth, 10);
     const mode = args.next() orelse "H";
+    const changed = if (std.mem.eql(u8, mode, "C")) try std.fmt.parseInt(u64, args.next() orelse return error.Changes, 10) else 0;
     if (args.next() != null) return error.Arguments;
     const image = try std.Io.Dir.cwd().readFileAlloc(init.io, image_path, init.gpa, .limited(64 << 20));
     defer init.gpa.free(image);
@@ -60,7 +61,21 @@ pub fn main(init: std.process.Init) !void {
     }
     const begin_allocations = entry_counting.allocations - allocations;
     const begin_bytes = entry_counting.allocated_bytes - allocated_bytes;
-    if (std.mem.eql(u8, mode, "H")) {
+    if (std.mem.eql(u8, mode, "C")) {
+        if (parked.record != .yielded or changed >= frames) return error.Changes;
+        const before = try snapshot(&resident);
+        const before_bytes = counting.allocated_bytes;
+        observed = .{};
+        var progress = try resident.drive(init.gpa, .{ .cancel = .{ .text = "bounded changed set" } }, .{ .quantum = changed });
+        defer progress.deinit();
+        const after = try snapshot(&resident);
+        if (progress.record != .progressed or observed.storage.traced_nodes != 0) return error.UnexpectedObservation;
+        var buffer: [4096]u8 = undefined;
+        var out = std.Io.File.stdout().writer(init.io, &buffer);
+        try std.json.Stringify.value(.{ .mode = mode, .depth = depth, .frames = frames, .quantum = changed, .removedFrames = before.frames - after.frames, .savedEntries = if (@hasDecl(runtime.Resident, "diagnostics")) after.saved - before.saved else retained, .commitEntries = if (@hasDecl(runtime.Resident, "diagnostics")) after.committed - before.committed else retained, .allocatedBytes = counting.allocated_bytes - before_bytes, .transitions = observed.transitions, .tracedNodes = observed.storage.traced_nodes }, .{}, &out.interface);
+        try out.interface.writeByte('\n');
+        try out.interface.flush();
+    } else if (std.mem.eql(u8, mode, "H")) {
         if (parked.record != .yielded) return error.NotYielded;
         var resumed = try resident.drive(init.gpa, .resume_yield, .{ .quantum = 0 });
         resumed.deinit();

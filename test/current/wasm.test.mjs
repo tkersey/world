@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { inspectKernelWasm, MAXIMUM_KERNEL_BYTES, wasmRange, wasmOffset } from '../../src/embedding/wasm.mjs';
 import { Kernel } from '../../src/embedding/kernel.mjs';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,6 +54,53 @@ test('layout sampler preserves every operation peak across resetting lifecycle c
       }
     }
   } finally { rmSync(directory, {recursive:true, force:true}); }
+});
+
+test('retained lifecycle sampler observes failed commands and cleanup before peak reset', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'world-retained-peaks-'));
+  try {
+    const embedding=join(directory,'embedding.mjs'),kernelPath=join(directory,'kernel'),image=join(directory,'image'),record=join(directory,'record.json');
+    writeFileSync(image,Buffer.from([1]));
+    // An independent command model makes any selected phase the sole peak.
+    // Rejection throws after its observation, and close/release reset the peak.
+    writeFileSync(embedding,`const output=kind=>Buffer.from(JSON.stringify({kind,request:[]}));
+export const decodeOutcome=bytes=>JSON.parse(Buffer.from(bytes));
+export const decodeRequest=async()=>({requestIdentity:new Uint8Array(32)});
+export class Kernel {
+  static async create({bytes}){return new Kernel(JSON.parse(Buffer.from(bytes)));}
+  constructor({mode,largest}){this.mode=mode;this.largest=largest;this.live=0n;this.peak=0n;}
+  setLimits(){}
+  observe(name,live){this.peak=BigInt(name===this.largest?900:10);this.live=BigInt(live);}
+  prepare(){this.observe('prepare',10);return {};}
+  start(){this.calls=0;this.replies=0;this.observe('start',20);return {};}
+  drive(_session,options={}){
+    if(options.control==='cancel_text'){this.observe('cancel',20);return output('cancelled');}
+    if(options.control==='reply'){
+      const n=this.replies++;this.observe(n<3?'reject-'+n:'valid-reply',20);
+      if(n<3)throw Object.assign(new Error('rejected'),{code:'REJECT_'+n});
+      return output('progressed');
+    }
+    const n=this.calls++;this.observe(n===0?'initial':'drive-'+(n-1),20);
+    return output(n===0?(this.mode==='H'?'yielded':'requested'):'progressed');
+  }
+  checkpoint(){this.observe('checkpoint',20);return Buffer.from([3]);}
+  close(){this.observe('close',10);}
+  releasePrepared(){this.observe('release',0);}
+  usage(){return {workingLive:this.live,workingPeak:this.peak,memoryBytes:1024};}
+}`);
+    const sampler=fileURLToPath(new URL('./retained_history_wasm.mjs',import.meta.url));
+    for(const mode of ['H','Q']) {
+      const phases=['prepare','start','initial',...(mode==='H'?['drive-0','drive-63','checkpoint']:['reject-0','reject-1','reject-2','valid-reply']),'cancel','close','release'];
+      for(const largest of phases){
+        writeFileSync(kernelPath,JSON.stringify({mode,largest}));
+        const result=JSON.parse(execFileSync(process.execPath,[sampler,'freeze',embedding,kernelPath,image,mode,'1',record],{encoding:'utf8'}));
+        assert.equal(result.peakBytes,900,mode+': preserve '+largest+' peak');
+        const memory=JSON.parse(readFileSync(record)).baselineMemory;
+        assert.equal(memory.phases.at(-1).live,0);
+        assert(memory.phases.some(p=>p.name===largest && p.peak===900));
+      }
+    }
+  } finally { rmSync(directory,{recursive:true,force:true}); }
 });
 
 test('oversized kernel bytes reject before copying or hashing', async (t) => {

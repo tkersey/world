@@ -147,6 +147,7 @@ pub const Resident = struct {
         self.live = false;
     }
 
+    /// Counters are caller-owned and must outlive their attachment to this handle.
     pub fn setStatistics(self: *Resident, statistics: ?*Statistics) Error!void {
         const state = try self.enter();
         defer self.leave();

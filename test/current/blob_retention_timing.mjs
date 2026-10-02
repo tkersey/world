@@ -21,7 +21,7 @@ if(args[0]==='sample'){
  if(p)k.releasePrepared(p);assert.equal(k.usage().workingLive,0n);console.log(JSON.stringify({samplesNs}));
 }else{
  const [embedding,before,after,corpus,output]=args;assert.equal(args.length,5);const report={status:'running',kernels:{before:hash(readFileSync(before)),after:hash(readFileSync(after))},cells:[]};
- for(const family of ['unique','alias','captured'])for(const length of [0,65532,65536,1048576])for(const phase of ['fresh','pause']){
+ for(const family of ['unique','alias','captured'])for(const length of [0,65532,65533,65534,65536,1048576])for(const phase of ['fresh','pause']){
   const windows=[];
   for(let w=0;w<5;w++){
    const results={};for(const arm of w%2?['after','before']:['before','after'])results[arm]=JSON.parse(execFileSync(process.execPath,[new URL(import.meta.url).pathname,'sample',embedding,arm==='before'?before:after,corpus,family,String(length),phase],{encoding:'utf8',timeout:120000}));

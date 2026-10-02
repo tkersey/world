@@ -156,6 +156,58 @@ test "every frame journal allocation failure preserves entry values and membersh
     try testing.checkAllAllocationFailures(testing.allocator, allocationFailure, .{});
 }
 
+fn protectionFailure(allocator: std.mem.Allocator, remove: bool) !void {
+    var c: Context = undefined;
+    try c.init(allocator, 65);
+    defer c.deinit();
+    try c.insert(0, 10);
+    // Fill both view tables so first-touch protection must grow them. This
+    // reaches failures after the slot fork but before the custody fork finishes.
+    while (c.frames.slots.views.items.len < c.frames.slots.views.capacity)
+        try c.insert(c.frames.entries.count(), 11);
+    try testing.expectEqual(c.frames.custody.nodes.views.items.len, c.frames.custody.nodes.views.capacity);
+    const count = c.frames.entries.count();
+    try c.frames.begin(count);
+    const attempted = if (remove) c.frames.remove(0) else blk: {
+        _ = c.frames.getMutable(0) catch |err| break :blk @as(FramesError!void, err);
+        break :blk @as(FramesError!void, {});
+    };
+    attempted catch |err| {
+        c.frames.rollback(count);
+        try testing.expectEqual(count, c.frames.entries.count());
+        try testing.expectEqual(10, try c.value(0, 0));
+        return err;
+    };
+    c.frames.rollback(count);
+    try testing.expectEqual(count, c.frames.entries.count());
+    try testing.expectEqual(10, try c.value(0, 0));
+}
+const FramesError = @import("activation_frames.zig").Error;
+
+test "first saved version and untouched removal fail before ownership escapes" {
+    try testing.checkAllAllocationFailures(testing.allocator, protectionFailure, .{false});
+    try testing.checkAllAllocationFailures(testing.allocator, protectionFailure, .{true});
+}
+
+test "rollback never resurrects an exhausted slot handle generation" {
+    var c: Context = undefined;
+    try c.init(testing.allocator, 4);
+    defer c.deinit();
+    try c.insert(0, 10);
+    const frame = c.frames.entries.getPtr(0).?;
+    frame.view.generation = std.math.maxInt(u64);
+    c.frames.slots.views.items[frame.view.index].generation = frame.view.generation;
+    const exhausted = frame.view;
+    try c.frames.begin(1);
+    try c.frames.write(try c.frames.getMutable(0), 0, Values.natural(0, 20));
+    c.frames.rollback(1);
+    try testing.expectError(error.InvalidHandle, c.frames.slots.get(exhausted, 0));
+    try testing.expectEqual(10, try c.value(0, 0));
+    try c.insert(1, 30);
+    try testing.expect((try c.frames.get(1)).view.index != exhausted.index);
+    try testing.expectError(error.InvalidHandle, c.frames.slots.get(exhausted, 0));
+}
+
 test "repeated frame commits release rollback views and retain a bounded plateau" {
     var counting = testing.FailingAllocator.init(testing.allocator, .{});
     var c: Context = undefined;

@@ -82,6 +82,9 @@ pub const Frames = struct {
     const Journal = struct {
         node_count: usize,
         entries: std.AutoHashMapUnmanaged(data.program.Id, ?Frame) = .empty,
+        // Membership only grows during an attempt. Reusing this one proven key
+        // avoids hashing it again at every instruction of a long active drive.
+        last_held: ?data.program.Id = null,
     };
 
     /// Frame IDs are Store node IDs. IDs at or above this entry extent have no
@@ -93,12 +96,17 @@ pub const Frames = struct {
     }
     fn hold(self: *Frames, id: data.program.Id) Error!void {
         const journal = if (self.journal) |*value| value else return;
-        if (id >= journal.node_count or journal.entries.contains(id)) return;
+        if (id >= journal.node_count or journal.last_held == id) return;
+        if (journal.entries.contains(id)) {
+            journal.last_held = id;
+            return;
+        }
         // Reserve first: failure cannot strand a retained frame or admit a
         // mutable borrow without its transaction-entry version.
         try journal.entries.ensureUnusedCapacity(self.allocator, 1);
         const saved = if (self.entries.get(id)) |frame| try self.forkFrame(frame) else null;
         journal.entries.putAssumeCapacity(id, saved);
+        journal.last_held = id;
         self.statistics.saved_entries +|= 1;
         if (saved != null) self.statistics.forked_frames +|= 1;
     }
@@ -152,9 +160,10 @@ pub const Frames = struct {
     }
     /// The borrow ends before any operation that changes the frame map.
     pub fn getMutable(self: *Frames, id: data.program.Id) Error!*Frame {
-        if (!self.entries.contains(id)) return error.InvalidState;
+        const frame = self.entries.getPtr(id) orelse return error.InvalidState;
+        // Protection may grow the journal or view tables, never this frame map.
         try self.hold(id);
-        return self.entries.getPtr(id) orelse error.InvalidState;
+        return frame;
     }
     /// A copied descriptor still mutates its owned slot/custody handles.
     /// Acquire protection before copying, not when later publishing the fields.
@@ -197,6 +206,7 @@ pub const Frames = struct {
                 // Removal transfers the untouched entry owner; no fork or
                 // temporary successor handle is necessary.
                 try journal.entries.put(self.allocator, id, frame);
+                journal.last_held = id;
                 _ = self.entries.remove(id);
                 self.statistics.saved_entries +|= 1;
                 self.statistics.moved_frames +|= 1;

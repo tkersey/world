@@ -6,9 +6,10 @@ import {pathToFileURL} from 'node:url';
 import {frame, concat, field} from '../../src/embedding/wire.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
-const [action, embedding, kernelPath, imagePath, mode, depthText, recordPath] = process.argv.slice(2);
+const [action, embedding, kernelPath, imagePath, mode, depthText, recordPath, profile = 'normal'] = process.argv.slice(2);
 assert(['freeze', 'sample', 'memory', 'complete'].includes(action));
 assert(['H','Q'].includes(mode));
+assert(['normal','failure'].includes(profile));
 const world = await import(pathToFileURL(embedding));
 const bytes = readFileSync(kernelPath), image = readFileSync(imagePath), depth = Number(depthText);
 assert(Number.isSafeInteger(depth) && depth >= 0);
@@ -40,12 +41,13 @@ const replyBytes = mode === 'Q' ? (frozen ? frozen.replies.map(x => Buffer.from(
 if (frozen) {
   assert.equal(frozen.imageSha256, hash(image)); assert.equal(frozen.mode, mode);
   assert.equal(frozen.depth, depth); assert.deepEqual(frozen.limits, limits);
+  assert.equal(frozen.profile ?? 'normal', profile);
 }
 
 // Instrumentation is optional and excluded completely from latency runs.
 function run(memory = false) {
   const outputs = [], phases = [];
-  let peak = 0, reserved = 0, preparedLive, pauseLive;
+  let peak = 0, reserved = 0, preparedLive, pauseLive, failureBefore, failureAfter;
   const observe = (name, start) => {
     const usage = kernel.usage();
     peak = Math.max(peak, Number(usage.workingPeak));
@@ -61,9 +63,24 @@ function run(memory = false) {
   if (memory) preparedLive = Number(kernel.usage().workingLive);
   const preparationEnd = process.hrtime.bigint();
   const s = command('start', () => kernel.start(p, initialArgs));
+  function failPublication(options) {
+    if(profile!=='failure')return;
+    failureBefore=command('before-failure-checkpoint',()=>kernel.checkpoint(s));outputs.push(failureBefore);
+    command('limit-output',()=>kernel.setLimits({...limits,output:1}));
+    let failed=false;
+    try { command('failed-publication',()=>kernel.drive(s,options)); }
+    catch(error){assert.equal(error.code,'WORLD_CAPACITY');assert.equal(error.details.arena,'output');outputs.push(error.code);failed=true;}
+    assert(failed,'output limit must fail after logical progress');
+    command('restore-limits',()=>kernel.setLimits(limits));
+    failureAfter=command('after-failure-checkpoint',()=>kernel.checkpoint(s));outputs.push(failureAfter);
+  }
   outputs.push(command('initial', () => kernel.drive(s)));
   if (mode === 'H') {
-    for (let i=0; i<64; i++) outputs.push(command(`drive-${i}`, () => kernel.drive(s, {control:i ? 'none' : 'resume_yield', quantum:1n})));
+    for (let i=0; i<64; i++) {
+      const options={control:i ? 'none' : 'resume_yield', quantum:1n};
+      if(i===63)failPublication(options);
+      outputs.push(command(`drive-${i}`, () => kernel.drive(s, options)));
+    }
     if (memory) pauseLive = Number(kernel.usage().workingLive);
     outputs.push(command('checkpoint', () => kernel.checkpoint(s)));
   } else {
@@ -74,6 +91,7 @@ function run(memory = false) {
       assert(error, 'invalid response was accepted');
     }
     if (memory) pauseLive = Number(kernel.usage().workingLive);
+    failPublication({control:'reply',value:replyBytes[3],quantum:0n});
     outputs.push(command('valid-reply', () => kernel.drive(s, {control:'reply', value:replyBytes[3], quantum:0n})));
   }
   outputs.push(command('cancel', () => kernel.drive(s, cancel)));
@@ -81,6 +99,7 @@ function run(memory = false) {
   command('release', () => kernel.releasePrepared(p));
   const end = process.hrtime.bigint();
   assert.equal(kernel.usage().workingLive, 0n);
+  if(profile==='failure')assert.deepEqual(Buffer.from(failureAfter),Buffer.from(failureBefore));
   const hashes = outputs.map(outcomeHash);
   if (frozen) assert.deepEqual(hashes, frozen.outcomes);
   assert.equal(world.decodeOutcome(outputs[0]).kind, mode === 'H' ? 'yielded' : 'requested');
@@ -91,7 +110,7 @@ function run(memory = false) {
 
 if (action === 'freeze') {
   const result = run(true);
-  frozen = {mode, depth, imageSha256:hash(image), baselineKernelSha256:hash(bytes), limits,
+  frozen = {mode, depth, profile, imageSha256:hash(image), baselineKernelSha256:hash(bytes), limits,
     replies:replyBytes.map(x=>Buffer.from(x).toString('hex')), outcomes:result.hashes,
     baselineMemory:result};
   writeFileSync(recordPath, JSON.stringify(frozen, null, 2)+'\n');

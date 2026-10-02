@@ -7,9 +7,10 @@ import {field,concat} from '../../src/embedding/wire.mjs';
 const hash=b=>createHash('sha256').update(b).digest('hex'),median=a=>[...a].sort((a,b)=>a-b)[Math.floor(a.length/2)],args=process.argv.slice(2);
 if(args[0]==='sample'){
  const [,embedding,kernelPath,corpus,countText]=args,count=Number(countText),world=await import(pathToFileURL(embedding)),bytes=readFileSync(kernelPath),k=await world.Kernel.create({bytes,expectedSha256:hash(bytes)});k.setLimits({input:256<<20,working:256<<20,output:256<<20});
- const image=readFileSync(`${corpus}/${count}.bpi3`),input=readFileSync(`${corpus}/${count}.args`),p=k.prepare(image),samplesNs=[];let pausedLive=0,steps=0,peakBytes=Number(k.usage().workingPeak);
+ const image=readFileSync(`${corpus}/${count}.bpi3`),input=readFileSync(`${corpus}/${count}.args`),samplesNs=[];let p=k.prepare(image),pausedLive=0,steps=0,peakBytes=Number(k.usage().workingPeak);
  // Observe memory in a separate untimed drive sequence; API calls reset peaks.
- {const s=k.start(p,input);peakBytes=Math.max(peakBytes,Number(k.usage().workingPeak));let step=0;while(true){const out=world.decodeOutcome(k.drive(s,{quantum:1n}));peakBytes=Math.max(peakBytes,Number(k.usage().workingPeak));if(++step===1)pausedLive=Number(k.usage().workingLive);if(out.kind==='completed'){assert.equal(Buffer.from(out.value).readBigUInt64LE(),65536n);break;}assert.equal(out.kind,'progressed');}k.close(s);}
+ {const s=k.start(p,input);peakBytes=Math.max(peakBytes,Number(k.usage().workingPeak));let step=0;while(true){const out=world.decodeOutcome(k.drive(s,{quantum:1n}));peakBytes=Math.max(peakBytes,Number(k.usage().workingPeak));if(++step===1)pausedLive=Number(k.usage().workingLive);if(out.kind==='completed'){assert.equal(Buffer.from(out.value).readBigUInt64LE(),65536n);break;}assert.equal(out.kind,'progressed');}k.close(s);peakBytes=Math.max(peakBytes,Number(k.usage().workingPeak));k.releasePrepared(p);peakBytes=Math.max(peakBytes,Number(k.usage().workingPeak));assert.equal(k.usage().workingLive,0n);}
+ p=k.prepare(image); // Timing owns a separate lifecycle; it cannot reset this memory result.
  for(let sample=0;sample<12;sample++){
   const s=k.start(p,input),start=process.hrtime.bigint();steps=0;
   while(true){const result=world.decodeOutcome(k.drive(s,{quantum:1n}));assert(++steps<=count+4);if(result.kind==='completed'){assert.equal(Buffer.from(result.value).readBigUInt64LE(),65536n);break;}assert.equal(result.kind,'progressed');}

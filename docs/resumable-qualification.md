@@ -3,9 +3,13 @@
 Work in progress. The first transaction slice is implemented and locally checked;
 complete-task and performance acceptance remain open.
 
+The unchanged [user-supplied specification](resumable-execution-spec.md) is the
+acceptance authority. Its digest below binds the original attachment; this report
+does not replace its requirements.
+
 ## Inputs and execution
 
-- Run: `01a0fc7f-2d47-7a50-b1be-68c8f42f82fc`; independent driver; serial reviews.
+- Run suffix: `01a0fc7f`; root thread `01a0fc7f-2d45-7520-a093-d28236999615` (native Goal owner); independent driver; serial reviews.
 - World W0: `c61edfc8208c375d5188e476131ca8cff5aeeb8a`, tree `87edc03ebb7b8b56facfe7f2e60845c5931f1834`.
 - Runtime data D0: `511fe388587b36ae37307d277e04c22b0bb6f6d9`, unchanged `build.zig.zon` package lock.
 - Agent A0: `b1f9d2866b5717d16339e7022a3b4d08951f0770`.
@@ -67,3 +71,127 @@ The boundary comparison rejected an unguarded cache in public mutable Session st
 At all five prescribed Q sizes, three distinct rejected replies allocate 762 native bytes, perform two decoded binding comparisons (the malformed reply rejects during decoding), and perform zero State projections or expected-request constructions after publication. Counters include failed attempts. Initial publication, caller-requested export, and new post-progress requests remain separately charged canonical observations. The native probe also discloses first-transaction Store index capacity allocation after restoration, which is distinct from recurrent frame rollback preparation.
 
 Four new native tests cover published and restored binding reuse, malformed/wrong-image/ill-typed replies against the ordinary Session's error oracle, all three late output-failure routes with original-input retry, cancellation-created cleanup binding replacement, and direct low-level frame mutation followed by rejection of the old binding. Native qualification is now 91 tests; storage remains 75. The frozen WASM H/Q outputs still match at all five depths, with no higher measured working peak in those cells. Timing acceptance remains unclaimed.
+
+## Preservation argument and verification domain
+
+At transaction entry let `E` be the frame map, `C` the current map, and `J` the
+saved partial map. For IDs below Store's entry extent, the entry value is `J[id]`
+when recorded and otherwise `C[id]`; IDs in Store's appended interval were absent
+at entry. Read access preserves this relation. First mutable acquisition forks
+Slots/custody roots before exposing the descriptor; their existing copy-on-write
+operations preserve the saved value. A removed untouched frame transfers its
+owner to `J`. A reused old hole records absence. Repeated mutation or ID reuse
+does not replace the original saved value. Commit releases only `J`; rollback
+removes successors before reinstating saved owners, so unchanged map capacity
+suffices. Store's corresponding journal and Session's control snapshot restore
+the rest of the unpublished attempt. Statistics are explicitly outside this
+semantic relation.
+
+The pointer returned by mutable frame acquisition remains valid until a frame-map
+mutation. Instruction/control paths that can grow the map already use copied
+descriptors; their first acquisition now secures entry ownership. Packed slot
+readers continue resolving logical positions through Slots, and argument lists
+are gathered before simultaneous writes. No raw packed offset is retained across
+insertion/removal. Preparation leases still outlive all frame roots and layout
+borrows. Store values referenced only by rollback frames remain owned by the
+Store journal until the shared commit fence.
+
+Resident binding reuse has a separate, closed operation domain. `start`/`restore`
+create private state without a binding. The exact canonical request establishes
+one. Only gated publication advances the computation; it couples binding
+invalidation/replacement and frame/Store/control rollback. The final record,
+encoded allocation, or caller-buffer encoding must succeed before commit.
+Checkpoint and diagnostics are read-only. Successful transfer/close ends the
+owner's lifetime. The general low-level Session API cannot use this private fact
+and therefore still reconstructs its expected binding. The shared response helper
+always parses and performs typed admission; it memoizes no response or external
+permission.
+
+Returned outcomes own an arena, encoded outputs own their allocator allocation,
+and checkpoints own the requested output allocation. The retained binding is a
+value copy of 32 bytes and borrows no Pending storage. Decoded response bytes live
+through typed admission and Store literal construction, exactly as before; Store
+retains the resulting value under its existing ownership rules. Diagnostic
+snapshots contain only counters/counts/booleans. No pointer to Resident's Session,
+temporary projection, frame map, or mutable WASM view escapes those APIs.
+
+These arguments concern admitted Programs/states, the actual exported APIs, and
+their supported owning-handle discipline. They do not cover arbitrary writes to
+private representation bytes or invalid allocator implementations. Tests are
+bounded falsification evidence: they include independent W0 bytes, source oracles,
+named valid and rejected cases, allocation/capacity failure, and cross-engine
+transfer. They are not a universal proof over all Programs.
+
+## Qualification progress after both slices
+
+The aggregate passes 75 storage tests, 91 native tests, 41 JavaScript tests,
+42 source fixtures with 8692 observations, 237 native/Node boundaries and 23
+transfers, 159 independent Wasmtime boundaries, input/working/output/physical
+capacity checks, and extracted package operation. Chromium 153.0.8010.12 and
+Firefox 155.0 execute real Workers. Additional H/Q transfer checks cover both
+source directions after original process/Worker exit: 12 native/Node/Wasmtime
+cases and four 1024-history transfers in each browser (15 Workers destroyed per
+browser including the retained existing cases).
+
+Two further storage tests (77 total) force first-protection growth of both slot
+and custody view tables, untouched-removal allocation failure, and exhaustion of
+a physical slot-handle generation. The added independent fake-kernel sampler test
+makes each H/Q phase, including thrown rejection, cancellation, close, and release,
+the sole large observation and proves the maximum is captured before reset.
+
+Unseen retained-depth neighbors 7/31/63/65/257 preserve canonical lifecycle output
+and each individually distinguished continuation. At 1025 retained frames,
+bounded cancellation drives removing 0/1/4/8 frames save and commit exactly those
+counts without tracing. Across 1024 wrong-binding commands, candidate live bytes
+remain 1,243,853 and linear memory remains 2,228,224 bytes after warm-up; W0 reaches
+a stable 1,342,541 live / 2,752,512 reserved bytes. Both release to zero.
+
+The exact A0/C0 images reproduce the 18-image upstream corpus. Unchanged fixture
+assertions on the authenticated reconstructed W0 runtime produce the original
+30-case / 491-command replay, plus 12 parser cases / 171 commands. The candidate
+is evaluated against those frozen inputs and expected outputs directly through
+World's public APIs; A0's historical runtime lock is never rewritten.
+
+The historical blob sampler's relative-improvement assertion fails even for
+W0 versus itself, because W0 already includes the accepted reclamation change.
+That failed result is retained. The corrected oracle checks each arm against its
+own pre-pause live bytes and independently requires dead large backing below
+8192 paused bytes while retaining live aliases. Threshold neighbors include
+payloads 65532/65533/65534 whose encoded extents straddle 64 KiB. All 18 cases,
+108 prefixes, and ten failure/retry cells pass. No old defect was restored to
+manufacture a gain.
+
+At head `5c940d0`, both primary WASM lifecycles meet the five-window win rule:
+H1024 ratio 0.8125 and Q1024 ratio 0.9088. Complete failure/retry lifecycle ratios
+are 0.8143 and 0.8901. The remaining guardrail run identifies material long-tail
+dispatch regressions, so this head is **not economically accepted** and is not P0.
+All initial raw windows are preserved for comparison with the correction.
+
+Historical Review Fold projection reports `InvalidStoreBinding`. This task does
+not repair predecessor evidence custody and makes no first-occurrence, historical
+absence, or recurrence claim from that unavailable source. Current test evidence
+retains its original subjects; the obsolete relative-reclamation expectation is
+not admitted as a production correctness defect.
+
+## Dispatch cost correction
+
+The first full cost pass at `5c940d0` passes all 60 native and all 60 WASM consumer
+cells (18 admissions plus 42 exact replay cases), but reports 6–21% regressions in
+long tail-call probes. That measurement is retained rather than relabeled.
+The hot mutable borrow performed both `contains` and `getPtr` on the frame map,
+then checked the same journal key on every instruction. The correction retains
+the Frames-owned journal and its rollback law: acquire the pointer once, protect
+before returning it, and remember one proven journal-membership key. Membership
+only grows during an attempt, including after logical ID removal/reuse; it is
+reset by commit/rollback. This caches no frame pointer or mutable frame contents.
+The general map lookup remains for another key. A future mid-attempt journal-key
+deletion would invalidate this shortcut.
+
+The corrected construction passes 77 storage and 91 native tests. A preselected
+five-window discriminator covers compatible/incompatible 512-call fresh and
+1000-call resident paths on native/WASM, the flagged four-operation fresh case,
+and the captured-blob pause. None meets the defined confirmed-slowdown rule.
+The four-operation cell remains variable (median ratio 1.0776 with fewer than
+four windows over 1.05), so it is disclosed as inconclusive pending the cumulative
+run rather than described as a speedup. Full final cost and package qualification
+remain required before P0.

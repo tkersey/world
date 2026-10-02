@@ -10,27 +10,33 @@ const fresh=async arm=>{const bytes=kernels[arm],k=await world.Kernel.create({by
 mkdirSync(corpus,{recursive:true});const report={status:'running',kernels:Object.fromEntries(Object.entries(kernels).map(([k,b])=>[k,hash(b)])),rows:[],prefixes:0,capacity:[]};
 for(const family of ['unique','alias','captured']){
  const image=execFileSync(emitter,[family]);writeFileSync(`${corpus}/${family}.bpi3`,image);
- for(const length of [0,65532,65533,65536,1048576]){
+ for(const length of [0,65532,65533,65534,65536,1048576]){
   const value=field(Buffer.alloc(length,120)),args=family==='alias'?concat(value,value):value,expected=family==='unique'?0n:BigInt(length);writeFileSync(`${corpus}/${family}-${length}.args`,args);
-  const row={family,length,encodedBlobBytes:value.length,arms:{}};
+  const row={family,length,encodedBlobBytes:value.length,arms:{before:{lifecyclePeak:0},after:{lifecyclePeak:0}}};
   for(const quantum of [0,1,2,3,4,8]){
    const results={};
    for(const arm of ['before','after']){
-    const k=await fresh(arm),p=k.prepare(image),s=k.start(p,args),beforeLive=Number(k.usage().workingLive),result=k.drive(s,{quantum:BigInt(quantum),checkpoint:true}),out=world.decodeOutcome(result);
+    const k=await fresh(arm);
+    const observed=operation=>{try{return operation();}finally{row.arms[arm].lifecyclePeak=Math.max(row.arms[arm].lifecyclePeak,Number(k.usage().workingPeak));}};
+    const p=observed(()=>k.prepare(image)),s=observed(()=>k.start(p,args)),beforeLive=Number(k.usage().workingLive),result=observed(()=>k.drive(s,{quantum:BigInt(quantum),checkpoint:true})),out=world.decodeOutcome(result);
     results[arm]=Buffer.from(result);
-    if(quantum===(family==='captured'?2:1))row.arms[arm]={beforeLive,pausedLive:Number(k.usage().workingLive),peak:Number(k.usage().workingPeak),linearMemoryBytes:k.usage().memoryBytes};
+    if(quantum===(family==='captured'?2:1))Object.assign(row.arms[arm],{beforeLive,pausedLive:Number(k.usage().workingLive),peak:Number(k.usage().workingPeak),linearMemoryBytes:k.usage().memoryBytes});
     if(out.kind==='progressed'){
-     const checkpoint=k.checkpoint(s);assert.deepEqual(Buffer.from(checkpoint),Buffer.from(out.state));
-     const resumed=world.decodeOutcome(k.drive(s));assert.equal(resumed.kind,'completed');assert.equal(Buffer.from(resumed.value).readBigUInt64LE(),expected);
-     k.close(s);
-     const saved=k.restore(p,checkpoint),restored=world.decodeOutcome(k.drive(saved));assert.equal(restored.kind,'completed');assert.equal(Buffer.from(restored.value).readBigUInt64LE(),expected);k.close(saved);
-    }else {assert.equal(out.kind,'completed');assert.equal(Buffer.from(out.value).readBigUInt64LE(),expected);k.close(s);}
-    k.releasePrepared(p);assert.equal(k.usage().workingLive,0n);
+     const checkpoint=observed(()=>k.checkpoint(s));assert.deepEqual(Buffer.from(checkpoint),Buffer.from(out.state));
+     const resumed=world.decodeOutcome(observed(()=>k.drive(s)));assert.equal(resumed.kind,'completed');assert.equal(Buffer.from(resumed.value).readBigUInt64LE(),expected);
+     observed(()=>k.close(s));
+     const saved=observed(()=>k.restore(p,checkpoint)),restored=world.decodeOutcome(observed(()=>k.drive(saved)));assert.equal(restored.kind,'completed');assert.equal(Buffer.from(restored.value).readBigUInt64LE(),expected);observed(()=>k.close(saved));
+    }else {assert.equal(out.kind,'completed');assert.equal(Buffer.from(out.value).readBigUInt64LE(),expected);observed(()=>k.close(s));}
+    observed(()=>k.releasePrepared(p));assert.equal(k.usage().workingLive,0n);
    }
    assert.deepEqual(results.after,results.before);report.prefixes++;
   }
-  if(family==='unique'&&value.length>=65536)assert(row.arms.after.pausedLive<row.arms.before.pausedLive-length+8192);
-  if(family!=='unique'&&length)assert(row.arms.after.pausedLive>=length);
+  // W0 already reclaims dead large backing. Check the absolute pause contract
+  // independently in both arms, rather than demanding the historic win again.
+  for(const arm of Object.values(row.arms)){
+   if(family==='unique'&&value.length>=65536){assert(arm.pausedLive<8192);assert(arm.pausedLive<arm.beforeLive-length+8192);}
+   if(family!=='unique'&&length)assert(arm.pausedLive>=length);
+  }
   report.rows.push(row);writeFileSync(output,JSON.stringify(report,null,2)+'\n');
  }
 }
