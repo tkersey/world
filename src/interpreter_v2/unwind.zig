@@ -69,8 +69,8 @@ pub fn failValues(machine: anytype, value: g.Value, parent: ?g.NodeRef, values: 
 fn discardFrame(machine: anytype, frame: g.NodeRef, parent: ?g.NodeRef) @TypeOf(machine.*).ExecutionError!void {
     const values = try machine.frames.discards(frame.id);
     errdefer machine.allocator.free(values);
+    try machine.frames.remove(frame.id);
     try positionOwned(machine, parent, values);
-    machine.frames.remove(frame.id);
 }
 
 pub fn cancel(machine: anytype, reason: data.invocation.Reason) @TypeOf(machine.*).ExecutionError!void {

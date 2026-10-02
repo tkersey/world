@@ -68,35 +68,70 @@ pub const Frames = struct {
     layouts: *const Layouts,
     custody: custody.Custody,
     entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
+    journal: ?Journal = null,
+    /// Diagnostic work includes failed attempts; never portable or rolled back.
+    statistics: Statistics = .{},
 
-    pub const Backup = struct {
-        entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
-        pub fn discard(self: *Backup, frames: *Frames) void {
-            var values = self.entries.valueIterator();
-            while (values.next()) |frame| frames.releaseFrame(frame.*);
-            self.entries.deinit(frames.allocator);
-            self.* = .{};
-        }
-        pub fn restore(self: *Backup, frames: *Frames) void {
-            var current = frames.entries.valueIterator();
-            while (current.next()) |frame| frames.releaseFrame(frame.*);
-            frames.entries.deinit(frames.allocator);
-            frames.entries = self.entries;
-            self.* = .{};
-        }
+    pub const Statistics = struct {
+        saved_entries: u64 = 0,
+        forked_frames: u64 = 0,
+        moved_frames: u64 = 0,
+        commit_entries: u64 = 0,
+        rollback_entries: u64 = 0,
+    };
+    const Journal = struct {
+        node_count: usize,
+        entries: std.AutoHashMapUnmanaged(data.program.Id, ?Frame) = .empty,
     };
 
-    /// Fork only view roots and custody handles, never their value descriptors.
-    pub fn backup(self: *Frames) Error!Backup {
-        var saved: Backup = .{};
-        errdefer saved.discard(self);
-        try saved.entries.ensureTotalCapacity(self.allocator, self.entries.count());
-        var entries = self.entries.iterator();
-        while (entries.next()) |entry| {
-            const frame = try self.forkFrame(entry.value_ptr.*);
-            saved.entries.putAssumeCapacity(entry.key_ptr.*, frame);
+    /// Frame IDs are Store node IDs. IDs at or above this entry extent have no
+    /// entry frame; Store's append extent accounts for them without per-frame
+    /// bookkeeping. Reused older IDs still require an explicit absent entry.
+    pub fn begin(self: *Frames, node_count: usize) Error!void {
+        if (self.journal != null) return error.InvalidState;
+        self.journal = .{ .node_count = node_count };
+    }
+    fn hold(self: *Frames, id: data.program.Id) Error!void {
+        const journal = if (self.journal) |*value| value else return;
+        if (id >= journal.node_count or journal.entries.contains(id)) return;
+        // Reserve first: failure cannot strand a retained frame or admit a
+        // mutable borrow without its transaction-entry version.
+        try journal.entries.ensureUnusedCapacity(self.allocator, 1);
+        const saved = if (self.entries.get(id)) |frame| try self.forkFrame(frame) else null;
+        journal.entries.putAssumeCapacity(id, saved);
+        self.statistics.saved_entries +|= 1;
+        if (saved != null) self.statistics.forked_frames +|= 1;
+    }
+    pub fn commit(self: *Frames) void {
+        var journal = self.journal.?;
+        self.journal = null;
+        var values = journal.entries.valueIterator();
+        while (values.next()) |saved| {
+            if (saved.*) |frame| self.releaseFrame(frame);
+            self.statistics.commit_entries +|= 1;
         }
-        return saved;
+        journal.entries.deinit(self.allocator);
+    }
+    /// Store has not rolled back yet, so its current append extent is intact.
+    /// Remove successors first; retained map capacity then suffices for every
+    /// entry frame. No allocation or full retained-frame traversal is needed.
+    pub fn rollback(self: *Frames, node_count: usize) void {
+        var journal = self.journal.?;
+        self.journal = null;
+        for (journal.node_count..node_count) |id| {
+            if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
+            self.statistics.rollback_entries +|= 1;
+        }
+        var entries = journal.entries.iterator();
+        while (entries.next()) |entry| {
+            if (self.entries.fetchRemove(entry.key_ptr.*)) |current| self.releaseFrame(current.value);
+            self.statistics.rollback_entries +|= 1;
+        }
+        entries = journal.entries.iterator();
+        while (entries.next()) |entry| if (entry.value_ptr.*) |frame| {
+            self.entries.putAssumeCapacity(entry.key_ptr.*, frame);
+        };
+        journal.entries.deinit(self.allocator);
     }
 
     /// The layout index and its immutable functions outlive these frame views.
@@ -106,6 +141,7 @@ pub const Frames = struct {
         return .{ .allocator = allocator, .slots = slots, .pool = pool, .layouts = layouts, .custody = try custody.Custody.init(allocator) };
     }
     pub fn deinit(self: *Frames) void {
+        if (self.journal != null) self.commit();
         self.entries.deinit(self.allocator);
         self.slots.deinit();
         self.custody.deinit();
@@ -116,7 +152,14 @@ pub const Frames = struct {
     }
     /// The borrow ends before any operation that changes the frame map.
     pub fn getMutable(self: *Frames, id: data.program.Id) Error!*Frame {
+        if (!self.entries.contains(id)) return error.InvalidState;
+        try self.hold(id);
         return self.entries.getPtr(id) orelse error.InvalidState;
+    }
+    /// A copied descriptor still mutates its owned slot/custody handles.
+    /// Acquire protection before copying, not when later publishing the fields.
+    pub fn getForUpdate(self: *Frames, id: data.program.Id) Error!Frame {
+        return (try self.getMutable(id)).*;
     }
     pub fn project(self: *Frames, id: data.program.Id, allocator: std.mem.Allocator) Error!?data.process_state.Activation {
         const frame = self.entries.get(id) orelse return null;
@@ -140,12 +183,26 @@ pub const Frames = struct {
     }
     pub fn put(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         if (self.entries.contains(id)) return error.InvalidState;
+        try self.hold(id);
         try self.entries.put(self.allocator, id, frame);
     }
-    pub fn update(self: *Frames, id: data.program.Id, frame: Frame) void {
+    pub fn update(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
+        try self.hold(id);
         self.entries.getPtr(id).?.* = frame;
     }
-    pub fn remove(self: *Frames, id: data.program.Id) void {
+    pub fn remove(self: *Frames, id: data.program.Id) Error!void {
+        const frame = self.entries.get(id) orelse return;
+        if (self.journal) |*journal| {
+            if (id < journal.node_count and !journal.entries.contains(id)) {
+                // Removal transfers the untouched entry owner; no fork or
+                // temporary successor handle is necessary.
+                try journal.entries.put(self.allocator, id, frame);
+                _ = self.entries.remove(id);
+                self.statistics.saved_entries +|= 1;
+                self.statistics.moved_frames +|= 1;
+                return;
+            }
+        }
         if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
     }
     pub fn create(self: *Frames, function: data.program.Id) Error!Frame {
@@ -255,11 +312,18 @@ pub const Frames = struct {
             else => error.InvalidState,
         };
         errdefer self.releaseFrame(copy);
-        try self.entries.put(self.allocator, to, copy);
+        self.put(to, copy) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.InvalidState,
+        };
     }
 
     pub fn rebaseFrame(self: *Frames, id: data.program.Id, map: anytype) data.graph_order.Error!void {
-        const frame = self.entries.get(id) orelse return;
+        if (!self.entries.contains(id)) return;
+        const frame = self.getForUpdate(id) catch |err| return switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.InvalidState,
+        };
         var members = frame.live_bound.iterator(self.pool);
         const limit = self.layouts.functions[@intCast(frame.function)].layout.slots.len;
         while (members.next()) |slot| {

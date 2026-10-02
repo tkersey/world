@@ -5,6 +5,7 @@ test {
     _ = @import("activation_slots_tests.zig");
     _ = @import("custody_tests.zig");
     _ = @import("store_transaction_tests.zig");
+    _ = @import("frame_transaction_tests.zig");
     _ = @import("compact_collection_tests.zig");
     _ = @import("clone.zig");
     _ = @import("economy_tests.zig");
