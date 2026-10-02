@@ -54,6 +54,9 @@ pub const Bound = union(enum) {
     };
 };
 pub const Frame = struct {
+    // Store IDs are allocated array indices; the maximum Id cannot be an
+    // allocated index (its successor length is unrepresentable).
+    const unregistered = std.math.maxInt(data.program.Id);
     view: Slots.Handle,
     // Reclamation upper bound, never evidence that a slot is initialized.
     live_bound: Bound,
@@ -62,10 +65,7 @@ pub const Frame = struct {
     custody: custody.State,
     // Registered descriptors route writes back to their authoritative entry.
     // Independent construction and semantic forks have no map owner yet.
-    owner_id: ?data.program.Id = null,
-    // Intrusive list of map pointers whose documented borrow is still live.
-    // A self-link terminates the list; null means this entry is not borrowed.
-    borrowed_next: ?data.program.Id = null,
+    owner_id: data.program.Id = unregistered,
 };
 pub const Frames = struct {
     allocator: std.mem.Allocator,
@@ -76,6 +76,9 @@ pub const Frames = struct {
     entries: std.AutoHashMapUnmanaged(data.program.Id, Frame) = .empty,
     journal: ?Journal = null,
     borrowed: ?data.program.Id = null,
+    // One pointer is the ordinary evaluator case. Additional simultaneous
+    // low-level borrows have a set bounded by those borrows, not retained frames.
+    borrowed_more: std.AutoHashMapUnmanaged(data.program.Id, void) = .empty,
     /// Diagnostic work includes failed attempts; never portable or rolled back.
     statistics: Statistics = .{},
 
@@ -103,12 +106,14 @@ pub const Frames = struct {
         if (self.journal != null) return error.InvalidState;
         self.journal = .{ .node_count = node_count, .last_held = node_count };
         errdefer self.commit(); // Only protection ran; entry contents are intact.
-        var cursor = self.borrowed;
-        while (cursor) |id| {
-            const next = self.entries.get(id).?.borrowed_next.?;
+        if (self.borrowed) |id| {
             try self.hold(id);
             self.statistics.borrowed_entries +|= 1;
-            cursor = if (next == id) null else next;
+        }
+        var borrowed = self.borrowed_more.keyIterator();
+        while (borrowed.next()) |id| {
+            try self.hold(id.*);
+            self.statistics.borrowed_entries +|= 1;
         }
     }
     inline fn hold(self: *Frames, id: data.program.Id) Error!void {
@@ -162,7 +167,6 @@ pub const Frames = struct {
         while (entries.next()) |entry| if (entry.value_ptr.*) |saved| {
             var frame = saved;
             frame.owner_id = entry.key_ptr.*;
-            frame.borrowed_next = null;
             self.entries.putAssumeCapacity(entry.key_ptr.*, frame);
         };
         journal.entries.deinit(self.allocator);
@@ -176,6 +180,7 @@ pub const Frames = struct {
     }
     pub fn deinit(self: *Frames) void {
         if (self.journal != null) self.commit();
+        self.endMutableBorrows();
         self.entries.deinit(self.allocator);
         self.slots.deinit();
         self.custody.deinit();
@@ -189,10 +194,10 @@ pub const Frames = struct {
         const frame = self.entries.getPtr(id) orelse return error.InvalidState;
         // Protection may grow the journal or view tables, never this frame map.
         try self.hold(id);
-        if (frame.borrowed_next == null) {
-            frame.borrowed_next = self.borrowed orelse id;
-            self.borrowed = id;
-        }
+        if (self.borrowed) |first| {
+            if (first != id and !self.borrowed_more.contains(id))
+                try self.borrowed_more.put(self.allocator, id, {});
+        } else self.borrowed = id;
         return frame;
     }
     /// A copied descriptor still mutates its owned slot/custody handles.
@@ -206,19 +211,15 @@ pub const Frames = struct {
     /// automatically. A closed owner may also call it when no pointer escapes
     /// its operation; ordinary low-level callers need no extra choreography.
     pub fn endMutableBorrows(self: *Frames) void {
-        var id = self.borrowed orelse return;
+        if (self.borrowed == null) return;
+        self.statistics.released_borrows +|= 1 + @as(u64, self.borrowed_more.count());
         self.borrowed = null;
-        while (true) {
-            const frame = self.entries.getPtr(id).?;
-            const next = frame.borrowed_next.?;
-            frame.borrowed_next = null;
-            self.statistics.released_borrows +|= 1;
-            if (next == id) break;
-            id = next;
-        }
+        // Do not retain or repeatedly clear a large historical borrow set.
+        self.borrowed_more.deinit(self.allocator);
+        self.borrowed_more = .empty;
     }
     inline fn protect(self: *Frames, frame: *const Frame) Error!void {
-        if (frame.owner_id) |id| try self.hold(id);
+        if (frame.owner_id != Frame.unregistered) try self.hold(frame.owner_id);
     }
     pub fn project(self: *Frames, id: data.program.Id, allocator: std.mem.Allocator) Error!?data.process_state.Activation {
         const frame = self.entries.get(id) orelse return null;
@@ -245,7 +246,6 @@ pub const Frames = struct {
         try self.hold(id);
         var registered = frame;
         registered.owner_id = id;
-        registered.borrowed_next = null;
         try self.entries.put(self.allocator, id, registered);
         self.endMutableBorrows();
     }
@@ -254,7 +254,6 @@ pub const Frames = struct {
         self.endMutableBorrows();
         var registered = frame;
         registered.owner_id = id;
-        registered.borrowed_next = null;
         self.entries.getPtr(id).?.* = registered;
     }
     pub fn remove(self: *Frames, id: data.program.Id) Error!void {
@@ -287,8 +286,7 @@ pub const Frames = struct {
     }
     pub fn forkFrame(self: *Frames, original: Frame) Error!Frame {
         var result = original;
-        result.owner_id = null;
-        result.borrowed_next = null;
+        result.owner_id = Frame.unregistered;
         result.view = try self.slots.fork(original.view);
         errdefer self.slots.release(result.view) catch unreachable;
         result.custody = try self.custody.fork(original.custody);

@@ -12,18 +12,24 @@ and none of its initial review credit carries to the successor.
 The repair keeps Frames as the transaction owner. Registered descriptors carry
 their entry identity, so frame-writing operations acquire protection even when
 the descriptor came from a read. Outstanding mutable map pointers are recorded
-without allocation; begin protects only those possibly writable entries. Their
+with one inline pointer and a set only for additional simultaneous borrows;
+begin protects only those possibly writable entries. Their
 borrows survive begin/commit and end at the existing map-mutation boundary.
 Resident ends its internal borrows at its operation boundary because its private
 Session cannot expose them. Independent construction and semantic forks remain
 separate owning values; map insertion transfers their ownership as before.
 
-The repaired source passes 83 storage tests, 92 native tests, and the normal
-aggregate, including 43 JavaScript tests and actual Node, Wasmtime, browser,
-source-oracle, capacity, and extracted-package checks. Its preliminary five-window
-H/Q primary ratios are 0.8348 / 0.9259; scalar timing guardrails pass. Complete
-successor economics, evidence packaging, exact-head delivery and a fresh review
-campaign remain pending. **The measurements and archive below describe P0 until
+The first repair passed the normal aggregate and primary/scalar timing but failed
+the larger H/Q memory guardrails: two optional per-frame fields added too much
+map storage. The compact successor adds eight bytes per frame, keeps the borrow
+set proportional to actual simultaneous pointers, and releases that set at its
+lifetime boundary. It passes 83 storage and 92 native tests and all ten H/Q working
+memory comparisons. The scalar probe's earlier exact physical-memory equality
+was also corrected to the specification's explicit allowance; canonical outcomes,
+checkpoint sizes, step counts, and preparation comparisons remain exact.
+
+Complete successor economics, evidence packaging, exact-head delivery and a fresh
+review campaign remain pending. **The measurements and archive below describe P0 until
 that requalification is complete; they are not successor qualification.**
 
 ## P0 implementation and measurements

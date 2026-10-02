@@ -35,7 +35,10 @@ for(const operations of [0,2,4,16,256,1024]){
   assert.equal(cycle.usage().workingLive,0n);
   row.arms[arm]={admission:admitted,freshPeak:Number(execution.usage().workingPeak),cyclePeak,checkpointMax,steps};
  }
- assert.deepEqual(row.arms.after,row.arms.before);
+ // Outcomes, checkpoint extents and preparation are exact obligations. Working
+ // peak follows the specification's explicit allowance for bounded metadata.
+ for(const key of ['admission','checkpointMax','steps'])assert.deepEqual(row.arms.after[key],row.arms.before[key]);
+ for(const key of ['freshPeak','cyclePeak'])assert(row.arms.after[key]-row.arms.before[key]<=Math.max(1024,Math.ceil(row.arms.before[key]*.01)),`${operations}: ${key}`);
  report.rows.push(row);writeFileSync(output,JSON.stringify(report,null,2)+'\n');
 }
-report.status='complete';writeFileSync(output,JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({rows:report.rows.length,requests:report.requests,memory:'exact equality'}));
+report.status='complete';writeFileSync(output,JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({rows:report.rows.length,requests:report.requests,memory:'within specification allowance; preparation exact'}));
