@@ -115,7 +115,7 @@ test "scalar batch resident rollback preserves prior input at every allocation f
         var resident = try runtime.Resident.restore(failing.allocator(), &prepared, checkpoint);
         defer resident.close() catch unreachable;
         var stats: @import("runtime_types.zig").Statistics = .{};
-        resident.session.?.statistics = &stats;
+        try resident.setStatistics(&stats);
         failing.fail_index = failing.alloc_index + failure;
         failing.resize_fail_index = failing.resize_index;
         const result = resident.driveEncoded(failing.allocator(), .none, .{}) catch |err| {

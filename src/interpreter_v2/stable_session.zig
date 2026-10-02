@@ -186,6 +186,7 @@ pub const Session = struct {
     /// restoreImage checks the matching Program and complete portable State.
     pub fn checkpoint(self: *Session, allocator: std.mem.Allocator) Error![]u8 {
         if (self.poisoned) return error.InvalidState;
+        if (self.statistics) |statistics| statistics.state_projections +|= 1;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -325,6 +326,7 @@ pub const Session = struct {
 
     pub fn pendingRequest(self: *Session, allocator: std.mem.Allocator) Error!Pending {
         if (self.poisoned or self.terminal != null or self.status != .parked) return error.InvalidState;
+        if (self.statistics) |statistics| statistics.pending_bindings +|= 1;
         const operation = (try self.store.get(self.roots.pending.?)).pending;
         const effect = self.program.effects[@intCast(operation.effect)];
         const state = try self.checkpoint(allocator);
@@ -353,28 +355,7 @@ pub const Session = struct {
     pub fn answer(self: *Session, input: []const u8) Error!void {
         var expected = try self.pendingRequest(self.allocator);
         defer expected.deinit();
-        var response = try protocol.decode(protocol.Result, self.allocator, input);
-        defer response.deinit();
-        if (!std.mem.eql(u8, &expected.request.request_identity, &response.value.request_identity)) return error.InvalidResult;
-        // The expected descriptors are immutable preparation data. The actual
-        // Program result schema is checked below with those same admitted facts.
-        try self.answerValue(response.value.value);
-    }
-
-    fn answerValue(self: *Session, input: []const u8) Error!void {
-        if (self.poisoned or self.status != .parked) return error.InvalidState;
-        const pending = (try self.store.get(self.roots.pending.?)).pending;
-        const effect = self.program.effects[@intCast(pending.effect)];
-        var scratch = std.heap.ArenaAllocator.init(self.allocator);
-        defer scratch.deinit();
-        const facts = self.value_facts;
-        const literal: p.Literal = .{ .schema = effect.result, .bytes = input };
-        try data.admission.value(scratch.allocator(), self.program.schemas, facts, literal);
-        errdefer self.poisoned = true; // Resident restores its retained entry on error.
-        const value = try self.store.literal(self.program.schemas, literal);
-        try self.resumeContinuation(pending.continuation, value);
-        self.roots.pending = null;
-        self.status = .active;
+        try @import("response.zig").answer(self, input, expected.request.request_identity);
     }
 
     pub fn step(self: *Session) Error!void {
