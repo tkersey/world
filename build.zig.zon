@@ -5,8 +5,8 @@
     .fingerprint = 0x3a771143074dc2bd,
     .dependencies = .{
         .boundary = .{
-            .url = "https://github.com/tkersey/boundary/archive/511fe388587b36ae37307d277e04c22b0bb6f6d9.tar.gz",
-            .hash = "boundary-3.0.0-dev.0-flclaGcPXAB8lBsvhVLPJFZmROkee3fHGfsloqpgeZSE",
+            .url = "https://github.com/tkersey/boundary/archive/93340dade30b7d27a1e139f107359f91fb66fad3.tar.gz",
+            .hash = "boundary-3.0.0-dev.0-flclaEdzRQBpnNrUM2gj62qP_jA65zcVHZgFfmxIPqxe",
             .lazy = true,
         },
     },

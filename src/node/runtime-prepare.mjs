@@ -9,8 +9,8 @@ import { packageVersion, encodeInput } from "../embedding/index.mjs";
 import { runSmoke } from "./runtime-smoke.mjs";
 import { reserveOutput } from "./runtime-output.mjs";
 
-const dependencyCommit = "511fe388587b36ae37307d277e04c22b0bb6f6d9";
-const dependencyPackage = "boundary-3.0.0-dev.0-flclaGcPXAB8lBsvhVLPJFZmROkee3fHGfsloqpgeZSE";
+const dependencyCommit = "93340dade30b7d27a1e139f107359f91fb66fad3";
+const dependencyPackage = "boundary-3.0.0-dev.0-flclaEdzRQBpnNrUM2gj62qP_jA65zcVHZgFfmxIPqxe";
 const dependencyUrl = `https://github.com/tkersey/boundary/archive/${dependencyCommit}.tar.gz`;
 const limits = { input: 65536, working: 1048576, output: 65536 };
 const json = value => JSON.stringify(value, null, 2) + "\n";
