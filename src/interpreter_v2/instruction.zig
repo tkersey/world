@@ -35,7 +35,7 @@ pub fn execute(machine: anytype, instruction: data.activation.Instruction, resul
             }
         },
         .boolean_not => blk: {
-            var value = [_]u8{0} ** 8;
+            var value = @as([8]u8, @splat(0));
             value[0] = 1 - (try machine.bytes(&(try read(slots, instruction.operands[0]))))[0];
             break :blk .{ .schema = result_type, .body = .{ .scalar = value } };
         },
@@ -73,7 +73,7 @@ pub fn execute(machine: anytype, instruction: data.activation.Instruction, resul
             var cell = (try machine.store.get(reference)).cell;
             cell.value = (try read(slots, instruction.operands[1]));
             try machine.store.replace(reference, .{ .cell = cell });
-            break :blk .{ .schema = result_type, .body = .{ .scalar = [_]u8{0} ** 8 } };
+            break :blk .{ .schema = result_type, .body = .{ .scalar = @as([8]u8, @splat(0)) } };
         },
         .package => blk: {
             const package = try machine.store.add(.{ .package = .{ .schema = result_type, .continuation = (try read(slots, instruction.operands[0])) } });

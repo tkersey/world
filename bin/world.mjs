@@ -2,6 +2,7 @@
 import { readRegularFile } from "../src/node/file-input.mjs";
 import { Kernel, packageVersion } from "../src/embedding/index.mjs";
 import { assertKernelByteLength } from "../src/embedding/wasm.mjs";
+import runtimeProfile from "../src/node/runtime-profile.json" with { type: "json" };
 
 async function main(args) {
   if (args[0] === "runtime") {
@@ -11,8 +12,8 @@ async function main(args) {
   }
   if (args.length === 1 && args[0] === "--version") { console.log(packageVersion); return; }
   if (args.length === 1 && args[0] === "--help") {
-    console.log("world runtime prepare --source ABSOLUTE_CLEAN_WORLD --output ABSOLUTE_NEW_BUNDLE\nworld runtime acquire --archive FILE --archive-sha256 HEX --manifest-sha256 HEX --output NEW_BUNDLE\nworld runtime verify --root BUNDLE --manifest-sha256 HEX [--smoke]");
-    console.log("Usage: world invoke --kernel FILE --sha256 HEX --input PKI3 [--input-budget N --working-budget N --output-budget N]\nWrites canonical PKO3 bytes to stdout. Budgets are bytes; defaults are 65536/1048576/65536.");
+    console.log("world runtime prepare --source ABSOLUTE_CLEAN_WORLD --output ABSOLUTE_NEW_BUNDLE [--zig-exe ABSOLUTE_PATH] [--package-root ABSOLUTE_PATH] [--offline]\nworld runtime acquire --archive FILE --archive-sha256 HEX --manifest-sha256 HEX --output NEW_BUNDLE\nworld runtime verify --root BUNDLE --manifest-sha256 HEX [--smoke]");
+    console.log(`Usage: world invoke --kernel FILE --sha256 HEX --input PKI3 [--input-budget N --working-budget N --output-budget N]\nWrites canonical PKO3 bytes to stdout. Budgets are bytes; defaults are ${runtimeProfile.defaults.input}/${runtimeProfile.defaults.working}/${runtimeProfile.defaults.output}.`);
     return;
   }
   if (args.shift() !== "invoke") throw new Error("expected invoke, --help or --version");
@@ -24,7 +25,7 @@ async function main(args) {
     options.set(flag, value);
   }
   for (const required of ["--kernel", "--sha256", "--input"]) if (!options.has(required)) throw new Error(`missing ${required}`);
-  const limits = { input: 65536n, working: 1048576n, output: 65536n };
+  const limits = Object.fromEntries(Object.entries(runtimeProfile.defaults).map(([name, value]) => [name, BigInt(value)]));
   for (const name of Object.keys(limits)) if (options.has(`--${name}-budget`)) {
     const value = options.get(`--${name}-budget`);
     if (!/^(0|[1-9][0-9]*)$/.test(value) || BigInt(value) >= 1n << 64n) throw new Error(`invalid ${name} budget`);

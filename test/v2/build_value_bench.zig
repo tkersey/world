@@ -9,9 +9,9 @@ pub fn build(b: *std.Build) void {
     const legacy_layout = b.option(bool, "legacy-layout", "Use src/v2 independently of module names") orelse legacy_names;
     const source_prefix = if (legacy_layout) "src/v2" else "src";
     const data_name = if (legacy_names) "boundary_data_v2" else "boundary_data";
-    const data = b.createModule(.{ .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ boundary_source, source_prefix, "data/root.zig" }) }, .target = b.graph.host, .optimize = .ReleaseSafe });
-    const boundary = b.createModule(.{ .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ boundary_source, source_prefix, "root.zig" }) }, .target = b.graph.host, .optimize = .ReleaseSafe, .imports = &.{.{ .name = data_name, .module = data }} });
-    const world = b.createModule(.{ .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, "src/root.zig" }) }, .target = b.graph.host, .optimize = .ReleaseSafe, .imports = &.{.{ .name = data_name, .module = data }} });
-    const root = b.createModule(.{ .root_source_file = b.path("value_bench.zig"), .target = b.graph.host, .optimize = .ReleaseSafe, .imports = &.{ .{ .name = "boundary", .module = boundary }, .{ .name = "world", .module = world } } });
+    const data = b.createModule(.{ .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ boundary_source, source_prefix, "data/root.zig" }) }, .target = b.graph.host, .optimize = .safe });
+    const boundary = b.createModule(.{ .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ boundary_source, source_prefix, "root.zig" }) }, .target = b.graph.host, .optimize = .safe, .imports = &.{.{ .name = data_name, .module = data }} });
+    const world = b.createModule(.{ .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, "src/root.zig" }) }, .target = b.graph.host, .optimize = .safe, .imports = &.{.{ .name = data_name, .module = data }} });
+    const root = b.createModule(.{ .root_source_file = b.path("value_bench.zig"), .target = b.graph.host, .optimize = .safe, .imports = &.{ .{ .name = "boundary", .module = boundary }, .{ .name = "world", .module = world } } });
     b.installArtifact(b.addExecutable(.{ .name = "value-bench", .root_module = root }));
 }

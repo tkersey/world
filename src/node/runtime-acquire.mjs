@@ -1,5 +1,5 @@
 import { gunzipSync } from "node:zlib";
-import { mkdir, writeFile, rename, rm, chmod } from "node:fs/promises";
+import { mkdir, writeFile, rename, chmod } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { reserveOutput } from "./runtime-output.mjs";
 import { readBounded, sha256, reject, verifyInventory } from "./runtime-bundle.mjs";
@@ -56,7 +56,8 @@ export async function acquireBundle(archive, expectedArchive, expectedManifest, 
   if (sha256(bytes) !== expectedArchive) reject("WORLD_BUNDLE_IDENTITY_INVALID", "downloaded archive digest mismatch");
   const files = unpackArchive(bytes); // Validate all entries before creating anything.
   output = resolve(output);
-  const stage = await reserveOutput(output);
+  const reservation = await reserveOutput(output), stage = reservation.stage;
+  output = reservation.output;
   try {
     for (const file of files) {
       await mkdir(dirname(join(stage, file.path)), { recursive: true });
@@ -64,7 +65,9 @@ export async function acquireBundle(archive, expectedArchive, expectedManifest, 
       await chmod(join(stage, file.path), file.mode);
     }
     await verifyInventory(stage, expectedManifest);
+    await reservation.assertOwned();
     await rename(stage, output);
-  } catch (error) { await rm(stage, { recursive: true, force: true }); throw error; }
+  } catch (error) { await reservation.cleanup(); throw error; }
+  finally { await reservation.close(); }
   return { bundle: output, archiveSha256: expectedArchive, manifestSha256: expectedManifest };
 }

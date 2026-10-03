@@ -623,7 +623,7 @@ test "resident output capacity and checkpoint transfer preserve custody on failu
     defer request.deinit();
     const reply = try protocol.encodeOwned(protocol.Result, testing.allocator, .{ .request_identity = request.value.request_identity, .value = &.{} });
     defer testing.allocator.free(reply);
-    var output = [_]u8{0xa5} ** 512;
+    var output = @as([512]u8, @splat(0xa5));
     try testing.expectError(error.Capacity, resident.driveInto(.{ .reply = reply }, .{ .checkpoint = true }, output[0..1]));
     for (output) |byte| try testing.expectEqual(0xa5, byte);
     const unchanged = try resident.checkpoint(testing.allocator);
@@ -996,7 +996,7 @@ test "failed PST3 export retains exactly the same resident instruction boundary"
     try testing.expect(try session.run(1) == .progressed);
     const before = try session.checkpoint(testing.allocator);
     defer testing.allocator.free(before);
-    try testing.checkAllAllocationFailures(testing.allocator, checkpointFailure, .{ &session, before });
+    try @import("allocation_testing.zig").check(testing.allocator, checkpointFailure, .{ &session, before });
     const result = try drive(&session, null);
     try testing.expect(result == .completed);
     try testing.expectEqual(1, result.completed.body.scalar[0]);
@@ -1101,13 +1101,13 @@ test "failed prepared starts and restores preserve the reusable owner" {
     var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, bytes);
     defer prepared.deinit();
     const retained = try prepared.storageBytes();
-    try testing.checkAllAllocationFailures(testing.allocator, startPreparedFailure, .{&prepared});
+    try @import("allocation_testing.zig").check(testing.allocator, startPreparedFailure, .{&prepared});
     var session = try Session.start(testing.allocator, &prepared, &.{ 1, 0, 0, 0, 0, 0, 0, 0 });
     defer session.deinit();
     try testing.expect(try session.run(null) == .requested);
     const checkpoint = try session.checkpoint(testing.allocator);
     defer testing.allocator.free(checkpoint);
-    try testing.checkAllAllocationFailures(testing.allocator, restorePreparedFailure, .{ &prepared, checkpoint });
+    try @import("allocation_testing.zig").check(testing.allocator, restorePreparedFailure, .{ &prepared, checkpoint });
     try testing.expectEqual(retained, try prepared.storageBytes());
     try answerWithValue(&session, &.{});
     try testing.expect(try session.run(null) == .completed);
@@ -1124,7 +1124,7 @@ fn retainedInputExample(builder: *source.Builder) !source.Module {
 }
 
 fn invocationFailure(allocator: std.mem.Allocator, command: []const u8) !void {
-    var output = [_]u8{0xa5} ** 1024;
+    var output = @as([1024]u8, @splat(0xa5));
     const bytes = @import("stable_runtime").invocation.invokeInto(allocator, command, &output) catch |err| {
         for (output) |byte| try testing.expectEqual(0xa5, byte);
         return err;
@@ -1196,9 +1196,9 @@ test "current fresh invocation binds captured values and rejects stale replies w
     defer testing.allocator.free(command);
     const original = try testing.allocator.dupe(u8, command);
     defer testing.allocator.free(original);
-    try testing.checkAllAllocationFailures(testing.allocator, invocationFailure, .{command});
+    try @import("allocation_testing.zig").check(testing.allocator, invocationFailure, .{command});
     try testing.expectEqualSlices(u8, original, command);
-    var output = [_]u8{0xa5} ** 32;
+    var output = @as([32]u8, @splat(0xa5));
     try testing.expectError(error.Capacity, fresh.invokeInto(testing.allocator, command, output[0..1]));
     for (output) |byte| try testing.expectEqual(0xa5, byte);
     try testing.expectEqualSlices(u8, original, command);
@@ -1296,7 +1296,7 @@ test "PST3 restore releases every partial owner on allocation failure" {
     defer testing.allocator.free(checkpoint);
     const image = try programBytes(compiled.program);
     defer testing.allocator.free(image);
-    try testing.checkAllAllocationFailures(testing.allocator, restoreFailure, .{ image, checkpoint });
+    try @import("allocation_testing.zig").check(testing.allocator, restoreFailure, .{ image, checkpoint });
 }
 
 fn rejectCheckpoint(image: []const u8, state: boundary.data.process_state.State) !void {
@@ -1415,7 +1415,7 @@ test "imported storage avoids payload copies and releases a large dead backing" 
     const small: data.graph.Value = .{ .schema = 0, .body = .{ .blob = .{ .id = 1 } } };
     // This is a physical Store test: no executable Program or control transition.
     const state: data.process_state.State = .{
-        .program_identity = .{0} ** 32,
+        .program_identity = @as([32]u8, @splat(0)),
         .status = .active,
         .roots = .{ .current = .{ .id = 0 } },
         .nodes = &.{.{ .record = .{ .environment = .{ .values = &.{
@@ -1767,7 +1767,7 @@ test "stable source releases partial native owners at every allocation failure" 
     defer builder.deinit();
     var compiled = try source.lower(testing.allocator, try source.examples.deep(&builder));
     defer compiled.deinit();
-    try testing.checkAllAllocationFailures(testing.allocator, failingSession, .{compiled.program});
+    try @import("allocation_testing.zig").check(testing.allocator, failingSession, .{compiled.program});
 }
 
 test "stable source preserves multi-shot choice and branch-local versus outer shared cells" {
@@ -2194,10 +2194,10 @@ fn emptyRecordPayload(comptime T: type) T {
     return switch (@typeInfo(T)) {
         .@"struct" => |info| blk: {
             var value: T = undefined;
-            inline for (info.fields) |field| @field(value, field.name) = emptyRecordPayload(field.type);
+            inline for (info.field_names, info.field_types) |field_name, FieldType| @field(value, field_name) = emptyRecordPayload(FieldType);
             break :blk value;
         },
-        .@"union" => |info| @unionInit(T, info.fields[0].name, emptyRecordPayload(info.fields[0].type)),
+        .@"union" => |info| @unionInit(T, info.field_names[0], emptyRecordPayload(info.field_types[0])),
         else => std.mem.zeroes(T),
     };
 }
@@ -2281,7 +2281,7 @@ fn checkReturnPaths(session: *Session, image: []const u8, schema: u64, seen: *st
 }
 
 test "PST3 normal return paths reject disposal markers while captured cleanup stays valid" {
-    var seen = std.EnumSet(ReturnPathKind).initEmpty();
+    var seen: std.EnumSet(ReturnPathKind) = .{};
     var captured_cleanup = false;
     for (0..3) |example| {
         var b = source.Builder.init(testing.allocator);
@@ -2325,7 +2325,7 @@ test "PST3 normal return paths reject disposal markers while captured cleanup st
             try testing.expectEqual(if (example == 0) @as(u8, 67) else 60, result.completed.body.scalar[0]);
         }
     }
-    try testing.expectEqual(std.EnumSet(ReturnPathKind).initFull().bits, seen.bits);
+    try testing.expectEqual(std.EnumSet(ReturnPathKind).full.bits, seen.bits);
     try testing.expect(captured_cleanup);
 }
 
@@ -2386,9 +2386,9 @@ test "PST3 captured handler state obeys one-shot and multi bounds and reference 
         }
         try data.state_admission.validateStable(testing.allocator, compiled.program, canonical.state);
         const original = checked_nodes[handler_index];
-        inline for (@typeInfo(g.Node).@"union".fields) |field| {
-            if (comptime !std.mem.eql(u8, field.name, "handler")) {
-                checked_nodes[handler_index].record = @unionInit(g.Node, field.name, emptyRecordPayload(field.type));
+        inline for (@typeInfo(g.Node).@"union".field_names, @typeInfo(g.Node).@"union".field_types) |field_name, FieldType| {
+            if (comptime !std.mem.eql(u8, field_name, "handler")) {
+                checked_nodes[handler_index].record = @unionInit(g.Node, field_name, emptyRecordPayload(FieldType));
                 if (data.state_admission.validateStable(testing.allocator, compiled.program, canonical.state)) |_| {
                     return error.AcceptedWrongCapturedHandlerKind;
                 } else |err| try testing.expect(err != error.OutOfMemory);
@@ -2451,7 +2451,7 @@ test "argument backing releases every partial Session owner on allocation failur
     defer prepared.deinit();
     const input = try argumentBytes(4096);
     defer testing.allocator.free(input);
-    try testing.checkAllAllocationFailures(testing.allocator, argumentSessionFailure, .{ &prepared, input });
+    try @import("allocation_testing.zig").check(testing.allocator, argumentSessionFailure, .{ &prepared, input });
 }
 
 test "argument Session survives caller release and sheds a large dead payload" {
@@ -2517,7 +2517,7 @@ test "argument backing survives journal collection and reuse then compacts a tin
     defer prepared.deinit();
     const input = try argumentBytes(4096);
     defer testing.allocator.free(input);
-    try testing.checkAllAllocationFailures(testing.allocator, argumentStoreFailure, .{ &prepared, input });
+    try @import("allocation_testing.zig").check(testing.allocator, argumentStoreFailure, .{ &prepared, input });
 }
 
 test "resident terminal compaction preserves rollback and releases backing at commit" {
@@ -2626,7 +2626,7 @@ test "prepared contracts retain encoded bytes without canonicalization scratch" 
     // maps and schema graphs must not remain owned by preparation.
     const contract_storage = (try prepared.storageBytes()) - admitted.storageBytes();
     try testing.expect(contract_storage <= 1024 + 4 * (contract.payload.len + contract.resume_value.len));
-    try testing.checkAllAllocationFailures(testing.allocator, prepareContractFailure, .{image});
+    try @import("allocation_testing.zig").check(testing.allocator, prepareContractFailure, .{image});
 }
 
 fn smallSurvivorExample(b: *source.Builder, keep_original: bool, request_boundary: bool) !source.Module {

@@ -1,0 +1,31 @@
+{
+  "zig": "0.17.0",
+  "target": "wasm32-freestanding",
+  "hostMode": "safe",
+  "kernelMode": "small",
+  "stackBytes": 65536,
+  "maximumMemoryBytes": 268435456,
+  "defaults": {
+    "input": 65536,
+    "working": 1048576,
+    "output": 65536
+  },
+  "boundary": {
+    "commit": "046ffefc8f7d99a3ad4f7b3cce21d471746e9048",
+    "package": "boundary-3.0.0-dev.0-flclaK4GRgB21YbzErzudBfzn40M6Wy6p-NeJ52XJUzT",
+    "url": "https://github.com/tkersey/boundary/archive/046ffefc8f7d99a3ad4f7b3cce21d471746e9048.tar.gz",
+    "inventorySha256": "d246e5cfcf628ba3176491b98514f23d79dc148af893794fe4d4927687a5d932"
+  },
+  "wasmBackend": "llvm",
+  "wasmLinker": "lld",
+  "cpu": "lime1",
+  "features": [
+    "bulk_memory_opt",
+    "call_indirect_overlong",
+    "extended_const",
+    "multivalue",
+    "mutable_globals",
+    "nontrapping_fptoint",
+    "sign_ext"
+  ]
+}

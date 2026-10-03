@@ -5,7 +5,7 @@ natively and as an import-free wasm32 kernel. Computations, handlers, policies,
 retained control and cleanup are program data. The environment supplies typed
 external results.
 
-World `6.0.0-dev.0` uses Zig `0.16.0`. This successor branch is completing the
+World `6.0.0-dev.0` supports only exact Zig `0.17.0`. This successor branch is completing the
 coordinated Boundary 3 / Agent migration. See [current status](docs/compositional-execution.md)
 and the [ABI 3 contract](docs/kernel-abi.md).
 
