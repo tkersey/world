@@ -6,6 +6,9 @@ pub fn main(init: std.process.Init) !void {
     var args = init.minimal.args.iterate();
     _ = args.next();
     const path = args.next() orelse return error.Image;
+    const mode = args.next() orelse "direct";
+    const removed = std.mem.eql(u8, mode, "removed");
+    if (!removed and !std.mem.eql(u8, mode, "direct")) return error.Mode;
     const image = try std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .limited(64 << 20));
     defer init.gpa.free(image);
     var arguments: [16]u8 = undefined;
@@ -23,7 +26,11 @@ pub fn main(init: std.process.Init) !void {
     var transaction = try session.begin();
     var changed = binding.value;
     changed.body.scalar[0] ^= 1;
-    try session.frames.slots.set(descriptor.view, binding.slot, changed);
+    if (removed) {
+        const removal = session.frames.remove(id);
+        if (@typeInfo(@TypeOf(removal)) == .error_union) try removal;
+    }
+    const mutation = session.frames.slots.set(descriptor.view, binding.slot, changed);
     transaction.rollback(&session);
     const restored = try session.frames.get(id);
     const value = try session.frames.slots.get(restored.view, binding.slot);
@@ -31,4 +38,5 @@ pub fn main(init: std.process.Init) !void {
     const after = try session.checkpoint(init.gpa);
     defer init.gpa.free(after);
     try std.testing.expectEqualSlices(u8, before, after);
+    if (removed) try std.testing.expectError(error.InvalidHandle, mutation) else try mutation;
 }

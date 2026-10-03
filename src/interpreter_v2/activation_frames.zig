@@ -297,11 +297,19 @@ pub const Frames = struct {
     pub fn remove(self: *Frames, id: data.program.Id) Error!void {
         const frame = self.entries.get(id) orelse return;
         if (self.journal) |*journal| {
-            if (id < journal.node_count and !journal.contains(id)) {
+            if (id < journal.node_count and !journal.contains(id) and
+                try self.slots.canTransfer(frame.view) and
+                try self.custody.nodes.canTransfer(frame.custody.view))
+            {
                 // Removal transfers the untouched entry owner; no fork or
-                // temporary successor handle is necessary.
+                // temporary view is necessary. Retire borrowed handles first;
+                // otherwise a copied descriptor could mutate the saved owner.
+                // Both generations are checked before either changes.
                 try journal.reserve(self.allocator);
-                journal.save(id, frame);
+                var saved = frame;
+                saved.view = self.slots.transfer(frame.view) catch unreachable;
+                saved.custody.view = self.custody.nodes.transfer(frame.custody.view) catch unreachable;
+                journal.save(id, saved);
                 journal.last_held = id;
                 self.endMutableBorrows();
                 _ = self.entries.remove(id);
@@ -310,6 +318,9 @@ pub const Frames = struct {
                 return;
             }
         }
+        // An exhausted generation cannot be renamed. Existing COW protection
+        // retains its entry version while release permanently retires that view.
+        try self.hold(id);
         self.endMutableBorrows();
         if (self.entries.fetchRemove(id)) |entry| self.releaseFrame(entry.value);
     }

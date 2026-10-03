@@ -170,6 +170,22 @@ pub fn Slots(comptime Value: type) type {
             (try self.lookupView(handle)).owner = owner;
         }
 
+        pub fn canTransfer(self: *Self, handle: Handle) error{InvalidHandle}!bool {
+            return (try self.lookupView(handle)).generation != std.math.maxInt(u64);
+        }
+
+        /// Move ownership without copying or allocating. Old descriptors and
+        /// iterators lose access even though the new owner retains the same root.
+        /// A containing owner can preflight several views before transferring any.
+        pub fn transfer(self: *Self, handle: Handle) error{ InvalidHandle, CapacityExceeded }!Handle {
+            const entry = try self.lookupView(handle);
+            if (entry.generation == std.math.maxInt(u64)) return error.CapacityExceeded;
+            entry.generation += 1;
+            var result = handle;
+            result.generation = entry.generation;
+            return result;
+        }
+
         /// Acquire the containing owner's entry version before changing either
         /// its descriptor metadata or this root. Independent forks have no owner.
         pub fn protect(self: *Self, handle: Handle) Error!void {

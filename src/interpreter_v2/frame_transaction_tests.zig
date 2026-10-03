@@ -119,6 +119,61 @@ test "direct custody mutations join the same frame entry journal" {
     try testing.expectEqual(1, c.frames.statistics.saved_entries);
 }
 
+// PR #60, 750f8ec: "copied mutable and read views survive map growth
+// without bypassing rollback". The direct-root spelling exercises #61's cut.
+test "copied direct slot descriptor survives map and view table growth" {
+    var c: Context = undefined;
+    try c.init(testing.allocator, 1);
+    defer c.deinit();
+    try c.insert(0, 42);
+    const copied = try c.frames.get(0);
+    for (1..1024) |id| try c.insert(id, id);
+    try c.frames.begin(1024);
+    try c.frames.slots.set(copied.view, 0, Values.natural(0, 100));
+    c.frames.rollback(1024);
+    try testing.expectEqual(42, try c.value(0, 0));
+    for (1..1024) |id| try testing.expectEqual(id, try c.value(id, 0));
+    try testing.expectEqual(1, c.frames.statistics.saved_entries);
+}
+
+test "removal retires borrowed slot and custody handles before journal ownership" {
+    for (0..4) |exhausted| {
+        var c: Context = undefined;
+        try c.init(testing.allocator, 4);
+        defer c.deinit();
+        try c.insert(0, 42);
+        if (exhausted & 1 != 0) {
+            const entry = c.frames.entries.getPtr(0).?;
+            entry.view.generation = std.math.maxInt(u64);
+            c.frames.slots.views.items[entry.view.index].generation = entry.view.generation;
+        }
+        if (exhausted & 2 != 0) {
+            const entry = c.frames.entries.getPtr(0).?;
+            entry.custody.view.generation = std.math.maxInt(u64);
+            c.frames.custody.nodes.views.items[entry.custody.view.index].generation = entry.custody.view.generation;
+        }
+        const descriptor = try c.frames.get(0);
+        var iterator = try c.frames.slots.iterator(descriptor.view);
+        const independent = try c.frames.forkFrame(descriptor);
+        defer c.frames.releaseFrame(independent);
+        try c.frames.begin(1);
+        defer if (c.frames.journal != null) c.frames.rollback(1);
+        try c.frames.remove(0);
+        try testing.expectError(error.InvalidHandle, c.frames.slots.get(descriptor.view, 0));
+        try testing.expectError(error.InvalidHandle, c.frames.slots.set(descriptor.view, 0, Values.natural(0, 99)));
+        try testing.expectError(error.InvalidHandle, c.frames.slots.clear(descriptor.view, 1));
+        try testing.expectError(error.InvalidHandle, c.frames.slots.retainOnly(descriptor.view, &.{}));
+        try testing.expectError(error.InvalidHandle, c.frames.custody.nodes.clear(descriptor.custody.view, 0));
+        try testing.expectError(error.InvalidHandle, iterator.next());
+        try c.insert(0, 100);
+        try c.frames.slots.set(independent.view, 0, Values.natural(0, 33));
+        c.frames.rollback(1);
+        try testing.expectEqual(42, try c.value(0, 0));
+        try testing.expectError(error.InvalidHandle, c.frames.slots.get(descriptor.view, 0));
+        try testing.expectEqual(33, (try c.frames.slots.get(independent.view, 0)).body.scalar[0]);
+    }
+}
+
 test "direct first touch allocation failure rolls back and retries without history" {
     for ([_]usize{ 1, 65, 1024 }) |width| {
         var saw_failure = false;
