@@ -113,7 +113,7 @@ export async function prepareBundle(source, output, options = {}) {
   const packages = join(lock, "packages");
   const env = { ...compiler.env, PATH: dirname(process.execPath) + delimiter + (compiler.env.PATH ?? ""),
     ZIG_GLOBAL_CACHE_DIR: cache, ZIG_LOCAL_CACHE_DIR: join(lock, "zig-local"), ZIG_LOCAL_PKG_DIR: packages,
-    PLAYWRIGHT_SKIP_BROWSER_GC: "1" };
+    PLAYWRIGHT_SKIP_BROWSER_GC: "1", ...(options.offline ? { UV_OFFLINE: "true" } : {}) };
   const run = (name, command, args, selectedEnv = env) => checked(source, evidence, checks, name, command, args, selectedEnv);
   const build = steps => ["build", ...steps, `-Doptimize=${runtimeProfile.hostMode}`, "--prefix", prefix, "--verbose"];
   try {

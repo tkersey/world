@@ -84,7 +84,7 @@ The 0.16 predecessor is frozen comparison evidence. The migration retains ABI 3,
 The explicit linker export list prevents Zig 0.17's `-rdynamic` from adding the
 linker's `__stack_pointer` export. `check-kernel` independently checks the ABI.
 
-The current local migration passed `check check-zig17 -Doptimize=safe` (47 steps)
+The current local migration passed `check check-zig17 -Doptimize=safe` (48 steps)
 on macOS arm64 with the official 0.17.0 distribution. Node/native canonical
 agreement covered 235 boundaries and 23 transfers; Node/Wasmtime/native transfer
 covered 158 boundaries. This is local correctness evidence, not a complete
@@ -116,3 +116,12 @@ sweep. SafeAllocator's successful remaps otherwise make allocation ordinals vary
 between identical runs. Ordinary native tests retain the real allocator and resize
 paths; production storage and rollback policy are unchanged. Allocation ordinals
 and native metadata bytes are not asserted equal to the predecessor.
+
+The official Zig 0.17 configuration cache can select the previous sibling
+`--build-file` when different standalone scripts share a cache. The `test/v2`
+source/benchmark helpers explicitly poison configuration caching to prevent that
+selection; compiled-artifact caching is retained. `check-zig17` alternates the
+actual execution/replay/value helpers with identical options and one cache, then
+checks the configured executable names. The normal World graph retains caching.
+Historical `legacy-names`/`legacy-layout` benchmark switches are removed; old
+source is reproduced only through its original worktree/toolchain.

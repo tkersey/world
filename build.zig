@@ -275,6 +275,12 @@ pub fn build(b: *std.Build) void {
     package_ownership.removeEnvironmentVariable("NODE_TEST_CONTEXT");
     package_ownership.has_side_effects = true;
     zig17.dependOn(&package_ownership.step);
+    const build_selection = b.addSystemCommand(&.{ "node", "test/current/build_selection.mjs" });
+    build_selection.addFileArg2(.zig_exe, .{ .make_absolute = true });
+    build_selection.addDirectoryArg2(.zig_lib, .{ .make_absolute = true });
+    build_selection.addDirectoryArg2(source, .{ .make_absolute = true });
+    build_selection.has_side_effects = true;
+    zig17.dependOn(&build_selection.step);
     check.dependOn(zig17);
     check.dependOn(&run_native_tests.step);
     check.dependOn(&stable_source.step);
