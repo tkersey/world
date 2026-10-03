@@ -33,7 +33,7 @@ pub const Custody = struct {
         const limit = std.math.add(usize, slots, scopes) catch return error.CapacityExceeded;
         return .{ .view = try self.nodes.create(limit), .slots = slots };
     }
-    pub fn fork(self: *Custody, state: State) Error!State {
+    pub fn fork(self: *Custody, state: State) Nodes.Error!State {
         var result = state;
         result.view = try self.nodes.fork(state.view);
         return result;

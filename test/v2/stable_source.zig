@@ -8,6 +8,7 @@ const Resident = @import("stable_runtime").Resident;
 test {
     // Dependency-module tests are not collected by this root test artifact.
     _ = @import("source_regressions.zig");
+    _ = @import("resident_binding.zig");
 }
 
 test "encoded cursors export canonical immutable checkpoints and restore as ordinary values" {
@@ -456,6 +457,61 @@ fn releaseResident(resident: *Resident) void {
     };
 }
 
+// Regression transferred from PR #60, 750f8ec74f909735c96992eb05bfe0c22904526e.
+fn residentBeforeOwnedUnwind(allocator: std.mem.Allocator, prepared: *const @import("stable_runtime").Prepared) !Resident {
+    var resident = try Resident.start(allocator, prepared, &.{});
+    errdefer releaseResident(&resident);
+    var yielded = try resident.drive(allocator, .none, .{});
+    defer yielded.deinit();
+    try testing.expect(yielded.record == .yielded);
+    var cancelling = try resident.drive(allocator, .{ .cancel = .{ .text = "live-owned-unwind" } }, .{ .quantum = 0 });
+    defer cancelling.deinit();
+    return resident;
+}
+
+test "live owned unwind preserves physical ownership and retry at every allocation failure" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.ownership(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var reference = try residentBeforeOwnedUnwind(testing.allocator, &prepared);
+    defer releaseResident(&reference);
+    var expected = try reference.drive(testing.allocator, .none, .{ .quantum = 1 });
+    defer expected.deinit();
+    var index: usize = 0;
+    while (true) : (index += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{});
+        var resident = try residentBeforeOwnedUnwind(failing.allocator(), &prepared);
+        defer releaseResident(&resident);
+        const entry = try resident.checkpoint(testing.allocator);
+        defer testing.allocator.free(entry);
+        failing.fail_index = failing.alloc_index + index;
+        failing.resize_fail_index = failing.resize_index;
+        var output = resident.drive(failing.allocator(), .none, .{ .quantum = 1 }) catch |err| {
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+            try testing.expectEqual(error.OutOfMemory, err);
+            const actual = try resident.checkpoint(testing.allocator);
+            defer testing.allocator.free(actual);
+            try testing.expectEqualSlices(u8, entry, actual);
+            var retry = try resident.drive(failing.allocator(), .none, .{ .quantum = 1 });
+            defer retry.deinit();
+            try testing.expectEqualDeep(expected.record, retry.record);
+            continue;
+        };
+        defer output.deinit();
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try testing.expectEqualDeep(expected.record, output.record);
+        try testing.expect(index != 0);
+        break;
+    }
+}
+
 fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, checkpoint: []const u8, control: boundary.data.invocation.Control, checkpoint_mode: bool) !void {
     var reference = try Resident.restore(testing.allocator, prepared, checkpoint);
     defer releaseResident(&reference);
@@ -468,16 +524,15 @@ fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, che
         var resident = try Resident.restore(failing.allocator(), prepared, checkpoint);
         defer releaseResident(&resident);
         var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
-        resident.session.?.statistics = &statistics;
-        resident.session.?.store.statistics = &statistics.storage;
-        const collection_cursors = resident.session.?.collection_cursors;
+        try resident.setStatistics(&statistics);
+        const collection_cursors = (try resident.diagnostics()).collection_cursors;
         failing.fail_index = failing.alloc_index + failures;
         failing.resize_fail_index = failing.resize_index;
         var output = resident.drive(failing.allocator(), control, .{ .checkpoint = checkpoint_mode }) catch |err| {
             failing.fail_index = std.math.maxInt(usize);
             failing.resize_fail_index = std.math.maxInt(usize);
             try testing.expectEqual(error.OutOfMemory, err);
-            try testing.expectEqual(collection_cursors, resident.session.?.collection_cursors);
+            try testing.expectEqual(collection_cursors, (try resident.diagnostics()).collection_cursors);
             failed_after_mutation = failed_after_mutation or statistics.transitions != 0 or statistics.storage.added_nodes != 0 or statistics.storage.journal_nodes != 0;
             const unchanged = try resident.checkpoint(testing.allocator);
             defer testing.allocator.free(unchanged);
@@ -552,7 +607,10 @@ test "resident output capacity and checkpoint transfer preserve custody on failu
     try testing.expectError(error.UnfinishedSession, resident.close());
     var pending = try resident.drive(testing.allocator, .none, .{ .checkpoint = true });
     defer pending.deinit();
-    const engine = &resident.session.?;
+    // The separate low-level Session API retains direct transaction access.
+    var engine_storage = try Session.restore(testing.allocator, &prepared, pending.record.requested.state.?);
+    defer engine_storage.deinit();
+    const engine = &engine_storage;
     const copies = engine.frames.slots.statistics.value_copies;
     const custody_copies = engine.frames.custody.nodes.statistics.value_copies;
     {
@@ -605,10 +663,12 @@ test "shallow resumption preserves every resident boundary after failed publicat
         const before = try resident.checkpoint(testing.allocator);
         defer testing.allocator.free(before);
         if (!swept) {
-            const session = &resident.session.?;
-            for (session.store.nodes.items, session.store.alive.items) |node, alive| {
-                if (!alive or node != .one_shot) continue;
-                const signature = session.program.schemas[@intCast(node.one_shot.schema)].internal.resumption;
+            var portable = try boundary.data.state_image.decodeGraph(testing.allocator, before);
+            defer portable.deinit();
+            for (portable.state.nodes) |entry| {
+                const node = entry.record;
+                if (node != .one_shot) continue;
+                const signature = compiled.program.schemas[@intCast(node.one_shot.schema)].internal.resumption;
                 if (signature.mode != .shallow) continue;
                 // The token already belongs to the entry State. Exercise every
                 // subsequent allocation failure, not only the output buffer.
@@ -767,15 +827,14 @@ test "a long resident drive journals entry state rather than transition history"
     var resident = try Resident.start(testing.allocator, &prepared, &.{ 16, 39, 0, 0, 0, 0, 0, 0 });
     defer releaseResident(&resident);
     var statistics: std.meta.Child(@typeInfo(@FieldType(Session, "statistics")).optional.child) = .{};
-    resident.session.?.statistics = &statistics;
-    resident.session.?.store.statistics = &statistics.storage;
-    const entry_nodes = resident.session.?.store.nodes.items.len;
+    try resident.setStatistics(&statistics);
+    const entry_nodes = (try resident.diagnostics()).nodes;
     var result = try resident.drive(testing.allocator, .none, .{});
     defer result.deinit();
     try testing.expectEqualSlices(u8, &.{1}, result.record.completed);
     try testing.expect(statistics.transitions >= 10_000);
     try testing.expect(statistics.storage.journal_nodes <= entry_nodes);
-    try testing.expect(resident.session.?.store.nodes.items.len <= 512);
+    try testing.expect((try resident.diagnostics()).nodes <= 512);
 }
 
 test "resident gate rejects reentrant observation during allocator callbacks" {
@@ -2491,14 +2550,14 @@ test "resident terminal compaction preserves rollback and releases backing at co
             const retry = try resident.driveEncoded(testing.allocator, .none, .{});
             defer testing.allocator.free(retry);
             try testing.expectEqualSlices(u8, expected, retry);
-            try testing.expect(resident.session.?.store.imported == null);
+            try testing.expect(!(try resident.diagnostics()).imported_backing);
             continue;
         };
         defer failing.allocator().free(output);
         failing.fail_index = std.math.maxInt(usize);
         failing.resize_fail_index = std.math.maxInt(usize);
         try testing.expectEqualSlices(u8, expected, output);
-        try testing.expect(resident.session.?.store.imported == null);
+        try testing.expect(!(try resident.diagnostics()).imported_backing);
         try testing.expect(failures > 0);
         break;
     }

@@ -17,35 +17,42 @@ if (args[0] === 'sample') {
   let peakBytes = 0;
   // The kernel resets its peak on every operation, including cleanup.
   // Fold each observation before another operation can replace it.
-  const observePeak = () => { peakBytes = Math.max(peakBytes, Number(k.usage().workingPeak)); };
-  const prepared = phase === 'resident' ? k.prepare(image) : null;
+  const observePeak = (enabled=true) => { if (enabled) peakBytes = Math.max(peakBytes, Number(k.usage().workingPeak)); };
+  let prepared = phase === 'resident' ? k.prepare(image) : null;
   observePeak();
   const live = k.usage().workingLive, samplesNs = [], batch = image.length > 8192 || phase === 'resident' ? 1 : 64;
   let retainedBytes = Number(live);
-  for (let sample=0; sample<12; sample++) {
+  // One separate instrumented lifecycle precedes the three warmups and nine
+  // latency samples. No peak observations occur in the latency pass.
+  for (let sample=-1; sample<12; sample++) {
     let elapsed=0;
-    for (let iteration=0; iteration<batch; iteration++) {
+    const memoryPass=sample<0;
+    for (let iteration=0; iteration<(memoryPass?1:batch); iteration++) {
       if (phase === 'admission') {
         const start=process.hrtime.bigint(), p=k.prepare(image);
         elapsed+=Number(process.hrtime.bigint()-start);
-        observePeak();
-        retainedBytes=Math.max(retainedBytes,Number(k.usage().workingLive)); k.releasePrepared(p); observePeak();
+        observePeak(memoryPass);
+        if(memoryPass)retainedBytes=Math.max(retainedBytes,Number(k.usage().workingLive)); k.releasePrepared(p); observePeak(memoryPass);
       } else if (phase === 'resident') {
-        const session=k.start(prepared,initialArgs); observePeak();
+        const session=k.start(prepared,initialArgs); observePeak(memoryPass);
         const start=process.hrtime.bigint();
         const result=k.drive(session,{}); elapsed+=Number(process.hrtime.bigint()-start);
-        observePeak(); assert.equal(hash(result),expected); k.close(session); observePeak();
+        observePeak(memoryPass); assert.equal(hash(result),expected); k.close(session); observePeak(memoryPass);
       } else {
         const start=process.hrtime.bigint(), result=k.invoke(input);
-        elapsed+=Number(process.hrtime.bigint()-start); observePeak(); assert.equal(hash(result),expected);
+        elapsed+=Number(process.hrtime.bigint()-start); observePeak(memoryPass); assert.equal(hash(result),expected);
       }
       assert.equal(k.usage().workingLive,live);
     }
+    if(memoryPass&&prepared){
+      k.releasePrepared(prepared); observePeak(); assert.equal(k.usage().workingLive,0n);
+      prepared=k.prepare(image);
+    }
     if (sample>=3) samplesNs.push(elapsed/batch);
   }
-  if (prepared) { k.releasePrepared(prepared); observePeak(); }
+  if (prepared) k.releasePrepared(prepared);
   assert.equal(k.usage().workingLive,0n);
-  console.log(JSON.stringify({samplesNs,peakBytes,retainedBytes,batch}));
+  console.log(JSON.stringify({samplesNs,peakBytes,retainedBytes,batch,memoryPasses:1}));
 } else {
   const [embedding,beforeKernel,afterKernel,emitter,beforeNative,afterNative,beforeResident,afterResident,corpus,output] = args;
   assert.equal(args.length,10); mkdirSync(corpus,{recursive:true});

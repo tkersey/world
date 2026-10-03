@@ -64,6 +64,7 @@ pub fn Slots(comptime Value: type) type {
             // for an intrusive free-list link. lookupView rejects retired views.
             limit: usize,
             depth: u8,
+            owner: usize = std.math.maxInt(usize),
         };
         pub const Handle = struct { instance: u64, index: usize, generation: u64 };
         pub const Binding = struct { slot: usize, value: Value };
@@ -93,6 +94,10 @@ pub fn Slots(comptime Value: type) type {
         views: std.ArrayList(View) = .empty,
         free_view: usize = std.math.maxInt(usize),
         statistics: Statistics = .{},
+        /// Embedded owners install this only for an active transaction. The
+        /// store address is supplied at the call, so moving the containing owner
+        /// never leaves a cached context pointer behind.
+        before_mutation: ?*const fn (*Self, usize) Error!void = null,
         var next_instance = std.atomic.Value(usize).init(1);
 
         pub fn init(allocator: std.mem.Allocator) Error!Self {
@@ -157,7 +162,37 @@ pub fn Slots(comptime Value: type) type {
             copy.root = try retain(copy.root);
             errdefer self.drop(copy.root);
             copy.revision = 0;
+            copy.owner = std.math.maxInt(usize);
             return self.addView(copy);
+        }
+
+        pub fn registerOwner(self: *Self, handle: Handle, owner: usize) Error!void {
+            (try self.lookupView(handle)).owner = owner;
+        }
+
+        pub fn canTransfer(self: *Self, handle: Handle) error{InvalidHandle}!bool {
+            return (try self.lookupView(handle)).generation != std.math.maxInt(u64);
+        }
+
+        /// Move ownership without copying or allocating. Old descriptors and
+        /// iterators lose access even though the new owner retains the same root.
+        /// A containing owner can preflight several views before transferring any.
+        pub fn transfer(self: *Self, handle: Handle) error{ InvalidHandle, CapacityExceeded }!Handle {
+            const entry = try self.lookupView(handle);
+            if (entry.generation == std.math.maxInt(u64)) return error.CapacityExceeded;
+            entry.generation += 1;
+            var result = handle;
+            result.generation = entry.generation;
+            return result;
+        }
+
+        /// Acquire the containing owner's entry version before changing either
+        /// its descriptor metadata or this root. Independent forks have no owner.
+        pub fn protect(self: *Self, handle: Handle) Error!void {
+            const owner = (try self.lookupView(handle)).owner;
+            if (owner != std.math.maxInt(usize)) {
+                if (self.before_mutation) |before| try before(self, owner);
+            }
         }
 
         pub fn release(self: *Self, handle: Handle) Error!void {
@@ -182,11 +217,14 @@ pub fn Slots(comptime Value: type) type {
         /// Consumes the candidate handle. Failure leaves both logical views intact.
         pub fn commit(self: *Self, target: Handle, candidate: Handle) Error!void {
             if (target.index == candidate.index) return error.InvalidHandle;
-            const destination = try self.lookupView(target);
-            const source = try self.lookupView(candidate);
+            var destination = try self.lookupView(target);
+            var source = try self.lookupView(candidate);
             if (destination.limit != source.limit or destination.depth != source.depth)
                 return error.InvalidSelection;
             if (destination.revision == std.math.maxInt(u64)) return error.CapacityExceeded;
+            try self.protect(target);
+            destination = try self.lookupView(target);
+            source = try self.lookupView(candidate);
             const previous = destination.root;
             destination.root = source.root;
             source.root = .empty;
@@ -230,13 +268,16 @@ pub fn Slots(comptime Value: type) type {
         }
 
         fn change(self: *Self, handle: Handle, slot: usize, value: ?Value) Error!void {
-            const entry = try self.lookupView(handle);
+            var entry = try self.lookupView(handle);
             if (slot >= entry.limit) return error.InvalidSlot;
             if (entry.revision == std.math.maxInt(u64)) return error.CapacityExceeded;
             if (value == null) {
                 const page = locate(entry.root, entry.depth, slot) orelse return;
                 if (page.initialized & mask(slot) == 0) return;
             }
+            try self.protect(handle);
+            // Protection may fork a view and relocate the handle table.
+            entry = try self.lookupView(handle);
             try self.changeOwned(&entry.root, entry.depth, slot, value);
             entry.revision += 1;
             self.statistics.writes +|= 1;
@@ -254,6 +295,7 @@ pub fn Slots(comptime Value: type) type {
             const temporary = try self.create(original.limit);
             defer self.release(temporary) catch unreachable;
             for (selected) |slot| try self.set(temporary, slot, try self.get(handle, slot));
+            try self.protect(handle);
             const replacement = try self.lookupView(temporary);
             const entry = try self.lookupView(handle);
             const previous = entry.root;

@@ -7,11 +7,11 @@ const hash=b=>createHash('sha256').update(b).digest('hex'),median=xs=>[...xs].so
 const args=process.argv.slice(2);
 if(args[0]==='sample'){
  const [,embedding,kernelPath,corpus,countText,phase]=args,operations=Number(countText);
- const world=await import(pathToFileURL(embedding)),bytes=readFileSync(kernelPath),k=await world.Kernel.create({bytes,expectedSha256:hash(bytes)});
+ const world=await import(pathToFileURL(embedding)),bytes=readFileSync(kernelPath),setupStart=process.hrtime.bigint(),k=await world.Kernel.create({bytes,expectedSha256:hash(bytes)}),setupNs=Number(process.hrtime.bigint()-setupStart);
  k.setLimits({input:256<<20,working:256<<20,output:256<<20});
  const image=readFileSync(`${corpus}/${operations}.bpi3`),request=readFileSync(`${corpus}/${operations}-fresh.pki3`),input=Buffer.alloc(16);input.writeBigUInt64LE(0x123456789abcdef0n);input.writeBigUInt64LE(0xfedcba9876543210n,8);
- const prepared=phase==='prepared'?k.prepare(image):null,retained=k.usage().workingLive,samplesNs=[],batch=operations<32?128:16;
- for(let sample=0;sample<12;sample++){
+ const prepared=phase==='prepared'?k.prepare(image):null,retained=k.usage().workingLive,samplesNs=[],warmupSamplesNs=[],warmups=64,batch=operations<32?128:16;
+ for(let sample=0;sample<warmups+9;sample++){
   let elapsed=0;
   for(let j=0;j<batch;j++){
    const start=process.hrtime.bigint();
@@ -24,15 +24,15 @@ if(args[0]==='sample'){
    }
    assert.equal(k.usage().workingLive,retained);
   }
-  if(sample>=3)samplesNs.push(elapsed/batch);
+  (sample>=warmups?samplesNs:warmupSamplesNs).push(elapsed/batch);
  }
  if(prepared)k.releasePrepared(prepared);
  // This sampler measures latency. Lifecycle calls reset kernel memory peaks;
  // memory qualification belongs to the separate platform/memory probes.
- console.log(JSON.stringify({samplesNs}));
+ console.log(JSON.stringify({samplesNs,warmupSamplesNs,warmups,batch,setupNs,coldRampNs:batch*warmupSamplesNs.slice(0,12).reduce((a,b)=>a+b,0)}));
 }else{
  const [embedding,before,after,corpus,output]=args;assert.equal(args.length,5);
- const report={status:'running',kernels:{before:hash(readFileSync(before)),after:hash(readFileSync(after))},cells:[]};
+ const report={status:'running',warmups:64,samples:9,windows:5,kernels:{before:hash(readFileSync(before)),after:hash(readFileSync(after))},cells:[]};
  for(const operations of [0,2,4,16,256,1024])for(const phase of ['admission','prepared','fresh']){
   const windows=[];
   for(let w=0;w<5;w++){
@@ -40,7 +40,8 @@ if(args[0]==='sample'){
    windows.push({...results,ratio:median(results.after.samplesNs)/median(results.before.samplesNs)});
   }
   const ratio=median(windows.map(w=>w.ratio)),confirmedSlowdown=ratio>1.05&&windows.filter(w=>w.ratio>1.05).length>=4;
-  report.cells.push({operations,phase,ratio,confirmedSlowdown,windows});writeFileSync(output,JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({operations,phase,ratio,confirmedSlowdown}));
+  const coldRampRatio=median(windows.map(w=>w.after.coldRampNs/w.before.coldRampNs)),setupRatio=median(windows.map(w=>w.after.setupNs/w.before.setupNs));
+  report.cells.push({operations,phase,ratio,confirmedSlowdown,coldRampRatio,setupRatio,windows});writeFileSync(output,JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({operations,phase,ratio,confirmedSlowdown}));
  }
  report.status='complete';writeFileSync(output,JSON.stringify(report,null,2)+'\n');
 }

@@ -61,7 +61,7 @@ test "measure consumed large blob residency and preserve a live alias" {
         var resident = try runtime.Resident.start(budget.allocator(), &prepared, arguments[0..writer.position]);
         defer resident.close() catch unreachable;
         var stats: @import("runtime_types.zig").Statistics = .{};
-        resident.session.?.statistics = &stats;
+        try resident.setStatistics(&stats);
         const before = budget.live;
         var parked = try resident.drive(a, .none, .{ .quantum = if (kind == 2) 2 else 1, .checkpoint = true });
         defer parked.deinit();
@@ -84,13 +84,15 @@ test "measure consumed large blob residency and preserve a live alias" {
 }
 
 fn finish(resident: *runtime.Resident) void {
-    if (resident.session) |*session| {
-        if (session.terminal == null) {
+    resident.close() catch |err| switch (err) {
+        error.InvalidState => return,
+        error.UnfinishedSession => {
             var result = resident.drive(a, .none, .{}) catch unreachable;
             result.deinit();
-        }
-        resident.close() catch unreachable;
-    }
+            resident.close() catch unreachable;
+        },
+        else => unreachable,
+    };
 }
 
 test "early blob collection rolls back byte-identically at every allocation failure" {
@@ -126,14 +128,14 @@ test "early blob collection rolls back byte-identically at every allocation fail
             finish(&resident);
         }
         var stats: @import("runtime_types.zig").Statistics = .{};
-        resident.session.?.statistics = &stats;
+        try resident.setStatistics(&stats);
         failing.fail_index = failing.alloc_index + failure;
         failing.resize_fail_index = failing.resize_index;
         var result = resident.drive(failing.allocator(), .none, .{ .quantum = 1, .checkpoint = true }) catch |err| {
             failing.fail_index = std.math.maxInt(usize);
             failing.resize_fail_index = std.math.maxInt(usize);
             try std.testing.expectEqual(error.OutOfMemory, err);
-            try std.testing.expect(!resident.session.?.pending_blob_collection);
+            try std.testing.expect(!(try resident.diagnostics()).pending_blob_collection);
             failed_after_collection = failed_after_collection or stats.early_blob_collections != 0;
             const unchanged = try resident.checkpoint(a);
             defer a.free(unchanged);

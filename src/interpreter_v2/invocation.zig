@@ -45,7 +45,14 @@ pub fn advance(session: *runtime.Session, control: protocol.Control, quantum: ?u
 }
 
 pub fn finish(allocator: std.mem.Allocator, session: *runtime.Session, checkpoint: bool) Error!Outcome {
+    return finishObserved(allocator, session, checkpoint, null);
+}
+
+/// Observe the identity already constructed for publication. This exports no
+/// validation authority and does not retain any output/checkpoint backing.
+pub fn finishObserved(allocator: std.mem.Allocator, session: *runtime.Session, checkpoint: bool, binding: ?*?[32]u8) Error!Outcome {
     const observation = try session.observe();
+    if (binding) |output| output.* = null;
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const a = arena.allocator();
@@ -55,11 +62,13 @@ pub fn finish(allocator: std.mem.Allocator, session: *runtime.Session, checkpoin
         .requested => blk: {
             if (checkpoint) {
                 const pending = try session.pendingRequest(a);
+                if (binding) |output| output.* = pending.request.request_identity;
                 // This invocation arena owns all Pending allocations.
                 break :blk .{ .requested = .{ .state = pending.state, .request = try protocol.encodeOwned(protocol.Request, a, pending.request) } };
             }
             var pending = try session.pendingRequest(allocator);
             defer pending.deinit();
+            if (binding) |output| output.* = pending.request.request_identity;
             break :blk .{ .requested = .{ .state = null, .request = try protocol.encodeOwned(protocol.Request, a, pending.request) } };
         },
         .completed => |value| .{ .completed = try a.dupe(u8, try session.bytes(&value)) },
