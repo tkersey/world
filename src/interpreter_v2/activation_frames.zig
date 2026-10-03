@@ -54,18 +54,12 @@ pub const Bound = union(enum) {
     };
 };
 pub const Frame = struct {
-    // Store IDs are allocated array indices; the maximum Id cannot be an
-    // allocated index (its successor length is unrepresentable).
-    const unregistered = std.math.maxInt(data.program.Id);
     view: Slots.Handle,
     // Reclamation upper bound, never evidence that a slot is initialized.
     live_bound: Bound,
     position: usize = 0,
     function: data.program.Id,
     custody: custody.State,
-    // Registered descriptors route writes back to their authoritative entry.
-    // Independent construction and semantic forks have no map owner yet.
-    owner_id: data.program.Id = unregistered,
 };
 pub const Frames = struct {
     allocator: std.mem.Allocator,
@@ -105,7 +99,7 @@ pub const Frames = struct {
             if (self.first) |first| if (first.id == id) return true;
             return self.entries.contains(id);
         }
-        fn reserve(self: *Journal, allocator: std.mem.Allocator) Error!void {
+        fn reserve(self: *Journal, allocator: std.mem.Allocator) std.mem.Allocator.Error!void {
             if (self.first != null) try self.entries.ensureUnusedCapacity(allocator, 1);
         }
         fn save(self: *Journal, id: data.program.Id, frame: ?Frame) void {
@@ -131,15 +125,26 @@ pub const Frames = struct {
             try self.hold(id.*);
             self.statistics.borrowed_entries +|= 1;
         }
+        self.slots.before_mutation = protectSlotRoot;
+        self.custody.nodes.before_mutation = protectCustodyRoot;
     }
-    inline fn hold(self: *Frames, id: data.program.Id) Error!void {
+    fn protectSlotRoot(slots: *Slots, id: usize) Slots.Error!void {
+        const self: *Frames = @fieldParentPtr("slots", slots);
+        try self.hold(id);
+    }
+    fn protectCustodyRoot(nodes: *custody.Nodes, id: usize) custody.Nodes.Error!void {
+        const owner: *custody.Custody = @fieldParentPtr("nodes", nodes);
+        const self: *Frames = @fieldParentPtr("custody", owner);
+        try self.hold(id);
+    }
+    inline fn hold(self: *Frames, id: data.program.Id) Slots.Error!void {
         const journal = if (self.journal) |*value| value else return;
         if (journal.last_held == id or id >= journal.node_count) return;
         return self.holdEntry(id, journal);
     }
     // Keep fresh/no-transaction and repeated active-frame acquisition cheap;
     // allocation and persistent-root preparation belong to first touch.
-    noinline fn holdEntry(self: *Frames, id: data.program.Id, journal: *Journal) Error!void {
+    noinline fn holdEntry(self: *Frames, id: data.program.Id, journal: *Journal) Slots.Error!void {
         if (journal.contains(id)) {
             journal.last_held = id;
             return;
@@ -154,6 +159,8 @@ pub const Frames = struct {
         if (saved != null) self.statistics.forked_frames +|= 1;
     }
     pub fn commit(self: *Frames) void {
+        self.slots.before_mutation = null;
+        self.custody.nodes.before_mutation = null;
         var journal = self.journal.?;
         self.journal = null;
         if (journal.first) |first| {
@@ -171,6 +178,8 @@ pub const Frames = struct {
     /// Remove successors first; retained map capacity then suffices for every
     /// entry frame. No allocation or full retained-frame traversal is needed.
     pub fn rollback(self: *Frames, node_count: usize) void {
+        self.slots.before_mutation = null;
+        self.custody.nodes.before_mutation = null;
         self.endMutableBorrows(); // Restoring map entries ends their borrows.
         var journal = self.journal.?;
         self.journal = null;
@@ -188,15 +197,13 @@ pub const Frames = struct {
             self.statistics.rollback_entries +|= 1;
         }
         if (journal.first) |first| if (first.frame) |saved| {
-            var frame = saved;
-            frame.owner_id = first.id;
-            self.entries.putAssumeCapacity(first.id, frame);
+            self.registerRoots(saved, first.id) catch unreachable;
+            self.entries.putAssumeCapacity(first.id, saved);
         };
         entries = journal.entries.iterator();
         while (entries.next()) |entry| if (entry.value_ptr.*) |saved| {
-            var frame = saved;
-            frame.owner_id = entry.key_ptr.*;
-            self.entries.putAssumeCapacity(entry.key_ptr.*, frame);
+            self.registerRoots(saved, entry.key_ptr.*) catch unreachable;
+            self.entries.putAssumeCapacity(entry.key_ptr.*, saved);
         };
         journal.entries.deinit(self.allocator);
     }
@@ -248,7 +255,7 @@ pub const Frames = struct {
         self.borrowed_more = .empty;
     }
     inline fn protect(self: *Frames, frame: *const Frame) Error!void {
-        if (frame.owner_id != Frame.unregistered) try self.hold(frame.owner_id);
+        try self.slots.protect(frame.view);
     }
     pub fn project(self: *Frames, id: data.program.Id, allocator: std.mem.Allocator) Error!?data.process_state.Activation {
         const frame = self.entries.get(id) orelse return null;
@@ -273,17 +280,19 @@ pub const Frames = struct {
     pub fn put(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         if (self.entries.contains(id)) return error.InvalidState;
         try self.hold(id);
-        var registered = frame;
-        registered.owner_id = id;
-        try self.entries.put(self.allocator, id, registered);
+        try self.entries.put(self.allocator, id, frame);
+        try self.registerRoots(frame, id);
         self.endMutableBorrows();
+    }
+    fn registerRoots(self: *Frames, frame: Frame, id: data.program.Id) Error!void {
+        try self.slots.registerOwner(frame.view, @intCast(id));
+        try self.custody.nodes.registerOwner(frame.custody.view, @intCast(id));
     }
     pub fn update(self: *Frames, id: data.program.Id, frame: Frame) Error!void {
         try self.hold(id);
         self.endMutableBorrows();
-        var registered = frame;
-        registered.owner_id = id;
-        self.entries.getPtr(id).?.* = registered;
+        try self.registerRoots(frame, id);
+        self.entries.getPtr(id).?.* = frame;
     }
     pub fn remove(self: *Frames, id: data.program.Id) Error!void {
         const frame = self.entries.get(id) orelse return;
@@ -314,9 +323,8 @@ pub const Frames = struct {
         self.slots.release(frame.view) catch unreachable;
         self.custody.release(frame.custody);
     }
-    pub fn forkFrame(self: *Frames, original: Frame) Error!Frame {
+    pub fn forkFrame(self: *Frames, original: Frame) Slots.Error!Frame {
         var result = original;
-        result.owner_id = Frame.unregistered;
         result.view = try self.slots.fork(original.view);
         errdefer self.slots.release(result.view) catch unreachable;
         result.custody = try self.custody.fork(original.custody);

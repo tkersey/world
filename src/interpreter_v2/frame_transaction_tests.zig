@@ -6,6 +6,166 @@ const Layouts = @import("frame_layouts.zig").Layouts;
 const Values = @import("values.zig").Values;
 const testing = std.testing;
 
+// Adapted from PR #60, 750f8ec74f909735c96992eb05bfe0c22904526e:
+// "direct slot roots and later frame protection share the entry version".
+test "direct slot roots and later frame protection share the entry version" {
+    for ([_]bool{ false, true }) |before_begin| {
+        var c: Context = undefined;
+        try c.init(testing.allocator, 65);
+        defer c.deinit();
+        try c.insert(0, 42);
+        var initial = try c.frames.get(0);
+        try c.frames.write(&initial, 64, Values.natural(0, 99));
+        const before = try c.frames.forkFrame(try c.frames.get(0));
+        defer c.frames.releaseFrame(before);
+        const descriptor = if (before_begin) try c.frames.get(0) else null;
+        try c.frames.begin(1);
+        const view = (descriptor orelse try c.frames.get(0)).view;
+        try c.frames.slots.set(view, 0, Values.natural(0, 100));
+        const during = try c.frames.forkFrame(try c.frames.get(0));
+        defer c.frames.releaseFrame(during);
+        try c.frames.slots.set(during.view, 0, Values.natural(0, 33));
+        try c.frames.slots.clear(view, 64);
+        const raw = try c.frames.getMutable(0);
+        raw.position = 19;
+        try c.frames.write(raw, 1, Values.natural(0, 200));
+        try c.frames.remove(0);
+        try c.insert(0, 255);
+        c.frames.rollback(1);
+        try testing.expectEqual(0, (try c.frames.get(0)).position);
+        try testing.expectEqual(42, try c.value(0, 0));
+        try testing.expectEqual(99, try c.value(0, 64));
+        try testing.expectError(error.UninitializedSlot, c.value(0, 1));
+        try testing.expectEqual(42, (try c.frames.slots.get(before.view, 0)).body.scalar[0]);
+        try testing.expectEqual(33, (try c.frames.slots.get(during.view, 0)).body.scalar[0]);
+        try testing.expectEqual(1, c.frames.statistics.saved_entries);
+    }
+}
+
+// Same allocation-disabled rollback/iterator discriminator as PR #60's
+// "direct slot rollback restores without allocation and invalidates both
+// iterator versions". #61 restores the saved frame's handle, so the retired
+// predecessor reports InvalidHandle (also W0's behavior), not StaleIterator.
+test "direct slot rollback restores without allocation and retires iterator handles" {
+    var failing = testing.FailingAllocator.init(testing.allocator, .{});
+    var c: Context = undefined;
+    try c.init(failing.allocator(), 1);
+    defer c.deinit();
+    try c.insert(0, 42);
+    const frame = try c.frames.get(0);
+    var old_iterator = try c.frames.slots.iterator(frame.view);
+    try c.frames.begin(1);
+    try c.frames.slots.set(frame.view, 0, Values.natural(0, 100));
+    var tentative_iterator = try c.frames.slots.iterator(frame.view);
+    const allocations = failing.alloc_index;
+    failing.fail_index = allocations;
+    failing.resize_fail_index = failing.resize_index;
+    c.frames.rollback(1);
+    try testing.expectEqual(allocations, failing.alloc_index);
+    try testing.expectEqual(42, try c.value(0, 0));
+    try testing.expectError(error.InvalidHandle, old_iterator.next());
+    try testing.expectError(error.InvalidHandle, tentative_iterator.next());
+}
+
+test "all direct slot root publications preserve the entry version" {
+    const Operation = enum { clear, retain_only, commit };
+    inline for (std.meta.tags(Operation)) |operation| {
+        var c: Context = undefined;
+        try c.init(testing.allocator, 65);
+        defer c.deinit();
+        try c.insert(0, 42);
+        const frame = try c.frames.get(0);
+        try c.frames.begin(1);
+        switch (operation) {
+            .clear => try c.frames.slots.clear(frame.view, 0),
+            .retain_only => try c.frames.slots.retainOnly(frame.view, &.{}),
+            .commit => {
+                const candidate = try c.frames.slots.fork(frame.view);
+                try c.frames.slots.set(candidate, 0, Values.natural(0, 99));
+                try c.frames.slots.commit(frame.view, candidate);
+            },
+        }
+        c.frames.rollback(1);
+        try testing.expectEqual(42, try c.value(0, 0));
+        try testing.expectEqual(1, c.frames.statistics.saved_entries);
+    }
+}
+
+test "direct custody mutations join the same frame entry journal" {
+    const scopes = [_]data.activation.CustodyScope{.{}};
+    var c: Context = undefined;
+    try c.init(testing.allocator, 65);
+    defer c.deinit();
+    c.functions[0].custody = &scopes;
+    var initial = try c.frames.create(0);
+    try c.frames.write(&initial, 0, Values.natural(0, 42));
+    try c.frames.custody.establish(&initial.custody, &scopes, 0);
+    try c.frames.put(0, initial);
+    const entry = try c.frames.custody.project(initial.custody, testing.allocator);
+    defer testing.allocator.free(entry);
+    try c.frames.begin(1);
+    var copy = try c.frames.get(0);
+    try c.frames.custody.remove(&copy.custody, 0);
+    try c.frames.custody.establish(&copy.custody, &scopes, 64);
+    try c.frames.slots.set(copy.view, 0, Values.natural(0, 99));
+    (try c.frames.getMutable(0)).position = 12;
+    c.frames.rollback(1);
+    const restored = try c.frames.get(0);
+    const actual = try c.frames.custody.project(restored.custody, testing.allocator);
+    defer testing.allocator.free(actual);
+    try testing.expectEqualDeep(entry, actual);
+    try testing.expectEqual(42, try c.value(0, 0));
+    try testing.expectEqual(0, restored.position);
+    try testing.expectEqual(1, c.frames.statistics.saved_entries);
+}
+
+test "direct first touch allocation failure rolls back and retries without history" {
+    for ([_]usize{ 1, 65, 1024 }) |width| {
+        var saw_failure = false;
+        for (0..16) |offset| {
+            var failing = testing.FailingAllocator.init(testing.allocator, .{});
+            var c: Context = undefined;
+            try c.init(failing.allocator(), width);
+            defer c.deinit();
+            for (0..3) |id| try c.insert(id, 42 + id);
+            try c.frames.begin(3);
+            failing.fail_index = failing.alloc_index + offset;
+            failing.resize_fail_index = failing.resize_index;
+            for (0..3) |id| {
+                const frame = try c.frames.get(id);
+                c.frames.slots.set(frame.view, width - 1, Values.natural(0, 99)) catch |err| {
+                    try testing.expectEqual(error.OutOfMemory, err);
+                    saw_failure = true;
+                    break;
+                };
+            }
+            const allocations = failing.alloc_index;
+            failing.fail_index = allocations;
+            failing.resize_fail_index = failing.resize_index;
+            c.frames.rollback(3);
+            try testing.expectEqual(allocations, failing.alloc_index);
+            for (0..3) |id| try testing.expectEqual(42 + id, try c.value(id, 0));
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+            var plateau: ?usize = null;
+            for (0..32) |cycle| {
+                try c.frames.begin(3);
+                const frame = try c.frames.get(0);
+                try c.frames.slots.set(frame.view, width - 1, Values.natural(0, 99));
+                if (cycle % 2 == 0) c.frames.rollback(3) else c.frames.commit();
+                if (cycle > 2) {
+                    const live = c.frames.slots.retainedBytes() + c.frames.custody.nodes.retainedBytes();
+                    if (plateau) |bound| try testing.expect(live <= bound) else plateau = live;
+                }
+                try testing.expect(c.frames.journal == null);
+                try testing.expect(c.frames.slots.before_mutation == null);
+                try testing.expect(c.frames.custody.nodes.before_mutation == null);
+            }
+        }
+        try testing.expect(saw_failure);
+    }
+}
+
 const Context = struct {
     allocator: std.mem.Allocator,
     pool: data.analysis_sets.Pool,

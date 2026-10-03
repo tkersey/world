@@ -457,6 +457,61 @@ fn releaseResident(resident: *Resident) void {
     };
 }
 
+// Regression transferred from PR #60, 750f8ec74f909735c96992eb05bfe0c22904526e.
+fn residentBeforeOwnedUnwind(allocator: std.mem.Allocator, prepared: *const @import("stable_runtime").Prepared) !Resident {
+    var resident = try Resident.start(allocator, prepared, &.{});
+    errdefer releaseResident(&resident);
+    var yielded = try resident.drive(allocator, .none, .{});
+    defer yielded.deinit();
+    try testing.expect(yielded.record == .yielded);
+    var cancelling = try resident.drive(allocator, .{ .cancel = .{ .text = "live-owned-unwind" } }, .{ .quantum = 0 });
+    defer cancelling.deinit();
+    return resident;
+}
+
+test "live owned unwind preserves physical ownership and retry at every allocation failure" {
+    var builder = source.Builder.init(testing.allocator);
+    defer builder.deinit();
+    var compiled = try source.lower(testing.allocator, try source.examples.ownership(&builder));
+    defer compiled.deinit();
+    const image = try programBytes(compiled.program);
+    defer testing.allocator.free(image);
+    var prepared = try @import("stable_runtime").Prepared.init(testing.allocator, image);
+    defer prepared.deinit();
+    var reference = try residentBeforeOwnedUnwind(testing.allocator, &prepared);
+    defer releaseResident(&reference);
+    var expected = try reference.drive(testing.allocator, .none, .{ .quantum = 1 });
+    defer expected.deinit();
+    var index: usize = 0;
+    while (true) : (index += 1) {
+        var failing = testing.FailingAllocator.init(testing.allocator, .{});
+        var resident = try residentBeforeOwnedUnwind(failing.allocator(), &prepared);
+        defer releaseResident(&resident);
+        const entry = try resident.checkpoint(testing.allocator);
+        defer testing.allocator.free(entry);
+        failing.fail_index = failing.alloc_index + index;
+        failing.resize_fail_index = failing.resize_index;
+        var output = resident.drive(failing.allocator(), .none, .{ .quantum = 1 }) catch |err| {
+            failing.fail_index = std.math.maxInt(usize);
+            failing.resize_fail_index = std.math.maxInt(usize);
+            try testing.expectEqual(error.OutOfMemory, err);
+            const actual = try resident.checkpoint(testing.allocator);
+            defer testing.allocator.free(actual);
+            try testing.expectEqualSlices(u8, entry, actual);
+            var retry = try resident.drive(failing.allocator(), .none, .{ .quantum = 1 });
+            defer retry.deinit();
+            try testing.expectEqualDeep(expected.record, retry.record);
+            continue;
+        };
+        defer output.deinit();
+        failing.fail_index = std.math.maxInt(usize);
+        failing.resize_fail_index = std.math.maxInt(usize);
+        try testing.expectEqualDeep(expected.record, output.record);
+        try testing.expect(index != 0);
+        break;
+    }
+}
+
 fn residentFailureSweep(prepared: *const @import("stable_runtime").Prepared, checkpoint: []const u8, control: boundary.data.invocation.Control, checkpoint_mode: bool) !void {
     var reference = try Resident.restore(testing.allocator, prepared, checkpoint);
     defer releaseResident(&reference);
