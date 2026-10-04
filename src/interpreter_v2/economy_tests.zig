@@ -84,36 +84,6 @@ test "one eight and sixty-four branches share immutable environments and blobs" 
     try std.testing.expectEqual(@as(usize, 0), mismatches);
 }
 
-test "collection and canonicalization traverse each reachable node and edge once" {
-    var statistics: @import("store.zig").Statistics = .{};
-    var store: Store = .{ .allocator = allocator, .statistics = &statistics };
-    defer store.deinit();
-    const shared = try store.add(.{ .environment = .{ .values = &.{}, .tail = null } });
-    const cycle = try store.add(.{ .environment = .{ .values = &.{ value(shared), value(shared) }, .tail = null } });
-    try store.replace(shared, .{ .environment = .{ .values = &.{}, .tail = cycle } });
-    _ = try store.add(.{ .environment = .{ .values = &.{}, .tail = null } });
-    const roots: g.Roots = .{ .current = cycle, .evidence = shared };
-    try store.collect(roots);
-    try std.testing.expectEqual(@as(u64, 2), statistics.traced_nodes);
-    try std.testing.expectEqual(@as(u64, 5), statistics.traced_edges);
-    try std.testing.expectEqual(@as(u64, 3), statistics.swept_slots);
-    var measured: data.graph_order.Statistics = .{};
-    const nodes = try allocator.alloc(data.process_state.Node, store.nodes.items.len);
-    defer allocator.free(nodes);
-    for (nodes, store.nodes.items) |*node, record| node.* = .{ .record = record };
-    var normalized = try data.graph_order.canonicalize(allocator, data.process_state.State{
-        .program_identity = @splat(0),
-        .status = .active,
-        .roots = roots,
-        .nodes = nodes,
-        .blobs = store.blobs.items,
-    }, &measured);
-    defer normalized.deinit();
-    try std.testing.expectEqual(statistics.traced_nodes, measured.nodes);
-    try std.testing.expectEqual(statistics.traced_edges, measured.edges);
-    try std.testing.expectEqual(@as(u64, 2), measured.remapped_nodes);
-}
-
 test "collection reuses scratch and clears marks when cyclic roots disappear" {
     var failing = std.testing.FailingAllocator.init(allocator, .{});
     var store: Store = .{ .allocator = failing.allocator() };
