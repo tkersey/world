@@ -2,7 +2,7 @@
 const std = @import("std");
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
-    const compiler_source = b.option(std.Build.LazyPath, "compiler-source", "Fixed C0 compiler") orelse @panic("compiler-source required");
+    const compiler_source = b.option(std.Build.LazyPath, "compiler-source", "Pinned Boundary 0.17 source") orelse @panic("compiler-source required");
     const compiler_data = b.createModule(.{
         .root_source_file = compiler_source.path(b, "src/data/root.zig"),
         .target = b.graph.host,
@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     }) });
     b.installArtifact(emitter);
     if (b.option(std.Build.LazyPath, "world-source", "Runtime source for the probe")) |world_source| {
-        const data_source = b.option(std.Build.LazyPath, "data-source", "Fixed D0 data") orelse @panic("data-source required");
+        const data_source = b.option(std.Build.LazyPath, "data-source", "Pinned Boundary data source") orelse @panic("data-source required");
         const data = b.createModule(.{
             .root_source_file = data_source.path(b, "src/data/root.zig"),
             .target = b.graph.host,
@@ -75,7 +75,7 @@ pub fn build(b: *std.Build) void {
             }) });
             b.installArtifact(executable);
         }
-        if (b.option(std.Build.LazyPath, "agent-source", "Fixed A0 native test consumer")) |agent_source| {
+        if (b.option(std.Build.LazyPath, "agent-source", "Pinned Agent native test consumer")) |agent_source| {
             const consumer = b.addExecutable(.{ .name = "agent-native", .root_module = b.createModule(.{
                 .root_source_file = agent_source.path(b, "test/agent4/native.zig"),
                 .target = b.graph.host,

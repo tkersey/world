@@ -11,10 +11,10 @@
     "output": 65536
   },
   "boundary": {
-    "commit": "9e68b6e8382a24e22f8b34986e4e7fb21ec80d31",
-    "package": "boundary-3.0.0-dev.0-flclaDQMRgDnoHmn6ypGSeftzcM8u4aSozWRo7KwpcPK",
-    "url": "https://github.com/tkersey/boundary/archive/9e68b6e8382a24e22f8b34986e4e7fb21ec80d31.tar.gz",
-    "inventorySha256": "0d51613ab31e1109bef09e7d9968e722e409e994c4c1569714724ea0d67f711d"
+    "commit": "2981507d9d0967babf69c5140674e6536263bfea",
+    "package": "boundary-3.0.0-dev.0-flclaPgnRgCDjLomSmJEBKBaxS3iQM8vMBhRUdukWRX9",
+    "url": "https://github.com/tkersey/boundary/archive/2981507d9d0967babf69c5140674e6536263bfea.tar.gz",
+    "inventorySha256": "0b746dad659bc79c7840c2c3eab9908cc312dc29ec60f150aa8cc66214ce96a7"
   },
   "wasmBackend": "llvm",
   "wasmLinker": "lld",
