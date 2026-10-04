@@ -349,7 +349,7 @@ pub const Store = struct {
 
     pub fn literal(self: *Store, schemas: []const data.program.Schema, value: data.program.Literal) Error!g.Value {
         if (data.scalar.width(schemas[@intCast(value.schema)])) |width| {
-            var scalar = [_]u8{0} ** 8;
+            var scalar = @as([8]u8, @splat(0));
             @memcpy(scalar[0..width], value.bytes);
             return .{ .schema = value.schema, .body = .{ .scalar = scalar } };
         }
@@ -372,7 +372,7 @@ pub const Store = struct {
         bytes: []u8,
     ) Error!g.Value {
         if (data.scalar.width(schemas[@intCast(schema)])) |width| {
-            var scalar = [_]u8{0} ** 8;
+            var scalar = @as([8]u8, @splat(0));
             @memcpy(scalar[0..width], bytes);
             if (self.statistics) |statistics| statistics.owned_blob_bytes +|= bytes.len;
             self.allocator.free(bytes);
@@ -544,6 +544,11 @@ pub const Store = struct {
         try self.blob_marks.ensureTotalCapacityPrecise(self.allocator, self.blobs.items.len);
         self.marks.items.len = self.nodes.items.len;
         self.blob_marks.items.len = self.blobs.items.len;
+        // These slices survive calls into the frame owner and journal allocation.
+        self.marks.lockPointers();
+        defer self.marks.unlockPointers();
+        self.blob_marks.lockPointers();
+        defer self.blob_marks.unlockPointers();
         const marks = self.marks.items;
         const blob_marks = self.blob_marks.items;
         @memset(marks, false);
@@ -637,7 +642,7 @@ fn ownedBytes(comptime T: type, value: T) usize {
         .optional => |info| if (value) |present| ownedBytes(info.child, present) else 0,
         .@"struct" => |info| blk: {
             var size: usize = 0;
-            inline for (info.fields) |field| size +|= ownedBytes(field.type, @field(value, field.name));
+            inline for (info.field_names, info.field_types) |field_name, FieldType| size +|= ownedBytes(FieldType, @field(value, field_name));
             break :blk size;
         },
         .@"union" => switch (value) {
@@ -666,18 +671,18 @@ pub fn duplicate(comptime T: type, allocator: std.mem.Allocator, value: T) std.m
         .@"struct" => |info| blk: {
             var result: T = undefined;
             var initialized: usize = 0;
-            errdefer inline for (info.fields, 0..) |field, index| {
-                if (index < initialized) release(field.type, allocator, @field(result, field.name));
+            errdefer inline for (info.field_names, info.field_types, 0..) |field_name, FieldType, index| {
+                if (index < initialized) release(FieldType, allocator, @field(result, field_name));
             };
-            inline for (info.fields) |field| {
-                @field(result, field.name) = try duplicate(field.type, allocator, @field(value, field.name));
+            inline for (info.field_names, info.field_types) |field_name, FieldType| {
+                @field(result, field_name) = try duplicate(FieldType, allocator, @field(value, field_name));
                 initialized += 1;
             }
             break :blk result;
         },
         .@"union" => |info| blk: {
-            inline for (info.fields) |field| if (std.mem.eql(u8, @tagName(value), field.name)) {
-                break :blk @unionInit(T, field.name, try duplicate(field.type, allocator, @field(value, field.name)));
+            inline for (info.field_names, info.field_types) |field_name, FieldType| if (std.mem.eql(u8, @tagName(value), field_name)) {
+                break :blk @unionInit(T, field_name, try duplicate(FieldType, allocator, @field(value, field_name)));
             };
             unreachable; // Closed native union.
         },
@@ -692,9 +697,9 @@ pub fn release(comptime T: type, allocator: std.mem.Allocator, value: T) void {
             allocator.free(value);
         },
         .optional => |info| if (value) |present| release(info.child, allocator, present),
-        .@"struct" => |info| inline for (info.fields) |field| release(field.type, allocator, @field(value, field.name)),
-        .@"union" => |info| inline for (info.fields) |field| if (std.mem.eql(u8, @tagName(value), field.name)) {
-            release(field.type, allocator, @field(value, field.name));
+        .@"struct" => |info| inline for (info.field_names, info.field_types) |field_name, FieldType| release(FieldType, allocator, @field(value, field_name)),
+        .@"union" => |info| inline for (info.field_names, info.field_types) |field_name, FieldType| if (std.mem.eql(u8, @tagName(value), field_name)) {
+            release(FieldType, allocator, @field(value, field_name));
             return;
         },
         else => {},

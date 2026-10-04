@@ -7,8 +7,10 @@ import { createHash } from "node:crypto";
 import { Kernel, encodeInput, decodeOutcome, decodeRequest, encodeResult } from "../../src/embedding/index.mjs";
 import { inspectKernelWasm, wasmRange } from "../../src/embedding/wasm.mjs";
 import { concat, natural } from "../../src/embedding/wire.mjs";
+import { selectZig } from "../../src/node/toolchain.mjs";
 
-const [kernelPath, fixtures, boundary] = process.argv.slice(2);
+const [kernelPath, fixtures, boundary, zigExe, zigLib] = process.argv.slice(2);
+const toolchain = selectZig(zigExe ? ["--zig-exe", zigExe, "--zig-lib", zigLib] : []);
 const code = new Uint8Array(await readFile(kernelPath));
 const host = await Kernel.create({ bytes: code, expectedSha256: createHash("sha256").update(code).digest("hex") });
 const limits = { input: 4 << 20, working: 16 << 20, output: 4 << 20 };
@@ -68,10 +70,11 @@ for (const arena of ["input", "working", "output"]) {
 const directory = await mkdtemp(join(tmpdir(), "world-fixed-memory-"));
 try {
   const pages = inspectKernelWasm(code).memory.initialPages;
-  execFileSync("zig", ["build", "build-kernel", `-Dboundary-source=${boundary}`,
+  execFileSync(toolchain.executable, ["build", `--zig-lib=${toolchain.identity.library}`, "build-kernel", `-Dboundary-source=${boundary}`,
     `-Dmaximum-memory=${pages * 65536}`, "--prefix", directory,
-    "--cache-dir", ".cache/capacity-local", "--global-cache-dir", ".cache/activation-global"],
-    { cwd: resolve(import.meta.dirname, "../.."), stdio: "pipe" });
+    "--cache-dir", join(directory, "cache")],
+    { cwd: resolve(import.meta.dirname, "../.."), env: toolchain.env, stdio: "pipe" });
+  toolchain.assertUnchanged();
   const fixed = new Uint8Array(await readFile(join(directory, "world-kernel.wasm")));
   assert.equal(inspectKernelWasm(fixed).memory.maximumPages, pages);
   const e = new WebAssembly.Instance(new WebAssembly.Module(fixed), {}).exports;

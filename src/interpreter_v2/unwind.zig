@@ -121,7 +121,7 @@ pub fn dispose(machine: anytype, disposal: anytype, slots: anytype, control: g.C
 
 fn information(machine: anytype, values: *@import("values.zig").Values, schema: p.Id, exit: g.Exit) @TypeOf(machine.*).ExecutionError!g.Value {
     const types = try data.cleanup_contract.types(machine.program, schema);
-    const unit: g.Value = .{ .schema = types.unit, .body = .{ .scalar = [_]u8{0} ** 8 } };
+    const unit: g.Value = .{ .schema = types.unit, .body = .{ .scalar = @as([8]u8, @splat(0)) } };
     var reason_value = unit;
     if (exit.cancellation) |reason| {
         var measure: data.wire.Writer = .{};
@@ -131,9 +131,9 @@ fn information(machine: anytype, values: *@import("values.zig").Values, schema: 
         var writer: data.wire.Writer = .{ .output = encoded };
         try writer.bytes(bytes);
         const payload = try machine.store.literal(machine.program.schemas, .{ .schema = if (reason == .text) types.text else types.bytes, .bytes = encoded });
-        reason_value = try values.aggregate(types.reason, .{ .tag = @intFromEnum(std.meta.activeTag(reason)), .fields = &.{payload} });
+        reason_value = try values.aggregate(types.reason, .{ .tag = @backingInt(std.meta.activeTag(reason)), .fields = &.{payload} });
     }
-    const primary = try values.aggregate(types.primary, .{ .tag = @intFromEnum(std.meta.activeTag(exit.reason)), .fields = &.{switch (exit.reason) {
+    const primary = try values.aggregate(types.primary, .{ .tag = @backingInt(std.meta.activeTag(exit.reason)), .fields = &.{switch (exit.reason) {
         .normal, .abandoned => unit,
         .failure => |failure| failure,
         .cancellation => reason_value,
@@ -273,7 +273,7 @@ pub fn step(machine: anytype) @TypeOf(machine.*).ExecutionError!?@TypeOf(machine
         machine.roots.exit = exit.outer;
         machine.status = .active;
         if (exit.reason == .normal) return machine.unwindReturnTo(current.cursor, exit.reason.normal);
-        try machine.resumeContinuation(current.cursor orelse return error.InvalidState, .{ .schema = 0, .body = .{ .scalar = [_]u8{0} ** 8 } });
+        try machine.resumeContinuation(current.cursor orelse return error.InvalidState, .{ .schema = 0, .body = .{ .scalar = @as([8]u8, @splat(0)) } });
         return null;
     }
     const cursor = current.cursor orelse return try machine.finishUnwind(root_exit);

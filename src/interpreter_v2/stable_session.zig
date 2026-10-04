@@ -166,8 +166,8 @@ pub const Session = struct {
             try result.frames.restore(id, result.program.blocks[@intCast(block)].function, activation);
         };
         result.roots = state.roots;
-        if (@intFromEnum(state.status) < 4) {
-            result.status = @enumFromInt(@intFromEnum(state.status));
+        if (@backingInt(state.status) < 4) {
+            result.status = @fromBackingInt(@intCast(@backingInt(state.status)));
         } else {
             result.terminal = state.roots.exit;
         }
@@ -198,7 +198,7 @@ pub const Session = struct {
             nodes[id] = if (alive) .{ .record = node, .activation = try self.frames.project(id, a) } else .{ .record = .{ .control = .{ .block = std.math.maxInt(u64) } } };
         }
         const roots = self.roots;
-        var status: data.process_state.Status = @enumFromInt(@intFromEnum(self.status));
+        var status: data.process_state.Status = @fromBackingInt(@intCast(@backingInt(self.status)));
         if (self.terminal != null) {
             status = switch ((try self.terminalExit()).reason) {
                 .normal => .completed,
@@ -397,6 +397,9 @@ pub const Session = struct {
         } else {
             const control = (try self.store.get(current)).control;
             const code = self.program.blocks[@intCast(control.block)];
+            self.frames.entries.lockPointers();
+            var frame_borrow = true;
+            defer if (frame_borrow) self.frames.entries.unlockPointers();
             const frame = try self.frames.getMutable(current.id);
             if (frame.position < code.instructions.len) {
                 const instruction = code.instructions[frame.position];
@@ -412,11 +415,15 @@ pub const Session = struct {
                     // grow the frame map, so end the borrow before entering it.
                     var saved_frame = frame.*;
                     saved_frame.position += 1;
+                    self.frames.entries.unlockPointers();
+                    frame_borrow = false;
                     try self.executeControl(current, control, code, &saved_frame, constructor);
                     work = 2;
                 } else if (instruction.opcode == .clone_resumption) {
                     // takeCapture can instantiate frames and grow the map.
                     var saved_frame = frame.*;
+                    self.frames.entries.unlockPointers();
+                    frame_borrow = false;
                     try self.executeInstruction(current, code, &saved_frame);
                     try self.frames.update(current.id, saved_frame);
                 } else {
@@ -437,6 +444,8 @@ pub const Session = struct {
             } else {
                 // Control may insert/remove frames or grow the map.
                 var saved_frame = frame.*;
+                self.frames.entries.unlockPointers();
+                frame_borrow = false;
                 try self.executeControl(current, control, code, &saved_frame, null);
             }
         }

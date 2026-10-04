@@ -13,7 +13,7 @@ Preparation resolves and archives raw Git commit objects with replacement refs
 disabled consistently. Its source identity describes the committed object, not
 a locally substituted Git view.
 
-Use Node 26.9.0, Zig 0.16.0, npm, uv, Git and tar on the producer. Browser
+Use Node 26.9.0, Zig 0.17.0, npm, uv, Git and tar on the producer. Browser
 qualification needs Chromium and Firefox and their OS dependencies. The producer
 installs the repository-locked browser tooling; on Linux first run its Playwright
 `install-deps chromium firefox` command. Wasmtime uses the existing uv lock.
@@ -21,10 +21,23 @@ installs the repository-locked browser tooling; on Linux first run its Playwrigh
 From a clean, committed World checkout:
 
 ```sh
-node bin/world.mjs runtime prepare --source "$PWD" --output /absolute/new/bundle
+node bin/world.mjs runtime prepare --source "$PWD" --output /absolute/new/bundle \
+  --zig-exe /absolute/zig-0.17.0/zig
 ```
 
-This builds through the normal Boundary-data lock in a fresh Zig package cache,
+The producer verifies exact Zig 0.17.0 and binds both its executable and standard
+library inventory before and after qualification. Nested builds inherit that
+selection. `--zig-lib` can select an explicit matching library directory. Older
+compiler versions are not supported.
+
+`--package-root` selects an existing package store; `ZIG_LOCAL_PKG_DIR` is also
+respected. The selected Boundary package must match the complete qualified
+content, membership, and mode inventory before build code is evaluated. The
+producer copies it into private run-owned storage and checks that copy again.
+`--offline` requires the package and locked browser/npm tooling to be available
+without downloads. Custom stores and aliases are never cleanup-owned.
+
+This builds through the normal Boundary-data lock in a private package snapshot,
 runs the existing aggregate and delivered-byte checks, and publishes `bundle`,
 `bundle.tar.gz`, and `bundle.delivery.json`. Existing destinations fail without
 overlay. Preparation and acquisition share one destination reservation, so neither
@@ -66,7 +79,7 @@ hosts need not match; select and retain one qualified artifact for consumers.
 Qualification records each command and outcome. The full existing source and
 transfer suites use their established explicit limits; the portable smoke uses
 default input/working/output budgets 65536/1048576/65536. Runtime limits do not
-change the compiled ReleaseSmall kernel, 65536-byte stack or 256 MiB maximum.
+change the compiled `small` kernel, 65536-byte stack or 256 MiB maximum.
 No claim is made for untested platform/fixture combinations.
 
 The `Qualified runtime bundle` Actions workflow invokes this same producer and

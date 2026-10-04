@@ -1,10 +1,26 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, symlink, chmod, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inventory, sha256, verifyInventory, readVerifiedFile,
   withVerifiedInventory } from "../../src/node/runtime-bundle.mjs";
+import runtimeProfile from "../../src/node/runtime-profile.json" with { type: "json" };
+
+async function failingCompiler(tools, delay = 0) {
+  const library = join(tools, "lib");
+  await mkdir(library);
+  await writeFile(join(library, "std.zig"), "fixture library");
+  const executable = join(tools, "zig");
+  await writeFile(executable, `#!/usr/bin/env node
+const fs=require("node:fs");
+if(process.argv[2]==="version"){console.log("0.17.0");process.exit(0)}
+if(process.argv[2]==="env"){console.log('.{\\n .lib_dir = '+JSON.stringify(${JSON.stringify(library)})+',\\n}');process.exit(0)}
+if(process.env.WORLD_TEST_CAPTURE)fs.writeFileSync(process.env.WORLD_TEST_CAPTURE,fs.readFileSync("archive-marker"));
+setTimeout(()=>process.exit(42),${delay});
+`, {mode:0o755});
+  return executable;
+}
 
 const required = ["runtime/world-kernel.wasm", "runtime/package.json", "runtime/bin/world.mjs",
   "runtime/src/node/runtime-bundle.mjs", "runtime/src/embedding/index.mjs", "qualification.json",
@@ -30,6 +46,19 @@ test("external identity and complete file inventory survive spaces", async t => 
   await assert.rejects(verifyInventory(f.root, "0".repeat(64)), { code: "WORLD_BUNDLE_IDENTITY_INVALID" });
   await writeFile(join(f.root, "runtime/src/node/runtime-bundle.mjs"), "substituted");
   await assert.rejects(verifyInventory(f.root, f.hash), { code: "WORLD_BUNDLE_CORRUPT" });
+});
+
+test("executable mode is bound before admission and preserved in the private snapshot", async t => {
+  const f = await fixture(t), path = join(f.root, "runtime/bin/world.mjs");
+  const original = (await stat(path)).mode & 0o777;
+  await chmod(path, original ^ 0o100);
+  await assert.rejects(verifyInventory(f.root, f.hash), {code:"WORLD_BUNDLE_CORRUPT"});
+  await chmod(path, original);
+  await verifyInventory(f.root, f.hash);
+  await withVerifiedInventory(f.root, f.hash, async copy => {
+    await chmod(path, original ^ 0o100);
+    assert.equal(((await stat(join(copy, "runtime/bin/world.mjs"))).mode & 0o111) !== 0, (original & 0o111) !== 0);
+  });
 });
 test("missing and additional modules reject", async t => {
   const f = await fixture(t);
@@ -125,13 +154,30 @@ test("unsupported profile and unexecuted qualification cannot pass", async t => 
   await assert.rejects(verifyBundle(f.root, f.hash), { code: "WORLD_BUNDLE_INCOMPATIBLE" });
   f.manifest.kernel = { abi: 3, path: "runtime/world-kernel.wasm" };
   f.manifest.packageVersion = "6.0.0-dev.0";
-  f.manifest.build = { target: "wasm32-freestanding", kernelMode: "ReleaseSmall", zig: "0.16.0", hostMode: "ReleaseSafe", stackBytes: 65536, maximumMemoryBytes: 268435456, defaults: {input:65536,working:1048576,output:65536} };
-  f.manifest.source = {repository:"https://github.com/tkersey/world",commit:"a".repeat(40),tree:"b".repeat(40),clean:true,dependency:{commit:"511fe388587b36ae37307d277e04c22b0bb6f6d9",package:"boundary-3.0.0-dev.0-flclaGcPXAB8lBsvhVLPJFZmROkee3fHGfsloqpgeZSE",lockSha256:"c".repeat(64)}};
+  f.manifest.build = { target: runtimeProfile.target, kernelMode: runtimeProfile.kernelMode, zig: runtimeProfile.zig,
+    hostMode: runtimeProfile.hostMode, stackBytes: runtimeProfile.stackBytes, maximumMemoryBytes: runtimeProfile.maximumMemoryBytes,
+    defaults: {...runtimeProfile.defaults}, backend: runtimeProfile.wasmBackend, linker: runtimeProfile.wasmLinker,
+    cpu: runtimeProfile.cpu, features: [...runtimeProfile.features], toolchain: {version:runtimeProfile.zig,executableIdentity:{sha256:"d".repeat(64)},libraryInventorySha256:"e".repeat(64)} };
+  f.manifest.source = {repository:"https://github.com/tkersey/world",commit:"a".repeat(40),tree:"b".repeat(40),clean:true,
+    dependency:{...runtimeProfile.boundary,lockSha256:"c".repeat(64)}};
   await writeFile(join(f.root,"runtime/package.json"), JSON.stringify({name:"@tkersey/world",version:"6.0.0-dev.0",type:"module",exports:{".":"./src/embedding/index.mjs"},bin:{world:"./bin/world.mjs"}}));
   f.manifest.requiredChecks = requiredChecks;
   await writeFile(join(f.root, "qualification.json"), JSON.stringify({ checks: requiredChecks.map(name => ({ name, status: "skipped" })) }));
   f.manifest.files = (await inventory(f.root)).filter(file => file.path !== "manifest.json");
   await assert.rejects(verifyBundle(f.root, await f.seal()), { code: "WORLD_BUNDLE_INCOMPLETE" });
+  const valid = structuredClone(f.manifest);
+  for (const mutate of [
+    m => {m.build.zig="0.17.0-dev.1";}, m => {m.build.hostMode="unknown";}, m => {m.build.kernelMode="fast";},
+    m => {m.build.target="wasm64-freestanding";}, m => {m.build.stackBytes++;}, m => {m.build.maximumMemoryBytes++;},
+    m => {m.build.defaults.working++;}, m => {m.build.backend="unknown";}, m => {m.build.linker="unknown";},
+    m => {m.build.cpu="unknown";}, m => {m.source.dependency.commit="0".repeat(40);},
+    m => {m.build.features.push("unknown");},
+    m => {m.source.dependency.inventorySha256="0".repeat(64);}, m => {m.build.toolchain.libraryInventorySha256="unknown";},
+  ]) {
+    Object.assign(f.manifest, structuredClone(valid));
+    mutate(f.manifest);
+    await assert.rejects(verifyBundle(f.root, await f.seal()), {code:"WORLD_BUNDLE_INCOMPATIBLE"});
+  }
 });
 
 test("failed preparation never publishes and concurrent preparation cannot mix outputs", async t => {
@@ -150,9 +196,9 @@ test("failed preparation never publishes and concurrent preparation cannot mix o
   const git = args => execFileSync("git",args,{cwd:source,stdio:"ignore"});
   git(["init"]); git(["add","."]);
   git(["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","-m","fixture"]);
-  await writeFile(join(tools,"zig"),'#!/bin/sh\nif [ "$1" = version ]; then echo 0.16.0; exit 0; fi\nsleep 2\nexit 42\n',{mode:0o755});
+  const compiler = await failingCompiler(tools, 2000);
   const args = [join(source,"bin/world.mjs"),"runtime","prepare","--source",source,"--output",output];
-  const options = {cwd:root,env:{...process.env,PATH:tools+":"+process.env.PATH}};
+  const options = {cwd:root,env:{...process.env,PATH:tools+":"+process.env.PATH,WORLD_ZIG_EXE:compiler}};
   const launch = (extra = []) => new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[...extra,...args],options); let stderr="";
     child.stderr.on("data",b=>stderr+=b); child.on("error",reject);
@@ -178,8 +224,9 @@ test("failed preparation never publishes and concurrent preparation cannot mix o
   const turnover=join(root,"turnover"),preload=join(root,"publish-before-lock.mjs");
   await writeFile(preload,`import fs from "node:fs"; import {syncBuiltinESMExports} from "node:module";
 const original=fs.promises.mkdir; const output=${JSON.stringify(turnover)};
+const path=await import("node:path"); const stage=path.join(fs.realpathSync(path.dirname(output)),path.basename(output)+".preparing");
 fs.promises.mkdir=async(path,...args)=>{
- if(path===output+".preparing"){
+ if(path===stage){
   await original(output); await fs.promises.writeFile(output+"/previous","bundle A");
   await fs.promises.writeFile(output+".tar.gz","archive A");
   await fs.promises.writeFile(output+".delivery.json","descriptor A");
@@ -214,7 +261,7 @@ process.stdout.write(result.stdout??"");process.stderr.write(result.stderr??"");
   const dirty=await launch();assert.match(dirty.stderr,/WORLD_BUNDLE_SOURCE_DIRTY/);
   await rm(join(source,"uncommitted"));
   const zon=await (await import("node:fs/promises")).readFile(join(source,"build.zig.zon"),"utf8");
-  await writeFile(join(source,"build.zig.zon"),zon.replace("511fe388587b36ae37307d277e04c22b0bb6f6d9","0".repeat(40)));
+  await writeFile(join(source,"build.zig.zon"),zon.replace(runtimeProfile.boundary.commit,"0".repeat(40)));
   git(["add","build.zig.zon"]);
   git(["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","-m","wrong dependency"]);
   const wrong=await launch();assert.match(wrong.stderr,/WORLD_BUNDLE_DEPENDENCY_INVALID/);
@@ -264,14 +311,11 @@ test("preparation binds raw commit contents despite Git replacement refs", async
   git(["reset", "--hard", original]);
   git(["replace", original, replacement]);
   const captured = join(root, "captured");
-  await writeFile(join(tools, "zig"), '#!/usr/bin/env node\n' +
-    'const fs=require("node:fs");if(process.argv[2]==="version"){console.log("0.16.0");process.exit(0)}' +
-    'fs.writeFileSync(process.env.WORLD_TEST_CAPTURE,fs.readFileSync("archive-marker"));process.exit(42);\n',
-    {mode: 0o755});
+  const compiler = await failingCompiler(tools);
   const run = () => spawnSync(process.execPath, [join(source, "bin/world.mjs"), "runtime", "prepare",
     "--source", source, "--output", join(root, "bundle")], {
     encoding: "utf8", env: {...process.env, PATH: tools + ":" + process.env.PATH,
-      WORLD_TEST_CAPTURE: captured},
+      WORLD_TEST_CAPTURE: captured, WORLD_ZIG_EXE: compiler},
   });
   await writeFile(join(source, "archive-marker"), "replacement");
   git(["add", "archive-marker"]);

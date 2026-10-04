@@ -197,6 +197,8 @@ pub fn Slots(comptime Value: type) type {
 
         pub fn release(self: *Self, handle: Handle) Error!void {
             const entry = try self.lookupView(handle);
+            self.views.lockPointers();
+            defer self.views.unlockPointers();
             self.retire(handle.index, entry);
         }
 
@@ -217,14 +219,18 @@ pub fn Slots(comptime Value: type) type {
         /// Consumes the candidate handle. Failure leaves both logical views intact.
         pub fn commit(self: *Self, target: Handle, candidate: Handle) Error!void {
             if (target.index == candidate.index) return error.InvalidHandle;
-            var destination = try self.lookupView(target);
-            var source = try self.lookupView(candidate);
-            if (destination.limit != source.limit or destination.depth != source.depth)
-                return error.InvalidSelection;
-            if (destination.revision == std.math.maxInt(u64)) return error.CapacityExceeded;
+            {
+                const destination = try self.lookupView(target);
+                const source = try self.lookupView(candidate);
+                if (destination.limit != source.limit or destination.depth != source.depth)
+                    return error.InvalidSelection;
+                if (destination.revision == std.math.maxInt(u64)) return error.CapacityExceeded;
+            }
             try self.protect(target);
-            destination = try self.lookupView(target);
-            source = try self.lookupView(candidate);
+            self.views.lockPointers();
+            defer self.views.unlockPointers();
+            const destination = try self.lookupView(target);
+            const source = try self.lookupView(candidate);
             const previous = destination.root;
             destination.root = source.root;
             source.root = .empty;
@@ -268,16 +274,20 @@ pub fn Slots(comptime Value: type) type {
         }
 
         fn change(self: *Self, handle: Handle, slot: usize, value: ?Value) Error!void {
-            var entry = try self.lookupView(handle);
-            if (slot >= entry.limit) return error.InvalidSlot;
-            if (entry.revision == std.math.maxInt(u64)) return error.CapacityExceeded;
-            if (value == null) {
-                const page = locate(entry.root, entry.depth, slot) orelse return;
-                if (page.initialized & mask(slot) == 0) return;
+            {
+                const entry = try self.lookupView(handle);
+                if (slot >= entry.limit) return error.InvalidSlot;
+                if (entry.revision == std.math.maxInt(u64)) return error.CapacityExceeded;
+                if (value == null) {
+                    const page = locate(entry.root, entry.depth, slot) orelse return;
+                    if (page.initialized & mask(slot) == 0) return;
+                }
             }
             try self.protect(handle);
             // Protection may fork a view and relocate the handle table.
-            entry = try self.lookupView(handle);
+            self.views.lockPointers();
+            defer self.views.unlockPointers();
+            const entry = try self.lookupView(handle);
             try self.changeOwned(&entry.root, entry.depth, slot, value);
             entry.revision += 1;
             self.statistics.writes +|= 1;
@@ -296,6 +306,8 @@ pub fn Slots(comptime Value: type) type {
             defer self.release(temporary) catch unreachable;
             for (selected) |slot| try self.set(temporary, slot, try self.get(handle, slot));
             try self.protect(handle);
+            self.views.lockPointers();
+            defer self.views.unlockPointers();
             const replacement = try self.lookupView(temporary);
             const entry = try self.lookupView(handle);
             const previous = entry.root;

@@ -2,14 +2,14 @@
 const std = @import("std");
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
-    const compiler_source = b.option([]const u8, "compiler-source", "Fixed C0 compiler") orelse @panic("compiler-source required");
+    const compiler_source = b.option(std.Build.LazyPath, "compiler-source", "Fixed C0 compiler") orelse @panic("compiler-source required");
     const compiler_data = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ compiler_source, "src/data/root.zig" }) },
+        .root_source_file = compiler_source.path(b, "src/data/root.zig"),
         .target = b.graph.host,
         .optimize = optimize,
     });
     const compiler = b.createModule(.{
-        .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ compiler_source, "src/root.zig" }) },
+        .root_source_file = compiler_source.path(b, "src/root.zig"),
         .target = b.graph.host,
         .optimize = optimize,
         .imports = &.{.{ .name = "boundary_data", .module = compiler_data }},
@@ -21,21 +21,21 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "boundary", .module = compiler }},
     }) });
     b.installArtifact(emitter);
-    if (b.option([]const u8, "world-source", "Runtime source for the probe")) |world_source| {
-        const data_source = b.option([]const u8, "data-source", "Fixed D0 data") orelse @panic("data-source required");
+    if (b.option(std.Build.LazyPath, "world-source", "Runtime source for the probe")) |world_source| {
+        const data_source = b.option(std.Build.LazyPath, "data-source", "Fixed D0 data") orelse @panic("data-source required");
         const data = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ data_source, "src/data/root.zig" }) },
+            .root_source_file = data_source.path(b, "src/data/root.zig"),
             .target = b.graph.host,
             .optimize = optimize,
         });
         const runtime = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, "src/interpreter_v2/stable_session.zig" }) },
+            .root_source_file = world_source.path(b, "src/interpreter_v2/stable_session.zig"),
             .target = b.graph.host,
             .optimize = optimize,
             .imports = &.{.{ .name = "boundary_data", .module = data }},
         });
         const world = b.createModule(.{
-            .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, "src/root.zig" }) },
+            .root_source_file = world_source.path(b, "src/root.zig"),
             .target = b.graph.host,
             .optimize = optimize,
             .imports = &.{.{ .name = "boundary_data", .module = data }},
@@ -59,7 +59,7 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{.{ .name = "boundary_data", .module = data }},
             });
             if (item.fixture) |fixture| module.addImport(item.owner, b.createModule(.{
-                .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ world_source, "src/interpreter_v2", fixture }) },
+                .root_source_file = world_source.path(b, b.pathJoin(&.{ "src/interpreter_v2", fixture })),
                 .target = b.graph.host,
                 .optimize = optimize,
                 .imports = &.{.{ .name = "boundary_data", .module = data }},
@@ -75,9 +75,9 @@ pub fn build(b: *std.Build) void {
             }) });
             b.installArtifact(executable);
         }
-        if (b.option([]const u8, "agent-source", "Fixed A0 native test consumer")) |agent_source| {
+        if (b.option(std.Build.LazyPath, "agent-source", "Fixed A0 native test consumer")) |agent_source| {
             const consumer = b.addExecutable(.{ .name = "agent-native", .root_module = b.createModule(.{
-                .root_source_file = .{ .cwd_relative = b.pathJoin(&.{ agent_source, "test/agent4/native.zig" }) },
+                .root_source_file = agent_source.path(b, "test/agent4/native.zig"),
                 .target = b.graph.host,
                 .optimize = optimize,
                 .imports = &.{ .{ .name = "world", .module = world }, .{ .name = "boundary_data", .module = data } },
