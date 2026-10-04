@@ -19,12 +19,16 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: '0.17.0'
+          # Qualification owns fresh caches under the reserved output directory.
+          # The workspace cache is unused; do not restore/save an empty archive.
+          use-cache: false
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
       - name: Install browser system dependencies
         run: |
           npm ci --ignore-scripts --prefix test/current/browser-tools
           node test/current/browser-tools/node_modules/playwright-core/cli.js install-deps chromium firefox
       - name: Prepare through the public producer
+        id: producer
         run: node bin/world.mjs runtime prepare --source "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/world-runtime-bundle"
       - name: Upload the qualified transport and external binding
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -36,3 +40,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+      - name: Retain failed-check evidence without publishing a runtime bundle
+        if: ${{ failure() && steps.producer.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: world-qualification-failure-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/world-runtime-bundle.preparing/bundle/evidence
+            ${{ runner.temp }}/world-runtime-bundle.preparing/bundle/qualification.json
+          if-no-files-found: warn
+          retention-days: 7

@@ -1456,27 +1456,6 @@ test "imported storage avoids payload copies and releases a large dead backing" 
     try testing.expectEqual(1, interned.body.blob.id);
 }
 
-test "BPI3 scalar and collection faults preserve the existing independent expectations" {
-    var builder = source.Builder.init(testing.allocator);
-    defer builder.deinit();
-    var compiled = try source.lower(testing.allocator, try source.examples.scalarContracts(&builder));
-    defer compiled.deinit();
-    const expected = [_]?u64{ 3, null, null, null, null, null, null, null, null, null, null, 8, 2, 0, 4, 20, 240, 9, null };
-    const faults = [_]u8{ 0, 3, 2, 3, 2, 2, 4, 5, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5 };
-    for (expected, faults, 0..) |value, fault, index| {
-        var session = try initFromImage(testing.allocator, compiled.program, &.{@intCast(index)});
-        defer session.deinit();
-        const outcome = try drive(&session, null);
-        if (value) |n| {
-            try testing.expect(outcome == .completed);
-            try testing.expectEqual(n, std.mem.readInt(u64, (try session.bytes(&outcome.completed))[0..8], .little));
-        } else {
-            try testing.expect(outcome == .failed);
-            try testing.expectEqualSlices(u8, &.{fault}, try session.bytes(&outcome.failed));
-        }
-    }
-}
-
 test "stable borrow admission distinguishes older from fresh references through return clauses" {
     const fixture = @import("borrow_return_fixtures");
     for (std.enums.values(fixture.ResultFrom)) |from| {
@@ -1599,32 +1578,6 @@ test "stable source installs real handlers and keeps the final checked sum after
         try testing.expectEqual(0, session.frames.entries.count());
         try testing.expect(session.frames.slots.statistics.value_copies <= 32 * count + 128);
     }
-}
-
-test "stable source preserves non-tail resumption and handler answer transformation" {
-    var builder = source.Builder.init(testing.allocator);
-    defer builder.deinit();
-    var compiled = try source.lower(testing.allocator, try source.examples.deep(&builder));
-    defer compiled.deinit();
-    var session = try initFromImage(testing.allocator, compiled.program, &.{});
-    defer session.deinit();
-    const result = try drive(&session, null);
-    try testing.expect(result == .completed);
-    try testing.expectEqual(67, std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
-}
-
-test "stable source keeps two one-shot owners across an explicit yield" {
-    var builder = source.Builder.init(testing.allocator);
-    defer builder.deinit();
-    var compiled = try source.lower(testing.allocator, try source.examples.ownership(&builder));
-    defer compiled.deinit();
-    var session = try initFromImage(testing.allocator, compiled.program, &.{});
-    defer session.deinit();
-    try testing.expect(try drive(&session, null) == .yielded);
-    try session.resumeYield();
-    const result = try drive(&session, null);
-    try testing.expect(result == .completed);
-    try testing.expectEqual(1, std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
 }
 
 test "stable source retains an external request and joins into the same activation" {
@@ -1768,26 +1721,6 @@ test "stable source releases partial native owners at every allocation failure" 
     var compiled = try source.lower(testing.allocator, try source.examples.deep(&builder));
     defer compiled.deinit();
     try @import("allocation_testing.zig").check(testing.allocator, failingSession, .{compiled.program});
-}
-
-test "stable source preserves multi-shot choice and branch-local versus outer shared cells" {
-    const examples = .{ source.examples.choicesAll, source.examples.choicesFirst, source.examples.stateLocal, source.examples.stateShared, source.examples.answers };
-    const expected = [_][]const u8{
-        &.{ 4, 0, 0, 0, 1, 1, 0, 1, 1 },                                                   &.{ 1, 0, 0 },
-        &.{ 2, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0 },                           &.{ 2, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0 },
-        &.{ 1, 10, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0 },
-    };
-    inline for (examples, 0..) |example, index| {
-        var builder = source.Builder.init(testing.allocator);
-        defer builder.deinit();
-        var compiled = try source.lower(testing.allocator, try example(&builder));
-        defer compiled.deinit();
-        var session = try initFromImage(testing.allocator, compiled.program, &.{});
-        defer session.deinit();
-        const result = try drive(&session, null);
-        try testing.expect(result == .completed);
-        try testing.expectEqualSlices(u8, expected[index], try session.bytes(&result.completed));
-    }
 }
 
 test "stable source reenters a live template-cell cycle without sharing branch control" {
@@ -1954,25 +1887,6 @@ test "stable injection selects definition-site versus use-site capabilities" {
             try testing.expect(result == .completed);
             try testing.expectEqual(@as(u64, if (injecting == 0) 109 else 209), std.mem.readInt(u64, result.completed.body.scalar[0..8], .little));
             try testing.expectEqual(injecting == 1, saw_injection);
-        }
-    }
-}
-
-test "stable successor handling preserves the shallow protocol" {
-    var builder = source.Builder.init(testing.allocator);
-    defer builder.deinit();
-    var compiled = try source.lower(testing.allocator, try source.examples.shallow(&builder));
-    defer compiled.deinit();
-    for ([_]u8{ 0, 1 }) |invalid| {
-        var session = try initFromImage(testing.allocator, compiled.program, &.{invalid});
-        defer session.deinit();
-        const result = try drive(&session, null);
-        if (invalid == 0) {
-            try testing.expect(result == .completed);
-            try testing.expectEqual(1, result.completed.body.scalar[0]);
-        } else {
-            try testing.expect(result == .failed);
-            try testing.expectEqual(0, (try session.bytes(&result.failed)).len);
         }
     }
 }

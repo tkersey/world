@@ -140,7 +140,9 @@ export async function prepareBundle(source, output, options = {}) {
     identity.dependency.inventorySha256 = consumed.inventorySha256;
     checks.push({ name: "dependency-package", operation: "verifyPackage", status: "passed", ...consumed,
       selectedRoot: store.root, consumedRoot: packages, selection: options.packageRoot ? "argument" : requested ? "environment" : "run-owned" });
-    await run("build", compiler.executable, build(["build-runtime", "check-kernel"]));
+    // The full check below owns kernel qualification; delivered-kernel checks
+    // the copied artifact separately. Do not run the same source check twice.
+    await run("build", compiler.executable, build(["build-runtime"]));
     await cp(join(prefix, "runtime"), join(bundle, "runtime"), { recursive: true, errorOnExist: true });
     await run("browser-tools", "npm", ["ci", "--ignore-scripts", ...(options.offline ? ["--offline"] : []), "--prefix", "test/current/browser-tools"]);
     if (options.offline) {
