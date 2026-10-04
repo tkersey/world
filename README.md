@@ -8,6 +8,9 @@ external results.
 World `6.0.0-dev.0` supports only exact Zig `0.17.0`. This successor branch is completing the
 coordinated Boundary 3 / Agent migration. See [current status](docs/compositional-execution.md)
 and the [ABI 3 contract](docs/kernel-abi.md).
+The [Zig 0.17 execution and cost evidence](https://github.com/tkersey/boundary/blob/a39014232db44c6780a3a2d953dacea111168aec/docs/zig-0.17-upgrade.md)
+records the qualified package/runtime behavior and accepted compatibility costs.
+Source and delivery identities remain bound by the consuming dependency lock.
 
 ## JavaScript and browser Workers
 
