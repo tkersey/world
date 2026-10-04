@@ -167,7 +167,7 @@ fn bytes(store: *heap.Store, roots: data.graph.Roots) ![]u8 {
     defer testing.allocator.free(nodes);
     for (nodes, store.nodes.items) |*target, source| target.* = .{ .record = source };
     return data.state_image.emit(testing.allocator, .{
-        .program_identity = .{0} ** 32,
+        .program_identity = @as([32]u8, @splat(0)),
         .status = .active,
         .roots = roots,
         .nodes = nodes,
@@ -210,7 +210,7 @@ test "journal retains one entry version across repeated changes, collection and 
 
 test "journal rollback retains imported bytes after collection and replacement" {
     const state: data.process_state.State = .{
-        .program_identity = .{0} ** 32,
+        .program_identity = @as([32]u8, @splat(0)),
         .status = .active,
         .roots = .{ .current = .{ .id = 0 } },
         .nodes = &.{.{ .record = .{ .environment = .{ .values = &.{.{ .schema = 0, .body = .{ .blob = .{ .id = 0 } } }}, .tail = null } } }},

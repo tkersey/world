@@ -170,12 +170,12 @@ fn rebase(comptime T: type, allocator: std.mem.Allocator, value: T, map: Map) Er
         .optional => |info| if (value) |present| try rebase(info.child, allocator, present, map) else null,
         .@"struct" => |info| blk: {
             var result: T = undefined;
-            inline for (info.fields) |field| @field(result, field.name) = try rebase(field.type, allocator, @field(value, field.name), map);
+            inline for (info.field_names, info.field_types) |field_name, FieldType| @field(result, field_name) = try rebase(FieldType, allocator, @field(value, field_name), map);
             break :blk result;
         },
         .@"union" => |info| blk: {
-            inline for (info.fields) |field| if (std.mem.eql(u8, @tagName(value), field.name))
-                break :blk @unionInit(T, field.name, try rebase(field.type, allocator, @field(value, field.name), map));
+            inline for (info.field_names, info.field_types) |field_name, FieldType| if (std.mem.eql(u8, @tagName(value), field_name))
+                break :blk @unionInit(T, field_name, try rebase(FieldType, allocator, @field(value, field_name), map));
             unreachable;
         },
         .array => |info| blk: {

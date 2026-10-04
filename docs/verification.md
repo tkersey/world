@@ -74,3 +74,54 @@ remaining review status. World has no redundant generated delivery reports in
 this change set. Its distinct native/WASM, retained-view, quantum, alias, failure
 and source-agreement harnesses remain substantive qualification inputs. Cleanup
 of documentation does not rebuild or relabel the authenticated cb52f4f kernel.
+
+## Zig 0.17 migration qualification in progress
+
+Maintained source, compiler selection, and CI support exact Zig 0.17.0 only.
+The 0.16 predecessor is frozen comparison evidence. The migration retains ABI 3,
+22 function exports plus memory, import-free unshared wasm32, the `small` kernel,
+65,536-byte stack, 268,435,456-byte maximum memory, and existing runtime budgets.
+The explicit linker export list prevents Zig 0.17's `-rdynamic` from adding the
+linker's `__stack_pointer` export. `check-kernel` independently checks the ABI.
+
+The current local migration passed `check check-zig17 -Doptimize=safe` (48 steps)
+on macOS arm64 with the official 0.17.0 distribution. Node/native canonical
+agreement covered 235 boundaries and 23 transfers; Node/Wasmtime/native transfer
+covered 158 boundaries. This is local correctness evidence, not a complete
+cross-platform delivery or performance result. The coordinated upgrade's
+experiments and final delivered-artifact qualification remain open.
+
+### Retained borrow intervals
+
+| Owner and borrow | Creation and last use | Potential invalidation and disposition |
+|---|---|---|
+| Activation view table: `lookupView` pointers | `release`, protected `commit`, `change`, and `retainOnly`, through their last view access | Page allocation and drop callbacks occur inside these intervals. Lock `views`, with deferred unlock on every return/error. Run `protect` before locking because frame journaling may legitimately fork/add a view; reacquire afterwards. |
+| Activation views: immediate reads, registration, transfer | Lookup through immediate field read/write; `fork` copies the view before allocation | No retained pointer crosses table growth. Generation/instance checks remain authoritative even when an address is unchanged. |
+| Session frame map: `getMutable` result | `stepInternal` before instruction execution through the last frame write | Lock `frames.entries` for ordinary instruction paths. Copy the descriptor and unlock before control, known-handler installation, or clone paths that may grow/move the map. Deferred unlock covers errors. |
+| Store mark arrays: `marks` and `blob_marks` slices | `collectWith` after capacity reservation through tracing and reclamation | Slices survive frame-owner callbacks and journal allocation. Lock both containers and defer both unlocks. Other store arrays are accessed by index or copied value. |
+| Store free-blob suffix | Deferred sorting after retirement | Capacity is reserved before retirement. The suffix is acquired only at sorting time; no append/growth occurs while it is borrowed. |
+| Store/journal hash-map iterators | Rollback/collection loop, ending before table clear/rebuild | Journal iteration does not mutate its own map. Intern-table retirement removes only the current entry with `removeByPtr`; it does not grow/rehash the table. Pointer locks must not forbid this supported removal. |
+| Activation page arrays and slot iterators | Stable separately allocated page; iterator carries the logical handle/revision | View-table relocation does not relocate pages. Logical retirement, mutation, and ownership transfer remain checked separately; a container lock cannot replace those checks. |
+
+`check-zig17` injects view growth and shifting removal through the allocator at a
+real `change` borrow. The parent requires the injection marker and a pointer-lock
+stack, rejecting unrelated crashes. The fault child uses `debug` so diagnostic
+frames remain identifiable. Valid neighbors cover ordinary post-borrow growth,
+allocation-failure retry, stale-generation rejection at a stable address, and
+moving an unlocked owner, all with explicit SafeAllocator leak checks. These are
+bounded diagnostics, not concurrency protection or hostile-process isolation.
+
+Native failure sweeps force resize failure before the standard allocation-failure
+sweep. SafeAllocator's successful remaps otherwise make allocation ordinals vary
+between identical runs. Ordinary native tests retain the real allocator and resize
+paths; production storage and rollback policy are unchanged. Allocation ordinals
+and native metadata bytes are not asserted equal to the predecessor.
+
+The official Zig 0.17 configuration cache can select the previous sibling
+`--build-file` when different standalone scripts share a cache. The `test/v2`
+source/benchmark helpers explicitly poison configuration caching to prevent that
+selection; compiled-artifact caching is retained. `check-zig17` alternates the
+actual execution/replay/value helpers with identical options and one cache, then
+checks the configured executable names. The normal World graph retains caching.
+Historical `legacy-names`/`legacy-layout` benchmark switches are removed; old
+source is reproduced only through its original worktree/toolchain.

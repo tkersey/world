@@ -35,8 +35,8 @@ const Projection = struct {
             },
             .@"struct" => |info| blk: {
                 var result: T = undefined;
-                inline for (info.fields) |field|
-                    @field(result, field.name) = try self.convert(field.type, @field(input, field.name));
+                inline for (info.field_names, info.field_types) |field_name, FieldType|
+                    @field(result, field_name) = try self.convert(FieldType, @field(input, field_name));
                 break :blk result;
             },
             .@"union" => switch (input) {
