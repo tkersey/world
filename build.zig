@@ -271,8 +271,7 @@ pub fn build(b: *std.Build) void {
     borrow_check.addArtifactArg2(borrow_probe, .{});
     borrow_check.has_side_effects = true;
     zig17.dependOn(&borrow_check.step);
-    const package_ownership = b.addSystemCommand(&.{ "node", "--test", "test/current/zig17.test.mjs" });
-    package_ownership.removeEnvironmentVariable("NODE_TEST_CONTEXT");
+    const package_ownership = b.addSystemCommand(&.{ "env", "-u", "NODE_TEST_CONTEXT", "node", "--test", "test/current/zig17.test.mjs" });
     package_ownership.has_side_effects = true;
     zig17.dependOn(&package_ownership.step);
     const build_selection = b.addSystemCommand(&.{ "node", "test/current/build_selection.mjs" });
