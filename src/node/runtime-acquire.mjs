@@ -2,7 +2,7 @@ import { gunzipSync } from "node:zlib";
 import { mkdir, writeFile, rename, chmod } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { reserveOutput } from "./runtime-output.mjs";
-import { readBounded, sha256, reject, verifyInventory } from "./runtime-bundle.mjs";
+import { readBounded, sha256, reject, verifyInventory, bundleFileMode } from "./runtime-bundle.mjs";
 
 // Deliberately accepts only the regular-file/directory USTAR profile produced here.
 export function unpackArchive(bytes) {
@@ -42,7 +42,7 @@ export function unpackArchive(bytes) {
         if (size !== 0) reject("WORLD_BUNDLE_ARCHIVE_INVALID", "nonempty tar directory");
       } else {
         // Preserve executable intent without admitting setuid, setgid or writable shared files.
-        const mode = octal(header.subarray(100, 108)) & 0o111 ? 0o755 : 0o644;
+        const mode = bundleFileMode(octal(header.subarray(100, 108)));
         files.push({ path, bytes: tar.subarray(offset, offset + size), mode });
       }
     }

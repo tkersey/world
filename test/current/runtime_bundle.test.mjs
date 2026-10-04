@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, writeFile, rm, symlink, chmod, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inventory, sha256, verifyInventory, readVerifiedFile,
+import { inventory, packageInventory, sha256, verifyInventory, readVerifiedFile,
   withVerifiedInventory } from "../../src/node/runtime-bundle.mjs";
 import runtimeProfile from "../../src/node/runtime-profile.json" with { type: "json" };
 
@@ -146,6 +146,64 @@ test("safe acquisition binds archive before extraction and refuses destination c
   execFileSync("tar", ["--format=ustar", "-czf", archive, "-C", f.root, "."]);
   const badArchive = await readFile(archive);
   assert.throws(() => unpackArchive(badArchive), { code: "WORLD_BUNDLE_ARCHIVE_INVALID" });
+});
+
+test("bundle mode normalization preserves package identity and safe archive round trips", async t => {
+  const { execFileSync } = await import("node:child_process");
+  const { readFile } = await import("node:fs/promises");
+  const { acquireBundle, unpackArchive } = await import("../../src/node/runtime-acquire.mjs");
+  const f = await fixture(t), file = "runtime/bin/world.mjs";
+  const scratch = await mkdtemp(join(tmpdir(), "world archive modes "));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  for (const [mode, delivered] of [[0o600, 0o644], [0o640, 0o644], [0o664, 0o644],
+    [0o601, 0o755], [0o610, 0o755], [0o700, 0o755], [0o750, 0o755],
+    [0o777, 0o755], [0o4755, 0o755]]) {
+    await chmod(join(f.root, file), mode);
+    const contents = await packageInventory(f.root);
+    assert.equal(contents.files.find(entry => entry.path === file).mode, mode & 0o777,
+      "source-package identity retains actual permissions");
+    f.manifest.files = (await inventory(f.root)).filter(entry => entry.path !== "manifest.json");
+    assert.equal(f.manifest.files.find(entry => entry.path === file).mode, delivered);
+    const hash = await f.seal();
+    await verifyInventory(f.root, hash);
+    const archive = join(scratch, `${mode}.tar.gz`), output = join(scratch, `${mode}`);
+    execFileSync("tar", ["--format=ustar", "-czf", archive, "-C", f.root, "."]);
+    const bytes = await readFile(archive);
+    assert.equal(unpackArchive(bytes).find(entry => entry.path === file).mode, delivered);
+    await acquireBundle(archive, sha256(bytes), hash, output);
+    assert.equal((await stat(join(output, file))).mode & 0o7777, delivered,
+      "extraction cannot restore set-id or group/other write permissions");
+    await withVerifiedInventory(output, hash, async copy => {
+      assert.equal((await stat(join(copy, file))).mode & 0o777,
+        delivered === 0o755 ? 0o500 : 0o400);
+      await verifyInventory(copy, hash);
+    });
+    await chmod(join(output, file), delivered === 0o755 ? 0o644 : 0o755);
+    await assert.rejects(verifyInventory(output, hash), { code: "WORLD_BUNDLE_CORRUPT" });
+  }
+});
+
+test("archive acquisition survives restrictive and shared-group producer umasks", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  for (const mask of ["002", "027", "077"]) {
+    const run = spawnSync("/bin/sh", ["-c", 'umask "$1"; shift; exec "$@"', "world-umask-test", mask,
+      process.execPath, "--test", "--test-reporter=tap",
+      "--test-name-pattern=^safe acquisition binds archive before extraction and refuses destination collision$",
+      import.meta.filename], { env, encoding: "utf8", timeout: 20_000 });
+    assert.equal(run.status, 0, `umask ${mask}: ${run.error ?? ""}\n${run.stdout}\n${run.stderr}`);
+    assert.match(run.stdout, /^# tests 1$/m);
+    assert.match(run.stdout, /^# pass 1$/m);
+  }
+});
+
+test("manifest modes must describe the canonical delivery representation", async t => {
+  const f = await fixture(t);
+  for (const mode of [0o600, 0o775]) {
+    f.manifest.files[0].mode = mode;
+    await assert.rejects(verifyInventory(f.root, await f.seal()), { code: "WORLD_BUNDLE_INVALID" });
+  }
 });
 
 test("unsupported profile and unexecuted qualification cannot pass", async t => {

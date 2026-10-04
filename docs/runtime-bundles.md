@@ -9,6 +9,12 @@ copy preserves executable intent, uses the existing file/count bounds, and is
 removed after smoke completes or fails. It needs temporary disk space for one
 bundle and does not claim protection against a hostile same-user process.
 
+Bundle inventory and extraction share canonical file modes: `0644` for data and
+`0755` when any executable bit is set. Producer umasks do not alter that identity;
+extraction strips set-id and group/other write permissions. Changing executable
+intent still rejects before admission or private copying. Source-package
+inventories separately retain exact file and directory permissions.
+
 Preparation resolves and archives raw Git commit objects with replacement refs
 disabled consistently. Its source identity describes the committed object, not
 a locally substituted Git view.

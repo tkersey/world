@@ -23,7 +23,10 @@ export async function readBounded(path, limit = 64 << 20) {
     if (size > BigInt(limit)) reject("WORLD_BUNDLE_INVALID", `file exceeds ${limit} bytes: ${path}`);
   });
 }
-export async function inventory(root, prefix = "", entries = [], count = { value: 0 }) {
+// Delivery preserves executable intent, not producer umask or privileged bits.
+export const bundleFileMode = mode => mode & 0o111 ? 0o755 : 0o644;
+
+async function scanInventory(root, prefix = "", entries = [], count = { value: 0 }) {
   if (entries.length > 512) reject("WORLD_BUNDLE_INVALID", "bundle exceeds 512 files");
   for (const name of (await readdir(join(root, prefix))).sort()) {
     if (++count.value > 1024 || prefix.split("/").length > 16) reject("WORLD_BUNDLE_INVALID", "bundle structure limit exceeded");
@@ -33,7 +36,7 @@ export async function inventory(root, prefix = "", entries = [], count = { value
     if (stat.isSymbolicLink()) reject("WORLD_BUNDLE_INVALID", `symlink: ${path}`);
     if (stat.isDirectory()) {
       count.directories?.push({ path, mode: stat.mode & 0o777 });
-      await inventory(root, path, entries, count);
+      await scanInventory(root, path, entries, count);
     }
     else if (stat.isFile()) {
       const bytes = await readBounded(join(root, path));
@@ -43,10 +46,15 @@ export async function inventory(root, prefix = "", entries = [], count = { value
   if (entries.length > 512) reject("WORLD_BUNDLE_INVALID", "bundle exceeds 512 files");
   return entries.sort((a, b) => a.path.localeCompare(b.path, "en"));
 }
+export async function inventory(root) {
+  const files = await scanInventory(root);
+  for (const file of files) file.mode = bundleFileMode(file.mode);
+  return files;
+}
 /** Complete package contents, including directory modes; the root is a locator. */
 export async function packageInventory(root) {
   const directories = [];
-  const files = await inventory(root, "", [], { value: 0, directories });
+  const files = await scanInventory(root, "", [], { value: 0, directories });
   return { files, directories };
 }
 export async function verifyInventory(root, expected) {
@@ -66,7 +74,7 @@ export async function verifyInventory(root, expected) {
         file.path.split("/").some(part => part === "." || part === "..") ||
         file.path === "manifest.json" || paths.has(file.path) ||
         !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > (64 << 20) ||
-        !/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isInteger(file.mode) || file.mode < 0 || file.mode > 0o777)
+        !/^[a-f0-9]{64}$/.test(file.sha256) || ![0o644, 0o755].includes(file.mode))
       reject("WORLD_BUNDLE_INVALID", "invalid inventory entry");
     paths.add(file.path);
   }
@@ -106,7 +114,7 @@ async function useInventoryCopy(root, manifest, expected, use) {
     for (const entry of manifest.files) {
       const stat = await lstat(join(root, entry.path));
       if (!stat.isFile()) reject("WORLD_BUNDLE_INVALID", `not a regular file: ${entry.path}`);
-      if ((stat.mode & 0o777) !== entry.mode)
+      if (bundleFileMode(stat.mode) !== entry.mode)
         reject("WORLD_BUNDLE_CORRUPT", `file mode changed before snapshot: ${entry.path}`);
       const mode = entry.mode & 0o111 ? 0o500 : 0o400;
       const bytes = await readVerifiedFile(root, manifest, entry.path);
