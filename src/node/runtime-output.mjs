@@ -1,4 +1,4 @@
-import { mkdir, lstat, rm, realpath, open } from "node:fs/promises";
+import { mkdir, lstat, rm, rmdir, realpath, open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, basename, join, resolve } from "node:path";
 import { reject } from "./runtime-bundle.mjs";
@@ -18,8 +18,17 @@ export async function reserveOutput(output, additionalDestinations = []) {
       reject("WORLD_BUNDLE_COLLISION", `creation already active/interrupted: ${stage}`);
     throw error;
   }
-  const handle = await open(stage, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  const owner = await handle.stat({ bigint: true }).catch(async error => { await handle.close(); throw error; });
+  let handle, owner;
+  try {
+    handle = await open(stage, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    owner = await handle.stat({ bigint: true });
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    // Initialization has written no contents. Never recursively delete a path
+    // whose directory identity could not be established; retain the first error.
+    await rmdir(stage).catch(() => {});
+    throw error;
+  }
   let closed = false, cleaning;
   const check = async () => {
     const named = await lstat(stage, { bigint: true });

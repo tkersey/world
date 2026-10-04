@@ -23,7 +23,8 @@ setTimeout(()=>process.exit(42),${delay});
 }
 
 const required = ["runtime/world-kernel.wasm", "runtime/package.json", "runtime/bin/world.mjs",
-  "runtime/src/node/runtime-bundle.mjs", "runtime/src/embedding/index.mjs", "qualification.json",
+  "runtime/src/node/runtime-bundle.mjs", "runtime/src/node/runtime-profile.json",
+  "runtime/src/embedding/index.mjs", "qualification.json",
   "runtime/LICENSE", "smoke/pure.bpi3", "smoke/effect.bpi3"];
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "world bundle "));
@@ -386,4 +387,11 @@ test("preparation binds raw commit contents despite Git replacement refs", async
   const selected = run();
   assert.match(selected.stderr, /WORLD_BUNDLE_QUALIFICATION_FAILED/);
   assert.equal(await readFile(captured, "utf8"), "original");
+});
+
+test("authenticated inventories cannot omit the runtime profile", async t => {
+  const f = await fixture(t), path = "runtime/src/node/runtime-profile.json";
+  await rm(join(f.root, path));
+  f.manifest.files = f.manifest.files.filter(file => file.path !== path);
+  await assert.rejects(verifyInventory(f.root, await f.seal()), { code: "WORLD_BUNDLE_INCOMPLETE" });
 });

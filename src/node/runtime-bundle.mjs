@@ -86,7 +86,8 @@ export async function verifyInventory(root, expected) {
       reject("WORLD_BUNDLE_CORRUPT", `file identity mismatch: ${a.path}`);
   }
   for (const path of ["runtime/world-kernel.wasm", "runtime/package.json", "runtime/bin/world.mjs",
-    "runtime/src/node/runtime-bundle.mjs", "runtime/src/embedding/index.mjs", "qualification.json",
+    "runtime/src/node/runtime-bundle.mjs", "runtime/src/node/runtime-profile.json",
+    "runtime/src/embedding/index.mjs", "qualification.json",
     "runtime/LICENSE", "smoke/pure.bpi3", "smoke/effect.bpi3"])
     if (!paths.has(path)) reject("WORLD_BUNDLE_INCOMPLETE", `required file missing: ${path}`);
   return manifest;

@@ -129,3 +129,41 @@ test('explicit library selection rejects a compiler describing another library',
   assert.throws(() => select(['--zig-exe', zig, '--zig-lib', a], { inherited: null }), /Conflicting Zig library/);
   assert.equal(select(['--zig-exe', zig, '--zig-lib', b], { inherited: null }).identity.library, await (await import('node:fs/promises')).realpath(b));
 });
+
+test('reservation initialization failures release an empty stage and close opened handles', async t => {
+  const { execFileSync } = await import('node:child_process');
+  const root = await area(t), moduleUrl = new URL('../../src/node/runtime-output.mjs', import.meta.url).href;
+  for (const failure of ['open', 'stat', 'replacement']) {
+    const output = join(root, failure);
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const output = ${JSON.stringify(output)}, failure = ${JSON.stringify(failure)};
+      const original = fs.promises.open;
+      let closed = false;
+      fs.promises.open = async (...args) => {
+        if (failure === 'replacement') {
+          await fs.promises.rename(args[0], args[0] + '.initial');
+          await fs.promises.mkdir(args[0]);
+          await fs.promises.writeFile(args[0] + '/sentinel', 'keep');
+          throw Object.assign(new Error('injected replacement'), { code: 'EMFILE' });
+        }
+        if (failure === 'open') throw Object.assign(new Error('injected open'), { code: 'EMFILE' });
+        const handle = await original(...args), close = handle.close.bind(handle);
+        handle.stat = async () => { throw Object.assign(new Error('injected stat'), { code: 'EIO' }); };
+        handle.close = async () => { closed = true; return close(); };
+        return handle;
+      };
+      syncBuiltinESMExports();
+      const { reserveOutput } = await import(${JSON.stringify(moduleUrl)});
+      await assert.rejects(reserveOutput(output), { code: failure === 'stat' ? 'EIO' : 'EMFILE' });
+      assert.equal(fs.existsSync(output + '.preparing'), failure === 'replacement');
+      assert.equal(closed, failure === 'stat');
+      fs.promises.open = original; syncBuiltinESMExports();
+      if (failure === 'replacement')
+        assert.equal(fs.readFileSync(output + '.preparing/sentinel', 'utf8'), 'keep');
+      else await (await reserveOutput(output)).cleanup();
+    `], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+});
