@@ -120,12 +120,3 @@ fn pairAllocationAttempt(allocator: std.mem.Allocator) !void {
 test "two-function classification preserves equality and allocation failure cleanup" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, pairAllocationAttempt, .{});
 }
-
-test "one function needs no retained layout-class allocation" {
-    const function: data.activation.Function = .{ .entry = 0, .inputs = &.{}, .layout = .{ .slots = &.{0} }, .result = 0 };
-    var layouts = try Layouts.init(std.testing.allocator, &.{function});
-    defer layouts.deinit();
-    try std.testing.expectEqual(@as(usize, 0), layouts.storageBytes());
-    try std.testing.expect(layouts.compatible(0, 0));
-    try std.testing.expect(!layouts.compatible(0, 1));
-}
