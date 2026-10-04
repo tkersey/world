@@ -256,7 +256,7 @@ test("failed preparation never publishes and concurrent preparation cannot mix o
   git(["-c","user.name=Fixture","-c","user.email=fixture@example.invalid","-c","commit.gpgsign=false","commit","-m","fixture"]);
   const compiler = await failingCompiler(tools, 2000);
   const args = [join(source,"bin/world.mjs"),"runtime","prepare","--source",source,"--output",output];
-  const options = {cwd:root,env:{...process.env,PATH:tools+":"+process.env.PATH,WORLD_ZIG_EXE:compiler}};
+  const options = {cwd:root,env:{...process.env,PATH:tools+":"+process.env.PATH,WORLD_ZIG_EXE:compiler,WORLD_ZIG_LIB:join(tools,"lib"),ZIG_LIB_DIR:join(tools,"lib")}};
   const launch = (extra = []) => new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[...extra,...args],options); let stderr="";
     child.stderr.on("data",b=>stderr+=b); child.on("error",reject);
@@ -373,7 +373,7 @@ test("preparation binds raw commit contents despite Git replacement refs", async
   const run = () => spawnSync(process.execPath, [join(source, "bin/world.mjs"), "runtime", "prepare",
     "--source", source, "--output", join(root, "bundle")], {
     encoding: "utf8", env: {...process.env, PATH: tools + ":" + process.env.PATH,
-      WORLD_TEST_CAPTURE: captured, WORLD_ZIG_EXE: compiler},
+      WORLD_TEST_CAPTURE: captured, WORLD_ZIG_EXE: compiler, WORLD_ZIG_LIB: join(tools,"lib"), ZIG_LIB_DIR: join(tools,"lib")},
   });
   await writeFile(join(source, "archive-marker"), "replacement");
   git(["add", "archive-marker"]);
