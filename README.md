@@ -85,9 +85,9 @@ A cancelled pending cleanup retains its control and receives a newly bound reque
 The environment may re-encode an already acquired typed result against that request;
 World does not provide external rollback or global exactly-once effects.
 
-Complete Agent migration, selective/value performance acceptance, remaining legacy
-retirement and final package qualification are still in progress. No merge or
-release is implied by this development package.
+Stable delivery and its compatibility limits are described in
+[runtime bundles](docs/runtime-bundles.md). Agent applications retain their own
+migration and qualification requirements.
 
 See [verification](docs/verification.md) for the current coverage and the
 remaining migration boundaries.
