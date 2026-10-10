@@ -212,14 +212,14 @@ test("unsupported profile and unexecuted qualification cannot pass", async t => 
   const f = await fixture(t);
   await assert.rejects(verifyBundle(f.root, f.hash), { code: "WORLD_BUNDLE_INCOMPATIBLE" });
   f.manifest.kernel = { abi: 3, path: "runtime/world-kernel.wasm" };
-  f.manifest.packageVersion = "6.0.0-dev.0";
+  f.manifest.packageVersion = "6.0.0";
   f.manifest.build = { target: runtimeProfile.target, kernelMode: runtimeProfile.kernelMode, zig: runtimeProfile.zig,
     hostMode: runtimeProfile.hostMode, stackBytes: runtimeProfile.stackBytes, maximumMemoryBytes: runtimeProfile.maximumMemoryBytes,
     defaults: {...runtimeProfile.defaults}, backend: runtimeProfile.wasmBackend, linker: runtimeProfile.wasmLinker,
     cpu: runtimeProfile.cpu, features: [...runtimeProfile.features], toolchain: {version:runtimeProfile.zig,executableIdentity:{sha256:"d".repeat(64)},libraryInventorySha256:"e".repeat(64)} };
   f.manifest.source = {repository:"https://github.com/tkersey/world",commit:"a".repeat(40),tree:"b".repeat(40),clean:true,
     dependency:{...runtimeProfile.boundary,lockSha256:"c".repeat(64)}};
-  await writeFile(join(f.root,"runtime/package.json"), JSON.stringify({name:"@tkersey/world",version:"6.0.0-dev.0",type:"module",exports:{".":"./src/embedding/index.mjs"},bin:{world:"./bin/world.mjs"}}));
+  await writeFile(join(f.root,"runtime/package.json"), JSON.stringify({name:"@tkersey/world",version:"6.0.0",type:"module",exports:{".":"./src/embedding/index.mjs"},bin:{world:"./bin/world.mjs"}}));
   f.manifest.requiredChecks = requiredChecks;
   await writeFile(join(f.root, "qualification.json"), JSON.stringify({ checks: requiredChecks.map(name => ({ name, status: "skipped" })) }));
   f.manifest.files = (await inventory(f.root)).filter(file => file.path !== "manifest.json");

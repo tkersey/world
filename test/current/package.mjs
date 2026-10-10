@@ -16,7 +16,7 @@ try {
   execFileSync("tar", ["-xf", join(scratch, packed.filename), "-C", directory]);
   const root = join(directory, "package");
   const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-  assert.equal(manifest.version, "6.0.0-dev.0");
+  assert.equal(manifest.version, "6.0.0");
   assert.deepEqual(Object.keys(manifest.exports), ["."]);
   const world = await import(pathToFileURL(join(root, manifest.exports["."])));
   assert.equal(world.packageVersion, manifest.version);
