@@ -5,7 +5,7 @@ export async function runtimeCommand(args) {
   if (!["verify", "acquire"].includes(operation)) throw new Error("expected runtime acquire or verify; source packages are built with zig build build-runtime");
   while (args.length) {
     const flag = args.shift();
-    const value = flag === "--smoke" || flag === "--offline" ? true : args.shift();
+    const value = flag === "--smoke" ? true : args.shift();
     if (!allowed.includes(flag) || options.has(flag) || !value || String(value).startsWith("--"))
       throw new Error(`invalid runtime option ${flag}`);
     options.set(flag, value);

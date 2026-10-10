@@ -4,14 +4,12 @@ import { dirname, basename, join, resolve } from "node:path";
 import { reject } from "./runtime-bundle.mjs";
 
 // Archive acquisition owns its output through this reservation.
-export async function reserveOutput(output, additionalDestinations = []) {
+export async function reserveOutput(output) {
   output = resolve(output);
   const requestedParent = dirname(output);
   await mkdir(requestedParent, { recursive: true });
   const parent = await realpath(requestedParent);
   output = join(parent, basename(output));
-  const destinations = additionalDestinations.map(path =>
-    dirname(resolve(path)) === requestedParent ? join(parent, basename(path)) : resolve(path));
   const stage = `${output}.preparing`;
   try { await mkdir(stage); } catch (error) {
     if (error.code === "EEXIST")
@@ -54,14 +52,11 @@ export async function reserveOutput(output, additionalDestinations = []) {
     },
   });
   try {
-    for (const path of [output, ...destinations]) {
-      try { await lstat(path); } catch (error) {
-        if (error.code === "ENOENT") continue;
-        throw error;
-      }
-      reject("WORLD_BUNDLE_COLLISION", `destination exists; choose a new output or verify it: ${path}`);
+    try { await lstat(output); } catch (error) {
+      if (error.code === "ENOENT") return reservation;
+      throw error;
     }
-    return reservation;
+    reject("WORLD_BUNDLE_COLLISION", `destination exists; choose a new output or verify it: ${output}`);
   } catch (error) {
     await reservation.cleanup();
     throw error;
