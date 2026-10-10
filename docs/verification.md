@@ -34,3 +34,22 @@ emitters and locks. Sampler-only assertions are removed with their collectors.
 The evaluator, memory/ownership guards, independent expectations and public JS
 interface remain. Prior release results do not qualify a successor; PR summaries
 record actual subjects, executed checks and remaining limits.
+
+## Run the checks
+
+Native checks need only the pinned Zig toolchain and source dependency:
+
+```sh
+zig build check-native check-zig17 -Doptimize=safe
+```
+
+For the optional JavaScript and browser checks, install their locked tooling:
+
+```sh
+npm ci --ignore-scripts --prefix test/current/browser-tools
+node test/current/browser-tools/node_modules/playwright-core/cli.js install chromium
+zig build check -Doptimize=safe
+```
+
+CI installs Chromium's Linux system dependencies with Playwright's `--with-deps`
+option. Firefox and Python/Wasmtime are not part of the current checks.
