@@ -62,7 +62,8 @@ zig build check
 
 Native consumers use the public `world` module and the package selected by
 `build.zig.zon`. An explicit `-Dboundary-source=/absolute/source` override is
-admitted against that actual Zig package hash before compilation. No interpreter,
+captured by Zig and admitted against the selected package hash; the native build
+uses `tar` to unpack that authenticated snapshot for compilation. No interpreter,
 JS/WASM archive or script-generated metadata is a native prerequisite.
 
 `check-native` and `check-storage` use shared native build roots. `check-source`

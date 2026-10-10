@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
     const profile = std.json.parseFromSliceLeaky(Profile, b.allocator, @embedFile("build-profile.json"), .{}) catch @panic("invalid runtime profile");
     const package = @import("build.zig.zon");
     const kernel_mode = std.meta.stringToEnum(std.lang.Optimize, profile.kernelMode) orelse @panic("invalid kernel mode");
-    const source = b.option(std.Build.LazyPath, "boundary-source", "Override the pinned Boundary source") orelse pinned: {
+    const supplied_source = b.option(std.Build.LazyPath, "boundary-source", "Override the pinned Boundary source") orelse pinned: {
         const dependency = b.lazyDependency("boundary", .{
             .target = target,
             .optimize = optimize,
@@ -31,18 +31,24 @@ pub fn build(b: *std.Build) void {
         }) orelse return;
         break :pinned dependency.path("");
     };
-    if (source == .cwd_relative and !std.Io.Dir.path.isAbsolute(source.cwd_relative))
+    if (supplied_source == .cwd_relative and !std.Io.Dir.path.isAbsolute(supplied_source.cwd_relative))
         @panic("Boundary source path must be absolute");
-    // Zig fetch authenticates the selected package without executing its build
-    // code. Exported modules carry this guard, including explicit source overrides.
+    // Fetch captures the selected package without executing its build code.
+    // Every compiler/emitter consumes the authenticated cache snapshot, never
+    // the caller's mutable source directory after verification.
     const admission = b.addRunFile(.zig_exe);
+    admission.setCwd(b.graph.path(.global_cache, ""));
+    admission.setEnvironmentVariable("ZIG_GLOBAL_CACHE_DIR", ".");
     admission.addArg("fetch");
-    admission.addDirectoryArg2(source, .{ .make_absolute = true });
+    admission.addDirectoryArg2(supplied_source, .{ .make_absolute = true });
     admission.expectStdOutEqual(package.dependencies.boundary.hash ++ "\n");
     admission.has_side_effects = true;
-    const admitted_files = b.addWriteFiles();
-    admitted_files.step.dependOn(&admission.step);
-    const admitted = b.createModule(.{ .root_source_file = admitted_files.add("boundary_admitted.zig", "") });
+    const snapshot = b.addSystemCommand(&.{ "tar", "-xzf" });
+    snapshot.removeEnvironmentVariable("TAR_OPTIONS");
+    snapshot.addFileArg2(b.graph.path(.global_cache, "p/" ++ package.dependencies.boundary.hash ++ ".tar.gz"), .{ .make_absolute = true });
+    snapshot.addArgs(&.{ "--strip-components=1", "--no-same-owner", "-C" });
+    const source = snapshot.addOutputDirectoryArg2("boundary", .{});
+    snapshot.step.dependOn(&admission.step);
     const data = b.createModule(.{
         .root_source_file = source.path(b, "src/data/root.zig"),
         .target = target,
@@ -53,8 +59,6 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .optimize = optimize,
     });
-    data.addImport("_boundary_admission", admitted);
-    host_data.addImport("_boundary_admission", admitted);
     const public_world = b.addModule("world", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -80,7 +84,6 @@ pub fn build(b: *std.Build) void {
         .dependOn(&b.addRunArtifact(activation_tests).step);
     const host_mode = std.meta.stringToEnum(std.lang.Optimize, profile.hostMode) orelse @panic("invalid host mode");
     const source_data = if (host_mode == optimize) host_data else b.createModule(.{ .root_source_file = source.path(b, "src/data/root.zig"), .target = b.graph.host, .optimize = host_mode });
-    source_data.addImport("_boundary_admission", admitted);
     const boundary = b.createModule(.{ .root_source_file = source.path(b, "src/root.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary_data", .module = source_data }} });
     const host_world = if (target.query.isNative() and host_mode == optimize) public_world else b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary_data", .module = source_data }} });
     const stable_runtime = b.createModule(.{ .root_source_file = b.path("src/interpreter_v2/stable_session.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary_data", .module = source_data }} });
@@ -101,7 +104,6 @@ pub fn build(b: *std.Build) void {
         .target = wasm_target,
         .optimize = kernel_mode,
     });
-    wasm_data.addImport("_boundary_admission", admitted);
     const current_runtime = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/stable_session.zig"),
         .target = wasm_target,
@@ -196,7 +198,6 @@ pub fn build(b: *std.Build) void {
     current_check.has_side_effects = true;
     b.step("check-kernel", "Check ABI 3 and current native/Node transfer").dependOn(&current_check.step);
     const source_examples = b.addRunFile(.zig_exe);
-    source_examples.step.dependOn(&admission.step);
     source_examples.addArg("build");
     source_examples.addDirectoryArg2(.zig_lib, .{ .prefix = "--zig-lib=", .make_absolute = true });
     source_examples.addArgs(&.{ "emit-examples", "--build-file" });

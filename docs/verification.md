@@ -7,9 +7,10 @@ The native roots preserve the evaluator and language contracts:
 - `check-zig17`: native subprocess checks of actual activation-view borrow
   invalidation, including expected assertion failures and leak-free valid paths.
 
-These roots use Zig and its authenticated package/build mechanism. An explicit
-Boundary source override must produce the selected package hash before dependent
-modules compile. They do not need Node, Python, a WASM bundle or a package producer.
+These roots use Zig’s authenticated package cache and the ordinary `tar`
+utility. An explicit Boundary source override must produce the selected package
+hash; modules and emitters then consume that captured package, so later edits to
+the supplied directory cannot change the compiled input. They do not need Node, Python, a WASM bundle or a package producer.
 
 The optional foreign-environment roots have distinct consumers:
 
@@ -37,7 +38,8 @@ record actual subjects, executed checks and remaining limits.
 
 ## Run the checks
 
-Native checks need only the pinned Zig toolchain and source dependency:
+From a source checkout, native checks use the pinned Zig toolchain, `tar`, and
+the source dependency:
 
 ```sh
 zig build check-native check-zig17 -Doptimize=safe
