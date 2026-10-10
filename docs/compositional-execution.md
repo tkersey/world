@@ -1,10 +1,15 @@
-# World 6 successor status
+# World 6 compatibility and development record
 
-World 6.0.0-dev.0 executes stable-activation Programs through one evaluator, with
+World 6.0.0 executes stable-activation Programs through one evaluator, with
 fresh and prepared/resident operation, portable checkpoints and a browser-neutral
-embedding. All linked PRs remain drafts; their live review/readiness status is authoritative.
+embedding. The supported toolchain is Zig 0.17.0 with Boundary 3 data,
+BPI3 programs, PST3 states and ABI 3.
 Contracts and commands are in [kernel-abi.md](kernel-abi.md) and
 [verification.md](verification.md).
+
+The development results and review/landing statements below describe their
+recorded candidates. They do not qualify a later release or change its source
+identity; current runtime delivery is described in [runtime-bundles.md](runtime-bundles.md).
 
 ## Current construction and validation
 
