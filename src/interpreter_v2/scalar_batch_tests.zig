@@ -1,5 +1,5 @@
 const std = @import("std");
-const data = @import("boundary_data");
+const data = @import("horos_data");
 const runtime = @import("stable_session.zig");
 const a = std.testing.allocator;
 const program: data.activation.Program = .{

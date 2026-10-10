@@ -1,7 +1,7 @@
 //! Explicit compiler-dependent fixture builder and independent native byte peer.
 const std = @import("std");
-const boundary = @import("boundary");
-const runtime = @import("world");
+const horos = @import("horos");
+const runtime = @import("kronos");
 
 pub fn main(init: std.process.Init) !void {
     var arguments = std.process.Args.Iterator.init(init.minimal.args);
@@ -26,29 +26,29 @@ pub fn main(init: std.process.Init) !void {
             try output.interface.flush();
             return;
         }
-        var builder = boundary.source.Builder.init(init.gpa);
+        var builder = horos.source.Builder.init(init.gpa);
         defer builder.deinit();
         const module = blk: {
             if (std.mem.eql(u8, name, "largeRequest")) break :blk try largeRequest(&builder);
             if (std.mem.eql(u8, name, "retainedScopeGeneral"))
-                break :blk try boundary.source.examples.retainedScope(&builder);
-            if (std.mem.eql(u8, name, "install")) break :blk try boundary.source.examples.installations(&builder, 64);
-            if (std.mem.eql(u8, name, "resource")) break :blk try boundary.source.examples.resourceScalar(&builder);
-            if (std.mem.eql(u8, name, "custody")) break :blk try boundary.source.examples.custodyOrder(&builder, 0);
+                break :blk try horos.source.examples.retainedScope(&builder);
+            if (std.mem.eql(u8, name, "install")) break :blk try horos.source.examples.installations(&builder, 64);
+            if (std.mem.eql(u8, name, "resource")) break :blk try horos.source.examples.resourceScalar(&builder);
+            if (std.mem.eql(u8, name, "custody")) break :blk try horos.source.examples.custodyOrder(&builder, 0);
             inline for (.{ "retainedScope", "branchingTail", "branchingTailProtected", "deep", "recursive", "reentrant", "generator", "shallow", "scalarContracts" }) |candidate| {
-                if (std.mem.eql(u8, name, candidate)) break :blk try @field(boundary.source.examples, candidate)(&builder);
+                if (std.mem.eql(u8, name, candidate)) break :blk try @field(horos.source.examples, candidate)(&builder);
             }
             return error.InvalidName;
         };
         // The general reference fixture rewrites clause functions by source ID.
         // A component retains those declarations; encoding still admits a closed Program.
         var compiled = if (std.mem.eql(u8, name, "retainedScopeGeneral"))
-            (try boundary.source.component.compile(init.gpa, module, .{ .exports = &.{} })).construction
+            (try horos.source.component.compile(init.gpa, module, .{ .exports = &.{} })).construction
         else
-            try boundary.program.compile(init.gpa, module);
+            try horos.program.compile(init.gpa, module);
         defer compiled.deinit();
         if (std.mem.eql(u8, name, "retainedScopeGeneral")) {
-            const ir = boundary.data.activation;
+            const ir = horos.data.activation;
             const a = builder.allocator();
             const handlers = try a.dupe(ir.Handler, compiled.program.handlers);
             for (handlers, builder.handlers.items) |*handler, original| {
@@ -61,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
             }
             compiled.program.handlers = handlers;
         }
-        const bytes = try init.gpa.alloc(u8, try boundary.data.program_image.encodedLength(compiled.program));
+        const bytes = try init.gpa.alloc(u8, try horos.data.program_image.encodedLength(compiled.program));
         defer init.gpa.free(bytes);
         _ = try compiled.encode(init.gpa, bytes);
         try output.interface.writeAll(bytes);
@@ -69,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
     try output.interface.flush();
 }
 
-fn largeRequest(b: *boundary.source.Builder) !boundary.source.Module {
+fn largeRequest(b: *horos.source.Builder) !horos.source.Module {
     const bytes = try b.schema(.bytes);
     const unit = try b.scalar(void);
     const effect = try b.effect(.{ .identity = "capacity/large", .payload = bytes, .result = unit });
@@ -81,8 +81,8 @@ fn largeRequest(b: *boundary.source.Builder) !boundary.source.Module {
 }
 
 fn linkedImage(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    const examples = boundary.source.component_examples;
-    const data = boundary.data;
+    const examples = horos.source.component_examples;
+    const data = horos.data;
     const doubled = std.mem.eql(u8, name, "componentsDouble");
     const recursive = std.mem.eql(u8, name, "componentsRecursive");
     const kinds: []const examples.Kind = if (recursive) &.{ .even, .odd } else &.{ .call, .state, .suspended, .double };

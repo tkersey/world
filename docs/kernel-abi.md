@@ -1,9 +1,9 @@
-# World kernel ABI 3 and byte embedding
+# Kronos kernel ABI 3 and byte embedding
 
 `src/kernel/main.zig` compiles one import-free wasm32 module from the stable
 evaluator. It defines unshared memory with a declared maximum (256 MiB by default)
 and no start function. Programs are BPI3 data; adding an application does not
-recompile the kernel. Production construction imports Boundary's pure data module
+recompile the kernel. Production construction imports Horos's pure data module
 only. Fixture compilation is an explicit, separate test build.
 
 ## Exports and buffers
@@ -116,7 +116,7 @@ persistence remain the caller's responsibility.
 ## Build and verification
 
 `zig build build-kernel` builds the generic ABI 3 kernel without constructing
-Boundary's authoring compiler. `zig build build-runtime check-package` builds the
+Horos's authoring compiler. `zig build build-runtime check-package` builds the
 ordinary standalone JS package and exercises its extracted public API and CLI.
 These commands do not publish a release or create a qualified-v1 bundle.
 

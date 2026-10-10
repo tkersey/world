@@ -8,13 +8,13 @@ The native roots preserve the evaluator and language contracts:
   invalidation, including expected assertion failures and leak-free valid paths.
 
 These roots use Zig’s authenticated package cache and the ordinary `tar`
-utility. An explicit Boundary source override must produce the selected package
+utility. An explicit Horos source override must produce the selected package
 hash; modules and emitters then consume that captured package, so later edits to
 the supplied directory cannot change the compiled input. They do not need Node, Python, a WASM bundle or a package producer.
 
 The optional foreign-environment roots have distinct consumers:
 
-- `check-source`: the independent Boundary higher-order interpreter versus actual
+- `check-source`: the independent Horos higher-order interpreter versus actual
   compiled native/WASM execution, preserving all 42 source examples.
 - `check-kernel`: the real JS embedding and canonical native/WASM ABI observations.
 - `check-capacity`: guest buffer bounds, physical memory growth and unchanged retry

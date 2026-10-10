@@ -1,7 +1,7 @@
 //! Shared response admission. The caller owns the exact expected binding:
 //! low-level Session recomputes it; Resident retains it under exclusive mutation.
 const std = @import("std");
-const data = @import("boundary_data");
+const data = @import("horos_data");
 
 pub fn answer(session: anytype, input: []const u8, expected: [32]u8) @TypeOf(session.*).ExecutionError!void {
     var response = try data.invocation.decode(data.invocation.Result, session.allocator, input);

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Reusable immutable Program ownership. Sessions retain their own strong lease.
 const std = @import("std");
-const data = @import("boundary_data");
+const data = @import("horos_data");
 const Layouts = @import("frame_layouts.zig").Layouts;
 pub const Error = data.program_image.Error || error{InvalidState};
 pub const Contract = struct { payload: []const u8, resume_value: []const u8 };

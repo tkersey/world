@@ -13,17 +13,17 @@ export function isUint8Array(value) {
  * Messages and details are deliberately metadata-only. Callers must not attach
  * program, state, effect, result, failure, or kernel diagnostic bytes.
  */
-export class WorldHostError extends Error {
+export class KronosHostError extends Error {
   constructor(code, message, details = undefined) {
     if (typeof code !== "string" || !CODE_PATTERN.test(code)) {
-      throw new TypeError("WorldHostError code must be a stable WORLD_* code");
+      throw new TypeError("KronosHostError code must be a stable WORLD_* code");
     }
     if (typeof message !== "string" || message.length === 0) {
-      throw new TypeError("WorldHostError message must be a nonempty string");
+      throw new TypeError("KronosHostError message must be a nonempty string");
     }
 
     super(message);
-    this.name = "WorldHostError";
+    this.name = "KronosHostError";
     Object.defineProperty(this, "code", {
       configurable: false,
       enumerable: true,
@@ -42,19 +42,19 @@ export class WorldHostError extends Error {
   }
 }
 
-export function worldError(code, message, details = undefined) {
-  return new WorldHostError(code, message, details);
+export function kronosError(code, message, details = undefined) {
+  return new KronosHostError(code, message, details);
 }
 
 function freezeDetails(details) {
   if (details === null || typeof details !== "object" || Array.isArray(details)) {
-    throw new TypeError("WorldHostError details must be a metadata record");
+    throw new TypeError("KronosHostError details must be a metadata record");
   }
 
   const copy = Object.create(null);
   for (const [key, value] of Object.entries(details)) {
     if (typeof key !== "string" || !isSafeDetail(value)) {
-      throw new TypeError("WorldHostError details must contain only safe metadata");
+      throw new TypeError("KronosHostError details must contain only safe metadata");
     }
     copy[key] = value;
   }

@@ -23,8 +23,8 @@ pub fn build(b: *std.Build) void {
     const profile = std.json.parseFromSliceLeaky(Profile, b.allocator, @embedFile("build-profile.json"), .{}) catch @panic("invalid runtime profile");
     const package = @import("build.zig.zon");
     const kernel_mode = std.meta.stringToEnum(std.lang.Optimize, profile.kernelMode) orelse @panic("invalid kernel mode");
-    const supplied_source = b.option(std.Build.LazyPath, "boundary-source", "Override the pinned Boundary source") orelse pinned: {
-        const dependency = b.lazyDependency("boundary", .{
+    const supplied_source = b.option(std.Build.LazyPath, "horos-source", "Override the pinned Horos source") orelse pinned: {
+        const dependency = b.lazyDependency("horos", .{
             .target = target,
             .optimize = optimize,
             .@"data-only" = true,
@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
         break :pinned dependency.path("");
     };
     if (supplied_source == .cwd_relative and !std.Io.Dir.path.isAbsolute(supplied_source.cwd_relative))
-        @panic("Boundary source path must be absolute");
+        @panic("Horos source path must be absolute");
     // Fetch captures the selected package without executing its build code.
     // Every compiler/emitter consumes the authenticated cache snapshot, never
     // the caller's mutable source directory after verification.
@@ -41,13 +41,13 @@ pub fn build(b: *std.Build) void {
     admission.setEnvironmentVariable("ZIG_GLOBAL_CACHE_DIR", ".");
     admission.addArg("fetch");
     admission.addDirectoryArg2(supplied_source, .{ .make_absolute = true });
-    admission.expectStdOutEqual(package.dependencies.boundary.hash ++ "\n");
+    admission.expectStdOutEqual(package.dependencies.horos.hash ++ "\n");
     admission.has_side_effects = true;
     const snapshot = b.addSystemCommand(&.{ "tar", "-xzf" });
     snapshot.removeEnvironmentVariable("TAR_OPTIONS");
-    snapshot.addFileArg2(b.graph.path(.global_cache, "p/" ++ package.dependencies.boundary.hash ++ ".tar.gz"), .{ .make_absolute = true });
+    snapshot.addFileArg2(b.graph.path(.global_cache, "p/" ++ package.dependencies.horos.hash ++ ".tar.gz"), .{ .make_absolute = true });
     snapshot.addArgs(&.{ "--strip-components=1", "--no-same-owner", "-C" });
-    const source = snapshot.addOutputDirectoryArg2("boundary", .{});
+    const source = snapshot.addOutputDirectoryArg2("horos", .{});
     snapshot.step.dependOn(&admission.step);
     const data = b.createModule(.{
         .root_source_file = source.path(b, "src/data/root.zig"),
@@ -59,17 +59,17 @@ pub fn build(b: *std.Build) void {
         .target = b.graph.host,
         .optimize = optimize,
     });
-    const public_world = b.addModule("world", .{
+    const public_kronos = b.addModule("kronos", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "boundary_data", .module = data }},
+        .imports = &.{.{ .name = "horos_data", .module = data }},
     });
     const tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/tests.zig"),
         .target = b.graph.host,
         .optimize = optimize,
-        .imports = &.{.{ .name = "boundary_data", .module = host_data }},
+        .imports = &.{.{ .name = "horos_data", .module = host_data }},
     }) });
     const run_native_tests = b.addRunArtifact(tests);
     b.step("check-storage", "Check current private storage and allocation contracts")
@@ -78,21 +78,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/interpreter_v2/activation_slots_tests.zig"),
         .target = b.graph.host,
         .optimize = optimize,
-        .imports = &.{.{ .name = "boundary_data", .module = host_data }},
+        .imports = &.{.{ .name = "horos_data", .module = host_data }},
     }) });
     b.step("check-activation-storage", "Check stable activation storage and failure atomicity")
         .dependOn(&b.addRunArtifact(activation_tests).step);
     const host_mode = std.meta.stringToEnum(std.lang.Optimize, profile.hostMode) orelse @panic("invalid host mode");
     const source_data = if (host_mode == optimize) host_data else b.createModule(.{ .root_source_file = source.path(b, "src/data/root.zig"), .target = b.graph.host, .optimize = host_mode });
-    const boundary = b.createModule(.{ .root_source_file = source.path(b, "src/root.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary_data", .module = source_data }} });
-    const host_world = if (target.query.isNative() and host_mode == optimize) public_world else b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary_data", .module = source_data }} });
-    const stable_runtime = b.createModule(.{ .root_source_file = b.path("src/interpreter_v2/stable_session.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary_data", .module = source_data }} });
-    const borrow_returns = b.createModule(.{ .root_source_file = source.path(b, "test/v2/borrow_returns.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary", .module = boundary }} });
+    const horos = b.createModule(.{ .root_source_file = source.path(b, "src/root.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "horos_data", .module = source_data }} });
+    const host_kronos = if (target.query.isNative() and host_mode == optimize) public_kronos else b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "horos_data", .module = source_data }} });
+    const stable_runtime = b.createModule(.{ .root_source_file = b.path("src/interpreter_v2/stable_session.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "horos_data", .module = source_data }} });
+    const borrow_returns = b.createModule(.{ .root_source_file = source.path(b, "test/v2/borrow_returns.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "horos", .module = horos }} });
     const stable_test = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("test/v2/stable_source.zig"),
         .target = b.graph.host,
         .optimize = host_mode,
-        .imports = &.{ .{ .name = "world", .module = host_world }, .{ .name = "stable_runtime", .module = stable_runtime }, .{ .name = "boundary_data", .module = source_data }, .{ .name = "boundary", .module = boundary }, .{ .name = "borrow_return_fixtures", .module = borrow_returns } },
+        .imports = &.{ .{ .name = "kronos", .module = host_kronos }, .{ .name = "stable_runtime", .module = stable_runtime }, .{ .name = "horos_data", .module = source_data }, .{ .name = "horos", .module = horos }, .{ .name = "borrow_return_fixtures", .module = borrow_returns } },
     }) });
     const stable_source = b.addRunArtifact(stable_test);
     const native_checks = b.step("check-native", "Check native storage, source semantics, sessions and restore without an interpreter");
@@ -108,7 +108,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/interpreter_v2/stable_session.zig"),
         .target = wasm_target,
         .optimize = kernel_mode,
-        .imports = &.{.{ .name = "boundary_data", .module = wasm_data }},
+        .imports = &.{.{ .name = "horos_data", .module = wasm_data }},
     });
     const current_options = b.addOptions();
     current_options.addOption(usize, "input_capacity", b.option(usize, "input-capacity", "Initial current input budget") orelse profile.defaults.input);
@@ -118,10 +118,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/kernel/main.zig"),
         .target = wasm_target,
         .optimize = kernel_mode,
-        .imports = &.{ .{ .name = "runtime", .module = current_runtime }, .{ .name = "boundary_data", .module = wasm_data } },
+        .imports = &.{ .{ .name = "runtime", .module = current_runtime }, .{ .name = "horos_data", .module = wasm_data } },
     });
     current_module.addOptions("kernel_options", current_options);
-    const current_kernel = b.addExecutable(.{ .name = "world-kernel", .root_module = current_module });
+    const current_kernel = b.addExecutable(.{ .name = "kronos-kernel", .root_module = current_module });
     current_kernel.entry = .disabled;
     current_kernel.use_llvm = profile.wasmBackend == .llvm;
     current_kernel.use_lld = profile.wasmLinker == .lld;
@@ -161,21 +161,21 @@ pub fn build(b: *std.Build) void {
     }, .{}) catch @panic("out of memory"));
     const installed_profile = b.addInstallFileWithDir(build_profile, .prefix, "kernel-profile.json");
     b.step("build-kernel", "Build the generic ABI 3 kernel")
-        .dependOn(&b.addInstallFileWithDir(current_kernel.getEmittedBin(), .prefix, "world-kernel.wasm").step);
+        .dependOn(&b.addInstallFileWithDir(current_kernel.getEmittedBin(), .prefix, "kronos-kernel.wasm").step);
     const runtime_package = b.step("build-runtime", "Build the standalone current JavaScript/kernel package");
     runtime_package.dependOn(&installed_profile.step);
     // One explicit npm file list owns the optional package's shipped surface.
     // Repeated builds may retain old outputs, but those never enter a new package.
     const npm_package = std.json.parseFromSliceLeaky(struct { files: []const []const u8 }, b.allocator, @embedFile("package.json"), .{ .ignore_unknown_fields = true }) catch @panic("invalid package file list");
     for (npm_package.files) |path| {
-        const file = if (std.mem.eql(u8, path, "world-kernel.wasm")) current_kernel.getEmittedBin() else b.path(path);
+        const file = if (std.mem.eql(u8, path, "kronos-kernel.wasm")) current_kernel.getEmittedBin() else b.path(path);
         runtime_package.dependOn(&b.addInstallFileWithDir(file, .prefix, b.fmt("runtime/{s}", .{path})).step);
     }
     const fixture = b.addExecutable(.{ .name = "current-fixtures", .root_module = b.createModule(.{
         .root_source_file = b.path("test/current/fixtures.zig"),
         .target = b.graph.host,
         .optimize = host_mode,
-        .imports = &.{ .{ .name = "world", .module = host_world }, .{ .name = "boundary", .module = boundary } },
+        .imports = &.{ .{ .name = "kronos", .module = host_kronos }, .{ .name = "horos", .module = horos } },
     }) });
     const current_fixtures = b.addInstallArtifact(fixture, .{ .dest_dir = .{ .override = .{ .custom = "current/bin" } } });
     const native_input = b.addRunArtifact(fixture);
@@ -244,7 +244,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/interpreter_v2/activation_slots.zig"),
         .target = wasm_target,
         .optimize = .safe,
-        .imports = &.{.{ .name = "boundary_data", .module = wasm_data }},
+        .imports = &.{.{ .name = "horos_data", .module = wasm_data }},
     });
     const activation_wasm = b.addExecutable(.{ .name = "activation-storage-test", .root_module = b.createModule(.{
         .root_source_file = b.path("test/v2/activation_storage_wasm.zig"),
@@ -265,13 +265,13 @@ pub fn build(b: *std.Build) void {
     const check = b.step("check", "Check current native, host, portable and package contracts");
     const zig17 = b.step("check-zig17", "Check pointer-borrow diagnostics and qualified storage ownership");
     const borrow_probe = b.addExecutable(.{
-        .name = "world-borrow-diagnostics",
+        .name = "kronos-borrow-diagnostics",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/interpreter_v2/borrow_diagnostics.zig"),
             .target = b.graph.host,
             // Keep the named assertion frame in intentional-panic diagnostics.
             .optimize = .debug,
-            .imports = &.{.{ .name = "boundary_data", .module = host_data }},
+            .imports = &.{.{ .name = "horos_data", .module = host_data }},
         }),
     });
     const borrow_check = b.addRunArtifact(borrow_probe);

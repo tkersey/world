@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
-//! Stable transient handles over Boundary's logical node kinds.
+//! Stable transient handles over Horos's logical node kinds.
 const std = @import("std");
-const data = @import("boundary_data");
+const data = @import("horos_data");
 const g = data.graph;
 pub const Error = data.graph_order.Error;
 const empty: g.Node = .{ .environment = .{ .values = &.{}, .tail = null } };

@@ -1,5 +1,5 @@
 {
-  "name": "world-browser-conformance",
+  "name": "kronos-browser-conformance",
   "private": true,
   "type": "module",
   "devDependencies": {

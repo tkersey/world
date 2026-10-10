@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! One operand access boundary for temporary call arrays and stable activations.
 const std = @import("std");
-const data = @import("boundary_data");
+const data = @import("horos_data");
 const Error = @import("runtime_types.zig").Error;
 
 pub fn read(storage: anytype, id: data.program.Id) Error!data.graph.Value {

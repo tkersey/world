@@ -56,7 +56,7 @@ fn check(allocator: std.mem.Allocator, mode: Mode) !void {
     injection.slots = &slots;
     const first = try slots.create(8);
     _ = try slots.create(8);
-    const value = @import("boundary_data").graph.Value{ .schema = 0, .body = .{ .scalar = .{ 7, 0, 0, 0, 0, 0, 0, 0 } } };
+    const value = @import("horos_data").graph.Value{ .schema = 0, .body = .{ .scalar = .{ 7, 0, 0, 0, 0, 0, 0, 0 } } };
     injection.armed = true;
     if (mode == .oom) {
         if (slots.set(first, 0, value)) |_| return error.MissingAllocationFailure else |err| if (err != error.OutOfMemory) return err;

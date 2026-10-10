@@ -1,5 +1,5 @@
 const std = @import("std");
-const data = @import("boundary_data");
+const data = @import("horos_data");
 const g = data.graph;
 const Store = @import("store.zig").Store;
 const allocator = std.testing.allocator;

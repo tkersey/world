@@ -1,11 +1,13 @@
-# World 6
+# Kronos 6
 
-World executes complete Boundary programs through one Zig interpreter, built
+Formerly World; see the [rename notes](docs/rename.md).
+
+Kronos executes complete Horos programs through one Zig interpreter, built
 natively and as an import-free wasm32 kernel. Computations, handlers, policies,
 retained control and cleanup are program data. The environment supplies typed
 external results.
 
-World `6.0.0` supports only exact Zig `0.17.0` and Boundary 3 data.
+Kronos `6.0.0` supports only exact Zig `0.17.0` and Horos 3 data.
 It consumes BPI3 programs and PST3 states through ABI 3. See the
 [ABI contract](docs/kernel-abi.md) and [verification boundaries](docs/verification.md).
 Current source/package identities are selected by the consuming lock; published
@@ -16,7 +18,7 @@ release bytes remain unchanged.
 The package root is an environment-neutral byte API:
 
 ```js
-import { Kernel, encodeInput, decodeOutcome, decodeRequest, encodeResult } from "@tkersey/world";
+import { Kernel, encodeInput, decodeOutcome, decodeRequest, encodeResult } from "@tkersey/kronos";
 const kernel = await Kernel.create({ bytes: kernelBytes, expectedSha256 });
 const outcome = decodeOutcome(kernel.invoke(encodeInput({ image, initialArgs })));
 if (outcome.kind === "requested") {
@@ -39,29 +41,29 @@ exports and releases only after successful output publication. `close` requires
 terminal control. Cancellation and cleanup are executable operations, not physical
 handle destruction. Use `setLimits` to select input, working and output budgets.
 
-Native consumers import `world.Session`, `world.Prepared`, `world.Resident`, and
-`world.invocation`. Production builds import only Boundary's pure data module.
+Native consumers import `kronos.Session`, `kronos.Prepared`, `kronos.Resident`, and
+`kronos.invocation`. Production builds import only Horos's pure data module.
 
 ## Build, package and command line
 
 ```sh
 zig build build-kernel build-runtime
-node zig-out/runtime/bin/world.mjs --help
-node zig-out/runtime/bin/world.mjs invoke --kernel zig-out/runtime/world-kernel.wasm --sha256 EXPECTED_SHA256 --input command.pki3 > outcome.pko3
+node zig-out/runtime/bin/kronos.mjs --help
+node zig-out/runtime/bin/kronos.mjs invoke --kernel zig-out/runtime/kronos-kernel.wasm --sha256 EXPECTED_SHA256 --input command.pki3 > outcome.pko3
 ```
 
 The CLI reads regular files, rejects observed changes, and writes canonical PKO3
 bytes to stdout. The input is a complete PKI3 command, including image, initial
 arguments or checkpoint, reply/cancellation/yield control, and optional quantum.
 `build-runtime` creates a standalone package under `zig-out/runtime` without
-constructing Boundary's authoring compiler. It does not publish a package.
+constructing Horos's authoring compiler. It does not publish a package.
 
 ```sh
 zig build check
 ```
 
-Native consumers use the public `world` module and the package selected by
-`build.zig.zon`. An explicit `-Dboundary-source=/absolute/source` override is
+Native consumers use the public `kronos` module and the package selected by
+`build.zig.zon`. An explicit `-Dhoros-source=/absolute/source` override is
 captured by Zig and admitted against the selected package hash; the native build
 uses `tar` to unpack that authenticated snapshot for compilation. No interpreter,
 JS/WASM archive or script-generated metadata is a native prerequisite.
@@ -84,10 +86,10 @@ An unbounded invocation may diverge if the authored program diverges.
 
 A cancelled pending cleanup retains its control and receives a newly bound request.
 The environment may re-encode an already acquired typed result against that request;
-World does not provide external rollback or global exactly-once effects.
+Kronos does not provide external rollback or global exactly-once effects.
 
 Stable delivery and its compatibility limits are described in
-[runtime bundles](docs/runtime-bundles.md). Agent applications retain their own
+[runtime bundles](docs/runtime-bundles.md). Protean applications retain their own
 migration and qualification requirements.
 
 See [verification](docs/verification.md) for the current coverage and the
