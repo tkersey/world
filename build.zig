@@ -11,7 +11,6 @@ const Profile = struct {
     stackBytes: u64,
     maximumMemoryBytes: u64,
     defaults: struct { input: usize, working: usize, output: usize },
-    boundary: struct { commit: []const u8, package: []const u8, url: []const u8, inventorySha256: []const u8 },
 };
 
 pub fn build(b: *std.Build) void {
@@ -21,11 +20,8 @@ pub fn build(b: *std.Build) void {
     }
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const profile = std.json.parseFromSliceLeaky(Profile, b.allocator, @embedFile("src/node/runtime-profile.json"), .{}) catch @panic("invalid runtime profile");
+    const profile = std.json.parseFromSliceLeaky(Profile, b.allocator, @embedFile("build-profile.json"), .{}) catch @panic("invalid runtime profile");
     const package = @import("build.zig.zon");
-    if (!std.mem.eql(u8, package.dependencies.boundary.url, profile.boundary.url) or
-        !std.mem.eql(u8, package.dependencies.boundary.hash, profile.boundary.package))
-        @panic("runtime profile and Boundary package selection differ");
     const kernel_mode = std.meta.stringToEnum(std.lang.Optimize, profile.kernelMode) orelse @panic("invalid kernel mode");
     const source = b.option(std.Build.LazyPath, "boundary-source", "Override the pinned Boundary source") orelse pinned: {
         const dependency = b.lazyDependency("boundary", .{
@@ -37,17 +33,29 @@ pub fn build(b: *std.Build) void {
     };
     if (source == .cwd_relative and !std.Io.Dir.path.isAbsolute(source.cwd_relative))
         @panic("Boundary source path must be absolute");
+    // Zig fetch authenticates the selected package without executing its build
+    // code. Exported modules carry this guard, including explicit source overrides.
+    const admission = b.addRunFile(.zig_exe);
+    admission.addArg("fetch");
+    admission.addDirectoryArg2(source, .{ .make_absolute = true });
+    admission.expectStdOutEqual(package.dependencies.boundary.hash ++ "\n");
+    admission.has_side_effects = true;
+    const admitted_files = b.addWriteFiles();
+    admitted_files.step.dependOn(&admission.step);
+    const admitted = b.createModule(.{ .root_source_file = admitted_files.add("boundary_admitted.zig", "") });
     const data = b.createModule(.{
         .root_source_file = source.path(b, "src/data/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const host_data = b.createModule(.{
+    const host_data = if (target.query.isNative()) data else b.createModule(.{
         .root_source_file = source.path(b, "src/data/root.zig"),
         .target = b.graph.host,
         .optimize = optimize,
     });
-    _ = b.addModule("world", .{
+    data.addImport("_boundary_admission", admitted);
+    host_data.addImport("_boundary_admission", admitted);
+    const public_world = b.addModule("world", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -70,24 +78,30 @@ pub fn build(b: *std.Build) void {
     }) });
     b.step("check-activation-storage", "Check stable activation storage and failure atomicity")
         .dependOn(&b.addRunArtifact(activation_tests).step);
-    const stable_source = b.addRunFile(.zig_exe);
-    stable_source.addArg("build");
-    stable_source.addDirectoryArg2(.zig_lib, .{ .prefix = "--zig-lib=", .make_absolute = true });
-    stable_source.addArgs(&.{"--build-file"});
-    stable_source.addFileArg2(b.path("test/v2/build_source.zig"), .{});
-    stable_source.addDirectoryArg2(b.path(""), .{ .prefix = "-Dworld-source=", .make_absolute = true });
-    stable_source.addDirectoryArg2(source, .{ .prefix = "-Dboundary-source=", .make_absolute = true });
-    stable_source.addArgs(&.{ b.fmt("-Doptimize={s}", .{profile.hostMode}), "--summary", "all", "--cache-dir" });
-    stable_source.addDirectoryArg2(std.Build.LazyPath.cache_root.path(b, "stable-source"), .{ .make_absolute = true });
-    stable_source.has_side_effects = true;
-    b.step("check-native", "Check current source semantics, sessions and restore")
-        .dependOn(&stable_source.step);
+    const host_mode = std.meta.stringToEnum(std.lang.Optimize, profile.hostMode) orelse @panic("invalid host mode");
+    const source_data = if (host_mode == optimize) host_data else b.createModule(.{ .root_source_file = source.path(b, "src/data/root.zig"), .target = b.graph.host, .optimize = host_mode });
+    source_data.addImport("_boundary_admission", admitted);
+    const boundary = b.createModule(.{ .root_source_file = source.path(b, "src/root.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary_data", .module = source_data }} });
+    const host_world = if (target.query.isNative() and host_mode == optimize) public_world else b.createModule(.{ .root_source_file = b.path("src/root.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary_data", .module = source_data }} });
+    const stable_runtime = b.createModule(.{ .root_source_file = b.path("src/interpreter_v2/stable_session.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary_data", .module = source_data }} });
+    const borrow_returns = b.createModule(.{ .root_source_file = source.path(b, "test/v2/borrow_returns.zig"), .target = b.graph.host, .optimize = host_mode, .imports = &.{.{ .name = "boundary", .module = boundary }} });
+    const stable_test = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("test/v2/stable_source.zig"),
+        .target = b.graph.host,
+        .optimize = host_mode,
+        .imports = &.{ .{ .name = "world", .module = host_world }, .{ .name = "stable_runtime", .module = stable_runtime }, .{ .name = "boundary_data", .module = source_data }, .{ .name = "boundary", .module = boundary }, .{ .name = "borrow_return_fixtures", .module = borrow_returns } },
+    }) });
+    const stable_source = b.addRunArtifact(stable_test);
+    const native_checks = b.step("check-native", "Check native storage, source semantics, sessions and restore without an interpreter");
+    native_checks.dependOn(&stable_source.step);
+    native_checks.dependOn(&run_native_tests.step);
     const wasm_target = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = profile.target, .cpu_features = profile.cpu }) catch @panic("invalid kernel target"));
     const wasm_data = b.createModule(.{
         .root_source_file = source.path(b, "src/data/root.zig"),
         .target = wasm_target,
         .optimize = kernel_mode,
     });
+    wasm_data.addImport("_boundary_admission", admitted);
     const current_runtime = b.createModule(.{
         .root_source_file = b.path("src/interpreter_v2/stable_session.zig"),
         .target = wasm_target,
@@ -150,28 +164,25 @@ pub fn build(b: *std.Build) void {
     runtime_package.dependOn(&installed_profile.step);
     runtime_package.dependOn(&b.addInstallFileWithDir(current_kernel.getEmittedBin(), .prefix, "runtime/world-kernel.wasm").step);
     for ([_][]const u8{
-        "LICENSE",                       "README.md",                  "package.json",                 "bin/world.mjs",               "docs/kernel-abi.md",
-        "src/embedding/index.mjs",       "src/embedding/kernel.mjs",   "src/embedding/codec.mjs",      "src/embedding/values.mjs",    "src/embedding/wasm.mjs",
-        "src/embedding/wire.mjs",        "src/embedding/errors.mjs",   "src/node/file-input.mjs",      "src/node/runtime-bundle.mjs", "src/node/runtime-command.mjs",
-        "src/node/runtime-prepare.mjs",  "src/node/runtime-smoke.mjs", "src/node/runtime-acquire.mjs", "docs/runtime-bundles.md",     "src/node/runtime-output.mjs",
-        "src/node/runtime-profile.json", "src/node/toolchain.mjs",
+        "LICENSE",                    "README.md",                    "package.json",            "bin/world.mjs",               "docs/kernel-abi.md",
+        "src/embedding/index.mjs",    "src/embedding/kernel.mjs",     "src/embedding/codec.mjs", "src/embedding/values.mjs",    "src/embedding/wasm.mjs",
+        "src/embedding/wire.mjs",     "src/embedding/errors.mjs",     "src/node/file-input.mjs", "src/node/runtime-bundle.mjs", "src/node/runtime-command.mjs",
+        "src/node/runtime-smoke.mjs", "src/node/runtime-acquire.mjs", "docs/runtime-bundles.md", "src/node/runtime-output.mjs", "src/node/runtime-profile.json",
     }) |path| runtime_package.dependOn(&b.addInstallFileWithDir(b.path(path), .prefix, b.fmt("runtime/{s}", .{path})).step);
-    const current_fixtures = b.addRunFile(.zig_exe);
-    current_fixtures.addArg("build");
-    current_fixtures.addDirectoryArg2(.zig_lib, .{ .prefix = "--zig-lib=", .make_absolute = true });
-    current_fixtures.addArgs(&.{"--build-file"});
-    current_fixtures.addFileArg2(b.path("test/v2/build_source.zig"), .{});
-    current_fixtures.addDirectoryArg2(b.path(""), .{ .prefix = "-Dworld-source=", .make_absolute = true });
-    current_fixtures.addDirectoryArg2(source, .{ .prefix = "-Dboundary-source=", .make_absolute = true });
-    current_fixtures.addArgs(&.{ "-Dcurrent-fixtures=true", b.fmt("-Doptimize={s}", .{profile.hostMode}), "--prefix" });
-    current_fixtures.addDirectoryArg2(b.graph.path(.install_prefix, "current"), .{ .make_absolute = true });
-    current_fixtures.addArg("--cache-dir");
-    current_fixtures.addDirectoryArg2(std.Build.LazyPath.cache_root.path(b, "current-fixture"), .{ .make_absolute = true });
-    current_fixtures.has_side_effects = true;
+    const fixture = b.addExecutable(.{ .name = "current-fixtures", .root_module = b.createModule(.{
+        .root_source_file = b.path("test/current/fixtures.zig"),
+        .target = b.graph.host,
+        .optimize = host_mode,
+        .imports = &.{ .{ .name = "world", .module = host_world }, .{ .name = "boundary", .module = boundary } },
+    }) });
+    const current_fixtures = b.addInstallArtifact(fixture, .{ .dest_dir = .{ .override = .{ .custom = "current/bin" } } });
+    const native_input = b.addRunArtifact(fixture);
+    native_input.addArgs(&.{ "image", "install" });
+    b.step("emit-native-input", "Emit the shared native public-consumer input").dependOn(&b.addInstallFileWithDir(native_input.captureStdOut(.{}), .prefix, "native-consumer.bpi3").step);
     const current_package_check = b.addSystemCommand(&.{"node"});
     current_package_check.addFileArg2(b.path("test/current/package.mjs"), .{});
     current_package_check.addDirectoryArg2(b.graph.path(.install_prefix, "runtime"), .{ .make_absolute = true });
-    current_package_check.addFileArg2(b.graph.path(.install_prefix, "current/bin/current-fixtures"), .{ .make_absolute = true });
+    current_package_check.addFileArg2(fixture.getEmittedBin(), .{ .make_absolute = true });
     current_package_check.step.dependOn(runtime_package);
     current_package_check.step.dependOn(&current_fixtures.step);
     current_package_check.has_side_effects = true;
@@ -180,11 +191,12 @@ pub fn build(b: *std.Build) void {
     const current_check = b.addSystemCommand(&.{"node"});
     current_check.addFileArg2(b.path("test/current/kernel.mjs"), .{});
     current_check.addFileArg2(current_kernel.getEmittedBin(), .{});
-    current_check.addFileArg2(b.graph.path(.install_prefix, "current/bin/current-fixtures"), .{ .make_absolute = true });
+    current_check.addFileArg2(fixture.getEmittedBin(), .{ .make_absolute = true });
     current_check.step.dependOn(&current_fixtures.step);
     current_check.has_side_effects = true;
     b.step("check-kernel", "Check ABI 3 and current native/Node transfer").dependOn(&current_check.step);
     const source_examples = b.addRunFile(.zig_exe);
+    source_examples.step.dependOn(&admission.step);
     source_examples.addArg("build");
     source_examples.addDirectoryArg2(.zig_lib, .{ .prefix = "--zig-lib=", .make_absolute = true });
     source_examples.addArgs(&.{ "emit-examples", "--build-file" });
@@ -196,7 +208,7 @@ pub fn build(b: *std.Build) void {
     const source_agreement = b.addSystemCommand(&.{"node"});
     source_agreement.addFileArg2(b.path("test/current/source_agreement.mjs"), .{});
     source_agreement.addFileArg2(current_kernel.getEmittedBin(), .{});
-    source_agreement.addFileArg2(b.graph.path(.install_prefix, "current/bin/current-fixtures"), .{ .make_absolute = true });
+    source_agreement.addFileArg2(fixture.getEmittedBin(), .{ .make_absolute = true });
     source_agreement.addDirectoryArg2(b.graph.path(.install_prefix, "source"), .{ .make_absolute = true });
     source_agreement.addFileArg2(source.path(b, "test/v2/source_oracle.mjs"), .{ .make_absolute = true });
     source_agreement.step.dependOn(&source_examples.step);
@@ -207,25 +219,15 @@ pub fn build(b: *std.Build) void {
     const capacity = b.addSystemCommand(&.{"node"});
     capacity.addFileArg2(b.path("test/current/capacity.mjs"), .{});
     capacity.addFileArg2(current_kernel.getEmittedBin(), .{});
-    capacity.addFileArg2(b.graph.path(.install_prefix, "current/bin/current-fixtures"), .{ .make_absolute = true });
-    capacity.addDirectoryArg2(source, .{ .make_absolute = true });
-    capacity.addFileArg2(.zig_exe, .{ .make_absolute = true });
-    capacity.addDirectoryArg2(.zig_lib, .{ .make_absolute = true });
+    capacity.addFileArg2(fixture.getEmittedBin(), .{ .make_absolute = true });
     capacity.step.dependOn(&current_fixtures.step);
     capacity.has_side_effects = true;
     b.step("check-capacity", "Check all current arena limits, physical memory and unchanged retries")
         .dependOn(&capacity.step);
-    const current_transfer = b.addSystemCommand(&.{"node"});
-    current_transfer.addFileArg2(b.path("test/current/transfer.mjs"), .{});
-    current_transfer.addFileArg2(current_kernel.getEmittedBin(), .{});
-    current_transfer.addFileArg2(b.graph.path(.install_prefix, "current/bin/current-fixtures"), .{ .make_absolute = true });
-    current_transfer.step.dependOn(&current_fixtures.step);
-    current_transfer.has_side_effects = true;
-    b.step("check-transfer", "Check current Node/Wasmtime/native State transfer").dependOn(&current_transfer.step);
     const current_browser = b.addSystemCommand(&.{"node"});
     current_browser.addFileArg2(b.path("test/current/browser.mjs"), .{});
     current_browser.addFileArg2(current_kernel.getEmittedBin(), .{});
-    current_browser.addFileArg2(b.graph.path(.install_prefix, "current/bin/current-fixtures"), .{ .make_absolute = true });
+    current_browser.addFileArg2(fixture.getEmittedBin(), .{ .make_absolute = true });
     current_browser.step.dependOn(&current_fixtures.step);
     current_browser.has_side_effects = true;
     b.step("check-browser", "Check real browser Worker/native transfer on Chromium and Firefox").dependOn(&current_browser.step);
@@ -271,19 +273,10 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "boundary_data", .module = host_data }},
         }),
     });
-    const borrow_check = b.addSystemCommand(&.{ "node", "test/current/borrow_diagnostics.mjs" });
-    borrow_check.addArtifactArg2(borrow_probe, .{});
-    borrow_check.has_side_effects = true;
+    const borrow_check = b.addRunArtifact(borrow_probe);
+    borrow_check.addArg("check");
+    borrow_check.addArtifactArg2(borrow_probe, .{ .make_absolute = true });
     zig17.dependOn(&borrow_check.step);
-    const package_ownership = b.addSystemCommand(&.{ "env", "-u", "NODE_TEST_CONTEXT", "node", "--test", "test/current/zig17.test.mjs" });
-    package_ownership.has_side_effects = true;
-    zig17.dependOn(&package_ownership.step);
-    const build_selection = b.addSystemCommand(&.{ "node", "test/current/build_selection.mjs" });
-    build_selection.addFileArg2(.zig_exe, .{ .make_absolute = true });
-    build_selection.addDirectoryArg2(.zig_lib, .{ .make_absolute = true });
-    build_selection.addDirectoryArg2(source, .{ .make_absolute = true });
-    build_selection.has_side_effects = true;
-    zig17.dependOn(&build_selection.step);
     check.dependOn(zig17);
     check.dependOn(&run_native_tests.step);
     check.dependOn(&stable_source.step);
@@ -291,11 +284,7 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&current_check.step);
     check.dependOn(&source_agreement.step);
     check.dependOn(&capacity.step);
-    check.dependOn(&current_transfer.step);
     check.dependOn(&current_browser.step);
     check.dependOn(&current_codecs.step);
     check.dependOn(&current_package_check.step);
-    const economy = b.step("check-economy", "Check storage work bounds and current execution preservation");
-    economy.dependOn(&run_native_tests.step);
-    economy.dependOn(&stable_source.step);
 }

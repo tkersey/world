@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { dirname, basename, join, resolve } from "node:path";
 import { reject } from "./runtime-bundle.mjs";
 
-// Both public creators own the destination through this one reservation.
+// Archive acquisition owns its output through this reservation.
 export async function reserveOutput(output, additionalDestinations = []) {
   output = resolve(output);
   const requestedParent = dirname(output);

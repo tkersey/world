@@ -6,11 +6,10 @@ retained control and cleanup are program data. The environment supplies typed
 external results.
 
 World `6.0.0` supports only exact Zig `0.17.0` and Boundary 3 data.
-It consumes BPI3 programs and PST3 states through ABI 3. See [current status](docs/compositional-execution.md)
-and the [ABI 3 contract](docs/kernel-abi.md).
-The [Zig 0.17 execution and cost evidence](https://github.com/tkersey/boundary/blob/a39014232db44c6780a3a2d953dacea111168aec/docs/zig-0.17-upgrade.md)
-records the qualified package/runtime behavior and accepted compatibility costs.
-Source and delivery identities remain bound by the consuming dependency lock.
+It consumes BPI3 programs and PST3 states through ABI 3. See the
+[ABI contract](docs/kernel-abi.md) and [verification boundaries](docs/verification.md).
+Current source/package identities are selected by the consuming lock; published
+release bytes remain unchanged.
 
 ## JavaScript and browser Workers
 
@@ -61,17 +60,18 @@ constructing Boundary's authoring compiler. It does not publish a package.
 zig build check
 ```
 
-During coordinated development, `-Dboundary-source=/absolute/boundary-source`
-selects the matching source explicitly. `check-native` runs current source and
-Session regressions in a separate compiler-dependent build. `check-storage`
-checks shared private storage, allocation, cloning and collection independently.
-The normal dependency pins Boundary `511fe38`, including canonical compilation
-without a coalescing selector. Production World still imports only Boundary data.
-`check-source` compares all 42 emitted BPI3 examples with the independent source
-oracle and fresh native/WASM execution. `check-capacity` checks arena exhaustion,
-fixed physical memory, and unchanged retries. Both are included in `check`.
-Wasmtime uses the locked Python environment through uv; browser checks run
-real Chromium and Firefox Workers.
+Native consumers use the public `world` module and the package selected by
+`build.zig.zon`. An explicit `-Dboundary-source=/absolute/source` override is
+admitted against that actual Zig package hash before compilation. No interpreter,
+JS/WASM archive or script-generated metadata is a native prerequisite.
+
+`check-native` and `check-storage` use shared native build roots. `check-source`
+compares 42 source examples with the independent higher-order oracle and actual
+native/WASM execution. The optional JS checks cover canonical bytes, handles,
+capacity/retry behavior, package/CLI consumption and a real Chromium Worker.
+Repeated measurement/transfer campaigns and the Python/Wasmtime dependency are
+retired. The old `runtime prepare` producer is replaced by the ordinary Zig
+package build and existing qualification roots.
 
 ## State and effects
 
@@ -92,5 +92,4 @@ migration and qualification requirements.
 See [verification](docs/verification.md) for the current coverage and the
 remaining migration boundaries.
 
-Qualified standalone runtime preparation, authenticated acquisition, and offline
-verification are documented in [runtime bundles](docs/runtime-bundles.md).
+Source builds and existing v1 authenticated acquisition/verification are documented in [runtime bundles](docs/runtime-bundles.md).

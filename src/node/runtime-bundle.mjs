@@ -3,9 +3,11 @@ import { lstat, readdir, mkdtemp, mkdir, writeFile, chmod, rm } from "node:fs/pr
 import { resolve, join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { readRegularFile } from "./file-input.mjs";
-import { Kernel, packageVersion } from "../embedding/index.mjs";
+import { Kernel } from "../embedding/index.mjs";
 import { inspectKernelWasm } from "../embedding/wasm.mjs";
 import runtimeProfile from "./runtime-profile.json" with { type: "json" };
+// Historical v1 admission policy is independent of current native source pins.
+const packageVersion = "6.0.0";
 Object.freeze(runtimeProfile.defaults);
 Object.freeze(runtimeProfile.boundary);
 Object.freeze(runtimeProfile.features);
@@ -35,7 +37,6 @@ async function scanInventory(root, prefix = "", entries = [], count = { value: 0
     const stat = await lstat(join(root, path));
     if (stat.isSymbolicLink()) reject("WORLD_BUNDLE_INVALID", `symlink: ${path}`);
     if (stat.isDirectory()) {
-      count.directories?.push({ path, mode: stat.mode & 0o777 });
       await scanInventory(root, path, entries, count);
     }
     else if (stat.isFile()) {
@@ -50,12 +51,6 @@ export async function inventory(root) {
   const files = await scanInventory(root);
   for (const file of files) file.mode = bundleFileMode(file.mode);
   return files;
-}
-/** Complete package contents, including directory modes; the root is a locator. */
-export async function packageInventory(root) {
-  const directories = [];
-  const files = await scanInventory(root, "", [], { value: 0, directories });
-  return { files, directories };
 }
 export async function verifyInventory(root, expected) {
   if (!/^[a-f0-9]{64}$/.test(expected ?? ""))

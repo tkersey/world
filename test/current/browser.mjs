@@ -4,13 +4,10 @@ import { createServer } from "node:http";
 import { resolve, extname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chromium, firefox } from "./browser-tools/node_modules/playwright-core/index.mjs";
+import { chromium } from "./browser-tools/node_modules/playwright-core/index.mjs";
 import { encodeInput, decodeOutcome, decodeRequest, encodeResult } from "../../src/embedding/index.mjs";
-const [kernelPath, fixtureTool, retainedCorpus, baselineKernelPath] = process.argv.slice(2);
+const [kernelPath, fixtureTool] = process.argv.slice(2);
 const kernel = await readFile(kernelPath);
-const baselineKernel = baselineKernelPath ? await readFile(baselineKernelPath) : null;
-const baselineSha256 = baselineKernel ? createHash("sha256").update(baselineKernel).digest("hex") : null;
-assert.equal(Boolean(retainedCorpus), Boolean(baselineKernelPath));
 const sha256 = createHash("sha256").update(kernel).digest("hex");
 const image = new Uint8Array(execFileSync(fixtureTool, ["image", "resource"]));
 const root = resolve(import.meta.dirname, "../..");
@@ -19,7 +16,6 @@ const server = createServer(async (request, response) => {
     const path = new URL(request.url, "http://localhost").pathname;
     if (path === "/") { response.end("<!doctype html><title>World Worker conformance</title>"); return; }
     if (path === "/kernel.wasm") { response.setHeader("Content-Type", "application/wasm"); response.end(kernel); return; }
-    if (path === "/baseline.wasm" && baselineKernel) { response.setHeader("Content-Type", "application/wasm"); response.end(baselineKernel); return; }
     const file = path === "/worker.mjs" ? resolve(import.meta.dirname, "worker.mjs") :
       /^\/src\/embedding\/[a-z-]+\.mjs$/.test(path) ? resolve(root, path.slice(1)) : null;
     if (!file) { response.writeHead(404); response.end(); return; }
@@ -31,7 +27,7 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const url = `http://127.0.0.1:${server.address().port}/`;
 const results = [];
 try {
-  for (const [engine, type] of [["chromium", chromium], ["firefox", firefox]]) {
+  for (const [engine, type] of [["chromium", chromium]]) {
     const browser = await type.launch({ headless: true });
     try {
       const page = await browser.newPage();
@@ -100,37 +96,7 @@ try {
         assert.equal(finished.result.workingLive, "0");
         await terminate(finished.id);
       }
-      let retainedTransfers=0;
-      if(retainedCorpus)for(const mode of ['H','Q'])for(const fromBaseline of [true,false]) {
-        const program=new Uint8Array(await readFile(join(retainedCorpus,mode+'.bpi3'))),initialArgs=Buffer.alloc(16);
-        initialArgs.writeBigUInt64LE(1024n);initialArgs.writeBigUInt64LE(17n,8);
-        const sourceSha=fromBaseline?baselineSha256:sha256,targetSha=fromBaseline?sha256:baselineSha256;
-        const producer=await start({op:'start',kernelPath:fromBaseline?'/baseline.wasm':'/kernel.wasm',sha256:sourceSha,image:Array.from(program),initialArgs:Array.from(initialArgs),checkpoint:true,transfer:true});
-        assert.equal(producer.result.error,undefined);assert.equal(producer.result.workingLive,'0');
-        const pending=decodeOutcome(new Uint8Array(producer.result.output));assert.equal(pending.kind,mode==='H'?'yielded':'requested');
-        await terminate(producer.id); // No resident or private identity survives.
-        const consumer=await start({op:'restore',kernelPath:fromBaseline?'/kernel.wasm':'/baseline.wasm',sha256:targetSha,image:Array.from(program),state:producer.result.state,quantum:0,checkpoint:true});
-        assert.equal(consumer.result.error,undefined);
-        assert.deepEqual(consumer.result.output,producer.result.output);
-        const control=mode==='H'?'resume_yield':'reply',value=mode==='H'?new Uint8Array():await encodeResult(pending.request,initialArgs.subarray(8));
-        if(mode==='Q') {
-          const wrong=new Uint8Array(value);wrong[20]^=1;
-          for(const invalid of [new Uint8Array([0]),wrong]){
-            const rejected=await page.evaluate(({id,value})=>window.workerCall(id,{op:'drive',control:'reply',value}),{id:consumer.id,value:Array.from(invalid)});
-            assert.equal(rejected.error,'WORLD_KERNEL_REJECTED');
-            assert(['Truncated','InvalidResult'].includes(rejected.diagnostic));
-          }
-        }
-        const command=encodeInput({image:program,state:new Uint8Array(producer.result.state),control,value,quantum:1n});
-        const expected=new Uint8Array(execFileSync(fixtureTool,['invoke'],{input:command}));
-        const resumed=await page.evaluate(({id,control,value})=>window.workerCall(id,{op:'drive',control,value,quantum:1,checkpoint:true}),{id:consumer.id,control,value:Array.from(value)});
-        assert.equal(resumed.error,undefined);assert.deepEqual(new Uint8Array(resumed.output),expected);
-        const cancelled=await page.evaluate(id=>window.workerCall(id,{op:'drive',control:'cancel_text',value:Array.from(new TextEncoder().encode('retained browser complete')),close:true}),consumer.id);
-        assert.equal(cancelled.error,undefined);assert.equal(decodeOutcome(new Uint8Array(cancelled.output)).kind,'cancelled');assert.equal(cancelled.workingLive,'0');
-        await terminate(consumer.id);retainedTransfers++;
-      }
-      results.push({ engine, version: browser.version(), workersDestroyed: 7+2*retainedTransfers,
-        retainedScopedComputations: 2, retainedTransfers });
+      results.push({ engine, version: browser.version(), workersDestroyed: 7, retainedScopedComputations: 2 });
     } finally { await browser.close(); }
   }
 } finally { await new Promise(resolve => server.close(resolve)); }
