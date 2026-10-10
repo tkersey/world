@@ -113,50 +113,19 @@ brands reject. Invocation codecs retain the schema-directed value rules, includi
 zero-size cardinality, bounds and UTF-8. Environmental tool semantics and checkpoint
 persistence remain the caller's responsibility.
 
-## Reproduction and qualification
+## Build and verification
 
-Install only browser conformance tooling when needed:
+`zig build build-kernel` builds the generic ABI 3 kernel without constructing
+Boundary's authoring compiler. `zig build build-runtime check-package` builds the
+ordinary standalone JS package and exercises its extracted public API and CLI.
+These commands do not publish a release or create a qualified-v1 bundle.
 
-```sh
-npm ci --prefix test/current/browser-tools
-node test/current/browser-tools/node_modules/playwright-core/cli.js install chromium firefox
-```
+See [verification boundaries](verification.md) for the native, independent source
+and optional JavaScript checks and browser setup. Current qualification uses
+Chromium Workers; the historical Firefox/Wasmtime and duplicate transfer campaigns
+are retired. Exact subjects and executed results belong to the current PR.
 
-The independent Wasmtime lane uses the existing locked Python 3.14.7 / Wasmtime
-48.0.0 environment through uv. Run:
-
-```sh
-zig build build-kernel check-kernel check-transfer check-browser check-codecs \
-  -Dboundary-source=/absolute/path/to/boundary-compositional-execution \
-  --global-cache-dir .zig-global-cache --summary all
-```
-
-The development source override is explicit. The normal dependency now selects
-Boundary 3 development source, and the package root exports the current byte API.
-Final namespace retirement and coordinated Agent cutover remain open. `build-kernel`
-alone never constructs the source compiler. Qualification commands print the exact
-kernel digest and engine versions; local emitted fixture/tool files are not releases.
-
-Current witnesses use the same kernel bytes for twelve staged/linked Programs:
-115 native/Node matched boundaries, 16 transfers between kernel instances, and
-29 independent Wasmtime boundaries. The linked cases include a reusable effectful
-callable, private counter interpretation, owned suspension/cleanup, a second
-wrapper, and mutually recursive components. Their independent expected results
-are 83, 166, and true for even(100). Wasmtime disables threads, memory64, GC,
-exceptions, tail calls and SIMD. Real Chromium 153.0.8010.12 and Firefox 155.0
-Workers export a resource suspension, terminate, restore its native-produced
-successor in a fresh Worker, and complete retained cleanup. Wrong kernel identity
-rejects in each browser. Repeated prepared Sessions show stable live and reserved
-memory after warm-up. Input/work/output capacity, stale handles, transfer failure,
-and old-family rejection have negative checks.
-
-This qualifies the core runtime/embedding paths. It is not the required Agent
-compiled-tool/file witness, extracted-package
-qualification, or final performance acceptance. Those remain part of the full goal.
-
-`zig build build-runtime check-package` builds a standalone current package and
-checks its API and CLI after npm packing and extraction. The 64-installation
-fixture demonstrates working-capacity rejection at the initial 1 MiB budget and
-successful unchanged-input retry with an explicit 8 MiB budget. It does not claim
-that all applications fit the initial budget. The CLI writes PKO3 to stdout and
-keeps filesystem loading in the Node-only shell.
+The installation fixture checks initial working-capacity rejection and successful
+unchanged-input retry with an explicitly larger budget. It does not claim that
+all applications fit the initial budget. The CLI writes PKO3 to stdout and keeps
+filesystem loading in its Node-only adapter.

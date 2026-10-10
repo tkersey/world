@@ -10,7 +10,11 @@ const [runtime, fixtures] = process.argv.slice(2).map(value => resolve(value));
 const scratch = await mkdtemp(join(tmpdir(), "world-current-package-"));
 try {
   const [packed] = JSON.parse(execFileSync("npm", ["pack", "--offline", "--ignore-scripts", "--json", "--pack-destination", scratch], { cwd: runtime, encoding: "utf8" }));
-  assert.ok(packed.files.every(file => !file.path.includes("process_v2") && !file.path.includes("kernel-v2")));
+  const declared = JSON.parse(await readFile(join(runtime, "package.json"), "utf8")).files;
+  assert.deepEqual(packed.files.map(file => file.path).sort(), [...declared].sort());
+  assert.ok(packed.files.some(file => file.path === "docs/verification.md"));
+  const retired = ["process_v2", "kernel-v2", "runtime-prepare.mjs", "runtime-delivery.mjs", "toolchain.mjs"];
+  assert.ok(packed.files.every(file => retired.every(name => !file.path.includes(name))));
   const directory = join(scratch, "extracted");
   await mkdir(directory);
   execFileSync("tar", ["-xf", join(scratch, packed.filename), "-C", directory]);

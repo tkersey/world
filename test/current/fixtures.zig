@@ -1,7 +1,7 @@
 //! Explicit compiler-dependent fixture builder and independent native byte peer.
 const std = @import("std");
 const boundary = @import("boundary");
-const runtime = @import("stable_runtime");
+const runtime = @import("world");
 
 pub fn main(init: std.process.Init) !void {
     var arguments = std.process.Args.Iterator.init(init.minimal.args);

@@ -5,10 +5,10 @@
     .fingerprint = 0x3a771143074dc2bd,
     .dependencies = .{
         .boundary = .{
-            .url = "https://github.com/tkersey/boundary/archive/c9d719a6c4ed3a34d8acb8b0f2808c39322883f3.tar.gz",
-            .hash = "boundary-3.0.0-flclaCwSRgCWzefAdYTuW8qR-dz1_f0yzoLJHegGXjo7",
+            .url = "git+https://github.com/tkersey/boundary#abc7092b96becd03e5c7792b20dafad0da17881a",
+            .hash = "boundary-3.0.0-flclaFbSMwBDSNcw9PhVPcn46Czi6LwYmXrVM1LNHhmo",
             .lazy = true,
         },
     },
-    .paths = .{ "LICENSE", "README.md", "build.zig", "build.zig.zon", "package.json", "bin", "src", "test", "docs/kernel-abi.md", "docs/verification.md", "docs/runtime-bundles.md", "docs/compositional-execution.md", "docs/recursive-interaction.md" },
+    .paths = .{ "LICENSE", "README.md", "build.zig", "build.zig.zon", "build-profile.json", "package.json", "bin", "src", "test", "docs/kernel-abi.md", "docs/verification.md", "docs/runtime-bundles.md" },
 }

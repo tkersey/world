@@ -9,3 +9,5 @@ node_modules/
 .zig-cache/
 zig-out/
 zig-pkg/
+
+/.zig-cache-upload/

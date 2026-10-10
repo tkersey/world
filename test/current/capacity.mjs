@@ -1,16 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { Kernel, encodeInput, decodeOutcome, decodeRequest, encodeResult } from "../../src/embedding/index.mjs";
 import { inspectKernelWasm, wasmRange } from "../../src/embedding/wasm.mjs";
 import { concat, natural } from "../../src/embedding/wire.mjs";
-import { selectZig } from "../../src/node/toolchain.mjs";
 
-const [kernelPath, fixtures, boundary, zigExe, zigLib] = process.argv.slice(2);
-const toolchain = selectZig(zigExe ? ["--zig-exe", zigExe, "--zig-lib", zigLib] : []);
+const [kernelPath, fixtures] = process.argv.slice(2);
 const code = new Uint8Array(await readFile(kernelPath));
 const host = await Kernel.create({ bytes: code, expectedSha256: createHash("sha256").update(code).digest("hex") });
 const limits = { input: 4 << 20, working: 16 << 20, output: 4 << 20 };
@@ -67,16 +63,23 @@ for (const arena of ["input", "working", "output"]) {
   assert.equal(e.world_output_len(), 0n);
 }
 
-const directory = await mkdtemp(join(tmpdir(), "world-fixed-memory-"));
-try {
-  const pages = inspectKernelWasm(code).memory.initialPages;
-  execFileSync(toolchain.executable, ["build", `--zig-lib=${toolchain.identity.library}`, "build-kernel", `-Dboundary-source=${boundary}`,
-    `-Dmaximum-memory=${pages * 65536}`, "--prefix", directory,
-    "--cache-dir", join(directory, "cache")],
-    { cwd: resolve(import.meta.dirname, "../.."), env: toolchain.env, stdio: "pipe" });
-  toolchain.assertUnchanged();
-  const fixed = new Uint8Array(await readFile(join(directory, "world-kernel.wasm")));
-  assert.equal(inspectKernelWasm(fixed).memory.maximumPages, pages);
+// The only difference is the WASM memory declaration. Keep the real evaluator
+// bytes and force memory.grow to fail without rebuilding the entire project.
+const pages = inspectKernelWasm(code).memory.initialPages;
+const nat = value => { const bytes=[]; do { const n=value&127; value=Math.floor(value/128); bytes.push(n|(value?128:0)); } while(value); return bytes; };
+let offset=8, memorySeen=false; const sections=[code.subarray(0,8)];
+const readNat = () => { let n=0,shift=0,b; do { b=code[offset++]; n+=(b&127)*2**shift; shift+=7; } while(b&128); return n; };
+while(offset<code.length) {
+  const start=offset, tag=code[offset++], length=readNat(), end=offset+length;
+  assert(end<=code.length);
+  if(tag===5) { assert(!memorySeen); memorySeen=true; const body=[1,1,...nat(pages),...nat(pages)]; sections.push(Uint8Array.from([5,...nat(body.length),...body])); }
+  else sections.push(code.subarray(start,end));
+  offset=end;
+}
+assert(memorySeen);
+const fixed = concat(...sections);
+assert.equal(inspectKernelWasm(fixed).memory.maximumPages,pages);
+{
   const e = new WebAssembly.Instance(new WebAssembly.Module(fixed), {}).exports;
   assert.equal(e.world_initialize(1n), 0);
   assert.equal(e.world_set_limits(1n, BigInt(limits.input), BigInt(limits.working), BigInt(limits.output)), 0);
@@ -88,5 +91,5 @@ try {
   assert.equal(capacity.memoryPages.provenance, "lower_bound");
   assert.ok(capacity.memoryPages.bytes > BigInt(pages));
   assert.deepEqual(host.invoke(command), expected);
-} finally { await rm(directory, { recursive: true, force: true }); }
+}
 console.log("Current input, working, output and physical-memory failures preserve unchanged retry input");

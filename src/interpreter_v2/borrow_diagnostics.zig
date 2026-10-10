@@ -93,7 +93,29 @@ fn check(allocator: std.mem.Allocator, mode: Mode) !void {
 pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next();
-    const mode = std.meta.stringToEnum(Mode, args.next() orelse return error.MissingMode) orelse return error.InvalidMode;
+    const selected = args.next() orelse return error.MissingMode;
+    if (std.mem.eql(u8, selected, "check")) {
+        const executable = args.next() orelse return error.MissingExecutable;
+        if (args.next() != null) return error.UnexpectedArgument;
+        for (std.enums.values(Mode)) |mode| {
+            const result = try std.process.run(init.gpa, init.io, .{ .argv = &.{ executable, @tagName(mode) }, .stdout_limit = .limited(1 << 20), .stderr_limit = .limited(1 << 20), .timeout = .{ .duration = .{ .raw = .fromSeconds(30), .clock = .awake } } });
+            defer init.gpa.free(result.stdout);
+            defer init.gpa.free(result.stderr);
+            const fault = mode == .grow or mode == .shift;
+            const message = try std.fmt.allocPrint(init.gpa, "Z17 {s} {s}{s}", .{ if (fault) "injected" else "valid", @tagName(mode), if (fault) " before invalidation" else "; leaks=0" });
+            defer init.gpa.free(message);
+            const valid = std.mem.indexOf(u8, result.stderr, message) != null and
+                (if (fault) !result.term.success() and
+                    (std.mem.indexOf(u8, result.stderr, "SafetyLock") != null or std.mem.indexOf(u8, result.stderr, "assertUnlocked") != null) and
+                    std.mem.indexOf(u8, result.stderr, "Z17 invalidation escaped") == null else result.term.success());
+            if (!valid) {
+                std.debug.print("{s}\n", .{result.stderr});
+                return error.DiagnosticMismatch;
+            }
+        }
+        return;
+    }
+    const mode = std.meta.stringToEnum(Mode, selected) orelse return error.InvalidMode;
     if (args.next() != null) return error.UnexpectedArgument;
     var safety = std.heap.SafeAllocator.init(std.heap.page_allocator, .{});
     const result = check(safety.allocator(), mode);

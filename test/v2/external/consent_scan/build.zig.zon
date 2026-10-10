@@ -1,8 +1,0 @@
-.{
-    .name = .consent_scan,
-    .fingerprint = 0x6db033a27b8764a1, // Changing this has security and trust implications.
-    .version = "0.0.0",
-    .minimum_zig_version = "0.16.0",
-    .dependencies = .{ .boundary = .{ .path = "../boundary" } },
-    .paths = .{ "build.zig", "build.zig.zon", "main.zig", "sum_squares.zig", "byte_length.zig", "request_xor.zig", "ordered_pair.zig", "README.md" },
-}
