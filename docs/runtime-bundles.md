@@ -100,3 +100,20 @@ GitHub access and artifact retention apply (the workflow requests 30 days).
 Record the actual run/artifact/expiry and preserve a verified durable local copy.
 This is a non-release artifact, not a permanent release URL. Expiry never permits
 silently replacing a pinned runtime with a newer build.
+
+## Stable release delivery
+
+World 6.0.0 uses the same qualified transport and external descriptor as durable
+GitHub release assets: `world-runtime-bundle.tar.gz` and
+`world-runtime-bundle.delivery.json`. Obtain them from the published
+[v6.0.0 release](https://github.com/tkersey/world/releases/tag/v6.0.0), then use
+the descriptor's archive and manifest hashes with the acquisition and smoke
+commands above. A preparation branch or draft release is not published delivery.
+The selected qualified bytes are uploaded unchanged; a release does not rebuild
+them or extend a CI artifact's retention period.
+
+The manifest binds Boundary 3.0.0 at
+`c9d719a6c4ed3a34d8acb8b0f2808c39322883f3`, the normal Zig package hash and the
+complete consumed package inventory. Source consumers use the same exact
+dependency in `build.zig.zon`. Keep existing tasks bound to their original
+runtime identities; installing this release does not migrate saved state.
