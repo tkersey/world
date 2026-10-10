@@ -15,8 +15,11 @@ The Zig build owns kernel construction, resolved build metadata and package
 assembly. The existing `check` roots qualify those same artifacts, including
 source agreement, kernel identity/ABI, ownership, memory and browser Worker
 observations. The ordinary source-built package is not labeled a v1 qualified
-runtime bundle. CI publishes its tested package as a workflow artifact; release
-publication remains a separate authorized operation.
+runtime bundle. The explicit `package.json` file list owns both Zig assembly and npm packaging,
+so stale files in a reused output directory cannot enter the new package. To
+create the ordinary npm archive, run `npm pack --offline --ignore-scripts` in
+`zig-out/runtime`. CI retains this tested npm archive as its workflow artifact;
+release publication remains a separate authorized operation.
 
 The old `runtime prepare` interface and its script-based source/package/compiler
 orchestration and repeated delivery campaigns are retired. Use `build-runtime`

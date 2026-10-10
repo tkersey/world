@@ -63,7 +63,10 @@ jobs:
       - name: Qualify the independent oracle and optional JS boundary
         run: zig build check build-runtime -Doptimize=safe --summary all
       - name: Package the tested ordinary JS consumer
-        run: tar -czf "$RUNNER_TEMP/world-runtime-package.tar.gz" -C zig-out/runtime .
+        working-directory: zig-out/runtime
+        run: |
+          archive=$(npm pack --offline --ignore-scripts --silent --pack-destination "$RUNNER_TEMP")
+          mv "$RUNNER_TEMP/$archive" "$RUNNER_TEMP/world-runtime-package.tar.gz"
       - name: Retain the tested package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

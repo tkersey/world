@@ -162,13 +162,13 @@ pub fn build(b: *std.Build) void {
         .dependOn(&b.addInstallFileWithDir(current_kernel.getEmittedBin(), .prefix, "world-kernel.wasm").step);
     const runtime_package = b.step("build-runtime", "Build the standalone current JavaScript/kernel package");
     runtime_package.dependOn(&installed_profile.step);
-    runtime_package.dependOn(&b.addInstallFileWithDir(current_kernel.getEmittedBin(), .prefix, "runtime/world-kernel.wasm").step);
-    for ([_][]const u8{
-        "LICENSE",                    "README.md",                    "package.json",            "bin/world.mjs",               "docs/kernel-abi.md",
-        "src/embedding/index.mjs",    "src/embedding/kernel.mjs",     "src/embedding/codec.mjs", "src/embedding/values.mjs",    "src/embedding/wasm.mjs",
-        "src/embedding/wire.mjs",     "src/embedding/errors.mjs",     "src/node/file-input.mjs", "src/node/runtime-bundle.mjs", "src/node/runtime-command.mjs",
-        "src/node/runtime-smoke.mjs", "src/node/runtime-acquire.mjs", "docs/runtime-bundles.md", "src/node/runtime-output.mjs", "src/node/runtime-profile.json",
-    }) |path| runtime_package.dependOn(&b.addInstallFileWithDir(b.path(path), .prefix, b.fmt("runtime/{s}", .{path})).step);
+    // One explicit npm file list owns the optional package's shipped surface.
+    // Repeated builds may retain old outputs, but those never enter a new package.
+    const npm_package = std.json.parseFromSliceLeaky(struct { files: []const []const u8 }, b.allocator, @embedFile("package.json"), .{ .ignore_unknown_fields = true }) catch @panic("invalid package file list");
+    for (npm_package.files) |path| {
+        const file = if (std.mem.eql(u8, path, "world-kernel.wasm")) current_kernel.getEmittedBin() else b.path(path);
+        runtime_package.dependOn(&b.addInstallFileWithDir(file, .prefix, b.fmt("runtime/{s}", .{path})).step);
+    }
     const fixture = b.addExecutable(.{ .name = "current-fixtures", .root_module = b.createModule(.{
         .root_source_file = b.path("test/current/fixtures.zig"),
         .target = b.graph.host,
