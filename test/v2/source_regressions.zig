@@ -1,7 +1,7 @@
 //! Current regressions migrated from the predecessor compiler/runtime suite.
 const std = @import("std");
-const boundary = @import("boundary");
-const data = boundary.data;
+const horos = @import("horos");
+const data = horos.data;
 const Session = @import("stable_runtime").Session;
 const testing = std.testing;
 const allocator = testing.allocator;
@@ -41,9 +41,9 @@ fn answerUnit(session: *Session) !void {
 }
 
 test "current duplicate one-shot custody rejects while distinct tokens still resume" {
-    var b = boundary.source.Builder.init(allocator);
+    var b = horos.source.Builder.init(allocator);
     defer b.deinit();
-    var compiled = try boundary.program.compile(allocator, try boundary.source.examples.ownership(&b));
+    var compiled = try horos.program.compile(allocator, try horos.source.examples.ownership(&b));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer allocator.free(image);
@@ -85,9 +85,9 @@ test "current duplicate one-shot custody rejects while distinct tokens still res
 }
 
 test "current cleanup rejects duplicate obligations and a forged running continuation" {
-    var b = boundary.source.Builder.init(allocator);
+    var b = horos.source.Builder.init(allocator);
     defer b.deinit();
-    var compiled = try boundary.program.compile(allocator, try boundary.source.examples.yieldingCleanup(&b));
+    var compiled = try horos.program.compile(allocator, try horos.source.examples.yieldingCleanup(&b));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer allocator.free(image);
@@ -140,9 +140,9 @@ test "current cleanup rejects duplicate obligations and a forged running continu
 test "current yielded cleanup preserves binary and text first cancellation through restore" {
     for ([_]u8{ 0, 1 }) |primary| {
         for ([_]data.invocation.Reason{ .{ .text = "stop" }, .{ .bytes = &.{ 0xff, 0 } } }) |reason| {
-            var b = boundary.source.Builder.init(allocator);
+            var b = horos.source.Builder.init(allocator);
             defer b.deinit();
-            var compiled = try boundary.program.compile(allocator, try boundary.source.examples.yieldingCleanup(&b));
+            var compiled = try horos.program.compile(allocator, try horos.source.examples.yieldingCleanup(&b));
             defer compiled.deinit();
             const image = try programBytes(compiled.program);
             defer allocator.free(image);
@@ -175,9 +175,9 @@ test "current yielded cleanup preserves binary and text first cancellation throu
 }
 
 test "current code admission rejects forged empty capture obligations" {
-    var b = boundary.source.Builder.init(allocator);
+    var b = horos.source.Builder.init(allocator);
     defer b.deinit();
-    var compiled = try boundary.program.compile(allocator, try boundary.source.examples.clauseAbort(&b));
+    var compiled = try horos.program.compile(allocator, try horos.source.examples.clauseAbort(&b));
     defer compiled.deinit();
     var program = compiled.program;
     const schemas = try allocator.dupe(data.program.Schema, program.schemas);
@@ -200,9 +200,9 @@ test "current code admission rejects forged empty capture obligations" {
 }
 
 test "current suspended delimiters cannot terminate a live return spine" {
-    var b = boundary.source.Builder.init(allocator);
+    var b = horos.source.Builder.init(allocator);
     defer b.deinit();
-    var compiled = try boundary.program.compile(allocator, try phaseReturnExample(&b));
+    var compiled = try horos.program.compile(allocator, try phaseReturnExample(&b));
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer allocator.free(image);
@@ -259,7 +259,7 @@ fn rejectMalformedState(program: data.activation.Program, image: []const u8, sta
 }
 
 test "current pending contracts blobs and identity reject before publishing a request" {
-    var b = boundary.source.Builder.init(allocator);
+    var b = horos.source.Builder.init(allocator);
     defer b.deinit();
     const bytes_type = try b.schema(.bytes);
     const unit = try b.scalar(void);
@@ -269,7 +269,7 @@ test "current pending contracts blobs and identity reject before publishing a re
         .effect = effect,
         .payload = try b.reference(b.parameter(entry, 0)),
     } }));
-    var compiled = try boundary.program.compile(allocator, b.module(entry, unit));
+    var compiled = try horos.program.compile(allocator, b.module(entry, unit));
     defer compiled.deinit();
     const program = compiled.program;
     const image = try programBytes(program);
@@ -319,10 +319,10 @@ test "current captured delimiters and branch-local region aliases reject corrupt
     var one_shot = false;
     var multi = false;
     var local_alias = false;
-    inline for (.{ boundary.source.examples.deep, boundary.source.examples.choicesAll, boundary.source.examples.stateLocal }) |example| {
-        var b = boundary.source.Builder.init(allocator);
+    inline for (.{ horos.source.examples.deep, horos.source.examples.choicesAll, horos.source.examples.stateLocal }) |example| {
+        var b = horos.source.Builder.init(allocator);
         defer b.deinit();
-        var compiled = try boundary.program.compile(allocator, try example(&b));
+        var compiled = try horos.program.compile(allocator, try example(&b));
         defer compiled.deinit();
         const image = try programBytes(compiled.program);
         defer allocator.free(image);
@@ -397,9 +397,9 @@ fn substituteSuccessorBorrow(program: data.activation.Program, state: data.proce
 
 test "current successor State and body results retain return-clause borrow constraints" {
     for (std.enums.values(borrow_returns.ResultFrom)) |from| for ([_]bool{ false, true }) |delegated| {
-        var b = boundary.source.Builder.init(allocator);
+        var b = horos.source.Builder.init(allocator);
         defer b.deinit();
-        var compiled = try boundary.program.compile(allocator, try borrow_returns.scenario(&b, from, false, false, delegated));
+        var compiled = try horos.program.compile(allocator, try borrow_returns.scenario(&b, from, false, false, delegated));
         defer compiled.deinit();
         const image = try programBytes(compiled.program);
         defer allocator.free(image);
@@ -436,9 +436,9 @@ test "current successor State and body results retain return-clause borrow const
 }
 
 test "current restored region frames retain their saved invocation effect contract" {
-    var b = boundary.source.Builder.init(allocator);
+    var b = horos.source.Builder.init(allocator);
     defer b.deinit();
-    var compiled = try boundary.program.compile(allocator, try regionInvocationExample(&b));
+    var compiled = try horos.program.compile(allocator, try regionInvocationExample(&b));
     defer compiled.deinit();
     const program = compiled.program;
     try testing.expectEqual(0, program.functions[@intCast(program.roots.entry)].effects.len);
@@ -489,7 +489,7 @@ test "current restored region frames retain their saved invocation effect contra
 }
 
 test "current full-width zero-size cardinalities survive yield and PST3 restore" {
-    var b = boundary.source.Builder.init(allocator);
+    var b = horos.source.Builder.init(allocator);
     defer b.deinit();
     const unit = try b.scalar(void);
     const integer = try b.scalar(u64);
@@ -518,9 +518,9 @@ test "current full-width zero-size cardinalities survive yield and PST3 restore"
 }
 
 test "current restored token interfaces bound actual captured continuation effects" {
-    var b = boundary.source.Builder.init(allocator);
+    var b = horos.source.Builder.init(allocator);
     defer b.deinit();
-    var compiled = try boundary.program.compile(allocator, try restoredEffectExample(&b));
+    var compiled = try horos.program.compile(allocator, try restoredEffectExample(&b));
     defer compiled.deinit();
     const program = compiled.program;
     const image = try programBytes(program);
@@ -573,7 +573,7 @@ const BindingConsumer = enum { value, call, closure };
 const BindingBody = struct { term: data.program.Id, schema: data.program.Id };
 
 fn bindingBody(
-    b: *boundary.source.Builder,
+    b: *horos.source.Builder,
     name: data.program.Id,
     consumer: BindingConsumer,
 ) !BindingBody {
@@ -598,7 +598,7 @@ fn bindingBody(
 }
 
 fn introduceBinding(
-    b: *boundary.source.Builder,
+    b: *horos.source.Builder,
     name: data.program.Id,
     body: data.program.Id,
     form: BindingForm,
@@ -624,12 +624,12 @@ fn introduceBinding(
 }
 
 fn shadowedBindingExample(
-    b: *boundary.source.Builder,
+    b: *horos.source.Builder,
     form: BindingForm,
     consumer: BindingConsumer,
     shadow: bool,
     yield_inside: bool,
-) !boundary.source.Module {
+) !horos.source.Module {
     const integer = try b.scalar(u64);
     const pair = try b.schema(.{ .product = &.{ integer, integer } });
     const entry = try b.declare(&.{integer}, pair, &.{}, &.{});
@@ -654,8 +654,8 @@ fn shadowedBindingExample(
 
 const BindingExit = union(enum) { completed: []const u8, failed: []const u8 };
 
-fn expectBindingExecution(module: boundary.source.Module, initial: []const u8, expected: BindingExit) !void {
-    var compiled = try boundary.program.compile(allocator, module);
+fn expectBindingExecution(module: horos.source.Module, initial: []const u8, expected: BindingExit) !void {
+    var compiled = try horos.program.compile(allocator, module);
     defer compiled.deinit();
     const image = try programBytes(compiled.program);
     defer allocator.free(image);
@@ -695,7 +695,7 @@ test "lexical binders preserve inner values and outside continuations through ca
         inline for (std.meta.tags(BindingConsumer)) |consumer| {
             for ([_]bool{ false, true }) |shadow| {
                 for ([_]bool{ false, true }) |yield_inside| {
-                    var b = boundary.source.Builder.init(std.testing.allocator);
+                    var b = horos.source.Builder.init(std.testing.allocator);
                     defer b.deinit();
                     const module = try shadowedBindingExample(
                         &b,
@@ -719,7 +719,7 @@ test "lexical binders preserve inner values and outside continuations through ca
 }
 
 test "lexical environments distinguish shared term bodies under different bindings" {
-    var b = boundary.source.Builder.init(std.testing.allocator);
+    var b = horos.source.Builder.init(std.testing.allocator);
     defer b.deinit();
     const integer = try b.scalar(u64);
     const boolean = try b.scalar(bool);
@@ -738,7 +738,7 @@ test "lexical environments distinguish shared term bodies under different bindin
     try expectBindingExecution(module, &.{0}, .{ .completed = &.{ 22, 0, 0, 0, 0, 0, 0, 0 } });
 }
 
-fn ownedBindingExample(b: *boundary.source.Builder, fail: bool) !boundary.source.Module {
+fn ownedBindingExample(b: *horos.source.Builder, fail: bool) !horos.source.Module {
     const integer = try b.scalar(u64);
     const computation = try b.schema(.{ .internal = .{ .computation = .{
         .parameters = &.{},
@@ -767,7 +767,7 @@ fn ownedBindingExample(b: *boundary.source.Builder, fail: bool) !boundary.source
 
 test "lexical shadowing preserves distinct owned values on consumption and failure" {
     for ([_]bool{ false, true }) |fail| {
-        var b = boundary.source.Builder.init(std.testing.allocator);
+        var b = horos.source.Builder.init(std.testing.allocator);
         defer b.deinit();
         const module = try ownedBindingExample(&b, fail);
         const expected: BindingExit = if (fail)
@@ -778,7 +778,7 @@ test "lexical shadowing preserves distinct owned values on consumption and failu
     }
 }
 
-fn restoredEffectExample(b: *boundary.source.Builder) !boundary.source.Module {
+fn restoredEffectExample(b: *horos.source.Builder) !horos.source.Module {
     const unit = try b.scalar(void);
     const boolean = try b.scalar(bool);
     const a = try b.effect(.{ .identity = "restore/A", .payload = unit, .result = unit, .external = false });
@@ -808,8 +808,8 @@ fn restoredEffectExample(b: *boundary.source.Builder) !boundary.source.Module {
     return b.module(entry, unit);
 }
 
-fn capabilityExample(b: *boundary.source.Builder, through_pair: bool) !struct {
-    module: boundary.source.Module,
+fn capabilityExample(b: *horos.source.Builder, through_pair: bool) !struct {
+    module: horos.source.Module,
     cap: u64,
     pair: u64,
 } {
@@ -849,12 +849,12 @@ fn capabilityExample(b: *boundary.source.Builder, through_pair: bool) !struct {
 
 test "saved same-family capability substitution cannot escape through a helper return" {
     for ([_]bool{ false, true }) |through_pair| {
-        var b = boundary.source.Builder.init(allocator);
+        var b = horos.source.Builder.init(allocator);
         defer b.deinit();
         const fixture = try capabilityExample(&b, through_pair);
         const cap = fixture.cap;
         const pair = fixture.pair;
-        var compiled = try boundary.program.compile(allocator, fixture.module);
+        var compiled = try horos.program.compile(allocator, fixture.module);
         defer compiled.deinit();
         const image = try programBytes(compiled.program);
         defer allocator.free(image);
@@ -899,7 +899,7 @@ test "saved same-family capability substitution cannot escape through a helper r
     }
 }
 
-fn regionInvocationExample(b: *boundary.source.Builder) !boundary.source.Module {
+fn regionInvocationExample(b: *horos.source.Builder) !horos.source.Module {
     const unit = try b.scalar(void);
     const effect = try b.effect(.{
         .identity = "restore/foreign-region",
@@ -945,7 +945,7 @@ fn regionInvocationExample(b: *boundary.source.Builder) !boundary.source.Module 
     return b.module(entry, unit);
 }
 
-fn phaseReturnExample(b: *boundary.source.Builder) !boundary.source.Module {
+fn phaseReturnExample(b: *horos.source.Builder) !horos.source.Module {
     const unit = try b.scalar(void);
     const integer = try b.scalar(u64);
     const boolean = try b.scalar(bool);
@@ -978,7 +978,7 @@ fn phaseReturnExample(b: *boundary.source.Builder) !boundary.source.Module {
 }
 
 test "tail indirect application retains its environment without accumulating return controls" {
-    const source = boundary.source;
+    const source = horos.source;
     for ([_]bool{ false, true }) |non_tail| {
         var b = source.Builder.init(allocator);
         defer b.deinit();
@@ -1003,7 +1003,7 @@ test "tail indirect application retains its environment without accumulating ret
         } }));
         const function = try b.lambda(loop, signature);
         try b.define(entry, try b.term(.{ .apply = .{ .computation = function, .arguments = &.{ function, try b.reference(b.parameter(entry, 0)) } } }));
-        var compiled = try boundary.program.compile(allocator, b.module(entry, unit));
+        var compiled = try horos.program.compile(allocator, b.module(entry, unit));
         defer compiled.deinit();
         const image = try programBytes(compiled.program);
         defer allocator.free(image);

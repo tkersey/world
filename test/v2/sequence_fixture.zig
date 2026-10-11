@@ -1,5 +1,5 @@
 //! Consume every sequence element with checked addition.
-const source = @import("boundary").source;
+const source = @import("horos").source;
 
 pub fn build(b: *source.Builder) !source.Module {
     const integer = try b.scalar(u64);

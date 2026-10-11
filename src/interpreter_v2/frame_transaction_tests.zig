@@ -1,5 +1,5 @@
 const std = @import("std");
-const data = @import("boundary_data");
+const data = @import("horos_data");
 const Frames = @import("activation_frames.zig").Frames;
 const Frame = @import("activation_frames.zig").Frame;
 const Layouts = @import("frame_layouts.zig").Layouts;

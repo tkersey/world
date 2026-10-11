@@ -1,8 +1,8 @@
 //! Independent response rejection and lifecycle checks for Resident-owned facts.
 const std = @import("std");
-const boundary = @import("boundary");
+const horos = @import("horos");
 const runtime = @import("stable_runtime");
-const data = boundary.data;
+const data = horos.data;
 const protocol = data.invocation;
 const a = std.testing.allocator;
 const expect = std.testing.expect;
@@ -11,9 +11,9 @@ const bytesEq = std.testing.expectEqualSlices;
 const Statistics = std.meta.Child(std.meta.Child(@FieldType(runtime.Session, "statistics")));
 
 fn image(cleanup: bool) ![]u8 {
-    var b = boundary.source.Builder.init(a);
+    var b = horos.source.Builder.init(a);
     defer b.deinit();
-    const module = if (cleanup) try boundary.source.examples.unwind(&b) else blk: {
+    const module = if (cleanup) try horos.source.examples.unwind(&b) else blk: {
         const integer = try b.scalar(u64);
         const unit = try b.scalar(void);
         const effect = try b.effect(.{ .identity = "binding/retained", .payload = unit, .result = unit });
@@ -22,7 +22,7 @@ fn image(cleanup: bool) ![]u8 {
         try b.define(entry, try b.bind(try b.variable(unit), operation, try b.pure(try b.reference(b.parameter(entry, 0)))));
         break :blk b.module(entry, unit);
     };
-    var compiled = try boundary.program.compile(a, module);
+    var compiled = try horos.program.compile(a, module);
     defer compiled.deinit();
     const result = try a.alloc(u8, try data.program_image.encodedLength(compiled.program));
     errdefer a.free(result);

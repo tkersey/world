@@ -1,7 +1,7 @@
 //! A retained multi-shot template outlives updates to the same recursive function's
 //! loop parameters. Each activation must restart from x=1 and the original count.
-const boundary = @import("boundary");
-const source = boundary.source;
+const horos = @import("horos");
+const source = horos.source;
 
 pub fn build(b: *source.Builder, count: usize) !source.Module {
     const unit = try b.scalar(void);

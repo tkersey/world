@@ -1,14 +1,14 @@
 .{
-    .name = .world,
+    .name = .kronos,
     .version = "6.0.0",
     .minimum_zig_version = "0.17.0",
-    .fingerprint = 0x3a771143074dc2bd,
+    .fingerprint = 0x5a86bb04074dc2bd,
     .dependencies = .{
-        .boundary = .{
-            .url = "git+https://github.com/tkersey/boundary#abc7092b96becd03e5c7792b20dafad0da17881a",
-            .hash = "boundary-3.0.0-flclaFbSMwBDSNcw9PhVPcn46Czi6LwYmXrVM1LNHhmo",
+        .horos = .{
+            .url = "git+https://github.com/tkersey/horos#8db152d174ff2d844872cbc132db5be010b174e5",
+            .hash = "horos-3.0.0-flclaLXTMwDq5BFotAjb5-nLTtY3TJr8pg-Q5JfdaWGy",
             .lazy = true,
         },
     },
-    .paths = .{ "LICENSE", "README.md", "build.zig", "build.zig.zon", "build-profile.json", "package.json", "bin", "src", "test", "docs/kernel-abi.md", "docs/verification.md", "docs/runtime-bundles.md" },
+    .paths = .{ "LICENSE", "README.md", "build.zig", "build.zig.zon", "build-profile.json", "package.json", "bin", "src", "test", "docs/rename.md", "docs/kernel-abi.md", "docs/verification.md", "docs/runtime-bundles.md" },
 }

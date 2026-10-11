@@ -12,8 +12,8 @@ async function main(args) {
   }
   if (args.length === 1 && args[0] === "--version") { console.log(packageVersion); return; }
   if (args.length === 1 && args[0] === "--help") {
-    console.log("world runtime acquire --archive FILE --archive-sha256 HEX --manifest-sha256 HEX --output NEW_BUNDLE\nworld runtime verify --root BUNDLE --manifest-sha256 HEX [--smoke]");
-    console.log(`Usage: world invoke --kernel FILE --sha256 HEX --input PKI3 [--input-budget N --working-budget N --output-budget N]\nWrites canonical PKO3 bytes to stdout. Budgets are bytes; defaults are ${runtimeProfile.defaults.input}/${runtimeProfile.defaults.working}/${runtimeProfile.defaults.output}.`);
+    console.log("kronos runtime acquire --archive FILE --archive-sha256 HEX --manifest-sha256 HEX --output NEW_BUNDLE\nkronos runtime verify --root BUNDLE --manifest-sha256 HEX [--smoke]");
+    console.log(`Usage: kronos invoke --kernel FILE --sha256 HEX --input PKI3 [--input-budget N --working-budget N --output-budget N]\nWrites canonical PKO3 bytes to stdout. Budgets are bytes; defaults are ${runtimeProfile.defaults.input}/${runtimeProfile.defaults.working}/${runtimeProfile.defaults.output}.`);
     return;
   }
   if (args.shift() !== "invoke") throw new Error("expected invoke, --help or --version");

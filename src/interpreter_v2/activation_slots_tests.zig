@@ -9,7 +9,7 @@ test "frame pruning keeps initialization separate from liveness and preserves ol
 }
 
 fn pruneFrame(count: usize) !void {
-    const data = @import("boundary_data");
+    const data = @import("horos_data");
     const Frames = @import("activation_frames.zig").Frames;
     const Values = @import("values.zig").Values;
     var pool: data.analysis_sets.Pool = .{ .allocator = testing.allocator, .limit = count };
@@ -236,8 +236,8 @@ test "stable slots preserve an actual outer mutable cell across retained views" 
     try testing.expectEqual(1, store.statistics.value_copies);
 }
 
-test "existing World value operations read stable slots without full-frame materialization" {
-    const data = @import("boundary_data");
+test "existing Kronos value operations read stable slots without full-frame materialization" {
+    const data = @import("horos_data");
     const Values = @import("values.zig").Values;
     const schemas = [_]data.program.Schema{
         .u64, .{ .product = &.{ 0, 0 } }, .{ .bounded_bytes = 64 },
@@ -402,7 +402,7 @@ test "frame batch writes derive initialization from values rather than liveness 
 }
 
 fn batchFrame(allocator: std.mem.Allocator, count: usize) !void {
-    const data = @import("boundary_data");
+    const data = @import("horos_data");
     const Frames = @import("activation_frames.zig").Frames;
     const Values = @import("values.zig").Values;
     var pool: data.analysis_sets.Pool = .{ .allocator = allocator, .limit = count };
@@ -453,7 +453,7 @@ test "tail restart clears old locals and preserves retained input permutations o
 }
 
 fn restartFrame(allocator: std.mem.Allocator, count: usize, target: u64) !void {
-    const data = @import("boundary_data");
+    const data = @import("horos_data");
     const Frames = @import("activation_frames.zig").Frames;
     const Values = @import("values.zig").Values;
     var pool: data.analysis_sets.Pool = .{ .allocator = allocator, .limit = count };
@@ -501,7 +501,7 @@ fn restartFrame(allocator: std.mem.Allocator, count: usize, target: u64) !void {
 }
 
 test "cross-function restart rejects incompatible schemas capacity and active custody" {
-    const data = @import("boundary_data");
+    const data = @import("horos_data");
     const Frames = @import("activation_frames.zig").Frames;
     var pool: data.analysis_sets.Pool = .{ .allocator = testing.allocator, .limit = 3 };
     defer pool.deinit();

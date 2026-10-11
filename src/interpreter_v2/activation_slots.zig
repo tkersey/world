@@ -566,7 +566,7 @@ pub fn Slots(comptime Value: type) type {
     };
 }
 
-pub const ActivationSlots = Slots(@import("boundary_data").graph.Value);
+pub const ActivationSlots = Slots(@import("horos_data").graph.Value);
 
 test "retained bytes match allocator storage across dense and packed page lifetimes" {
     var counter = std.testing.FailingAllocator.init(std.testing.allocator, .{});

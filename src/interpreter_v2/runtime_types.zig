@@ -1,6 +1,6 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Error and observation vocabulary shared by the current execution machinery.
-const data = @import("boundary_data");
+const data = @import("horos_data");
 
 pub const Error = data.program_image.Error || data.state_admission.Error ||
     data.invocation.Error || data.scalar.Error || error{UnsupportedTransition};

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 World contributors. MIT license.
 //! Immutable exact frame-layout classes, derived once before sharing preparation.
 const std = @import("std");
-const data = @import("boundary_data");
+const data = @import("horos_data");
 
 pub const Layouts = struct {
     allocator: std.mem.Allocator,
